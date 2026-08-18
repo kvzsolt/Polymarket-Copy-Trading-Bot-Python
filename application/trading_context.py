@@ -14,6 +14,7 @@ from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
 from services.positionCoordinator import PositionCoordinator
+from services.telemetry import TelemetryEmitters
 
 if TYPE_CHECKING:
     from orchestrators.market_data_runtime import MarketDataRuntime
@@ -71,6 +72,11 @@ class TradingContext:
     # Phase 4 — balance regime gate (per-position cap, daily spend ceiling,
     # min headroom floor). Built from ``config.execution`` when ``None``.
     balance_regime: BalanceRegime | None = None
+    # Part C — operator telemetry emitters, injected by ``build_user_state``.
+    # The default is the disabled null-object bundle so every existing
+    # construction (tests, tools, paper harnesses) keeps working and no call
+    # site has to branch on whether telemetry is running.
+    telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.

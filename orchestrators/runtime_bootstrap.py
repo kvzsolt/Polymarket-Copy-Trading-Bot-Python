@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlencode
 from decimal import Decimal
 from collections.abc import Sized
@@ -29,6 +29,7 @@ from services.risk.risk_monitor import (
     rehydrate_position_manager,
 )
 from services.trading_permission import TradingPermissionService
+from services.telemetry import TelemetryEmitters
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
@@ -183,6 +184,10 @@ class UserRuntimeState:
     manual_sync_service: "object | None" = None
     # Cached durable control state; refreshed off the order hot path.
     trading_permission: TradingPermissionService | None = None
+    # Part C — operator telemetry emitters shared by every collaborator this
+    # follower owns. Defaults to the disabled null-object bundle so existing
+    # fixtures keep constructing state without telemetry.
+    telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -268,9 +273,24 @@ def build_user_state(
     pool,
     config: AppConfig,
     clob_gateway: "ClobGateway | None" = None,
+    telemetry: TelemetryEmitters | None = None,
 ) -> UserRuntimeState:
-    """Build one follower runtime from injected configuration and ports."""
+    """Build one follower runtime from injected configuration and ports.
+
+    Args:
+        runtime_user: Follower runtime identity and wallet settings.
+        client: CCXT prediction client owned by the venue runtime.
+        pool: Database pool backing every repository.
+        config: Validated application configuration.
+        clob_gateway: The single CCXT venue boundary for this follower.
+        telemetry: Operator telemetry emitters; a disabled bundle is used when
+            the telemetry runtime is not composed.
+
+    Returns:
+        The composed runtime state for one follower account.
+    """
     init_risk_engine(config)
+    emitters = telemetry if telemetry is not None else TelemetryEmitters.disabled()
 
     # Same pattern for the balance-lookup module (RPC_URL + collateral
     # contract addresses) so utils/getMyBalance.py drops its ENV reads.
@@ -355,6 +375,7 @@ def build_user_state(
         # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
         geoblock_gate=GeoblockGate(config.polymarket.enforce_geoblock),
         trading_permission=trading_permission,
+        telemetry=emitters.execution,
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
@@ -418,6 +439,7 @@ def build_user_state(
         position_drift_service=position_drift_service,
         manual_sync_service=manual_sync_service,
         trading_permission=trading_permission,
+        telemetry=emitters,
     )
 
 
@@ -816,6 +838,14 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     reservation_service.reconciler_callback = _reconcile_expired_reservation
 
 
+def _user_state_telemetry(user_state: object) -> TelemetryEmitters:
+    """Return the follower's emitter bundle, or the disabled null object."""
+    emitters = getattr(user_state, "telemetry", None)
+    if isinstance(emitters, TelemetryEmitters):
+        return emitters
+    return TelemetryEmitters.disabled()
+
+
 async def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
@@ -872,6 +902,7 @@ async def build_trading_context(
         rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
+        telemetry=_user_state_telemetry(user_state),
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
             "clob_gateway": user_state.clob_gateway,

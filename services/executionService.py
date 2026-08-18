@@ -16,6 +16,7 @@ from domain.units import BASIS_POINTS_PER_UNIT
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
     from services.market_data_service import MarketDataService
+    from services.telemetry import ExecutionTelemetryEmitter
 
 # CLOB venue access flows through the gateway; SDK-shaped types
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
@@ -377,6 +378,7 @@ class ExecutionService:
         market_data_service: "MarketDataService | None" = None,
         geoblock_gate=None,
         trading_permission: TradingPermissionService | None = None,
+        telemetry: "ExecutionTelemetryEmitter | None" = None,
     ):
         if config is None:
             raise TypeError("ExecutionService requires a typed AppConfig")
@@ -389,6 +391,10 @@ class ExecutionService:
         # None = no enforcement (preserves the configless / test default).
         self._geoblock_gate = geoblock_gate
         self._trading_permission = trading_permission
+        # Part C — operator telemetry emitter. Held but not yet used: the
+        # execution emit sites land with the projection wrapper in a later
+        # slice, so injecting it now keeps composition and emission separate.
+        self._telemetry = telemetry
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` must pass the same
         # CCXT-backed gateway to execution, reconciliation, and market data.

@@ -83,7 +83,7 @@ from services.control_plane.runtime import OpenOrderControlGateway
 from services.control_plane.commands import DiscoveryCommandPort
 from services.control_plane.queries import CachedPortfolioQueryPort
 from services.control_plane.tasks import TaskActivationGuard
-from services.telemetry import SystemClock
+from services.telemetry import SystemClock, TelemetryEmitters
 from services.multiUserConfig import (
     RuntimeUser,
     UserFollowConfig,
@@ -1095,6 +1095,23 @@ async def _start_telemetry_runtime(
     return runtime
 
 
+def _build_telemetry_emitters(telemetry_runtime: TelemetryRuntime | None) -> TelemetryEmitters:
+    """Return the process-wide operator telemetry emitter bundle.
+
+    Args:
+        telemetry_runtime: Started telemetry owner, or ``None`` when telemetry
+            was not composed for this process.
+
+    Returns:
+        A bundle bound to the running telemetry service, or the disabled
+        null-object bundle so no collaborator has to branch on availability.
+    """
+
+    if telemetry_runtime is None:
+        return TelemetryEmitters.disabled()
+    return TelemetryEmitters.build(telemetry_runtime.service)
+
+
 async def _start_control_plane_runtime(
     *,
     application: object,
@@ -1359,6 +1376,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         application=application,
         client_registry=client_registry,
     )
+    telemetry_emitters = _build_telemetry_emitters(telemetry_runtime)
     if application.falcon_client is not None:
         client_registry.append(application.falcon_client)
 
@@ -1524,6 +1542,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             _pool,
             application.config,
             clob_gateway=venue_runtime.gateway,
+            telemetry=telemetry_emitters,
         )
 
     logger.info(
