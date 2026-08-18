@@ -31,6 +31,24 @@ Both credentials are capped at 1024 characters and are compared in constant
 time, with every configured credential compared even after a match so
 credential order carries no timing signal.
 
+A browser cannot set request headers on a `WebSocket` upgrade, so
+`GET /api/v1/stream` — and no other route — also accepts the credential as the
+subprotocol offer `Sec-WebSocket-Protocol: bearer, <credential>`
+(`new WebSocket(url, ["bearer", credential])`, tokens order-insensitive). The
+`101` echoes `Sec-WebSocket-Protocol: bearer`, and the credential runs through
+the same constant-time comparison as the header, so permissions and rate limits
+are unchanged. The `Authorization` header wins when both carriers are present;
+if they do not present the same credential in the same bearer form the upgrade
+is refused with `401 conflicting_bearer_credentials`, and any other subprotocol
+offer is refused with `400 unsupported_subprotocol` before the handshake so an
+offered token never reaches a log. Because a subprotocol token carries no
+whitespace and no comma, the carrier is limited to credentials made of
+`A-Za-z0-9._~+/=-` (`secrets.token_urlsafe` qualifies); a deployment whose
+credential uses anything else logs one startup warning, disables the carrier
+with no fallback, and needs a header-injecting reverse proxy for browser
+streams. Nothing logs the credential: the stream records `auth_carrier`
+(`header` or `subprotocol`) and the principal subject only.
+
 Deploy browsers behind a same-origin reverse proxy. CORS is disabled unless an
 explicit origin allowlist is configured, and wildcard authenticated CORS is not
 supported.
@@ -244,7 +262,9 @@ read or rotated over the API.
 ## Live stream and resynchronization
 
 Connect an authenticated WebSocket to `GET /api/v1/stream` after reading the
-REST snapshots. It needs `telemetry.stream`, which the viewer credential holds.
+REST snapshots, carrying the credential in the `Authorization` header or in the
+`["bearer", credential]` subprotocol a browser needs (see above). It needs
+`telemetry.stream`, which the viewer credential holds.
 The stream carries immutable safe telemetry events and state changes. It is
 incremental notification, not the state authority.
 

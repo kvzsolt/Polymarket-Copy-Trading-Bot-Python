@@ -77,9 +77,11 @@ breaks one of them is worse than no console.
    once (§3) and render read-only: no pause/resume/full-stop, no settings form,
    no discovery run, no lock reset, no task editing. Disabling is better than
    hiding here, with a tooltip explaining the credential is read-only.
-10. **Never display or log a credential.** The bearer token belongs in one
-    place — the `Authorization` header. Not in a URL, not in `localStorage` next
-    to user-visible state, not in an error toast, not in a debug panel.
+10. **Never display or log a credential.** The bearer token belongs in exactly
+    two places — the `Authorization` header, and the WebSocket subprotocol
+    carrier the upgrade accepts instead of it (§2). Not in a URL, not in
+    `localStorage` next to user-visible state, not in an error toast, not in a
+    debug panel.
 11. **Every destructive control needs an explicit confirmation dialog** that
     names the consequence, requires a typed or selected `reason_code`, and shows
     the `expected_revision` being asserted. Full-stop additionally cancels
@@ -136,15 +138,38 @@ and a `WWW-Authenticate: Bearer` header. Authenticated but not permitted →
 `403 permission_denied`. Treat `401` as "re-prompt for the credential" and
 `403` as "this build/credential cannot do that" — never retry a `403`.
 
-**Browser WebSocket caveat.** The browser `WebSocket` constructor cannot set
-request headers, and this server accepts the credential *only* from the
-`Authorization` header — there is no query-parameter or subprotocol fallback.
-A browser console therefore needs one of: a reverse proxy that injects the
-header on the upgrade request, a loopback deployment configured with
-`require_authentication: false` (which grants any loopback caller full
-permissions and must never be exposed off-host), or a small local agent that
-holds the socket. Design the live feed so that a stream that cannot connect
-degrades to REST polling instead of breaking the app.
+**Browser WebSocket auth.** The browser `WebSocket` constructor cannot set
+request headers, so the upgrade — and *only* the upgrade — also accepts the
+credential as a subprotocol offer:
+
+```js
+const socket = new WebSocket(`${base}/stream`, ["bearer", credential]);
+```
+
+That sends `Sec-WebSocket-Protocol: bearer, <credential>`; the two tokens are
+order-insensitive, and a successful `101` echoes `Sec-WebSocket-Protocol:
+bearer`, which is what makes the browser accept the handshake. `socket.protocol`
+is then `"bearer"`. The credential is checked by the same constant-time bearer
+path as the header, so permissions, rate limits and every frame contract are
+identical.
+
+Four rules come with it:
+
+- **Only the upgrade reads it.** Every REST route ignores
+  `Sec-WebSocket-Protocol`; a REST call still needs the `Authorization` header.
+- **Send exactly one carrier.** If you send both, they must present the same
+  credential in the same `Bearer <credential>` form; anything else is
+  `401 conflicting_bearer_credentials`. The header wins when they agree.
+- **Any other subprotocol is refused** with `400 unsupported_subprotocol`
+  before the handshake. Do not offer a second subprotocol alongside `bearer`.
+- **The credential must be subprotocol-token safe** — only
+  `A-Za-z0-9._~+/=-` (a `secrets.token_urlsafe` value qualifies). A deployment
+  whose credential uses anything else logs one startup warning and disables
+  this carrier entirely, with no fallback; such a console needs a reverse proxy
+  that injects the header, or a local agent that holds the socket.
+
+Design the live feed so that a stream that cannot connect degrades to REST
+polling instead of breaking the app.
 
 **Response headers** you can rely on: `X-Correlation-ID`, `Cache-Control:
 no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
@@ -237,6 +262,7 @@ operator joins a failed click to the server's activity log.
 | Code | HTTP | Meaning |
 | --- | --- | --- |
 | `authentication_required` | 401 | No Authorization header on an authenticated deployment. |
+| `conflicting_bearer_credentials` | 401 | Upgrade sent both carriers without the same credential in the same bearer form (§2). |
 | `http_error` | varies | Generic transport failure; the HTTP status carries the meaning. |
 | `invalid_bearer_token` | 401 | Malformed or unknown bearer credential. |
 | `method_not_allowed` | 405 | Endpoint exists but not for this method. |
@@ -246,6 +272,7 @@ operator joins a failed click to the server's activity log.
 | `permission_denied` | 403 | Authenticated principal lacks this route's permission. |
 | `rate_limited` | 429 | Per subject:action command budget exhausted; see Retry-After. |
 | `telemetry_unavailable` | 503 | Telemetry stream unavailable or shutting down. |
+| `unsupported_subprotocol` | 400 | Upgrade offered a `Sec-WebSocket-Protocol` value the endpoint will not echo (§2). |
 
 Handling rules: `409` means someone or something else changed the resource —
 re-read it, show the new state, and make the operator re-confirm; never retry
@@ -1247,9 +1274,10 @@ full stop), not two independent toggles.
 
 ## 12. Live stream
 
-Upgrade `GET /api/v1/stream` with the same bearer header (see the browser caveat
-in §2). Requires the `telemetry.stream` permission, which the viewer credential
-holds. Text frames only — a binary frame closes the socket. The server
+Upgrade `GET /api/v1/stream` with the same bearer credential, carried either by
+the `Authorization` header or by the `["bearer", credential]` subprotocol a
+browser must use (§2). Requires the `telemetry.stream` permission, which the
+viewer credential holds. Text frames only — a binary frame closes the socket. The server
 heartbeats every **30 seconds**.
 
 **Message size is capped in one direction only.** A **client-to-server** frame
@@ -1599,6 +1627,6 @@ generated from the running backend and holds:
 | `routes` | every method/path with permission, capability, query, body, response, status, rate-limit action |
 | `telemetry` | the event envelope, every payload with its fields and category, every enum, the payload → `event_type` mapping, WSS stream names |
 | `views` | every response schema: field name, type, nullability, decimal flag, and closed vocabulary where one exists |
-| `websocket` | frame types in both directions and the client error codes |
+| `websocket` | both credential carriers with the subprotocol form, frame types in both directions, and the client error codes |
 
 Generate your types from it rather than transcribing the tables above by hand.

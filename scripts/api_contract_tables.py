@@ -57,11 +57,32 @@ BULK_ITEMS_MAX = 100
 
 HTTP_MODULE = "integrations/control_plane/http.py"
 
+SECURITY_MODULE = "integrations/control_plane/security.py"
+
+WEBSOCKET_SUBPROTOCOL_MARKER = "bearer"
+"""First token of the browser credential carrier on the stream upgrade.
+
+A browser cannot set request headers on a ``WebSocket`` upgrade, so
+``GET /api/v1/stream`` also accepts ``Sec-WebSocket-Protocol: bearer,
+<credential>`` and echoes this marker alone on the 101.
+"""
+
+WEBSOCKET_SUBPROTOCOL_CREDENTIAL_CHARSET = "A-Za-z0-9._~+/=-"
+"""Characters a credential may use to survive a subprotocol token.
+
+Subprotocol tokens carry no whitespace and no comma and are transmitted
+verbatim, so a credential outside this class disables the carrier for the whole
+deployment.
+"""
+
 # Literals this exporter restates, and therefore has to prove still exist in
 # the transport source, so a rename cannot leave a lie in the contract.
 SOURCE_GUARDS: tuple[tuple[str, str], ...] = (
     ("heartbeat=30.0", HTTP_MODULE),
     ("max_msg_size=4096", HTTP_MODULE),
+    ("protocols=self._websocket_credentials.echo_protocols", HTTP_MODULE),
+    ('WEBSOCKET_BEARER_SUBPROTOCOL = "bearer"', SECURITY_MODULE),
+    ("[A-Za-z0-9._~+/=-]{1,1024}", SECURITY_MODULE),
     ('request.query.get("limit", "50")', HTTP_MODULE),
     ("0 <= limit <= 1000", HTTP_MODULE),
     ("1 <= len(raw_items) <= 100", HTTP_MODULE),
@@ -175,6 +196,16 @@ TRANSPORT_ERRORS: Mapping[str, tuple[int | None, str]] = {
     "not_found": (404, "No such endpoint, or that capability is not composed."),
     "method_not_allowed": (405, "Endpoint exists but not for this method."),
     "telemetry_unavailable": (503, "Telemetry stream unavailable or shutting down."),
+    "conflicting_bearer_credentials": (
+        401,
+        "Upgrade carried both an Authorization header and a bearer subprotocol "
+        "offer that do not present the same credential.",
+    ),
+    "unsupported_subprotocol": (
+        400,
+        "Upgrade offered a Sec-WebSocket-Protocol value this endpoint will not "
+        "echo; refused before the handshake.",
+    ),
     "http_error": (None, "Generic transport failure; the HTTP status carries the meaning."),
 }
 """Transport-level error codes that never reach ``ControlPlaneReason``."""
@@ -761,7 +792,10 @@ ROUTE_GROUPS: tuple[RouteGroup, ...] = (
         permission="telemetry.stream",
         capability="live_stream",
         response="WebSocket",
-        summary="Authenticated telemetry WebSocket upgrade.",
+        summary=(
+            "Authenticated telemetry WebSocket upgrade; the credential may come "
+            "from the Authorization header or the bearer subprotocol carrier."
+        ),
     ),
 )
 
@@ -797,11 +831,14 @@ __all__ = [
     "ROUTE_GROUPS",
     "RouteGroup",
     "RouteSpec",
+    "SECURITY_MODULE",
     "SOURCE_GUARDS",
     "TELEMETRY_LIMIT_MAX",
     "TRANSPORT_ERRORS",
     "WEBSOCKET_ERROR_CODES",
     "WEBSOCKET_HEARTBEAT_SECONDS",
     "WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES",
+    "WEBSOCKET_SUBPROTOCOL_CREDENTIAL_CHARSET",
+    "WEBSOCKET_SUBPROTOCOL_MARKER",
     "build_routes",
 ]

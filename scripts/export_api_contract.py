@@ -87,12 +87,15 @@ from scripts.api_contract_tables import (  # noqa: E402
     PAGE_LIMIT_MIN,
     PAYLOAD_FIELD_PLACEHOLDERS,
     ROUTES,
+    SECURITY_MODULE,
     SOURCE_GUARDS,
     TELEMETRY_LIMIT_MAX,
     TRANSPORT_ERRORS,
     WEBSOCKET_ERROR_CODES,
     WEBSOCKET_HEARTBEAT_SECONDS,
     WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES,
+    WEBSOCKET_SUBPROTOCOL_CREDENTIAL_CHARSET,
+    WEBSOCKET_SUBPROTOCOL_MARKER,
     RouteSpec,
 )
 from services.control_plane import contracts as rest_contracts  # noqa: E402
@@ -328,7 +331,7 @@ class ApiContractExporter:
     def _source_guard_problems() -> tuple[str, ...]:
         sources = {
             HTTP_MODULE: inspect.getsource(http_module),
-            "integrations/control_plane/security.py": inspect.getsource(security_module),
+            SECURITY_MODULE: inspect.getsource(security_module),
             "integrations/control_plane/serialization.py": inspect.getsource(serialization_module),
         }
         joined = "\n".join(sources.values())
@@ -472,6 +475,11 @@ class ApiContractExporter:
     def _authentication() -> dict[str, JsonValue]:
         return {
             "header": "Authorization: Bearer <credential>",
+            "notes": (
+                "Every route reads the Authorization header. The WebSocket upgrade "
+                "additionally accepts the credential as a subprotocol offer, because a "
+                "browser cannot set headers on an upgrade - see websocket.auth."
+            ),
             "principals": {
                 "operator": "Every permission, including every mutation.",
                 "viewer": "Every *.read permission plus telemetry.stream; no mutation.",
@@ -650,6 +658,31 @@ class ApiContractExporter:
     @staticmethod
     def _websocket() -> dict[str, JsonValue]:
         return {
+            "auth": {
+                "_note": (
+                    "Send the credential through exactly one carrier. Both carriers on "
+                    "one upgrade must present the same credential in the same bearer "
+                    "form, otherwise the upgrade is refused with 401 "
+                    "conflicting_bearer_credentials. Any other Sec-WebSocket-Protocol "
+                    "offer is refused with 400 unsupported_subprotocol before the "
+                    "handshake, so it never reaches a log."
+                ),
+                "header": "Authorization: Bearer <credential>",
+                "subprotocol": {
+                    "credential_charset": WEBSOCKET_SUBPROTOCOL_CREDENTIAL_CHARSET,
+                    "disabled_when": (
+                        "A configured credential uses a character outside "
+                        "credential_charset; the deployment then logs one startup "
+                        "warning and this carrier is unavailable, with no fallback."
+                    ),
+                    "javascript": 'new WebSocket(url, ["bearer", credential])',
+                    "marker": WEBSOCKET_SUBPROTOCOL_MARKER,
+                    "order_insensitive": True,
+                    "precedence": "The Authorization header wins when both are present.",
+                    "request_header": "Sec-WebSocket-Protocol: bearer, <credential>",
+                    "response_header": "Sec-WebSocket-Protocol: bearer",
+                },
+            },
             "client_frames": {"ping": {"type": "ping"}, "resync": {"type": "resync"}},
             "error_codes": dict(sorted(WEBSOCKET_ERROR_CODES.items())),
             "path": f"{API_PREFIX}/stream",
