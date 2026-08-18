@@ -1,7 +1,8 @@
 """Operator-visible health for the on-chain (Alchemy) WebSocket subscriptions.
 
 ``clients.onchain_ws.OnchainWebSocket`` reconnects silently. In
-``detection.mode=on_chain_pending`` a dropped subscription means every copy
+``detection.mode=on_chain_pending`` and in ``on_chain_confirmed`` with
+``confirmed_source=logs_only`` a dropped subscription means every copy
 falls back to REST polling — correct, but seconds slower and invisible: no
 metric, no readiness signal, only an INFO log line. This module turns the three
 connection-lifecycle transitions into:
@@ -36,7 +37,10 @@ class OnchainWsHealthReporter:
     reconnect counter are per ``stream``, while the single readiness check is
     ready whenever *any* subscription is connected (the runtime opens only the
     subscriptions its mode needs, so requiring all of them would report the
-    unused one as down forever).
+    unused one as down forever). Connections are **counted per stream name**:
+    ``logs_only`` confirmed mode opens two sockets that both report as
+    ``orderfilled``, and one of them dropping must not mark the stream down
+    while its sibling is still subscribed.
     """
 
     def __init__(
@@ -61,7 +65,7 @@ class OnchainWsHealthReporter:
         self._metrics = metrics
         self._readiness = readiness
         self._check_key = check_key
-        self._connected: set[str] = set()
+        self._connection_counts: dict[str, int] = {}
         self._readiness.register_check(check_key, required=False, ready=False)
 
     @property
@@ -72,31 +76,35 @@ class OnchainWsHealthReporter:
 
     @property
     def connected_streams(self) -> frozenset[str]:
-        """Return the subscription names currently reported as connected."""
+        """Return the stream names with at least one subscribed socket."""
 
-        return frozenset(self._connected)
+        return frozenset(self._connection_counts)
 
     def on_connected(self, stream: str) -> None:
-        """Record that ``stream`` is subscribed.
+        """Record that one socket of ``stream`` is subscribed.
 
         Args:
             stream: Subscription name (bounded by the metric schema).
         """
 
         self._metrics.set_gauge(GAUGE_ONCHAIN_WS_CONNECTED, 1.0, labels={"stream": stream})
-        self._connected.add(stream)
+        self._connection_counts[stream] = self._connection_counts.get(stream, 0) + 1
         self._readiness.set_check(self._check_key, ready=True)
 
     def on_disconnected(self, stream: str) -> None:
-        """Record that ``stream`` lost its connection.
+        """Record that one socket of ``stream`` lost its connection.
 
         Args:
             stream: Subscription name (bounded by the metric schema).
         """
 
+        remaining = max(0, self._connection_counts.get(stream, 0) - 1)
+        if remaining:
+            self._connection_counts[stream] = remaining
+            return
+        self._connection_counts.pop(stream, None)
         self._metrics.set_gauge(GAUGE_ONCHAIN_WS_CONNECTED, 0.0, labels={"stream": stream})
-        self._connected.discard(stream)
-        if not self._connected:
+        if not self._connection_counts:
             self._readiness.set_check(
                 self._check_key,
                 ready=False,

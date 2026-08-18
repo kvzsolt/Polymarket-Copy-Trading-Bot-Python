@@ -317,29 +317,40 @@ def _build_onchain_ws_health_reporter(
     metrics_registry: MetricsRegistry = metrics,
     *,
     mode: DetectionMode,
+    confirmed_source: str = "mempool_reserved",
 ):
     """Thin glue: the on-chain WebSocket health reporter, when it applies.
 
-    Only the gen-1 provisional runtime opens ``OnchainWebSocket``
-    subscriptions. Registering ``onchain_ws_ok`` in any other mode would
-    publish a check that nothing can ever mark ready — a permanent false "WS
-    down" for a socket the process never opens.
+    Only the gen-1 runtime opens ``OnchainWebSocket`` subscriptions: the
+    pending mode (stream ``pendingtx``) and the confirmed mode with
+    ``confirmed_source=logs_only`` (stream ``orderfilled``, one socket per
+    role filter). Registering ``onchain_ws_ok`` for the gen-2
+    ``mempool_reserved`` runtime would publish a check that nothing can ever
+    mark ready — a permanent false "WS down" for a socket the process never
+    opens.
 
     Args:
         readiness: Readiness tracker the ``onchain_ws_ok`` check registers on.
         metrics_registry: Registry receiving the bounded on-chain WS metrics.
         mode: Selected detection mode.
+        confirmed_source: Selected confirmed-source variant
+            (``detection.onchain.confirmed_source``).
 
     Returns:
-        ``OnchainWsHealthReporter`` for ``ON_CHAIN_PENDING``; ``None``
-        otherwise.
+        ``OnchainWsHealthReporter`` for ``ON_CHAIN_PENDING`` and for
+        ``ON_CHAIN_CONFIRMED`` + ``logs_only``; ``None`` otherwise.
     """
 
     from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
-    if mode is not DetectionMode.ON_CHAIN_PENDING:
-        return None
-    return OnchainWsHealthReporter(metrics_registry, readiness)
+    if mode is DetectionMode.ON_CHAIN_PENDING:
+        return OnchainWsHealthReporter(metrics_registry, readiness)
+    if (
+        mode is DetectionMode.ON_CHAIN_CONFIRMED
+        and str(confirmed_source).strip().lower() == "logs_only"
+    ):
+        return OnchainWsHealthReporter(metrics_registry, readiness)
+    return None
 
 
 def _build_onchain_websocket_factory(state_listener):
@@ -508,24 +519,30 @@ def _build_detection_source_factory(
     state_store_provider=None,
     websocket_factory=None,
 ):
-    """Thin glue: one ``DetectionSourceFactory`` covering both on-chain modes.
+    """Thin glue: one ``DetectionSourceFactory`` covering every detection key.
 
     Args:
         config: Typed application configuration (``detection`` section read).
         state_store_provider: Awaitable factory for the confirmed runtime's
             durable state store; defaults to the shared Postgres pool.
         websocket_factory: ``OnchainWebSocket``-compatible constructor for the
-            provisional runtime's subscription; ``app.main`` binds the health
+            gen-1 runtimes' subscriptions; ``app.main`` binds the health
             reporter here. Defaults to the plain client.
 
     Returns:
-        ``DetectionSourceFactory`` with the provisional-pending and
-        receipt-confirmed builders registered.
+        ``DetectionSourceFactory`` with the provisional-pending,
+        logs-only confirmed, and receipt-confirmed (mempool-reserved)
+        builders registered.
     """
 
     from clients.onchain_ws import OnchainWebSocket
+    from config.addresses import (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    )
     from orchestrators.detection_source_factory import (
         DetectionSourceFactory,
+        LogsOnlyConfirmedSourceBuilder,
         ProvisionalPendingSourceBuilder,
     )
 
@@ -534,6 +551,14 @@ def _build_detection_source_factory(
         [
             ProvisionalPendingSourceBuilder(
                 pending_config=_build_pending_tx_config(oc_cfg),
+                condition_id_resolver=_build_onchain_condition_id_resolver(),
+                websocket_factory=websocket_factory or OnchainWebSocket,
+            ),
+            LogsOnlyConfirmedSourceBuilder(
+                exchange_addresses=(
+                    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+                    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+                ),
                 condition_id_resolver=_build_onchain_condition_id_resolver(),
                 websocket_factory=websocket_factory or OnchainWebSocket,
             ),
@@ -2412,10 +2437,13 @@ async def _run_application(client_registry: list[Any]) -> int:
                 telemetry_service=telemetry_runtime.service,
                 metrics_registry=metrics,
             )
+            oc_cfg = application.config.detection.onchain
+            confirmed_source = str(getattr(oc_cfg, "confirmed_source", "mempool_reserved"))
             _ws_health_reporter = _build_onchain_ws_health_reporter(
                 application.readiness,
                 metrics,
                 mode=detection_mode,
+                confirmed_source=confirmed_source,
             )
             try:
                 from orchestrators.detection_source_factory import DetectionSourceRequest
@@ -2435,7 +2463,6 @@ async def _run_application(client_registry: list[Any]) -> int:
                     pending_copy_tracker=pending_copy_tracker,
                     telemetry=telemetry_emitters.detection,
                 )
-                oc_cfg = application.config.detection.onchain
                 onchain_runtime = await _build_detection_source_factory(
                     application.config,
                     websocket_factory=_build_onchain_websocket_factory(_ws_health_reporter),
@@ -2446,6 +2473,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                         ws_url=oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url,
                         chain_id=application.config.wallet.chain_id,
                         signal_sink=_onchain_signal_sink,
+                        confirmed_source=confirmed_source,
                     )
                 )
                 if onchain_runtime is not None:
