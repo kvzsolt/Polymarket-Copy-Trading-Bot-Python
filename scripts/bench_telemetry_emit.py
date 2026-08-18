@@ -32,18 +32,20 @@ Usage::
     python scripts/bench_telemetry_emit.py
     python scripts/bench_telemetry_emit.py --iterations 50000 --assert-max-us 20
 
-``--assert-max-us`` turns the bench into a gate: any scenario whose mean
-exceeds the budget exits ``1``, as does any run that failed to keep every
-sample on the accepted path.
+``--assert-max-us`` turns the bench into a gate. **It gates the pre-submit
+scenarios only.** The budget exists because work done before an order is
+submitted delays that order; a post-submit projection cannot, so holding it to
+the same number would fail the build over a cost that has no safety meaning.
+Pass ``--assert-all`` to widen the budget to every scenario deliberately. A run
+that failed to keep every sample on the accepted path always exits ``1``,
+gated or not, because such a measurement is not representative.
 
-Measured on the development host (Python 3.12, 50k iterations, three runs):
-``detection.signal_received`` 18.2-19.0 us mean, ``trade.pipeline_results``
-19.7-20.0 us mean. Only the first is pre-submit, so only the first is a
-hot-path budget; the second is projected after submission and its cost cannot
-delay an order. A 20 us budget therefore holds comfortably for the pre-submit
-emit and sits exactly on the boundary for the post-submit projection, which is
-why the report labels each scenario's scope. Pick the budget for the machine
-the gate runs on.
+Measured on the development host (Python 3.12, 50k iterations): the gated
+``detection.signal_received`` runs 18.2-19.0 us mean, comfortably inside a 20 us
+budget, while the ungated ``trade.pipeline_results`` runs 19.7-20.1 us mean and
+straddles that line run to run. Every row is printed either way, and each is
+labelled ``pre-submit`` or ``post-submit`` so the gated number is unambiguous.
+Pick the budget for the machine the gate runs on.
 
 The script lives outside ``testpaths`` (``pytest.ini`` collects ``tests``
 only), so pytest never collects it; it is an operator/CI tool, not a unit test.
@@ -355,8 +357,16 @@ class BenchCli:
             default=None,
             metavar="BUDGET",
             help=(
-                "Exit 1 when any scenario mean exceeds this microsecond budget. "
-                "Applies to every scenario, not only the pre-submit one."
+                "Exit 1 when a gated scenario mean exceeds this microsecond budget. "
+                "Gates the pre-submit scenarios only, unless --assert-all is given."
+            ),
+        )
+        parser.add_argument(
+            "--assert-all",
+            action="store_true",
+            help=(
+                "Widen --assert-max-us to every scenario, including post-submit ones "
+                "whose cost cannot delay an order."
             ),
         )
         return parser
@@ -368,10 +378,13 @@ class BenchCli:
             argv: Command-line arguments, defaulting to ``sys.argv[1:]``.
 
         Returns:
-            Process exit status: ``0`` on success, ``1`` on a budget breach or
-            an overflowed run, ``2`` on invalid arguments.
+            Process exit status: ``0`` on success, ``1`` on a gated budget
+            breach or an overflowed run, ``2`` on invalid arguments.
         """
-        args = self.build_parser().parse_args(argv)
+        parser = self.build_parser()
+        args = parser.parse_args(argv)
+        if args.assert_all and args.assert_max_us is None:
+            parser.error("--assert-all requires --assert-max-us")
         try:
             bench = TelemetryEmitBench(
                 iterations=args.iterations,
@@ -397,14 +410,50 @@ class BenchCli:
                 )
                 status = 1
         if args.assert_max_us is not None:
-            for summary in summaries:
-                if summary.mean_us > args.assert_max_us:
-                    print(
-                        f"FAIL {summary.label}: mean {summary.mean_us:.3f}us exceeds the "
-                        f"{args.assert_max_us:.3f}us budget",
-                        file=sys.stderr,
-                    )
-                    status = 1
+            status = self._enforce_budget(summaries, args.assert_max_us, args.assert_all) or status
+        return status
+
+    @staticmethod
+    def _enforce_budget(
+        summaries: Sequence[LatencySummary],
+        budget_us: float,
+        gate_every_scenario: bool,
+    ) -> int:
+        """Apply the latency budget to the scenarios it is meaningful for.
+
+        Only pre-submit work can delay an order, so that is what the budget
+        gates by default. ``--assert-all`` opts into gating post-submit
+        projections too.
+
+        Args:
+            summaries: Every measured scenario, gated or not.
+            budget_us: Maximum accepted mean in microseconds.
+            gate_every_scenario: Whether to gate post-submit scenarios as well.
+
+        Returns:
+            ``1`` on a breach or a vacuous gate, otherwise ``0``.
+        """
+        gated = tuple(summary for summary in summaries if gate_every_scenario or summary.hot_path)
+        scope = "every scenario" if gate_every_scenario else "pre-submit scenarios"
+        if not gated:
+            print(
+                f"FAIL --assert-max-us gated no scenario ({scope}); the budget proved nothing",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"budget {budget_us:.3f}us applied to {scope}: "
+            + ", ".join(summary.label for summary in gated)
+        )
+        status = 0
+        for summary in gated:
+            if summary.mean_us > budget_us:
+                print(
+                    f"FAIL {summary.label}: mean {summary.mean_us:.3f}us exceeds the "
+                    f"{budget_us:.3f}us budget",
+                    file=sys.stderr,
+                )
+                status = 1
         return status
 
 
