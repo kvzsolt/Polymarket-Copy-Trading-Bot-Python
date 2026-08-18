@@ -150,3 +150,90 @@ def test_portfolio_cache_intervals_must_be_positive(
 
     with pytest.raises(EnvValidationError, match=message):
         load_config(_overrides(), config_dir=config_dir)
+
+
+def test_viewer_token_loads_only_through_secret_boundary(tmp_path: Path) -> None:
+    """The second, read-only credential shares the operator secret boundary."""
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "control_plane.yml").write_text(
+        "enabled: true\nrequire_authentication: true\n",
+        encoding="utf-8",
+    )
+    secrets_path = tmp_path / "secrets.env"
+    operator = "operator-secret-token-value"
+    viewer = "viewer-secret-token-value"
+    secrets_path.write_text(
+        f"PMCOPY__CONTROL_PLANE__AUTH__TOKEN={operator}\n"
+        f"PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN={viewer}\n",
+        encoding="utf-8",
+    )
+    secrets_path.chmod(0o600)
+
+    config = load_config(
+        _overrides(),
+        config_dir=config_dir,
+        secrets_path=secrets_path,
+    )
+
+    assert secret_value(config.control_plane.auth.viewer_token) == viewer
+    assert viewer not in repr(config.control_plane)
+    assert viewer not in yaml.safe_dump(dump_config_payload(config))
+
+
+def test_viewer_token_is_optional(tmp_path: Path) -> None:
+    """An operator who wants no read-only credential simply omits it."""
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "control_plane.yml").write_text(
+        "enabled: true\nrequire_authentication: true\n",
+        encoding="utf-8",
+    )
+    overrides = _overrides()
+    overrides["control_plane"] = {"auth": {"token": "operator-only-credential"}}
+
+    config = load_config(overrides, config_dir=config_dir)
+
+    assert secret_value(config.control_plane.auth.viewer_token) == ""
+
+
+def test_viewer_token_equal_to_the_operator_token_fails_closed(tmp_path: Path) -> None:
+    """Two identical credentials would silently grant the viewer every write."""
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    overrides = _overrides()
+    overrides["control_plane"] = {
+        "auth": {"token": "shared-credential", "viewer_token": "shared-credential"}
+    }
+
+    with pytest.raises(EnvValidationError, match="viewer token must differ"):
+        load_config(overrides, config_dir=config_dir)
+
+
+def test_viewer_token_length_is_bounded_like_the_operator_token(tmp_path: Path) -> None:
+    """``BearerCredential`` rejects >1024 chars; configuration fails earlier."""
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    overrides = _overrides()
+    overrides["control_plane"] = {"auth": {"viewer_token": "v" * 1025}}
+
+    with pytest.raises(EnvValidationError, match="viewer token must contain at most 1024"):
+        load_config(overrides, config_dir=config_dir)
+
+
+def test_enabled_authenticated_control_plane_names_the_missing_secret(tmp_path: Path) -> None:
+    """The fail-closed message tells the operator which variable to set."""
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "control_plane.yml").write_text(
+        "enabled: true\nrequire_authentication: true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EnvValidationError, match=r"PMCOPY__CONTROL_PLANE__AUTH__TOKEN"):
+        load_config(_overrides(), config_dir=config_dir)

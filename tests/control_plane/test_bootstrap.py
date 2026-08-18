@@ -192,6 +192,7 @@ def build_config(
     enabled: bool = True,
     trading_mode: str = "paper",
     detection: DetectionConfig | None = None,
+    viewer_token: str = "",
 ) -> AppConfig:
     """Return a valid authenticated loopback control-plane configuration."""
 
@@ -214,7 +215,10 @@ def build_config(
             host="127.0.0.1",
             port=9103,
             require_authentication=True,
-            auth=ControlPlaneAuthConfig(token=SecretStr("operator-test-token")),
+            auth=ControlPlaneAuthConfig(
+                token=SecretStr("operator-test-token"),
+                viewer_token=SecretStr(viewer_token),
+            ),
         ),
         environment=trading_mode,
         dry_run=trading_mode == "paper",
@@ -735,3 +739,85 @@ async def test_factory_without_reads_keeps_the_existing_capability_surface(
         "pnl_read",
         "risk_read",
     } & set(capabilities.capabilities)
+
+
+async def test_viewer_credential_is_composed_only_when_its_secret_is_set(
+    tmp_path: Path,
+) -> None:
+    """An unset viewer secret leaves exactly the single operator credential."""
+
+    from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
+
+    config_root = tmp_path / "config"
+    (config_root / "environments" / "paper").mkdir(parents=True)
+    server_factory = RecordingServerFactory()
+    telemetry_service, telemetry_query, telemetry_hub = build_telemetry()
+    ControlPlaneRuntimeFactory(
+        server_factory=server_factory,
+        config_root=config_root,
+        version="0.1.0",
+        clock=FixedClock(),
+        monotonic_clock=FixedMonotonicClock(),
+        semantic_validator=AppConfigSemanticValidator(),
+        started_monotonic=100.0,
+    ).build(
+        config=build_config(),
+        pool=FakePool(),
+        readiness=ReadinessTracker(),
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        telemetry_service=telemetry_service,
+        worker_state=FixedWorkerState(),
+    )
+
+    assert server_factory.authenticator is not None
+    credentials = server_factory.authenticator.credentials
+    assert tuple(credential.subject for credential in credentials) == ("operator",)
+
+
+async def test_viewer_credential_holds_every_read_and_no_write(tmp_path: Path) -> None:
+    """A configured viewer secret adds a second, strictly read-only principal."""
+
+    from integrations.control_plane import (
+        ALL_CONTROL_PLANE_PERMISSIONS,
+        ControlPlanePermission,
+        READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+    )
+    from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
+
+    config_root = tmp_path / "config"
+    (config_root / "environments" / "paper").mkdir(parents=True)
+    server_factory = RecordingServerFactory()
+    telemetry_service, telemetry_query, telemetry_hub = build_telemetry()
+    ControlPlaneRuntimeFactory(
+        server_factory=server_factory,
+        config_root=config_root,
+        version="0.1.0",
+        clock=FixedClock(),
+        monotonic_clock=FixedMonotonicClock(),
+        semantic_validator=AppConfigSemanticValidator(),
+        started_monotonic=100.0,
+    ).build(
+        config=build_config(viewer_token="viewer-test-token"),
+        pool=FakePool(),
+        readiness=ReadinessTracker(),
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        telemetry_service=telemetry_service,
+        worker_state=FixedWorkerState(),
+    )
+
+    assert server_factory.authenticator is not None
+    credentials = server_factory.authenticator.credentials
+    by_subject = {credential.subject: credential for credential in credentials}
+    assert set(by_subject) == {"operator", "viewer"}
+    assert by_subject["operator"].permissions == ALL_CONTROL_PLANE_PERMISSIONS
+    assert by_subject["viewer"].permissions == READ_ONLY_CONTROL_PLANE_PERMISSIONS
+    writes = {
+        permission
+        for permission in ControlPlanePermission
+        if not permission.value.endswith(".read")
+        and permission is not ControlPlanePermission.TELEMETRY_STREAM
+    }
+    assert writes and not (writes & by_subject["viewer"].permissions)
+    assert "viewer-test-token" not in repr(credentials)

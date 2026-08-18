@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+from aiohttp.client_exceptions import WSServerHandshakeError
+from aiohttp.test_utils import TestClient, TestServer
 
 from integrations.control_plane import (
+    ALL_CONTROL_PLANE_PERMISSIONS,
     BearerCredential,
     ControlPlaneAuthenticator,
+    ControlPlaneDependencies,
     ControlPlaneHttpConfig,
     ControlPlaneJsonSerializer,
     ControlPlanePermission,
     ControlPlanePermissionPolicy,
     ControlPlaneTransportError,
     InProcessActionRateLimiter,
+    READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+    create_control_plane_app,
 )
+from services.control_plane.contracts import Page, PositionView
 
 
 class _MonotonicClock:
@@ -176,11 +184,6 @@ def test_serializer_bounds_aggregate_text_and_rejects_sensitive_key_variants() -
 def test_read_only_permission_set_covers_every_read_and_excludes_mutations() -> None:
     """A viewer credential can observe everything and change nothing."""
 
-    from integrations.control_plane import (
-        ALL_CONTROL_PLANE_PERMISSIONS,
-        READ_ONLY_CONTROL_PLANE_PERMISSIONS,
-    )
-
     reads = {
         permission for permission in ControlPlanePermission if permission.value.endswith(".read")
     }
@@ -197,3 +200,124 @@ def test_read_only_permission_set_covers_every_read_and_excludes_mutations() -> 
         ControlPlanePermission.RISK_READ,
         ControlPlanePermission.LEADER_READ,
     } <= ALL_CONTROL_PLANE_PERMISSIONS
+
+
+class _ViewerPositions:
+    """Return one deterministic follower-scoped position page."""
+
+    async def list(self, follower_account: str, page: object) -> object:
+        """Return a single-row page for the requested follower."""
+
+        del page
+        return Page(
+            items=(
+                PositionView(
+                    follower_account=follower_account,
+                    condition_id="0xcondition",
+                    token_id="12345",
+                    leader_wallet="0x" + "1" * 40,
+                    size="10.5",
+                    avg_entry_price="0.4200",
+                    updated_at=datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
+                ),
+            ),
+            next_cursor=None,
+        )
+
+
+class _RecordingRuntimeCommands:
+    """Fail if a read-only principal ever reaches a runtime mutation."""
+
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    async def pause_entries(self, command: object) -> object:
+        """Record a call that must never happen for a viewer credential."""
+
+        self.calls.append(command)
+        raise AssertionError("a read-only credential must not reach pause_entries")
+
+
+class _ViewerStreamHub:
+    """Minimal bounded telemetry hub for the stream upgrade check."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
+        self.unsubscribed = 0
+
+    def subscribe(self, *, capacity: int | None = None) -> "_ViewerStreamHub":
+        """Return self as the bounded subscription."""
+
+        del capacity
+        return self
+
+    def unsubscribe(self, subscription: object) -> None:
+        """Record the subscription teardown."""
+
+        del subscription
+        self.unsubscribed += 1
+
+    async def get(self) -> object:
+        """Block until an event is published; the test never publishes one."""
+
+        return await self.queue.get()
+
+
+async def test_viewer_credential_reads_and_streams_but_cannot_mutate_runtime() -> None:
+    """End-to-end proof of the read-only role over the real aiohttp adapter."""
+
+    operator_token = "operator-credential-value"
+    viewer_token = "viewer-credential-value"
+    runtime_commands = _RecordingRuntimeCommands()
+    hub = _ViewerStreamHub()
+    app = create_control_plane_app(
+        config=ControlPlaneHttpConfig(host="127.0.0.1", port=0, websocket_queue_capacity=2),
+        authenticator=ControlPlaneAuthenticator(
+            credentials=(
+                BearerCredential(
+                    token=operator_token,
+                    subject="operator",
+                    permissions=ALL_CONTROL_PLANE_PERMISSIONS,
+                ),
+                BearerCredential(
+                    token=viewer_token,
+                    subject="viewer",
+                    permissions=READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+                ),
+            )
+        ),
+        dependencies=ControlPlaneDependencies(
+            positions=_ViewerPositions(),
+            runtime_commands=runtime_commands,
+            telemetry_hub=hub,
+        ),
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    viewer_headers = {"Authorization": f"Bearer {viewer_token}"}
+    try:
+        forbidden = await client.post(
+            "/api/v1/runtime/pause",
+            headers=viewer_headers,
+            json={"expected_revision": 1, "reason_code": "maintenance"},
+        )
+        assert forbidden.status == 403
+        assert (await forbidden.json())["error"]["code"] == "permission_denied"
+        assert runtime_commands.calls == []
+
+        readable = await client.get(
+            "/api/v1/positions?follower_account=account-a",
+            headers=viewer_headers,
+        )
+        assert readable.status == 200
+        assert (await readable.json())["data"]["items"][0]["size"] == "10.5"
+
+        websocket = await client.ws_connect("/api/v1/stream", headers=viewer_headers)
+        assert await websocket.receive_json() == {"type": "stream_ready"}
+        await websocket.close()
+
+        with pytest.raises(WSServerHandshakeError) as unauthenticated:
+            await client.ws_connect("/api/v1/stream")
+        assert unauthenticated.value.status == 401
+    finally:
+        await client.close()

@@ -152,9 +152,20 @@ class AppServiceConfig:
 
 @dataclass(frozen=True)
 class ControlPlaneAuthConfig:
-    """Secret bearer credential loaded only from deployment secret layers."""
+    """Secret bearer credentials loaded only from deployment secret layers.
+
+    ``token`` is the operator credential and holds every control-plane
+    permission. ``viewer_token`` is an optional second credential that holds
+    every read permission plus the telemetry stream and no mutation, so a
+    dashboard can be pointed at the operator API without being able to pause,
+    resume, or write anything. Both are supplied as
+    ``PMCOPY__CONTROL_PLANE__AUTH__TOKEN`` and
+    ``PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN``; neither belongs in a YAML
+    file, and neither is readable or writable through the API.
+    """
 
     token: SecretStr = field(default_factory=lambda: SecretStr(""))
+    viewer_token: SecretStr = field(default_factory=lambda: SecretStr(""))
 
 
 @dataclass(frozen=True)
@@ -1286,10 +1297,18 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     control = cfg.control_plane
     control_token = secret_value(control.auth.token)
+    viewer_token = secret_value(control.auth.viewer_token)
     if control.enabled and control.require_authentication and not control_token:
-        errors.append("control_plane auth token is required when authenticated control is enabled.")
+        errors.append(
+            "control_plane auth token is required when authenticated control is enabled "
+            "(set PMCOPY__CONTROL_PLANE__AUTH__TOKEN in secrets.env)."
+        )
     if len(control_token) > 1024:
         errors.append("control_plane auth token must contain at most 1024 characters.")
+    if len(viewer_token) > 1024:
+        errors.append("control_plane auth viewer token must contain at most 1024 characters.")
+    if viewer_token and viewer_token == control_token:
+        errors.append("control_plane auth viewer token must differ from the operator token.")
     if (
         control.enabled
         and not control.require_authentication

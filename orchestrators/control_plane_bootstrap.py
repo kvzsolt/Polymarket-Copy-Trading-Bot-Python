@@ -23,6 +23,7 @@ from integrations.control_plane import (
     ControlPlaneHttpConfig,
     ControlPlaneHttpServer,
     CopyTaskPayloadDecoder,
+    READ_ONLY_CONTROL_PLANE_PERMISSIONS,
     TelemetryHubPort,
     TelemetryQueryPort,
 )
@@ -522,19 +523,36 @@ class ControlPlaneRuntimeFactory:
 
     @staticmethod
     def _authenticator(config: AppConfig) -> ControlPlaneAuthenticator:
-        """Build bearer or explicitly local unauthenticated policy."""
+        """Build bearer or explicitly local unauthenticated policy.
+
+        The operator credential always holds every permission. A second
+        ``viewer`` credential is composed only when its own secret is set, and
+        holds :data:`READ_ONLY_CONTROL_PLANE_PERMISSIONS` — every read plus the
+        telemetry stream, and no mutation — so a dashboard can be given a
+        credential that cannot pause, resume, or write anything. Configuration
+        already rejects a viewer secret equal to the operator secret, so the
+        two credentials can never collapse onto one identity here.
+        """
 
         if config.control_plane.require_authentication:
-            token = secret_value(config.control_plane.auth.token)
-            return ControlPlaneAuthenticator(
-                credentials=(
+            auth = config.control_plane.auth
+            credentials = (
+                BearerCredential(
+                    token=secret_value(auth.token),
+                    subject="operator",
+                    permissions=ALL_CONTROL_PLANE_PERMISSIONS,
+                ),
+            )
+            viewer_token = secret_value(auth.viewer_token)
+            if viewer_token:
+                credentials += (
                     BearerCredential(
-                        token=token,
-                        subject="operator",
-                        permissions=ALL_CONTROL_PLANE_PERMISSIONS,
+                        token=viewer_token,
+                        subject="viewer",
+                        permissions=READ_ONLY_CONTROL_PLANE_PERMISSIONS,
                     ),
                 )
-            )
+            return ControlPlaneAuthenticator(credentials=credentials)
         return ControlPlaneAuthenticator(
             allow_unauthenticated_loopback=True,
             loopback_permissions=ALL_CONTROL_PLANE_PERMISSIONS,
