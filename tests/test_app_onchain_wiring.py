@@ -417,10 +417,10 @@ def test_pending_copy_tracker_uses_the_configured_bounds() -> None:
     )
 
     assert tracker is not None
-    assert tracker._deadline_seconds == 42.0
-    assert tracker._max_tracked == 7
+    assert tracker.deadline_seconds == 42.0
+    assert tracker.max_tracked == 7
     # Auto-unwind is opt-in and off by default: no hook may be wired.
-    assert tracker._unwind_hook is None
+    assert tracker.unwind_enabled is False
 
 
 def test_auto_unwind_flag_does_not_wire_a_hook_yet() -> None:
@@ -435,35 +435,69 @@ def test_auto_unwind_flag_does_not_wire_a_hook_yet() -> None:
     )
 
     assert tracker is not None
-    assert tracker._unwind_hook is None
+    assert tracker.unwind_enabled is False
 
 
-def test_onchain_ws_health_reporter_is_registered_on_readiness() -> None:
+def test_onchain_ws_health_reporter_is_registered_in_pending_mode() -> None:
     from app import _build_onchain_ws_health_reporter
+    from domain.detection import DetectionMode
     from services.healthServer import ReadinessTracker
     from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
     from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
     readiness = ReadinessTracker()
     reporter = _build_onchain_ws_health_reporter(
-        readiness, MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+        readiness,
+        MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        mode=DetectionMode.ON_CHAIN_PENDING,
     )
 
     assert isinstance(reporter, OnchainWsHealthReporter)
     assert readiness.snapshot()["checks"]["onchain_ws_ok"]["required"] is False
 
 
+def test_no_ws_health_check_is_registered_outside_pending_mode() -> None:
+    """Only the gen-1 runtime opens ``OnchainWebSocket``.
+
+    The gen-2 confirmed runtime uses its own connection manager, so an
+    ``onchain_ws_ok`` check there could never be marked ready — a permanent
+    false "WS down" in the operator snapshot.
+    """
+    from app import _build_onchain_ws_health_reporter
+    from domain.detection import DetectionMode
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    for mode in (DetectionMode.POLLING, DetectionMode.ON_CHAIN_CONFIRMED):
+        readiness = ReadinessTracker()
+
+        reporter = _build_onchain_ws_health_reporter(
+            readiness,
+            MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+            mode=mode,
+        )
+
+        assert reporter is None, mode
+        assert "onchain_ws_ok" not in readiness.snapshot()["checks"], mode
+
+
 @pytest.mark.asyncio
 async def test_detection_factory_forwards_the_health_reporting_socket_factory() -> None:
     """The reporter must reach the socket the gen-1 runtime actually opens."""
-    from app import _build_detection_source_factory, _build_onchain_ws_health_reporter
+    from app import (
+        _build_detection_source_factory,
+        _build_onchain_websocket_factory,
+        _build_onchain_ws_health_reporter,
+    )
     from domain.detection import DetectionMode
     from orchestrators.detection_source_factory import DetectionSourceRequest
     from services.healthServer import ReadinessTracker
     from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     reporter = _build_onchain_ws_health_reporter(
-        ReadinessTracker(), MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+        ReadinessTracker(),
+        MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        mode=DetectionMode.ON_CHAIN_PENDING,
     )
 
     async def _state_store_provider():
@@ -475,7 +509,7 @@ async def test_detection_factory_forwards_the_health_reporting_socket_factory() 
     factory = _build_detection_source_factory(
         _pending_config(),
         state_store_provider=_state_store_provider,
-        websocket_factory=_socket_factory_with(reporter),
+        websocket_factory=_build_onchain_websocket_factory(reporter),
     )
     runtime = await factory.build(
         DetectionSourceRequest(
@@ -496,23 +530,28 @@ async def test_detection_factory_forwards_the_health_reporting_socket_factory() 
     assert built._state_listener is reporter
 
 
-def _socket_factory_with(reporter):
-    import functools
-
+def test_websocket_factory_binds_the_listener_and_degrades_to_the_plain_client() -> None:
+    """``app`` builds the socket constructor; the listener is optional."""
+    from app import _build_onchain_websocket_factory
     from clients.onchain_ws import OnchainWebSocket
 
-    return functools.partial(OnchainWebSocket, state_listener=reporter)
+    assert _build_onchain_websocket_factory(None) is OnchainWebSocket
+
+    listener = object()
+    factory = _build_onchain_websocket_factory(listener)
+    built = factory(
+        ws_url="wss://polygon.example.invalid/v2/redacted",
+        subscribe_params=["alchemy_pendingTransactions", {}],
+        name="pendingtx",
+        on_message=_noop_on_message,
+    )
+
+    assert isinstance(built, OnchainWebSocket)
+    assert built._state_listener is listener
 
 
-def test_app_wires_the_reporter_into_the_socket_factory_it_passes() -> None:
-    """Guard the exact ``functools.partial`` shape ``app.main`` uses."""
-    import inspect
-
-    import app
-
-    source = inspect.getsource(app._run_application)
-    assert "websocket_factory=functools.partial(" in source
-    assert "state_listener=" in source
+async def _noop_on_message(_message: object) -> None:
+    return None
 
 
 def test_the_confidence_parse_sits_outside_the_onchain_start_guard() -> None:
@@ -526,7 +565,7 @@ def test_the_confidence_parse_sits_outside_the_onchain_start_guard() -> None:
     import app
 
     source = inspect.getsource(app._run_application)
-    parse_at = source.index("_detection_confidence_from_config(")
+    parse_at = source.index("_validate_detection_confidence_floor(")
     guard_at = source.index("onchain_detection_start_failed")
     try_at = source.rindex("try:", 0, guard_at)
 
@@ -613,10 +652,87 @@ async def test_polling_mode_startup_does_not_validate_the_pending_floor(
     assert errors == []
 
 
-def test_shutdown_stops_the_pending_copy_tracker() -> None:
-    import inspect
+class _StoppableTracker:
+    """Records ``stop()`` awaits; optionally raises to prove teardown continues."""
 
-    import app
+    def __init__(self, *, raises: bool = False) -> None:
+        self.stops = 0
+        self._raises = raises
 
-    source = inspect.getsource(app._shutdown_runtime)
-    assert "pending_copy_tracker" in source
+    async def stop(self) -> None:
+        self.stops += 1
+        if self._raises:
+            raise RuntimeError("tracker stop exploded")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_the_pending_copy_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live confirmation loop must not survive shutdown."""
+    import app as app_module
+    import storage.postgres.connection as connection
+
+    pool_closed = {"n": 0}
+
+    async def _spy() -> None:
+        pool_closed["n"] += 1
+
+    monkeypatch.setattr(connection, "shutdown_pool", _spy)
+    tracker = _StoppableTracker()
+
+    await app_module._shutdown_runtime(
+        monitor_tasks=[],
+        supervised=[],
+        market_data_runtimes={},
+        user_data_runtimes=[],
+        metrics_runner=None,
+        pending_copy_tracker=tracker,
+    )
+
+    assert tracker.stops == 1
+    assert pool_closed["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_tracker_stop_is_logged_and_shutdown_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A teardown hiccup must never mask the real shutdown reason."""
+    import logging
+
+    import app as app_module
+    import storage.postgres.connection as connection
+
+    pool_closed = {"n": 0}
+
+    async def _spy() -> None:
+        pool_closed["n"] += 1
+
+    monkeypatch.setattr(connection, "shutdown_pool", _spy)
+    tracker = _StoppableTracker(raises=True)
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    # ``app``'s child logger does not propagate to the root, so caplog alone
+    # would see nothing; attach directly to it.
+    handler = _Capture(level=logging.WARNING)
+    app_module.logger.addHandler(handler)
+    try:
+        await app_module._shutdown_runtime(
+            monitor_tasks=[],
+            supervised=[],
+            market_data_runtimes={},
+            user_data_runtimes=[],
+            metrics_runner=None,
+            pending_copy_tracker=tracker,
+        )
+    finally:
+        app_module.logger.removeHandler(handler)
+
+    assert tracker.stops == 1
+    # The remaining steps still ran.
+    assert pool_closed["n"] == 1
+    assert any("pending_copy_tracker_shutdown_failed" in record.getMessage() for record in records)

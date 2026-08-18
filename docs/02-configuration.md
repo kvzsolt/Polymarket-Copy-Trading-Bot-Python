@@ -83,6 +83,10 @@ when `polymarket.rpc_url` is set — without an HTTP RPC endpoint the tracker is
 not built and startup logs `pending_copy_tracker_disabled |
 reason=no_rpc_endpoint`.
 
+The receipt poll offsets are fixed at 5/15/30/60 s after the copy and are not
+configurable; `pending_copy_confirmation_deadline_seconds` is only the age at
+which the final verdict is taken (it always forces one last poll).
+
 The tracker **reports**, it does not unwind: a copy whose leader transaction
 reverted, never mined, or could not be checked logs WARN
 `pending_copy_unconfirmed | tx=… leader=… age_s=… reason=…`, increments

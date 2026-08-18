@@ -917,8 +917,8 @@ async def test_provisional_copy_that_reached_the_venue_is_tracked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tracked_statuses_cover_paper_and_unconfirmed_submissions() -> None:
-    for status in ("executed", "paper", "submitted_unconfirmed"):
+async def test_tracked_statuses_are_the_submitted_ones() -> None:
+    for status in ("executed", "submitted_unconfirmed"):
         tracker = _RecordingTracker()
         pipeline = _Pipeline(outcomes=[SimpleNamespace(status=status, reason=None, order_id=None)])
         adapter, _pipeline = _tracking_adapter(
@@ -928,6 +928,30 @@ async def test_tracked_statuses_cover_paper_and_unconfirmed_submissions() -> Non
         await adapter(_signal(provisional=True))
 
         assert [entry.user_ids for entry in tracker.entries] == [("u1",)], status
+
+
+@pytest.mark.asyncio
+async def test_the_paper_tier_gate_result_is_not_tracked() -> None:
+    """``status="paper"`` is the tier gate, not a submission.
+
+    ``trade_pipeline`` returns it from the "Tier gate: paper follow" branch
+    with ``order_id=None``, *before* any execution — and
+    ``execution.paper_trade_only`` downgrades every ``live_follow`` leader to
+    that tier. Tracking it would make a paper soak alarm
+    ``pending_copy_unconfirmed`` for positions that were never opened.
+    """
+    tracker = _RecordingTracker()
+    pipeline = _Pipeline(
+        outcomes=[SimpleNamespace(status="paper", reason="tier_paper_follow", order_id=None)]
+    )
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1")]}, tracker=tracker, pipeline=pipeline
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    assert tracker.entries == []
 
 
 @pytest.mark.asyncio

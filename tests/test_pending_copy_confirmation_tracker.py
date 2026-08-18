@@ -535,7 +535,7 @@ async def test_the_background_loop_polls_and_survives_fetch_errors() -> None:
         metrics=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
         telemetry=None,
         logger=logging.getLogger("PendingCopyConfirmation"),
-        poll_interval_seconds=0.0,
+        poll_interval_seconds=0.001,
     )
     tracker.track(
         TrackedPendingCopy(
@@ -555,3 +555,30 @@ async def test_the_background_loop_polls_and_survives_fetch_errors() -> None:
     await tracker.stop()
 
     assert fetcher.calls >= 1
+
+
+def test_a_non_positive_poll_interval_is_rejected() -> None:
+    """A zero delay would busy-spin the loop and starve detection/execution."""
+    for interval in (0.0, -1.0):
+        with pytest.raises(ValueError, match="poll_interval_seconds"):
+            PendingCopyConfirmationTracker(
+                receipt_fetcher=_FakeFetcher(),
+                clock=_FakeClock(),
+                metrics=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+                telemetry=None,
+                logger=logging.getLogger("PendingCopyConfirmation"),
+                poll_interval_seconds=interval,
+            )
+
+
+def test_the_configured_bounds_are_readable() -> None:
+    """The control plane reads these; they must not require private access."""
+    tracker, _fetcher, _metrics, _clock = _tracker(deadline_seconds=42.0, max_tracked=7)
+
+    assert tracker.deadline_seconds == 42.0
+    assert tracker.max_tracked == 7
+    assert tracker.unwind_enabled is False
+
+    hooked, _f, _m, _c = _tracker(unwind_hook=_RecordingHook())
+
+    assert hooked.unwind_enabled is True

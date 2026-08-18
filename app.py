@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from orchestrators.runtime_bootstrap import TradingContext
 
 from bootstrap import build_app
-from clients.onchain_ws import OnchainWebSocket
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
@@ -252,6 +251,39 @@ def _detection_confidence_from_config(value: object):
         ) from exc
 
 
+def _validate_detection_confidence_floor(config: object) -> None:
+    """Fail closed on the pending-path confidence floor before startup proceeds.
+
+    In ``on_chain_pending`` this floor decides whether every mempool sighting
+    is copied or dropped. Validating it here — right after the config loads,
+    before any runtime, socket, or pool exists — means an unparseable value
+    aborts the process instead of being absorbed by the on-chain composition
+    guard, which would silently downgrade the operator's chosen mode to REST
+    polling. Other modes are unaffected.
+
+    Every read is defensive because ``app`` is also driven by partial config
+    doubles in the startup tests; a loader-produced ``AppConfig`` always
+    carries both sections.
+
+    Args:
+        config: Freshly loaded application configuration.
+
+    Raises:
+        EnvValidationError: If a non-polling mode carries an unparseable
+            confidence floor (a missing ``onchain`` section included).
+    """
+
+    detection = getattr(config, "detection", None)
+    if detection is None:
+        return
+    if getattr(detection, "detection_mode", DetectionMode.POLLING) is DetectionMode.POLLING:
+        return
+    onchain = getattr(detection, "onchain", None)
+    _detection_confidence_from_config(
+        getattr(onchain, "pending_tx_detection_confidence_required", None)
+    )
+
+
 def _build_pending_tx_config(oc_cfg: object):
     from services.onchain_detection.pending_tx_detector import PendingTxConfig
 
@@ -274,20 +306,52 @@ def _build_onchain_condition_id_resolver():
     return GammaConditionIdResolver().resolve
 
 
-def _build_onchain_ws_health_reporter(readiness, metrics_registry: MetricsRegistry = metrics):
-    """Thin glue: the on-chain WebSocket health reporter for this process.
+def _build_onchain_ws_health_reporter(
+    readiness,
+    metrics_registry: MetricsRegistry = metrics,
+    *,
+    mode: DetectionMode,
+):
+    """Thin glue: the on-chain WebSocket health reporter, when it applies.
+
+    Only the gen-1 provisional runtime opens ``OnchainWebSocket``
+    subscriptions. Registering ``onchain_ws_ok`` in any other mode would
+    publish a check that nothing can ever mark ready — a permanent false "WS
+    down" for a socket the process never opens.
 
     Args:
         readiness: Readiness tracker the ``onchain_ws_ok`` check registers on.
         metrics_registry: Registry receiving the bounded on-chain WS metrics.
+        mode: Selected detection mode.
 
     Returns:
-        ``OnchainWsHealthReporter`` ready to be bound to the socket factory.
+        ``OnchainWsHealthReporter`` for ``ON_CHAIN_PENDING``; ``None``
+        otherwise.
     """
 
     from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
+    if mode is not DetectionMode.ON_CHAIN_PENDING:
+        return None
     return OnchainWsHealthReporter(metrics_registry, readiness)
+
+
+def _build_onchain_websocket_factory(state_listener):
+    """Thin glue: the subscription constructor, health-reporting when asked.
+
+    Args:
+        state_listener: Connection-state observer, or ``None``.
+
+    Returns:
+        ``OnchainWebSocket`` itself when no listener is supplied, else a
+        partial with the listener bound.
+    """
+
+    from clients.onchain_ws import OnchainWebSocket
+
+    if state_listener is None:
+        return OnchainWebSocket
+    return functools.partial(OnchainWebSocket, state_listener=state_listener)
 
 
 def _build_pending_copy_tracker(
@@ -1242,17 +1306,7 @@ async def _run_application(client_registry: list[Any]) -> int:
 
     try:
         startup_config = load_config()
-        # Fail closed on the detection confidence floor before anything is
-        # started. In ``on_chain_pending`` that floor decides whether every
-        # mempool sighting is copied or dropped, so an unparseable value must
-        # abort startup — inside the on-chain composition guard further down
-        # it would be absorbed and the operator's chosen mode would silently
-        # degrade to REST polling.
-        detection_cfg = getattr(startup_config, "detection", None)
-        if detection_cfg is not None and detection_cfg.detection_mode is not DetectionMode.POLLING:
-            _detection_confidence_from_config(
-                detection_cfg.onchain.pending_tx_detection_confidence_required
-            )
+        _validate_detection_confidence_floor(startup_config)
     except EnvValidationError as exc:
         print_error(str(exc))
         return 1
@@ -2165,6 +2219,21 @@ async def _run_application(client_registry: list[Any]) -> int:
         # The confidence floor was already validated at startup (before any
         # runtime was built) precisely so an unparseable value aborts instead
         # of being absorbed by the guard below.
+        #
+        # The observability collaborators are likewise built OUTSIDE that
+        # guard: a failure to compose a tracker or a health reporter is a
+        # structural fault, and swallowing it there would silently downgrade
+        # the operator's chosen detection mode to REST polling.
+        pending_copy_tracker = _build_pending_copy_tracker(
+            application.config,
+            telemetry_service=telemetry_runtime.service,
+            metrics_registry=metrics,
+        )
+        _ws_health_reporter = _build_onchain_ws_health_reporter(
+            application.readiness,
+            metrics,
+            mode=detection_mode,
+        )
         try:
             from orchestrators.detection_source_factory import DetectionSourceRequest
             from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
@@ -2172,11 +2241,6 @@ async def _run_application(client_registry: list[Any]) -> int:
                 execute_trades as _execute_trade_pipeline,
             )
 
-            pending_copy_tracker = _build_pending_copy_tracker(
-                application.config,
-                telemetry_service=telemetry_runtime.service,
-                metrics_registry=metrics,
-            )
             # One adapter routes every on-chain signal into the same copy
             # pipeline the REST-polling leader monitor uses (v1 runtime when
             # enabled, else the legacy per-context pipeline), logging
@@ -2188,12 +2252,9 @@ async def _run_application(client_registry: list[Any]) -> int:
                 pending_copy_tracker=pending_copy_tracker,
             )
             oc_cfg = application.config.detection.onchain
-            _ws_health_reporter = _build_onchain_ws_health_reporter(application.readiness, metrics)
             onchain_runtime = await _build_detection_source_factory(
                 application.config,
-                websocket_factory=functools.partial(
-                    OnchainWebSocket, state_listener=_ws_health_reporter
-                ),
+                websocket_factory=_build_onchain_websocket_factory(_ws_health_reporter),
             ).build(
                 DetectionSourceRequest(
                     mode=detection_mode,

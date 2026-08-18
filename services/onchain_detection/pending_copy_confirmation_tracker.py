@@ -162,6 +162,10 @@ class PendingCopyConfirmationTracker:
             raise ValueError("max_tracked must be positive")
         if max_concurrent_fetches <= 0:
             raise ValueError("max_concurrent_fetches must be positive")
+        if poll_interval_seconds <= 0:
+            # A zero delay would turn the loop into a busy spin that starves
+            # the detection and execution tasks on the same event loop.
+            raise ValueError("poll_interval_seconds must be positive")
         self._fetcher = receipt_fetcher
         self._clock = clock
         self._metrics = metrics
@@ -172,7 +176,7 @@ class PendingCopyConfirmationTracker:
             sorted({float(offset) for offset in poll_offsets_seconds if float(offset) > 0})
         ) or (self._deadline_seconds,)
         self._max_tracked = int(max_tracked)
-        self._poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+        self._poll_interval_seconds = float(poll_interval_seconds)
         self._unwind_hook = unwind_hook
         self._max_concurrent_fetches = int(max_concurrent_fetches)
         self._tracked: OrderedDict[tuple[str, str], _TrackedState] = OrderedDict()
@@ -192,6 +196,24 @@ class PendingCopyConfirmationTracker:
         """Return whether the background confirmation loop is active."""
 
         return self._running
+
+    @property
+    def deadline_seconds(self) -> float:
+        """Return the age at which an undecided copy is reported unconfirmed."""
+
+        return self._deadline_seconds
+
+    @property
+    def max_tracked(self) -> int:
+        """Return the ceiling on concurrently tracked copies."""
+
+        return self._max_tracked
+
+    @property
+    def unwind_enabled(self) -> bool:
+        """Return whether an unwind hook is wired (money-path opt-in)."""
+
+        return self._unwind_hook is not None
 
     def track(self, entry: TrackedPendingCopy) -> bool:
         """Record one provisional copy for later confirmation.

@@ -73,10 +73,18 @@ _WINNER_ERROR = "error"
 # venue (execution dedup, reservation conflict, or an already-persisted fill).
 # Such a "skip" is a post-submission outcome, never "nothing happened".
 _REASON_DUPLICATE_IGNORED = "duplicate_ignored"
-# ``TradePipelineResult.status`` values that mean a copy actually reached the
-# venue (or the paper book). Only those need pending-copy confirmation: a
-# skipped or failed copy leaves no position to orphan.
-_VENUE_REACHED_STATUSES = frozenset({"executed", "paper", "submitted_unconfirmed"})
+# ``TradePipelineResult.status`` values that mean an order was actually
+# submitted. Only those need pending-copy confirmation: a skipped or failed
+# copy leaves no position to orphan.
+#
+# ``"paper"`` is deliberately NOT here. It is the tier gate
+# (``trade_pipeline.py`` "Tier gate: paper follow"), which returns
+# ``order_id=None`` and ``continue``s *before* any execution — and
+# ``execution.paper_trade_only`` downgrades every ``live_follow`` leader to
+# that tier, so during a paper soak every copy would report as tracked and
+# then alarm as ``pending_copy_unconfirmed`` for a position that was never
+# opened.
+_VENUE_REACHED_STATUSES = frozenset({"executed", "submitted_unconfirmed"})
 
 
 class ProcessedTradeClaimRepository(Protocol):
@@ -686,12 +694,13 @@ class OnchainSignalDispatchAdapter:
 
     @staticmethod
     def _reached_venue(result: Any) -> bool:
-        """Whether any pipeline outcome in ``result`` reached the venue.
+        """Whether any pipeline outcome in ``result`` submitted an order.
 
-        ``executed`` / ``submitted_unconfirmed`` mean an order is out;
-        ``paper`` means the paper book holds a simulated position. All three
-        leave something that must be reconciled against the leader
-        transaction actually mining. Skips and failures leave nothing.
+        ``executed`` and ``submitted_unconfirmed`` are the only statuses that
+        follow a submission attempt, so they are the only ones that can leave
+        a position to reconcile against the leader transaction actually
+        mining. Skips, failures, and the ``paper`` tier gate (which returns
+        before execution with no order id) leave nothing to unwind.
         """
 
         outcomes = list(result) if isinstance(result, (list, tuple)) else []
