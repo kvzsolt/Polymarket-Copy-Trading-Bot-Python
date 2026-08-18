@@ -171,3 +171,29 @@ def test_serializer_bounds_aggregate_text_and_rejects_sensitive_key_variants() -
         serializer.to_jsonable({"a": "1234", "b": "5678"})
     with pytest.raises(ValueError, match="sensitive"):
         ControlPlaneJsonSerializer().to_jsonable({"api-key": "sv7"})
+
+
+def test_read_only_permission_set_covers_every_read_and_excludes_mutations() -> None:
+    """A viewer credential can observe everything and change nothing."""
+
+    from integrations.control_plane import (
+        ALL_CONTROL_PLANE_PERMISSIONS,
+        READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+    )
+
+    reads = {
+        permission for permission in ControlPlanePermission if permission.value.endswith(".read")
+    }
+
+    assert ControlPlanePermission.FILL_READ.value == "fill.read"
+    assert ControlPlanePermission.RISK_READ.value == "risk.read"
+    assert ControlPlanePermission.LEADER_READ.value == "leader.read"
+    assert reads <= READ_ONLY_CONTROL_PLANE_PERMISSIONS
+    assert ControlPlanePermission.TELEMETRY_STREAM in READ_ONLY_CONTROL_PLANE_PERMISSIONS
+    assert READ_ONLY_CONTROL_PLANE_PERMISSIONS == reads | {ControlPlanePermission.TELEMETRY_STREAM}
+    assert READ_ONLY_CONTROL_PLANE_PERMISSIONS < ALL_CONTROL_PLANE_PERMISSIONS
+    assert {
+        ControlPlanePermission.FILL_READ,
+        ControlPlanePermission.RISK_READ,
+        ControlPlanePermission.LEADER_READ,
+    } <= ALL_CONTROL_PLANE_PERMISSIONS

@@ -18,12 +18,15 @@ from services.control_plane.contracts import (
     DiscoveryCycleView,
     DiscoveryRosterView,
     DiscoveryStatusView,
+    FillView,
     OrderView,
     Page,
     PageRequest,
     PositionView,
     ReentryLockView,
     ReservationView,
+    RiskBlockView,
+    RiskTriggerView,
     TaskDetailView,
     TaskView,
 )
@@ -31,6 +34,10 @@ from storage.postgres.copy_task_repository import CopyTaskCodec
 
 
 T = TypeVar("T")
+
+# Hard row ceilings so one operator read can never scan an unbounded table.
+_MAX_RISK_ROWS = 200
+_MAX_LEADER_AGGREGATE_ROWS = 500
 
 
 class DatabasePool(Protocol):
@@ -547,6 +554,115 @@ class PostgresControlPlaneQueryRepository:
             ),
         )
 
+    async def list_fills(
+        self,
+        follower_account: str,
+        page: PageRequest,
+    ) -> Page[FillView]:
+        """Return durable fills newest-first through identity keyset paging."""
+
+        (fill_cursor,) = self._cursor.decode(page.cursor, "fills", 1)
+        after_id = self._cursor_integer(fill_cursor) if fill_cursor else None
+        rows = await self._fetch(
+            """
+            SELECT id, user_id, leader_id, order_id, condition_id, token_id,
+                   side, size_tokens, price, fee, fill_ts, created_at
+            FROM fills
+            WHERE user_id = $1
+              AND ($2::bigint IS NULL OR id < $2::bigint)
+            ORDER BY id DESC
+            LIMIT $3
+            """,
+            follower_account,
+            after_id,
+            page.limit + 1,
+        )
+        return self._page(
+            rows,
+            page,
+            kind="fills",
+            mapper=self._fill_view,
+            cursor_values=lambda row: (str(self._integer(row, "id")),),
+        )
+
+    async def list_active_risk_blocks(
+        self,
+        follower_account: str,
+    ) -> tuple[RiskBlockView, ...]:
+        """Return every uncleared, unexpired risk block for one follower."""
+
+        rows = await self._fetch(
+            """
+            SELECT user_id, condition_id, token_id, reason, source,
+                   triggered_at, expires_at, leader_anchor
+            FROM risk_blocks
+            WHERE cleared_at IS NULL
+              AND (expires_at IS NULL OR expires_at > $1)
+              AND user_id = $2
+            ORDER BY triggered_at DESC
+            LIMIT $3
+            """,
+            self._clock.now().timestamp(),
+            follower_account,
+            _MAX_RISK_ROWS,
+        )
+        return tuple(self._risk_block_view(row) for row in rows)
+
+    async def list_recent_risk_triggers(
+        self,
+        follower_account: str,
+        limit: int,
+    ) -> tuple[RiskTriggerView, ...]:
+        """Return the newest protective-exit triggers for one follower."""
+
+        bounded = max(1, min(int(limit), _MAX_RISK_ROWS))
+        rows = await self._fetch(
+            """
+            SELECT id, user_id, condition_id, token_id, reason, source,
+                   triggered_at, fill_order_id, fill_status
+            FROM risk_triggers
+            WHERE user_id = $1
+            ORDER BY triggered_at DESC, id DESC
+            LIMIT $2
+            """,
+            follower_account,
+            bounded,
+        )
+        return tuple(self._risk_trigger_view(row) for row in rows)
+
+    async def leader_trade_counts(self) -> Mapping[str, int]:
+        """Return bounded recorded fill counts grouped by leader identity."""
+
+        rows = await self._fetch(
+            """
+            SELECT leader_id, COUNT(*) AS leader_count
+            FROM fills
+            WHERE leader_id IS NOT NULL
+            GROUP BY leader_id
+            ORDER BY leader_count DESC, leader_id ASC
+            LIMIT $1
+            """,
+            _MAX_LEADER_AGGREGATE_ROWS,
+        )
+        return self._leader_counts(rows)
+
+    async def leader_open_position_counts(self) -> Mapping[str, int]:
+        """Return bounded open-position counts grouped by leader identity."""
+
+        rows = await self._fetch(
+            """
+            SELECT leader_id, COUNT(*) AS leader_count
+            FROM positions
+            WHERE leader_id IS NOT NULL
+              AND size_tokens::numeric > 0
+            GROUP BY leader_id
+            ORDER BY leader_count DESC, leader_id ASC
+            LIMIT $1
+            """,
+            _MAX_LEADER_AGGREGATE_ROWS,
+        )
+        return self._leader_counts(rows)
+
     async def _fetch(
         self,
         query: str,
@@ -734,6 +850,66 @@ class PostgresControlPlaneQueryRepository:
             locked_at=self._datetime(row, "locked_at"),
             revision=self._integer(row, "revision"),
         )
+
+    def _fill_view(self, row: Mapping[str, object]) -> FillView:
+        """Translate one durable fill row into exact boundary text."""
+
+        return FillView(
+            fill_id=str(self._integer(row, "id")),
+            follower_account=self._text(row, "user_id"),
+            leader_wallet=self._optional_text(row, "leader_id"),
+            order_id=self._optional_text(row, "order_id"),
+            condition_id=self._optional_text(row, "condition_id"),
+            token_id=self._optional_text(row, "token_id"),
+            side=self._optional_text(row, "side"),
+            size=self._decimal_text(row, "size_tokens"),
+            price=self._decimal_text(row, "price"),
+            fee=self._decimal_text(row, "fee"),
+            filled_at=self._epoch_datetime(row.get("fill_ts")),
+            created_at=self._datetime(row, "created_at"),
+        )
+
+    def _risk_block_view(self, row: Mapping[str, object]) -> RiskBlockView:
+        """Translate one active risk block row."""
+
+        expires_at = row.get("expires_at")
+        return RiskBlockView(
+            follower_account=self._text(row, "user_id"),
+            condition_id=self._text(row, "condition_id"),
+            token_id=self._text(row, "token_id"),
+            reason=self._text(row, "reason"),
+            source=self._text(row, "source"),
+            leader_wallet=self._optional_text(row, "leader_anchor"),
+            triggered_at=self._epoch_datetime(row.get("triggered_at")),
+            expires_at=(None if expires_at is None else self._epoch_datetime(expires_at)),
+        )
+
+    def _risk_trigger_view(self, row: Mapping[str, object]) -> RiskTriggerView:
+        """Translate one protective-exit trigger row."""
+
+        return RiskTriggerView(
+            trigger_id=str(self._integer(row, "id")),
+            follower_account=self._text(row, "user_id"),
+            condition_id=self._text(row, "condition_id"),
+            token_id=self._text(row, "token_id"),
+            reason=self._text(row, "reason"),
+            source=self._text(row, "source"),
+            fill_status=self._text(row, "fill_status"),
+            fill_order_id=self._optional_text(row, "fill_order_id"),
+            triggered_at=self._epoch_datetime(row.get("triggered_at")),
+        )
+
+    @classmethod
+    def _leader_counts(cls, rows: Sequence[Mapping[str, object]]) -> Mapping[str, int]:
+        """Translate grouped leader aggregate rows into a bounded mapping."""
+
+        counts: dict[str, int] = {}
+        for row in rows:
+            wallet = cls._optional_text(row, "leader_id")
+            if wallet is None:
+                continue
+            counts[wallet] = cls._integer(row, "leader_count")
+        return counts
 
     @staticmethod
     def _text(row: Mapping[str, object], name: str) -> str:

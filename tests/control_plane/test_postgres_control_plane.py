@@ -471,3 +471,144 @@ async def test_discovery_pages_preserve_existing_score_desc_wallet_asc_order() -
 
     assert "final_score DESC, snapshots.wallet ASC" in pool.calls[0][1]
     assert "score DESC, wallet ASC" in pool.calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_fill_pagination_is_identity_keyset_descending_with_its_own_cursor() -> None:
+    """Fills page newest-first on the durable identity, never by OFFSET."""
+
+    pool = FakePool()
+    pool.fetch_results = [
+        [
+            {
+                "id": 9,
+                "user_id": "account-a",
+                "leader_id": "0xleader",
+                "order_id": "order-a",
+                "condition_id": "condition-a",
+                "token_id": "token-a",
+                "side": "BUY",
+                "size_tokens": "12.5",
+                "price": "0.42",
+                "fee": "0",
+                "fill_ts": 1766000000,
+                "created_at": NOW,
+            },
+            {
+                "id": 8,
+                "user_id": "account-a",
+                "leader_id": None,
+                "order_id": None,
+                "condition_id": "condition-b",
+                "token_id": "token-b",
+                "side": "SELL",
+                "size_tokens": "1",
+                "price": "0.90",
+                "fee": "0",
+                "fill_ts": 1766000001,
+                "created_at": NOW,
+            },
+        ],
+        [],
+    ]
+    repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
+
+    first = await repository.list_fills("account-a", PageRequest(limit=1))
+    await repository.list_fills("account-a", PageRequest(limit=1, cursor=first.next_cursor))
+
+    assert [fill.fill_id for fill in first.items] == ["9"]
+    assert first.items[0].size == "12.5"
+    assert first.items[0].price == "0.42"
+    assert first.items[0].filled_at == datetime.fromtimestamp(1766000000, tz=UTC)
+    assert first.next_cursor is not None
+    assert pool.calls[0][2] == ("account-a", None, 2)
+    assert pool.calls[1][2] == ("account-a", 9, 2)
+    assert "ORDER BY id DESC" in pool.calls[0][1]
+    assert "OFFSET" not in pool.calls[0][1].upper()
+
+
+@pytest.mark.asyncio
+async def test_fill_cursor_cannot_be_replayed_against_another_query() -> None:
+    """A fills cursor is bound to the fills query kind before any SQL runs."""
+
+    pool = FakePool()
+    repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
+    foreign = ControlPlaneCursorCodec().encode("positions", ("condition-a", "token-a"))
+
+    with pytest.raises(ControlPlaneError) as captured:
+        await repository.list_fills("account-a", PageRequest(limit=5, cursor=foreign))
+
+    assert captured.value.reason is ControlPlaneReason.INVALID_PAGE
+    assert pool.calls == []
+
+
+@pytest.mark.asyncio
+async def test_risk_projections_are_follower_scoped_and_bounded() -> None:
+    """Active blocks and recent triggers convert epoch columns to UTC."""
+
+    pool = FakePool()
+    pool.fetch_results = [
+        [
+            {
+                "user_id": "account-a",
+                "condition_id": "condition-a",
+                "token_id": "token-a",
+                "reason": "stop_loss",
+                "source": "risk_monitor",
+                "triggered_at": 1766000000.0,
+                "expires_at": None,
+                "leader_anchor": None,
+            }
+        ],
+        [
+            {
+                "id": 7,
+                "user_id": "account-a",
+                "condition_id": "condition-a",
+                "token_id": "token-a",
+                "reason": "stop_loss",
+                "source": "risk_monitor",
+                "triggered_at": 1766000000.0,
+                "fill_order_id": "order-a",
+                "fill_status": "filled",
+            }
+        ],
+    ]
+    repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
+
+    blocks = await repository.list_active_risk_blocks("account-a")
+    triggers = await repository.list_recent_risk_triggers("account-a", limit=25)
+
+    assert blocks[0].reason == "stop_loss"
+    assert blocks[0].triggered_at == datetime.fromtimestamp(1766000000.0, tz=UTC)
+    assert blocks[0].expires_at is None
+    assert triggers[0].trigger_id == "7"
+    assert triggers[0].fill_status == "filled"
+    assert "cleared_at IS NULL" in pool.calls[0][1]
+    assert pool.calls[0][2][1:] == ("account-a", 200)
+    assert "ORDER BY triggered_at DESC" in pool.calls[1][1]
+    assert pool.calls[1][2] == ("account-a", 25)
+
+
+@pytest.mark.asyncio
+async def test_leader_counts_are_grouped_aggregates_with_a_hard_bound() -> None:
+    """Leader aggregates are grouped in PostgreSQL, never in the query service."""
+
+    pool = FakePool()
+    pool.fetch_results = [
+        [{"leader_id": "0xleader", "leader_count": 4}],
+        [{"leader_id": "0xleader", "leader_count": 2}],
+    ]
+    repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
+
+    trades = await repository.leader_trade_counts()
+    positions = await repository.leader_open_position_counts()
+
+    assert trades == {"0xleader": 4}
+    assert positions == {"0xleader": 2}
+    assert "GROUP BY leader_id" in pool.calls[0][1]
+    assert "FROM fills" in pool.calls[0][1]
+    assert "GROUP BY leader_id" in pool.calls[1][1]
+    assert "FROM positions" in pool.calls[1][1]
+    assert pool.calls[0][2] == (500,)
+    assert pool.calls[1][2] == (500,)

@@ -68,6 +68,28 @@ class TelemetryQueryService:
         """
         if limit < 0:
             raise ValueError("limit must be non-negative")
+        metrics = self.metrics_snapshot()
+        return {
+            "generated_at": metrics["generated_at"],
+            "events": [
+                self._event_to_json(event) for event in self._service.history_snapshot(limit=limit)
+            ],
+            "metrics": {
+                "counters": metrics["counters"],
+                "gauges": metrics["gauges"],
+                "histograms": metrics["histograms"],
+            },
+        }
+
+    def metrics_snapshot(self) -> dict[str, JsonValue]:
+        """Return counters, gauges, and histograms without event history.
+
+        The operator metrics route serves this projection directly, so a UI
+        polling numbers never pays for serializing the bounded event ring.
+
+        Returns:
+            A structure accepted directly by :func:`json.dumps`.
+        """
         counters, gauges = self._metrics.snapshot()
         histograms: list[JsonValue] = []
         for histogram in self._metrics.histogram_snapshots():
@@ -87,14 +109,9 @@ class TelemetryQueryService:
             )
         return {
             "generated_at": self._clock.now().isoformat(),
-            "events": [
-                self._event_to_json(event) for event in self._service.history_snapshot(limit=limit)
-            ],
-            "metrics": {
-                "counters": dict(sorted(counters.items())),
-                "gauges": dict(sorted(gauges.items())),
-                "histograms": histograms,
-            },
+            "counters": dict(sorted(counters.items())),
+            "gauges": dict(sorted(gauges.items())),
+            "histograms": histograms,
         }
 
     @staticmethod

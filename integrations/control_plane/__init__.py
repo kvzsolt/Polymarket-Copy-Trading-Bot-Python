@@ -33,6 +33,7 @@ from .http import (
 )
 from .security import (
     ALL_CONTROL_PLANE_PERMISSIONS,
+    READ_ONLY_CONTROL_PLANE_PERMISSIONS,
     BearerCredential,
     ControlPlaneAuthenticator,
     ControlPlaneHttpConfig,
@@ -81,6 +82,7 @@ __all__ = [
     "OrderQueryPort",
     "PortfolioQueryPort",
     "PositionQueryPort",
+    "READ_ONLY_CONTROL_PLANE_PERMISSIONS",
     "RateLimitDecision",
     "ReentryLockCommandPort",
     "ReentryLockQueryPort",

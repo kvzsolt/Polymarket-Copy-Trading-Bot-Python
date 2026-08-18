@@ -41,11 +41,14 @@ class ControlPlanePermission(StrEnum):
     POSITION_READ = "position.read"
     ORDER_READ = "order.read"
     ACTIVITY_READ = "activity.read"
+    FILL_READ = "fill.read"
     DISCOVERY_READ = "discovery.read"
     DISCOVERY_RUN = "discovery.run"
+    LEADER_READ = "leader.read"
     LOCK_READ = "lock.read"
     LOCK_RESET = "lock.reset"
     RESERVATION_READ = "reservation.read"
+    RISK_READ = "risk.read"
     SETTINGS_READ = "settings.read"
     SETTINGS_WRITE = "settings.write"
     PORTFOLIO_READ = "portfolio.read"
@@ -56,6 +59,14 @@ class ControlPlanePermission(StrEnum):
 
 
 ALL_CONTROL_PLANE_PERMISSIONS = frozenset(ControlPlanePermission)
+
+# Everything a viewer credential may hold: every read plus the live stream.
+# Membership is derived from the permission vocabulary itself, so a future
+# read permission joins the viewer role without a second place to update,
+# while every mutation stays out by construction.
+READ_ONLY_CONTROL_PLANE_PERMISSIONS = frozenset(
+    permission for permission in ControlPlanePermission if permission.value.endswith(".read")
+) | {ControlPlanePermission.TELEMETRY_STREAM}
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +418,7 @@ def _require_number(name: str, value: object) -> None:
 
 __all__ = [
     "ALL_CONTROL_PLANE_PERMISSIONS",
+    "READ_ONLY_CONTROL_PLANE_PERMISSIONS",
     "BearerCredential",
     "ControlPlaneAuthenticator",
     "ControlPlaneHttpConfig",
