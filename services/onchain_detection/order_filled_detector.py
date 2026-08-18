@@ -35,6 +35,7 @@ topics are checked.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -52,6 +53,7 @@ from services.onchain_detection.trade_detection_models import (
     price_from_fill,
     watched_side_from_maker_side,
 )
+from utils.logger import get_logger
 
 ORDER_FILLED_TOPIC0: bytes = keccak(
     text="OrderFilled(bytes32,address,address,uint8,uint256,uint256,"
@@ -279,3 +281,74 @@ def log_subscription_params(exchange_addresses: tuple[str, ...] | None = None) -
         "topics": ["0x" + ORDER_FILLED_TOPIC0.hex()],
     }
     return ["logs", filter_obj]
+
+
+#: Maximum watched wallets embedded per ``logs`` topic filter. A filter that
+#: lists every followed leader keeps provider cost near zero; beyond this the
+#: WARN (counts only) names the truncation and the REST-polling fallback
+#: covers the leaders that no longer fit.
+WATCHED_TOPIC_FILTER_CAP = 100
+
+logger = get_logger("OrderFilledDetector")
+
+
+def _address_to_topic(address: str) -> str:
+    """Return the 32-byte topic word for an address (lowercase, left-padded)."""
+    body = str(address).strip().lower()
+    if body.startswith("0x"):
+        body = body[2:]
+    return "0x" + body.rjust(64, "0")
+
+
+def log_subscription_params_for_watched(
+    exchange_addresses: tuple[str, ...] | None = None,
+    watched_wallets: Iterable[str] | None = None,
+) -> tuple[list, ...]:
+    """Build the leader-filtered ``logs`` subscriptions (maker role, taker role).
+
+    ``OrderFilled`` indexes the maker as topic2 and the taker as topic3, and a
+    single ``logs`` filter cannot OR two topic positions, so the caller opens
+    one subscription per role:
+
+    * maker role: ``topics = [[topic0], null, [<leader topics>]]``
+    * taker role: ``topics = [[topic0], null, null, [<leader topics>]]``
+
+    (``null`` is the positional wildcard; an array is OR-at-that-position —
+    the standard ``eth_getLogs``/``eth_subscribe`` filter format every WSS
+    provider implements.) The client-side maker/taker match in
+    :func:`build_signal_from_log` stays as the second guard.
+
+    Args:
+        exchange_addresses: CTF exchange contracts to filter on; defaults to
+            both Polymarket exchanges.
+        watched_wallets: Followed leader wallets, any case. Truncated to
+            :data:`WATCHED_TOPIC_FILTER_CAP` per filter (deterministic
+            lexicographic prefix, WARN with counts only). ``None`` or empty
+            falls back to the unfiltered :func:`log_subscription_params`
+            shape — the address-only subscription keeps the socket alive and
+            the client-side match drops foreign fills.
+
+    Returns:
+        A tuple with one ``eth_subscribe`` params list per subscription to
+        open: two role filters with a watched set, one unfiltered list
+        without.
+    """
+    watched = {
+        str(wallet).strip().lower() for wallet in (watched_wallets or ()) if str(wallet).strip()
+    }
+    if not watched:
+        return (log_subscription_params(exchange_addresses),)
+    if len(watched) > WATCHED_TOPIC_FILTER_CAP:
+        logger.warning(
+            "orderfilled_topic_filter_capped | watched=%d cap=%d — leaders beyond the cap "
+            "keep the REST-polling path only",
+            len(watched),
+            WATCHED_TOPIC_FILTER_CAP,
+        )
+        watched = set(sorted(watched)[:WATCHED_TOPIC_FILTER_CAP])
+    leader_topics = sorted(_address_to_topic(wallet) for wallet in watched)
+    addresses = [a.lower() for a in (exchange_addresses or ONCHAIN_EXCHANGE_ADDRESSES)]
+    topic0 = ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    maker_role = ["logs", {"address": addresses, "topics": [topic0, None, leader_topics]}]
+    taker_role = ["logs", {"address": addresses, "topics": [topic0, None, None, leader_topics]}]
+    return (maker_role, taker_role)
