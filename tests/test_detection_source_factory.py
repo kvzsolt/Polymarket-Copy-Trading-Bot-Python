@@ -153,6 +153,62 @@ async def test_on_chain_pending_default_factory_is_gen1_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pending_builder_forwards_websocket_factory() -> None:
+    """The health-reporting socket factory must reach the gen-1 runtime.
+
+    ``app.main`` injects ``functools.partial(OnchainWebSocket,
+    state_listener=reporter)`` here; if the builder swallowed it the WS
+    connection state would silently stop being reported.
+    """
+    from clients.onchain_ws import OnchainWebSocket
+
+    def _socket_factory(**_kwargs: object) -> object:
+        raise AssertionError("never constructed in this test")
+
+    builder = ProvisionalPendingSourceBuilder(
+        pending_config=PendingTxConfig(),
+        condition_id_resolver=_resolver,
+        runtime_factory=_RecordingRuntime,
+        websocket_factory=_socket_factory,
+    )
+
+    runtime = await builder.build(_request(DetectionMode.ON_CHAIN_PENDING))
+
+    assert isinstance(runtime, _RecordingRuntime)
+    assert runtime.kwargs["websocket_factory"] is _socket_factory
+
+    default_builder = ProvisionalPendingSourceBuilder(
+        pending_config=PendingTxConfig(),
+        condition_id_resolver=_resolver,
+        runtime_factory=_RecordingRuntime,
+    )
+    default_runtime = await default_builder.build(_request(DetectionMode.ON_CHAIN_PENDING))
+
+    assert isinstance(default_runtime, _RecordingRuntime)
+    assert default_runtime.kwargs["websocket_factory"] is OnchainWebSocket
+
+
+@pytest.mark.asyncio
+async def test_pending_builder_websocket_factory_reaches_the_real_runtime() -> None:
+    """Contract check against ``OnchainDetectionRuntime``, not just a stand-in."""
+    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+
+    def _socket_factory(**_kwargs: object) -> object:
+        raise AssertionError("never constructed in this test")
+
+    builder = ProvisionalPendingSourceBuilder(
+        pending_config=PendingTxConfig(),
+        condition_id_resolver=_resolver,
+        websocket_factory=_socket_factory,
+    )
+
+    runtime = await builder.build(_request(DetectionMode.ON_CHAIN_PENDING))
+
+    assert isinstance(runtime, OnchainDetectionRuntime)
+    assert runtime._websocket_factory is _socket_factory
+
+
+@pytest.mark.asyncio
 async def test_on_chain_confirmed_builds_polygon_source_runtime_and_awaits_state_store() -> None:
     provider = _StateStoreProvider()
     bootstrap = _RecordingBootstrap()

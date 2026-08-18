@@ -457,6 +457,23 @@ METRIC_DETECTION_SIGNALS_DEDUPED = "detection_signals_deduped_total"
 GAUGE_DETECTION_MODE_SELECTED = "detection_mode_selected"
 DETECTION_SOURCE_LABEL_VALUES = tuple(mode.value for mode in DetectionMode)
 
+# On-chain (Alchemy) subscription health. ``stream`` is bounded to the two
+# subscription names ``OnchainDetectionRuntime`` opens — ``orderfilled`` (mined
+# ``OrderFilled`` logs) and ``pendingtx`` (``alchemy_pendingTransactions``).
+GAUGE_ONCHAIN_WS_CONNECTED = "onchain_ws_connected"
+METRIC_ONCHAIN_WS_RECONNECT = "onchain_ws_reconnect_total"
+ONCHAIN_WS_STREAM_LABEL_VALUES = ("orderfilled", "pendingtx")
+
+# Pending-copy confirmation (``detection.mode=on_chain_pending``): a copy taken
+# off a provisional mempool sighting is tracked until its leader transaction
+# mines, reverts, or misses the deadline.
+METRIC_PENDING_COPY_CONFIRMED = "pending_copy_confirmed_total"
+METRIC_PENDING_COPY_UNCONFIRMED = "pending_copy_unconfirmed_total"
+METRIC_PENDING_COPY_TRACKER_DROPPED = "pending_copy_tracker_dropped_total"
+GAUGE_PENDING_COPY_TRACKED = "pending_copy_tracked"
+PENDING_COPY_UNCONFIRMED_REASONS = ("reverted", "not_mined", "rpc_error")
+PENDING_COPY_DROP_REASONS = ("full",)
+
 # V1 telemetry metric names. Every label in these schemas has an explicit,
 # bounded value set; opaque leader/task/order identifiers never become labels.
 METRIC_TELEMETRY_LEADER_SIGNAL = "telemetry_leader_signal_total"
@@ -536,6 +553,28 @@ TELEMETRY_METRIC_SCHEMAS: tuple[MetricSchema, ...] = (
         MetricKind.GAUGE,
         (("mode", DETECTION_SOURCE_LABEL_VALUES),),
     ),
+    MetricSchema(
+        GAUGE_ONCHAIN_WS_CONNECTED,
+        MetricKind.GAUGE,
+        (("stream", ONCHAIN_WS_STREAM_LABEL_VALUES),),
+    ),
+    MetricSchema(
+        METRIC_ONCHAIN_WS_RECONNECT,
+        MetricKind.COUNTER,
+        (("stream", ONCHAIN_WS_STREAM_LABEL_VALUES),),
+    ),
+    MetricSchema(METRIC_PENDING_COPY_CONFIRMED, MetricKind.COUNTER),
+    MetricSchema(
+        METRIC_PENDING_COPY_UNCONFIRMED,
+        MetricKind.COUNTER,
+        (("reason", PENDING_COPY_UNCONFIRMED_REASONS),),
+    ),
+    MetricSchema(
+        METRIC_PENDING_COPY_TRACKER_DROPPED,
+        MetricKind.COUNTER,
+        (("reason", PENDING_COPY_DROP_REASONS),),
+    ),
+    MetricSchema(GAUGE_PENDING_COPY_TRACKED, MetricKind.GAUGE),
     MetricSchema(
         METRIC_TELEMETRY_LEADER_SIGNAL,
         MetricKind.COUNTER,

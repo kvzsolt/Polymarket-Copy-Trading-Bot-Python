@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Coroutine, Protocol
 
+from clients.onchain_ws import OnchainWebSocket
 from domain.detection import DetectionMode
 from interfaces.source_transactions import SourceTransactionStateStore
 from orchestration.bootstrap import (
@@ -128,19 +129,26 @@ class ProvisionalPendingSourceBuilder:
         pending_config: PendingTxConfig,
         condition_id_resolver: ConditionIdResolver,
         runtime_factory: Callable[..., DetectionSourceRuntime] = OnchainDetectionRuntime,
+        websocket_factory: Callable[..., Any] = OnchainWebSocket,
     ) -> None:
-        """Store the pending-path policy and runtime constructor.
+        """Store the pending-path policy, runtime, and socket constructors.
 
         Args:
             pending_config: Staleness / calldata / confidence policy.
             condition_id_resolver: Async token-id -> condition-id lookup.
             runtime_factory: ``OnchainDetectionRuntime``-compatible constructor;
                 injectable for tests.
+            websocket_factory: ``OnchainWebSocket``-compatible constructor the
+                runtime uses for each subscription. The composition root binds
+                the health reporter here
+                (``functools.partial(OnchainWebSocket, state_listener=...)``)
+                so a dropped subscription becomes visible.
         """
 
         self._pending_config = pending_config
         self._condition_id_resolver = condition_id_resolver
         self._runtime_factory = runtime_factory
+        self._websocket_factory = websocket_factory
 
     @property
     def mode(self) -> DetectionMode:
@@ -167,6 +175,7 @@ class ProvisionalPendingSourceBuilder:
             enable_mined=False,
             pending_config=self._pending_config,
             condition_id_resolver=self._condition_id_resolver,
+            websocket_factory=self._websocket_factory,
         )
 
 

@@ -6,6 +6,9 @@ A minimal, self-contained ``websockets``-based client that:
     ``OrderFilled``) or ``alchemy_pendingTransactions`` (pending tx),
   * drains JSON-RPC subscription notifications into an ``asyncio.Queue``,
   * reconnects with exponential backoff + jitter on close/error,
+  * reports connect / disconnect / reconnect-scheduled to an optional
+    ``OnchainWsStateListener`` (operator visibility only — see
+    ``services.onchain_detection.ws_health_reporter``),
   * exposes a graceful ``stop()`` that cancels its tasks and closes the socket.
 
 This mirrors the lifecycle discipline of ``clients/market_ws.py`` (heartbeat,
@@ -20,7 +23,7 @@ import asyncio
 import contextlib
 import orjson
 import random
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import websockets
@@ -46,6 +49,30 @@ _MAX_QUEUE: int | None = 1000
 MessageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
+@runtime_checkable
+class OnchainWsStateListener(Protocol):
+    """Observer of one subscription's connection lifecycle.
+
+    Every method is **synchronous, non-blocking and best-effort**: the client
+    calls them from inside its connect loop, swallows anything they raise, and
+    never awaits them. Implementations must therefore not perform IO — the
+    production listener only touches an in-memory metrics registry and the
+    readiness tracker.
+    """
+
+    def on_connected(self, stream: str) -> None:
+        """Report that ``stream`` is subscribed and receiving notifications."""
+        ...
+
+    def on_disconnected(self, stream: str) -> None:
+        """Report that ``stream`` lost its connection (for any reason)."""
+        ...
+
+    def on_reconnect_scheduled(self, stream: str) -> None:
+        """Report that ``stream`` is about to wait out its backoff delay."""
+        ...
+
+
 class OnchainWebSocket:
     """A single Alchemy WebSocket subscription.
 
@@ -62,11 +89,13 @@ class OnchainWebSocket:
         on_message: MessageCallback,
         reconnect_min_delay: float = _MIN_RECONNECT_DELAY,
         reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
+        state_listener: OnchainWsStateListener | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._subscribe_params = subscribe_params
         self._name = name
         self._on_message = on_message
+        self._state_listener = state_listener
         self._reconnect_min_delay = reconnect_min_delay
         self._reconnect_max_delay = reconnect_max_delay
         self._reconnect_delay = reconnect_min_delay
@@ -161,12 +190,14 @@ class OnchainWebSocket:
             finally:
                 self._ws = None
                 self._sub_id = None
+                self._notify_state("on_disconnected")
 
             if not self._running:
                 break
 
             delay = self._reconnect_delay + random.uniform(0, 0.5)
             logger.info("OnchainWS[%s]: reconnecting in %.1fs", self._name, delay)
+            self._notify_state("on_reconnect_scheduled")
             await asyncio.sleep(delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, self._reconnect_max_delay)
 
@@ -196,6 +227,36 @@ class OnchainWebSocket:
             raise ConnectionClosed(None, None)
         self._sub_id = str(ack["result"])
         logger.info("OnchainWS[%s]: subscribed (sub_id=%s)", self._name, self._sub_id)
+        self._notify_state("on_connected")
+
+    def _notify_state(self, event: str) -> None:
+        """Fire one lifecycle callback on the optional state listener.
+
+        The listener is an operator-visibility observer, never a participant:
+        it is looked up by name (so a partial implementation is legal), called
+        synchronously, and anything it raises is swallowed at debug level. A
+        health reporter must never be able to break the detection socket.
+
+        Args:
+            event: Listener method name (``on_connected`` / ``on_disconnected``
+                / ``on_reconnect_scheduled``).
+        """
+
+        listener = self._state_listener
+        if listener is None:
+            return
+        callback = getattr(listener, event, None)
+        if not callable(callback):
+            return
+        try:
+            callback(self._name)
+        except Exception as exc:
+            logger.debug(
+                "OnchainWS[%s]: state listener %s failed: %s",
+                self._name,
+                event,
+                redact_error_detail(exc),
+            )
 
     async def _handle_raw(self, raw: str | bytes) -> None:
         if raw in ("", b""):
