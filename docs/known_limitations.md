@@ -159,8 +159,14 @@ tick submit a second one:
 - every pipeline result is a *pre-submission* skip — `status="skipped"` with no
   `order_id` and a reason other than `duplicate_ignored` (an empty result list
   counts as releasable);
-- or the pipeline raised **and** the per-fill `processed_trades` row is absent
-  or carries no `order_id`, i.e. it raised before its own claim/submit.
+- or the pipeline raised **and** the per-fill `processed_trades` row is
+  absent, i.e. it raised before reaching its own per-fill claim
+  (`try_claim_processed_trade`, taken before any submission attempt). Any
+  existing row — regardless of status or `order_id` — proves that claim was
+  already taken, so a raise after that point keeps the tx-level claim
+  (possible missed copy, never a double copy): `mark_processed_trade` never
+  writes an `order_id` onto the per-fill row, so the row's `order_id` cannot
+  distinguish "claimed" from "submitted".
 
 A `skipped/duplicate_ignored` result reports the opposite: the execution dedup,
 a `ReservationConflict`, or an already-persisted fill — the copy happened, so

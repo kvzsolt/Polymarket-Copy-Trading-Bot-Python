@@ -618,11 +618,19 @@ async def test_claim_kept_when_skip_is_reservation_conflict_without_order_id(
 async def test_claim_kept_when_exception_after_fill_persisted(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """N1: the pipeline raised *after* its own claim and an order id exists."""
+    """N5: the pipeline raised after its own per-fill claim (row present).
+
+    ``mark_processed_trade`` (``orchestrators/trade_pipeline.py``) never
+    writes ``order_id`` on the per-fill row, so a real post-claim row looks
+    exactly like this: ``status="executed"``, no ``order_id``. The row's mere
+    presence — not its ``order_id`` — is what proves the pipeline reached its
+    own claim, so the tx-level claim must stay kept.
+    """
     from orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
-    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id="ORD-LIVE-2")
+    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
+    repo.rows[_onchain_fill_key()]["status"] = "executed"
     pipeline = _Pipeline(fail_for={"u1"})
     adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
 
@@ -636,6 +644,41 @@ async def test_claim_kept_when_exception_after_fill_persisted(
     kept = [r.getMessage() for r in caplog.records if "cross_source_claim_kept" in r.getMessage()]
     assert len(kept) == 1
     assert "reason=pipeline_error" in kept[0]
+    assert "detail=per_fill_row_present" in kept[0]
+    assert "status=executed" in kept[0]
+    assert await _polling_claim(repo, polling_key) is False
+
+
+@pytest.mark.asyncio
+async def test_claim_kept_when_exception_after_pipeline_claim_in_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """N5: a per-fill row still ``in_progress`` also proves a claim was taken.
+
+    ``try_claim_processed_trade`` (``orchestrators/trade_pipeline.py:1761``)
+    inserts the per-fill row *before* any submission attempt. Any row at all
+    — regardless of status or ``order_id`` — means the pipeline's own claim
+    already exists, so an absent row is the only proof that nothing happened.
+    """
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
+    pipeline = _Pipeline(fail_for={"u1"})
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == []
+    assert repo.rows[polling_key]["status"] == CROSS_SOURCE_CLAIM_STATUS
+    assert not any("cross_source_claim_released" in r.getMessage() for r in caplog.records)
+    kept = [r.getMessage() for r in caplog.records if "cross_source_claim_kept" in r.getMessage()]
+    assert len(kept) == 1
+    assert "reason=pipeline_error" in kept[0]
+    assert "detail=per_fill_row_present" in kept[0]
+    assert "status=in_progress" in kept[0]
     assert await _polling_claim(repo, polling_key) is False
 
 
@@ -660,23 +703,6 @@ async def test_claim_released_when_exception_before_pipeline_claim(
     ]
     assert len(released) == 1
     assert "reason=pipeline_error" in released[0]
-    assert await _polling_claim(repo, polling_key) is True
-
-
-@pytest.mark.asyncio
-async def test_claim_released_when_exception_left_a_fill_row_without_order_id() -> None:
-    """A per-fill row still in ``in_progress`` with no order id is releasable."""
-    from orchestrators.trade_pipeline import build_trade_key
-
-    repo = _FakeOrdersRepo()
-    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
-    pipeline = _Pipeline(fail_for={"u1"})
-    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
-
-    await adapter(_signal(provisional=False))
-
-    polling_key = build_trade_key("u1", _LEADER, _polling_row())
-    assert repo.deleted == [polling_key]
     assert await _polling_claim(repo, polling_key) is True
 
 

@@ -350,17 +350,19 @@ class CrossSourceTradeClaimPolicy:
         *,
         reason: str,
     ) -> None:
-        """Release a claim only when the raising pipeline never submitted.
+        """Release a claim only when the pipeline never reached its own claim.
 
         An exception out of ``execute_trades`` is ambiguous: the pipeline may
         have raised before taking its own per-fill claim (nothing happened —
-        REST polling must be free to copy the fill), or after an order already
-        reached the venue (``append_fill_and_apply`` persists the fill and its
-        ``order_id`` before a non-duplicate integrity error is re-raised).
-        Releasing in the second case re-opens the cross-source double copy, so
-        the per-fill ``processed_trades`` row decides: absent, or present
-        without an ``order_id``, means nothing was submitted. Anything the
-        probe cannot prove keeps the claim (under-copy beats double-copy).
+        REST polling must be free to copy the fill), or any time after that
+        claim, including after an order already reached the venue. The
+        per-fill ``processed_trades`` row decides: only its absence proves
+        nothing was submitted, because the row is written by
+        ``try_claim_processed_trade`` *before* submission and
+        ``mark_processed_trade`` never adds an ``order_id`` to it, so an
+        existing row's ``order_id`` (or lack of one) proves nothing either
+        way. Anything the probe cannot prove also keeps the claim
+        (under-copy beats double-copy).
 
         Args:
             context: Trading context whose ``orders_repo`` holds both rows.
@@ -381,7 +383,26 @@ class CrossSourceTradeClaimPolicy:
         *,
         reason: str,
     ) -> bool:
-        """Whether the per-fill row proves no order reached the venue."""
+        """Whether the per-fill row proves the pipeline never reached its claim.
+
+        The pipeline's own per-fill claim (``try_claim_processed_trade`` in
+        ``orchestrators/trade_pipeline.py``, called before any submission
+        attempt) always writes the per-fill ``processed_trades`` row first.
+        ``mark_processed_trade`` — called after a successful submission —
+        never adds an ``order_id`` to that row, so an existing row's
+        ``order_id`` proves nothing about whether an order reached the venue;
+        only the row's *absence* proves the pipeline never got that far. Any
+        row at all, whatever its ``status``, therefore means "polling must
+        stay refused, fail closed" (under-copy beats double-copy).
+
+        Args:
+            context: Trading context whose ``orders_repo`` holds both rows.
+            decision: The decision returned by ``try_claim``.
+            reason: Short operator-facing reason for the release.
+
+        Returns:
+            ``True`` only when the per-fill probe proves the row is absent.
+        """
 
         user_id = str(getattr(context, "user_id", "") or "")
         probe = getattr(getattr(context, "orders_repo", None), "get_processed_trade", None)
@@ -406,16 +427,17 @@ class CrossSourceTradeClaimPolicy:
                 redact_error_detail(exc),
             )
             return False
-        order_id = str((row or {}).get("order_id") or "")
-        if not order_id:
+        if row is None:
             return True
+        status = str(row.get("status") or "")
         self._logger.info(
-            "cross_source_claim_kept | reason=%s user=%s key=%s order_id=%s — the pipeline "
-            "already reached the venue for this fill; polling stays refused",
+            "cross_source_claim_kept | reason=%s user=%s key=%s detail=per_fill_row_present "
+            "status=%s — the pipeline already reached its own claim for this fill; polling "
+            "stays refused",
             reason,
             user_id,
             decision.trade_key,
-            order_id,
+            status,
         )
         return False
 
