@@ -763,6 +763,98 @@ def test_pending_copy_confirmation_keys_are_overridable() -> None:
     assert onchain.pending_copy_auto_unwind_enabled is True
 
 
+def test_confirmed_source_defaults_to_mempool_reserved() -> None:
+    """The gen-2 mempool-reserved confirmed source stays the typed default."""
+    config = load_config(_overrides())
+    assert config.detection.onchain.confirmed_source == "mempool_reserved"
+
+
+def test_confirmed_source_default_is_pinned_in_the_packaged_base_yaml() -> None:
+    """The base detection.yml carries the knob so operators can discover it."""
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    assert packaged["onchain"]["confirmed_source"] == "mempool_reserved"
+    assert load_config(_overrides()).detection.onchain.confirmed_source == "mempool_reserved"
+
+
+def test_confirmed_source_rejects_unknown_values() -> None:
+    """A typo must fail at load time, not silently select a runtime."""
+    with pytest.raises(EnvValidationError, match="confirmed_source"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                confirmed_source="shadow_logs",
+            )
+        )
+
+
+def test_on_chain_confirmed_logs_only_accepts_generic_provider() -> None:
+    """logs_only runs on any plain eth_subscribe logs endpoint."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            confirmed_source="logs_only",
+            pending_tx_provider="generic",
+        )
+    )
+    assert config.detection.onchain.confirmed_source == "logs_only"
+    assert config.detection.onchain.pending_tx_provider == "generic"
+
+
+def test_on_chain_confirmed_logs_only_accepts_alchemy_provider() -> None:
+    """The operator's Alchemy WSS also serves the logs-only subscriptions."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            confirmed_source="logs_only",
+        )
+    )
+    assert config.detection.onchain.confirmed_source == "logs_only"
+    assert config.detection.onchain.pending_tx_provider == "alchemy"
+
+
+def test_on_chain_confirmed_logs_only_still_requires_a_wss_url() -> None:
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(_onchain_overrides("on_chain_confirmed", confirmed_source="logs_only"))
+
+
+def test_on_chain_confirmed_mempool_reserved_rejects_generic_provider() -> None:
+    """The gen-2 mempool-reserved runtime needs Alchemy-only subscriptions."""
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="generic",
+            )
+        )
+
+
+def test_on_chain_pending_with_logs_only_fails_closed() -> None:
+    """The pending mode is the Alchemy mempool subscription, full stop."""
+    with pytest.raises(EnvValidationError, match="confirmed_source=mempool_reserved"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                confirmed_source="logs_only",
+            )
+        )
+
+
+def test_on_chain_pending_with_generic_provider_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="generic",
+            )
+        )
+
+
 def test_invalid_detection_mode_rejected() -> None:
     """``DetectionConfig.mode`` is a ``Literal``: pydantic rejects an unknown
     mode before semantic validation, so ``detection_mode`` is total."""
@@ -792,19 +884,22 @@ def test_polling_mode_with_copy_tasks_enabled_is_allowed() -> None:
     assert config.detection.mode == "polling"
 
 
-def test_live_environment_selects_on_chain_pending() -> None:
-    """The checked-in live environment copies off the provisional mempool source.
+def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
+    """The checked-in live environment detects at block inclusion, near-zero CU.
 
-    ``on_chain_pending`` is the live default: it also pins the wider staleness
-    budget the mempool path needs and the pending-copy confirmation tracker
-    that reports a copy whose leader transaction never mines.
+    ``on_chain_confirmed`` + ``confirmed_source: logs_only`` subscribes to
+    topic-filtered ``logs`` only (OrderFilled topic0 + the followed leaders),
+    which sits inside the provider free tiers, keeps the Alchemy endpoint the
+    operator already runs, and leaves the mempool path one env var away
+    (``PMCOPY__DETECTION__MODE=on_chain_pending``).
     """
     from domain.detection import DetectionMode
 
     packaged = yaml.safe_load(
         (ROOT / "config" / "environments" / "live" / "detection.yml").read_text()
     )
-    assert packaged["mode"] == "on_chain_pending"
+    assert packaged["mode"] == "on_chain_confirmed"
+    assert packaged["onchain"]["confirmed_source"] == "logs_only"
 
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
@@ -818,8 +913,9 @@ def test_live_environment_selects_on_chain_pending() -> None:
 
     assert config.environment == "live"
     assert config.execution.trading_mode == "live"
-    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
     onchain = config.detection.onchain
+    assert onchain.confirmed_source == "logs_only"
     assert onchain.pending_tx_provider == "alchemy"
     assert onchain.pending_tx_max_signal_age_ms == 700
     assert onchain.pending_tx_detection_confidence_required == "pending_probable"
@@ -834,5 +930,5 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
     overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
-    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_pending requires"):
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
         load_config(overrides, environment="live")
