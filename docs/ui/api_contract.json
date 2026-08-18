@@ -1,0 +1,4518 @@
+{
+  "api_prefix": "/api/v1",
+  "authentication": {
+    "header": "Authorization: Bearer <credential>",
+    "principals": {
+      "operator": "Every permission, including every mutation.",
+      "viewer": "Every *.read permission plus telemetry.stream; no mutation."
+    },
+    "unauthenticated_status": 401,
+    "unauthorized_status": 403
+  },
+  "capabilities": [
+    "account_read",
+    "activity_read",
+    "ccxt_backend",
+    "detection_read",
+    "discovery_manual_run",
+    "discovery_read",
+    "fill_read",
+    "leader_read",
+    "live_stream",
+    "metrics_snapshot",
+    "on_chain_confirmed",
+    "on_chain_pending",
+    "order_read",
+    "pnl_read",
+    "portfolio_read",
+    "position_read",
+    "reentry_lock_read",
+    "reentry_lock_reset",
+    "reservation_read",
+    "risk_read",
+    "runtime_full_stop",
+    "runtime_pause_entries",
+    "runtime_read",
+    "runtime_resume_entries",
+    "settings_read",
+    "settings_write",
+    "task_bulk",
+    "task_create",
+    "task_delete",
+    "task_duplicate",
+    "task_pause",
+    "task_read",
+    "task_resume",
+    "task_update",
+    "telemetry_snapshot"
+  ],
+  "decimal_fields": {
+    "DiscoveryCandidateView": [
+      "score"
+    ],
+    "DiscoveryRosterView": [
+      "score"
+    ],
+    "FillView": [
+      "size",
+      "price",
+      "fee"
+    ],
+    "LeaderView": [
+      "score"
+    ],
+    "OrderView": [
+      "amount",
+      "price_limit",
+      "matched_total"
+    ],
+    "PnlPositionView": [
+      "size",
+      "avg_entry_price",
+      "cost_basis_usdc",
+      "mark_price",
+      "market_value_usdc",
+      "unrealized_pnl_usdc"
+    ],
+    "PnlSummaryView": [
+      "realized_pnl_usdc",
+      "total_invested_usdc",
+      "total_returned_usdc",
+      "max_drawdown_usdc"
+    ],
+    "PnlView": [
+      "cost_basis_usdc",
+      "unrealized_pnl_usdc"
+    ],
+    "PortfolioView": [
+      "cash_usdc",
+      "reserved_usdc",
+      "positions_value_usdc",
+      "equity_usdc",
+      "copyable_balance_usdc",
+      "unrealized_pnl_usdc"
+    ],
+    "PositionView": [
+      "size",
+      "avg_entry_price"
+    ],
+    "ReservationView": [
+      "amount"
+    ],
+    "RiskHeadroomView": [
+      "cap_notional_usdc",
+      "equity_usdc",
+      "free_cash_usdc",
+      "daily_loss_usdc"
+    ],
+    "RiskPolicyView": [
+      "max_market_exposure_usdc",
+      "max_category_exposure_usdc",
+      "max_leader_exposure_usdc",
+      "max_daily_drawdown_pct",
+      "reserve_pct",
+      "reserve_floor_usdc",
+      "hard_cap_pct",
+      "hard_cap_ceiling_usdc"
+    ],
+    "RiskStateView": [
+      "day_start_equity_usdc"
+    ],
+    "TaskMarketFilterView": [
+      "min_liquidity_usdc",
+      "min_volume_24h_usdc",
+      "max_days_until_close"
+    ],
+    "TaskPriceView": [
+      "min_price",
+      "max_price",
+      "offset",
+      "max_slippage_percent"
+    ],
+    "TaskSizingView": [
+      "percentage",
+      "fixed_amount",
+      "trade_multiplier",
+      "weighted_multiplier",
+      "buy_min_amount",
+      "buy_max_amount",
+      "copyable_balance_percent"
+    ],
+    "TaskSpendView": [
+      "max_total",
+      "max_daily",
+      "max_per_market"
+    ],
+    "TaskTriggerView": [
+      "min_notional",
+      "max_notional"
+    ]
+  },
+  "enums": {
+    "ControlPlaneReason": [
+      "invalid_request",
+      "invalid_page",
+      "invalid_decimal_string",
+      "not_found",
+      "conflict",
+      "revision_mismatch",
+      "task_deleted",
+      "task_runtime_unavailable",
+      "bulk_limit_exceeded",
+      "duplicate_bulk_target",
+      "bulk_failed",
+      "portfolio_unavailable",
+      "portfolio_stale",
+      "discovery_busy",
+      "discovery_unavailable",
+      "full_stop_active",
+      "runtime_unavailable",
+      "settings_path_forbidden",
+      "settings_symlink_forbidden",
+      "settings_invalid",
+      "settings_secret_forbidden",
+      "settings_unavailable",
+      "audit_unavailable",
+      "internal_error"
+    ],
+    "LockResetOutcome": [
+      "reset",
+      "not_found",
+      "revision_mismatch"
+    ],
+    "TaskAction": [
+      "pause",
+      "resume",
+      "delete"
+    ]
+  },
+  "envelope": {
+    "error": {
+      "error": {
+        "code": "string",
+        "correlation_id": "string",
+        "message": "string"
+      }
+    },
+    "notes": "Every success body is {data, correlation_id}; every failure body is {error:{code,message,correlation_id}}. The same id is echoed in the X-Correlation-ID response header, and a client may propose one with an X-Correlation-ID request header.",
+    "success": {
+      "correlation_id": "string",
+      "data": "<response>"
+    }
+  },
+  "errors": {
+    "application": {
+      "audit_unavailable": {
+        "http_status": 503,
+        "message": "The audit store is unavailable."
+      },
+      "bulk_failed": {
+        "http_status": 409,
+        "message": "The atomic bulk command was not applied."
+      },
+      "bulk_limit_exceeded": {
+        "http_status": 400,
+        "message": "Bulk commands support between 1 and 100 items."
+      },
+      "conflict": {
+        "http_status": 409,
+        "message": "The requested change conflicts with current state."
+      },
+      "discovery_busy": {
+        "http_status": 409,
+        "message": "A discovery run is already pending."
+      },
+      "discovery_unavailable": {
+        "http_status": 503,
+        "message": "Discovery cannot accept work right now."
+      },
+      "duplicate_bulk_target": {
+        "http_status": 400,
+        "message": "A bulk command contains a duplicate target."
+      },
+      "full_stop_active": {
+        "http_status": 409,
+        "message": "Entry resume is blocked while full stop is active."
+      },
+      "internal_error": {
+        "http_status": 500,
+        "message": "The control plane could not complete the request."
+      },
+      "invalid_decimal_string": {
+        "http_status": 400,
+        "message": "A financial value must be a decimal string."
+      },
+      "invalid_page": {
+        "http_status": 400,
+        "message": "The requested page is invalid."
+      },
+      "invalid_request": {
+        "http_status": 400,
+        "message": "The request is invalid."
+      },
+      "not_found": {
+        "http_status": 404,
+        "message": "The requested resource was not found."
+      },
+      "portfolio_stale": {
+        "http_status": 503,
+        "message": "The cached portfolio snapshot is stale."
+      },
+      "portfolio_unavailable": {
+        "http_status": 503,
+        "message": "A cached portfolio snapshot is unavailable."
+      },
+      "revision_mismatch": {
+        "http_status": 409,
+        "message": "The resource revision no longer matches."
+      },
+      "runtime_unavailable": {
+        "http_status": 503,
+        "message": "Runtime control is unavailable."
+      },
+      "settings_invalid": {
+        "http_status": 400,
+        "message": "The settings document is invalid."
+      },
+      "settings_path_forbidden": {
+        "http_status": 400,
+        "message": "The settings path is not operator-editable."
+      },
+      "settings_secret_forbidden": {
+        "http_status": 400,
+        "message": "Secrets cannot cross the settings boundary."
+      },
+      "settings_symlink_forbidden": {
+        "http_status": 400,
+        "message": "Symbolic links are forbidden for settings."
+      },
+      "settings_unavailable": {
+        "http_status": 503,
+        "message": "Settings storage is unavailable."
+      },
+      "task_deleted": {
+        "http_status": 409,
+        "message": "A deleted task cannot be changed."
+      },
+      "task_runtime_unavailable": {
+        "http_status": 503,
+        "message": "The task cannot be activated by the current runtime."
+      }
+    },
+    "transport": {
+      "authentication_required": {
+        "http_status": 401,
+        "meaning": "No Authorization header on an authenticated deployment."
+      },
+      "http_error": {
+        "http_status": null,
+        "meaning": "Generic transport failure; the HTTP status carries the meaning."
+      },
+      "invalid_bearer_token": {
+        "http_status": 401,
+        "meaning": "Malformed or unknown bearer credential."
+      },
+      "method_not_allowed": {
+        "http_status": 405,
+        "meaning": "Endpoint exists but not for this method."
+      },
+      "not_found": {
+        "http_status": 404,
+        "meaning": "No such endpoint, or that capability is not composed."
+      },
+      "origin_not_allowed": {
+        "http_status": 403,
+        "meaning": "Origin header outside the configured CORS allowlist."
+      },
+      "payload_too_large": {
+        "http_status": 413,
+        "meaning": "Request body exceeds request_max_bytes."
+      },
+      "permission_denied": {
+        "http_status": 403,
+        "meaning": "Authenticated principal lacks this route's permission."
+      },
+      "rate_limited": {
+        "http_status": 429,
+        "meaning": "Per subject:action command budget exhausted; see Retry-After."
+      },
+      "telemetry_unavailable": {
+        "http_status": 503,
+        "meaning": "Telemetry stream unavailable or shutting down."
+      }
+    }
+  },
+  "limits": {
+    "bulk_items_max": 100,
+    "bulk_items_min": 1,
+    "command_rate_limit": 30,
+    "command_rate_scope": "subject:action",
+    "command_rate_window_seconds": 60.0,
+    "cursor_max_chars": 512,
+    "page_limit_default": 50,
+    "page_limit_max": 100,
+    "page_limit_min": 1,
+    "request_max_bytes": 262144,
+    "telemetry_limit_default": 100,
+    "telemetry_limit_max": 1000,
+    "telemetry_limit_min": 0,
+    "websocket_heartbeat_seconds": 30.0,
+    "websocket_max_message_bytes": 4096,
+    "websocket_queue_capacity": 128
+  },
+  "permissions": {
+    "all": [
+      "activity.read",
+      "discovery.read",
+      "discovery.run",
+      "fill.read",
+      "leader.read",
+      "lock.read",
+      "lock.reset",
+      "order.read",
+      "portfolio.read",
+      "position.read",
+      "reservation.read",
+      "risk.read",
+      "runtime.read",
+      "runtime.write",
+      "settings.read",
+      "settings.write",
+      "system.read",
+      "task.read",
+      "task.write",
+      "telemetry.read",
+      "telemetry.stream"
+    ],
+    "viewer": [
+      "activity.read",
+      "discovery.read",
+      "fill.read",
+      "leader.read",
+      "lock.read",
+      "order.read",
+      "portfolio.read",
+      "position.read",
+      "reservation.read",
+      "risk.read",
+      "runtime.read",
+      "settings.read",
+      "system.read",
+      "task.read",
+      "telemetry.read",
+      "telemetry.stream"
+    ]
+  },
+  "routes": [
+    {
+      "action": null,
+      "body": [],
+      "capability": "account_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/accounts",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "AccountView[]",
+      "status": 200,
+      "summary": "Follower accounts this process composed, projected per request."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "activity_read",
+      "method": "GET",
+      "optional_query": [
+        "follower_account",
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/activity",
+      "permission": "activity.read",
+      "required_query": [],
+      "response": "Page<ActivityView>",
+      "status": 200,
+      "summary": "Sanitized operator activity, optionally follower-scoped."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/capabilities",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "CapabilitiesView",
+      "status": 200,
+      "summary": "Capabilities this exact composition backs; drives what the UI shows."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "detection_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/detection",
+      "permission": "runtime.read",
+      "required_query": [],
+      "response": "DetectionStatusView",
+      "status": 200,
+      "summary": "Local detection-source counters and observable WSS health."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "discovery_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/discovery/candidates",
+      "permission": "discovery.read",
+      "required_query": [],
+      "response": "Page<DiscoveryCandidateView>",
+      "status": 200,
+      "summary": "Evaluated discovery candidates and their scores."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "discovery_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/discovery/cycles",
+      "permission": "discovery.read",
+      "required_query": [],
+      "response": "Page<DiscoveryCycleView>",
+      "status": 200,
+      "summary": "Completed discovery cycles."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "discovery_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/discovery/roster",
+      "permission": "discovery.read",
+      "required_query": [],
+      "response": "Page<DiscoveryRosterView>",
+      "status": 200,
+      "summary": "Active and inactive discovery roster entries."
+    },
+    {
+      "action": "discovery.run",
+      "body": [
+        "force"
+      ],
+      "capability": "discovery_manual_run",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/discovery/run",
+      "permission": "discovery.run",
+      "required_query": [],
+      "response": "DiscoveryRunReceipt",
+      "status": 202,
+      "summary": "Queue at most one discovery cycle and return immediately."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "discovery_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/discovery/status",
+      "permission": "discovery.read",
+      "required_query": [],
+      "response": "DiscoveryStatusView",
+      "status": 200,
+      "summary": "Current discovery scheduler state."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "fill_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/fills",
+      "permission": "fill.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<FillView>",
+      "status": 200,
+      "summary": "Durable fills, newest first, for one follower account."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "leader_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/leaders",
+      "permission": "leader.read",
+      "required_query": [],
+      "response": "LeaderView[]",
+      "status": 200,
+      "summary": "Merged leader identities, capped at 500 rows."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "reentry_lock_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/locks",
+      "permission": "lock.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<ReentryLockView>",
+      "status": 200,
+      "summary": "Protective-exit reentry locks for one follower account."
+    },
+    {
+      "action": "lock.reset",
+      "body": [
+        "follower_account",
+        "task_id",
+        "leader_wallet",
+        "market_id",
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "reentry_lock_reset",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/locks/reset",
+      "permission": "lock.reset",
+      "required_query": [],
+      "response": "LockResetResult",
+      "status": 200,
+      "summary": "Reset one reentry lock by its complete identity; on the {lock_id} spelling that path segment must equal the body identity."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "metrics_snapshot",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/metrics/snapshot",
+      "permission": "telemetry.read",
+      "required_query": [],
+      "response": "MetricsSnapshot",
+      "status": 200,
+      "summary": "Counters, gauges, and histograms without the event ring."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "order_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/orders",
+      "permission": "order.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<OrderView>",
+      "status": 200,
+      "summary": "Durable orders for one follower account."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "order_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/orders/{order_id}",
+      "permission": "order.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "OrderView",
+      "status": 200,
+      "summary": "One durable order; still follower-scoped by query parameter."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "pnl_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/pnl",
+      "permission": "portfolio.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "PnlView",
+      "status": 200,
+      "summary": "Session realized ledger plus honestly marked open positions."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "portfolio_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/portfolio",
+      "permission": "portfolio.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "PortfolioView",
+      "status": 200,
+      "summary": "Cached portfolio snapshot; never triggers a venue call."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "position_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/positions",
+      "permission": "position.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<PositionView>",
+      "status": 200,
+      "summary": "Open positions for one follower account."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "position_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/positions/{position_id}",
+      "permission": "position.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "PositionView",
+      "status": 200,
+      "summary": "One open position; still follower-scoped by query parameter."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/readiness",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "ReadinessView",
+      "status": 200,
+      "summary": "Readiness half of the system status projection."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "reentry_lock_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/reentry-locks",
+      "permission": "lock.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<ReentryLockView>",
+      "status": 200,
+      "summary": "Alias of GET /locks."
+    },
+    {
+      "action": "lock.reset",
+      "body": [
+        "follower_account",
+        "task_id",
+        "leader_wallet",
+        "market_id",
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "reentry_lock_reset",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/reentry-locks/{lock_id}/reset",
+      "permission": "lock.reset",
+      "required_query": [],
+      "response": "LockResetResult",
+      "status": 200,
+      "summary": "Alias of POST /locks/reset."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "reservation_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/reservations",
+      "permission": "reservation.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<ReservationView>",
+      "status": 200,
+      "summary": "Collateral reservations for one follower account."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "risk_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/risk",
+      "permission": "risk.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "RiskStateView",
+      "status": 200,
+      "summary": "Configured policy, active blocks, recent triggers, and headroom."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "runtime_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/runtime",
+      "permission": "runtime.read",
+      "required_query": [],
+      "response": "RuntimeView",
+      "status": 200,
+      "summary": "Entry-control safety state, worker count, and queue depth."
+    },
+    {
+      "action": "runtime.full_stop",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_full_stop",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/full-stop",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Halt entries and protective exits, then cancel resting orders."
+    },
+    {
+      "action": "runtime.pause",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_pause_entries",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/pause",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Pause new entries while protective exits keep running."
+    },
+    {
+      "action": "runtime.resume",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_resume_entries",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/resume",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Resume entries; cannot override an active full stop."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "runtime_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/runtime/safety",
+      "permission": "runtime.read",
+      "required_query": [],
+      "response": "RuntimeView",
+      "status": 200,
+      "summary": "Alias of GET /runtime."
+    },
+    {
+      "action": "runtime.full_stop",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_full_stop",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/safety/full-stop",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Alias of POST /runtime/full-stop."
+    },
+    {
+      "action": "runtime.pause",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_pause_entries",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/safety/pause-entries",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Alias of POST /runtime/pause."
+    },
+    {
+      "action": "runtime.resume",
+      "body": [
+        "expected_revision",
+        "reason_code"
+      ],
+      "capability": "runtime_resume_entries",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/runtime/safety/resume-entries",
+      "permission": "runtime.write",
+      "required_query": [],
+      "response": "EntryControlState",
+      "status": 200,
+      "summary": "Alias of POST /runtime/resume."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "settings_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/settings",
+      "permission": "settings.read",
+      "required_query": [],
+      "response": "SettingsDocument[]",
+      "status": 200,
+      "summary": "Every operator-editable settings section and its revision."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "settings_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/settings/{environment}/{section}",
+      "permission": "settings.read",
+      "required_query": [],
+      "response": "SettingsDocument",
+      "status": 200,
+      "summary": "One settings section in an explicitly named environment."
+    },
+    {
+      "action": "settings.write",
+      "body": [
+        "values",
+        "expected_revision"
+      ],
+      "capability": "settings_write",
+      "method": "PUT",
+      "optional_query": [],
+      "path": "/api/v1/settings/{environment}/{section}",
+      "permission": "settings.write",
+      "required_query": [],
+      "response": "SettingsWriteResult",
+      "status": 200,
+      "summary": "Replace one settings section in an explicitly named environment."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "settings_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/settings/{section}",
+      "permission": "settings.read",
+      "required_query": [],
+      "response": "SettingsDocument",
+      "status": 200,
+      "summary": "One settings section in this process's own environment."
+    },
+    {
+      "action": "settings.write",
+      "body": [
+        "values",
+        "expected_revision"
+      ],
+      "capability": "settings_write",
+      "method": "PUT",
+      "optional_query": [],
+      "path": "/api/v1/settings/{section}",
+      "permission": "settings.write",
+      "required_query": [],
+      "response": "SettingsWriteResult",
+      "status": 200,
+      "summary": "Replace one section in this process's environment; restart-required."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/status",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "SystemStatusView",
+      "status": 200,
+      "summary": "Process identity paired with authoritative readiness."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "live_stream",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/stream",
+      "permission": "telemetry.stream",
+      "required_query": [],
+      "response": "WebSocket",
+      "status": 200,
+      "summary": "Authenticated telemetry WebSocket upgrade."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/system",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "SystemView",
+      "status": 200,
+      "summary": "Process identity, environment, trading mode, and uptime."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/system/capabilities",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "CapabilitiesView",
+      "status": 200,
+      "summary": "Alias of GET /capabilities."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/system/readiness",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "ReadinessView",
+      "status": 200,
+      "summary": "Alias of GET /readiness."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": null,
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/system/status",
+      "permission": "system.read",
+      "required_query": [],
+      "response": "SystemStatusView",
+      "status": 200,
+      "summary": "Alias of GET /status."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "task_read",
+      "method": "GET",
+      "optional_query": [
+        "limit",
+        "cursor"
+      ],
+      "path": "/api/v1/tasks",
+      "permission": "task.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "Page<TaskView>",
+      "status": 200,
+      "summary": "Copy tasks for one follower account."
+    },
+    {
+      "action": "task.create",
+      "body": [
+        "task"
+      ],
+      "capability": "task_create",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/tasks",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 201,
+      "summary": "Create one paused copy task."
+    },
+    {
+      "action": "task.bulk",
+      "body": [
+        "items"
+      ],
+      "capability": "task_bulk",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/tasks/bulk",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "BulkTaskResult",
+      "status": 200,
+      "summary": "Apply one all-or-none batch of 1..100 versioned task actions."
+    },
+    {
+      "action": "task.delete",
+      "body": [
+        "expected_version"
+      ],
+      "capability": "task_delete",
+      "method": "DELETE",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 200,
+      "summary": "Soft-delete one task; positions are never closed implicitly."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "task_read",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}",
+      "permission": "task.read",
+      "required_query": [],
+      "response": "TaskDetailView",
+      "status": 200,
+      "summary": "One task summary plus its complete typed configuration."
+    },
+    {
+      "action": "task.update",
+      "body": [
+        "task",
+        "expected_version"
+      ],
+      "capability": "task_update",
+      "method": "PATCH",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 200,
+      "summary": "Same handler and same complete body as PUT /tasks/{task_id}."
+    },
+    {
+      "action": "task.update",
+      "body": [
+        "task",
+        "expected_version"
+      ],
+      "capability": "task_update",
+      "method": "PUT",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 200,
+      "summary": "Replace one task configuration under its expected version."
+    },
+    {
+      "action": "task.duplicate",
+      "body": [
+        "new_task_id",
+        "new_name"
+      ],
+      "capability": "task_duplicate",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}/duplicate",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 201,
+      "summary": "Duplicate one task into a new paused task."
+    },
+    {
+      "action": "task.pause",
+      "body": [
+        "expected_version"
+      ],
+      "capability": "task_pause",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}/pause",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 200,
+      "summary": "Pause one task under its expected version."
+    },
+    {
+      "action": "task.resume",
+      "body": [
+        "expected_version"
+      ],
+      "capability": "task_resume",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/tasks/{task_id}/resume",
+      "permission": "task.write",
+      "required_query": [],
+      "response": "TaskView",
+      "status": 200,
+      "summary": "Resume one task; fails closed without a live execution binding."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "telemetry_snapshot",
+      "method": "GET",
+      "optional_query": [
+        "limit"
+      ],
+      "path": "/api/v1/telemetry",
+      "permission": "telemetry.read",
+      "required_query": [],
+      "response": "TelemetrySnapshot",
+      "status": 200,
+      "summary": "Bounded newest-first event history plus the metrics block."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "telemetry_snapshot",
+      "method": "GET",
+      "optional_query": [
+        "limit"
+      ],
+      "path": "/api/v1/telemetry/snapshot",
+      "permission": "telemetry.read",
+      "required_query": [],
+      "response": "TelemetrySnapshot",
+      "status": 200,
+      "summary": "Alias of GET /telemetry."
+    }
+  ],
+  "schema_version": 1,
+  "telemetry": {
+    "enums": {
+      "AmbiguousOperation": [
+        "order_submission",
+        "order_cancel",
+        "fill_reconciliation"
+      ],
+      "DiscoveryOutcome": [
+        "request",
+        "failure",
+        "schema",
+        "completed"
+      ],
+      "FailureComponent": [
+        "detection",
+        "normalization",
+        "worker",
+        "copy_decision",
+        "sizing",
+        "risk",
+        "execution",
+        "reconciliation",
+        "protective_exit",
+        "discovery",
+        "wss",
+        "runtime",
+        "telemetry"
+      ],
+      "FillOutcome": [
+        "observed",
+        "duplicate"
+      ],
+      "LeaderOutcome": [
+        "received",
+        "dedup",
+        "pending",
+        "promoted",
+        "demoted",
+        "retracted"
+      ],
+      "LockOutcome": [
+        "created",
+        "blocked",
+        "reset"
+      ],
+      "OrderOutcome": [
+        "submitted",
+        "canceled",
+        "rejected",
+        "not_fillable",
+        "ambiguous"
+      ],
+      "ProtectiveOutcome": [
+        "triggered",
+        "filled"
+      ],
+      "ReconciliationOutcome": [
+        "run",
+        "drift"
+      ],
+      "RiskOutcome": [
+        "approved",
+        "rejected",
+        "limit_reached",
+        "exit_triggered"
+      ],
+      "RosterOutcome": [
+        "updated",
+        "empty",
+        "unchanged"
+      ],
+      "RuntimeOutcome": [
+        "started",
+        "ready",
+        "degraded",
+        "stopping",
+        "stopped"
+      ],
+      "SkipReason": [
+        "duplicate",
+        "risk_rejected",
+        "task_inactive",
+        "schedule_closed",
+        "market_not_allowed",
+        "reentry_locked",
+        "budget_exhausted",
+        "insufficient_balance",
+        "below_minimum_size",
+        "stale_market_data",
+        "price_limit",
+        "capacity",
+        "finality_retracted",
+        "unsupported",
+        "paper_only",
+        "other"
+      ],
+      "TaskOutcome": [
+        "enqueued",
+        "admitted",
+        "started",
+        "completed",
+        "canceled",
+        "failed"
+      ],
+      "TelemetryCategory": [
+        "leader",
+        "task",
+        "trade",
+        "fill",
+        "skip",
+        "failure",
+        "ambiguous",
+        "protective",
+        "lock",
+        "reconciliation",
+        "discovery",
+        "roster",
+        "wss",
+        "runtime",
+        "risk"
+      ],
+      "TelemetryEventType": [
+        "leader_signal",
+        "task_decision",
+        "trade_submitted",
+        "trade_fill",
+        "trade_skip",
+        "trade_failure",
+        "ambiguous_order",
+        "protective_exit",
+        "reentry_lock",
+        "reconciliation",
+        "discovery_cycle",
+        "leader_promoted",
+        "leader_demoted",
+        "wss_state",
+        "runtime_state",
+        "risk_state"
+      ],
+      "TelemetryProducer": [
+        "detection",
+        "normalization",
+        "worker",
+        "copy_decision",
+        "sizing",
+        "risk",
+        "execution",
+        "reconciliation",
+        "protective_exit",
+        "discovery",
+        "wss",
+        "runtime",
+        "control_plane"
+      ],
+      "TelemetrySeverity": [
+        "debug",
+        "info",
+        "notice",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "TradeOutcome": [
+        "candidate_evaluated",
+        "submitted",
+        "executed",
+        "partial",
+        "skipped",
+        "failed",
+        "ambiguous"
+      ],
+      "TradeSide": [
+        "BUY",
+        "SELL"
+      ],
+      "WssOutcome": [
+        "connected",
+        "disconnected",
+        "reconnected",
+        "stalled"
+      ]
+    },
+    "event": {
+      "doc": "Immutable envelope ordered independently for each producer.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "event_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "event_type",
+          "nullable": false,
+          "type": "TelemetryEventType"
+        },
+        {
+          "decimal": false,
+          "name": "timestamp",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "severity",
+          "nullable": false,
+          "type": "TelemetrySeverity"
+        },
+        {
+          "decimal": false,
+          "name": "correlation_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "payload",
+          "nullable": false,
+          "type": "TelemetryPayload"
+        },
+        {
+          "decimal": false,
+          "name": "producer",
+          "nullable": false,
+          "type": "TelemetryProducer"
+        },
+        {
+          "decimal": false,
+          "name": "sequence",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "event_type_by_payload": {
+      "AmbiguousEvent": "ambiguous_order",
+      "DiscoveryEvent": "discovery_cycle",
+      "FailureEvent": "trade_failure",
+      "FillEvent": "trade_fill",
+      "LeaderEvent": {
+        "dedup": "leader_signal",
+        "demoted": "leader_demoted",
+        "pending": "leader_signal",
+        "promoted": "leader_promoted",
+        "received": "leader_signal",
+        "retracted": "leader_signal"
+      },
+      "LockEvent": "reentry_lock",
+      "ProtectiveExitEvent": "protective_exit",
+      "ReconciliationEvent": "reconciliation",
+      "RiskEvent": "risk_state",
+      "RosterEvent": {
+        "empty": "leader_demoted",
+        "unchanged": "leader_promoted",
+        "updated": "leader_promoted"
+      },
+      "RuntimeEvent": "runtime_state",
+      "SkipEvent": "trade_skip",
+      "TaskEvent": "task_decision",
+      "TradeEvent": "trade_submitted",
+      "WssEvent": "wss_state"
+    },
+    "payloads": {
+      "AmbiguousEvent": {
+        "category": "ambiguous",
+        "doc": "Describe an operation that requires reconciliation before retry.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "operation",
+            "nullable": false,
+            "type": "AmbiguousOperation"
+          },
+          {
+            "decimal": false,
+            "name": "order_ref",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "reconciliation_required",
+            "nullable": false,
+            "type": "boolean"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "DiscoveryEvent": {
+        "category": "discovery",
+        "doc": "Describe a Falcon discovery request or bounded failure class.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "DiscoveryOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "candidate_count",
+            "nullable": false,
+            "type": "integer"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "FailureEvent": {
+        "category": "failure",
+        "doc": "Describe a failure using only a bounded code, never raw exception text.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "component",
+            "nullable": false,
+            "type": "FailureComponent"
+          },
+          {
+            "decimal": false,
+            "name": "code",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "retryable",
+            "nullable": false,
+            "type": "boolean"
+          },
+          {
+            "decimal": false,
+            "name": "order_outcome",
+            "nullable": true,
+            "type": "OrderOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "FillEvent": {
+        "category": "fill",
+        "doc": "Describe one observed or duplicate fill.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "FillOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "order_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "fill_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "LeaderEvent": {
+        "category": "leader",
+        "doc": "Describe one safe canonical leader-event transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "LeaderOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "leader_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "source",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "LockEvent": {
+        "category": "lock",
+        "doc": "Describe a durable reentry-lock transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "LockOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "lock_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "ProtectiveExitEvent": {
+        "category": "protective",
+        "doc": "Describe a task protective-exit transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "ProtectiveOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "task_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "ReconciliationEvent": {
+        "category": "reconciliation",
+        "doc": "Describe a reconciliation run or detected drift.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "ReconciliationOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "affected_count",
+            "nullable": false,
+            "type": "integer"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "RiskEvent": {
+        "category": "risk",
+        "doc": "Describe a risk decision without monetary or credential payloads.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "RiskOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "task_ref",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "RosterEvent": {
+        "category": "roster",
+        "doc": "Describe a dynamic leader-roster transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "RosterOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "active_count",
+            "nullable": false,
+            "type": "integer"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "RuntimeEvent": {
+        "category": "runtime",
+        "doc": "Describe a top-level runtime lifecycle transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "RuntimeOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "SkipEvent": {
+        "category": "skip",
+        "doc": "Describe a bounded, operator-visible copy skip.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "reason",
+            "nullable": false,
+            "type": "SkipReason"
+          },
+          {
+            "decimal": false,
+            "name": "task_ref",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "TaskEvent": {
+        "category": "task",
+        "doc": "Describe one copy-task lifecycle transition.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "TaskOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "task_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "leader_ref",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "TradeEvent": {
+        "category": "trade",
+        "doc": "Describe one copy-trade outcome without raw venue data.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "TradeOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "task_ref",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "side",
+            "nullable": false,
+            "type": "TradeSide"
+          },
+          {
+            "decimal": false,
+            "name": "order_ref",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "order_outcome",
+            "nullable": true,
+            "type": "OrderOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      },
+      "WssEvent": {
+        "category": "wss",
+        "doc": "Describe a bounded WebSocket lifecycle event.",
+        "fields": [
+          {
+            "decimal": false,
+            "name": "outcome",
+            "nullable": false,
+            "type": "WssOutcome"
+          },
+          {
+            "decimal": false,
+            "name": "stream",
+            "nullable": false,
+            "type": "string"
+          },
+          {
+            "decimal": false,
+            "name": "category",
+            "nullable": false,
+            "type": "TelemetryCategory"
+          }
+        ]
+      }
+    },
+    "wss_stream_names": [
+      "leader",
+      "market",
+      "user"
+    ]
+  },
+  "views": {
+    "AccountView": {
+      "doc": "One composed follower account and the leaders bound to it.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "wallet_address",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_count",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "ActivityView": {
+      "doc": "Append-only operator activity projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "activity_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "action",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "target_type",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "target_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "outcome",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "occurred_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "AuditEvent": {
+      "doc": "Minimal append-only audit event with allowlisted scalar detail.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "event_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "action",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "target_type",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "target_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "outcome",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "occurred_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "details",
+          "nullable": false,
+          "type": "array<array<string | string>>"
+        }
+      ]
+    },
+    "BulkTaskCommand": {
+      "doc": "All-or-none task mutation batch validated before persistence.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "items",
+          "nullable": false,
+          "type": "array<BulkTaskItem>"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "BulkTaskItem": {
+      "doc": "One versioned item inside an atomic bulk request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "action",
+          "nullable": false,
+          "type": "TaskAction"
+        },
+        {
+          "decimal": false,
+          "name": "expected_version",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "BulkTaskResult": {
+      "doc": "Successful atomic task mutation result.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "tasks",
+          "nullable": false,
+          "type": "array<TaskView>"
+        },
+        {
+          "decimal": false,
+          "name": "atomic",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "CapabilitiesView": {
+      "doc": "Explicitly composed control-plane capabilities.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "capabilities",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "DetectionSourceStatusView": {
+      "doc": "Local signal counters for exactly one detection source.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "source",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "signals_total",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "deduplicated_total",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "last_signal_at",
+          "nullable": true,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "DetectionStatusView": {
+      "doc": "Detection-source health assembled from local counters and readiness.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "sources",
+          "nullable": false,
+          "type": "array<DetectionSourceStatusView>"
+        },
+        {
+          "decimal": false,
+          "name": "leader_ws_connected",
+          "nullable": true,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "market_ws_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "user_ws_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "market_ws_reconnects",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "user_ws_reconnects",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "pending_confirmations",
+          "nullable": true,
+          "type": "PendingConfirmationStatsView"
+        },
+        {
+          "decimal": false,
+          "name": "watched_leader_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "DiscoveryCandidateView": {
+      "doc": "Provider-safe candidate score projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "score",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "accepted",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "cycle_id",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "DiscoveryCycleView": {
+      "doc": "Discovery-cycle state without provider payloads or raw errors.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "cycle_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "started_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "completed_at",
+          "nullable": true,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "candidate_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "kept_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "config_revision",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "DiscoveryRosterView": {
+      "doc": "Active or inactive discovery roster projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "tier",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "active",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "score",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "updated_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "DiscoveryRunCommand": {
+      "doc": "Asynchronous discovery job request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "force",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "DiscoveryRunReceipt": {
+      "doc": "Immediate queue acknowledgement for a discovery request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "run_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "accepted",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "DiscoveryStatusView": {
+      "doc": "Current discovery scheduler state without provider error material.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "state",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "current_run_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "last_cycle_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "EntryControlState": {
+      "doc": "Durable global entry-pause and full-stop state.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "entries_paused",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "full_stop",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "updated_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "updated_by",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "FillView": {
+      "doc": "One durable fill projection using exact decimal strings.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "fill_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "order_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "condition_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "token_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "side",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "size",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "price",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "fee",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "filled_at",
+          "nullable": true,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "LeaderView": {
+      "doc": "One leader identity merged from configuration, roster, and counters.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "configured",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "monitored",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "tier",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "score",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "signals_total",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "deduplicated_total",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "last_signal_at",
+          "nullable": true,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "trade_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "open_position_count",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "LockResetCommand": {
+      "doc": "Versioned manual reset for one protective re-entry lock.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "market_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "expected_revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "LockResetResult": {
+      "doc": "Result of a lock reset attempt.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "outcome",
+          "nullable": false,
+          "type": "LockResetOutcome"
+        },
+        {
+          "decimal": false,
+          "name": "released_at",
+          "nullable": true,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "OrderView": {
+      "doc": "Sanitized order projection without raw request or response payloads.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "idempotency_key",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "order_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "side",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "amount",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "price_limit",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "matched_total",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "created_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "updated_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "Page": {
+      "doc": "Immutable query page with an optional opaque continuation cursor.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "items",
+          "nullable": false,
+          "type": "array<T>"
+        },
+        {
+          "decimal": false,
+          "name": "next_cursor",
+          "nullable": true,
+          "type": "string"
+        }
+      ]
+    },
+    "PageRequest": {
+      "doc": "Bounded opaque-cursor pagination request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "limit",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "cursor",
+          "nullable": true,
+          "type": "string"
+        }
+      ]
+    },
+    "PendingConfirmationStatsView": {
+      "doc": "Bounded state of the provisional-copy confirmation tracker.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "tracked",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "running",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "deadline_seconds",
+          "nullable": false,
+          "type": "number"
+        },
+        {
+          "decimal": false,
+          "name": "max_tracked",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "PnlPositionView": {
+      "doc": "One open position valued only from a fresh cached WSS mid quote.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "condition_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "token_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "size",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "avg_entry_price",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "cost_basis_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "mark_price",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "market_value_usdc",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "unrealized_pnl_usdc",
+          "nullable": true,
+          "type": "string"
+        }
+      ]
+    },
+    "PnlSummaryView": {
+      "doc": "Session-scoped realized ledger metrics for one follower account.",
+      "fields": [
+        {
+          "decimal": true,
+          "name": "realized_pnl_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "total_invested_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "total_returned_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_drawdown_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "trade_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "buy_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "sell_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "win_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "loss_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "session_started_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "PnlView": {
+      "doc": "Realized session PnL paired with honestly marked open positions.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "realized",
+          "nullable": false,
+          "type": "PnlSummaryView"
+        },
+        {
+          "decimal": false,
+          "name": "positions",
+          "nullable": false,
+          "type": "array<PnlPositionView>"
+        },
+        {
+          "decimal": false,
+          "name": "position_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "truncated",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "cost_basis_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "unrealized_pnl_usdc",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "unrealized_basis",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "marked_position_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "PortfolioView": {
+      "doc": "Cached portfolio snapshot using exact decimal strings.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "cash_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "reserved_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "positions_value_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "equity_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "stale",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "copyable_balance_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "position_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "valuation_basis",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "unrealized_pnl_usdc",
+          "nullable": true,
+          "type": "string"
+        }
+      ]
+    },
+    "PositionView": {
+      "doc": "Open-position projection with decimal strings.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "condition_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "token_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "size",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "avg_entry_price",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "updated_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "ReadinessView": {
+      "doc": "Authoritative liveness/readiness projection from the runtime.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "live",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "ready",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "failed_checks",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "circuit_breaker_state",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "wss_market_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "wss_user_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "reconciliation_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "detection_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "discovery_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "copy_workers_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "control_plane_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "telemetry_ok",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "active_leader_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "active_task_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "pending_intents",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "reservations",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "stale_locks",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "last_reconciliation",
+          "nullable": true,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "last_source_event",
+          "nullable": true,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "ReentryLockView": {
+      "doc": "Protective-exit lock projection carrying a CAS revision.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "market_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "fill_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "locked_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "lock_id",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "ReservationView": {
+      "doc": "Task-budget reservation projection with exact notional text.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "reservation_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "market_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "amount",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reserved_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "expires_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "RiskBlockView": {
+      "doc": "One active durable risk block on a follower position.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "condition_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "token_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "source",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "triggered_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "expires_at",
+          "nullable": true,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "RiskHeadroomView": {
+      "doc": "Account-level BUY headroom recomputed from one cached snapshot.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "allowed",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "reason",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "policy_name",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "cap_notional_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "equity_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "free_cash_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "daily_loss_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "open_position_count",
+          "nullable": false,
+          "type": "integer"
+        }
+      ]
+    },
+    "RiskPolicyView": {
+      "doc": "Effective account-level risk limits as configured for this process.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "name",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "risk_management_enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "tiered_policy_enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "kill_switch",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "max_open_positions",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": true,
+          "name": "max_market_exposure_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_category_exposure_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_leader_exposure_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_daily_drawdown_pct",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "reserve_pct",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "reserve_floor_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "hard_cap_pct",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "hard_cap_ceiling_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "allow_partial_exits",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "allow_pyramiding",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "RiskStateView": {
+      "doc": "Configured policy, active blocks, recent triggers, and headroom.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "policy",
+          "nullable": false,
+          "type": "RiskPolicyView"
+        },
+        {
+          "decimal": false,
+          "name": "active_blocks",
+          "nullable": false,
+          "type": "array<RiskBlockView>"
+        },
+        {
+          "decimal": false,
+          "name": "recent_triggers",
+          "nullable": false,
+          "type": "array<RiskTriggerView>"
+        },
+        {
+          "decimal": false,
+          "name": "headroom",
+          "nullable": true,
+          "type": "RiskHeadroomView"
+        },
+        {
+          "decimal": true,
+          "name": "day_start_equity_usdc",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "RiskTriggerView": {
+      "doc": "One recorded protective-exit trigger and its fill status.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "trigger_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "condition_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "token_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "source",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "fill_status",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "fill_order_id",
+          "nullable": true,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "triggered_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "RuntimeControlCommand": {
+      "doc": "Versioned entry-pause or full-stop request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "expected_revision",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "reason_code",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeView": {
+      "doc": "Bounded local runtime state.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "entry_control",
+          "nullable": false,
+          "type": "EntryControlState"
+        },
+        {
+          "decimal": false,
+          "name": "worker_count",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "queue_depth",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        }
+      ]
+    },
+    "SettingsApplyMetadata": {
+      "doc": "Truthful write/apply metadata for restart-required settings.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "previous_revision",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "applied_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "applied_by",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "restart_required",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "live_applied",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "SettingsDocument": {
+      "doc": "Secret-free immutable settings document and content revision.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "path",
+          "nullable": false,
+          "type": "SettingsPath"
+        },
+        {
+          "decimal": false,
+          "name": "values",
+          "nullable": false,
+          "type": "object"
+        },
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "SettingsPath": {
+      "doc": "Allowlisted environment and service-section identity.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "environment",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "section",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "SettingsWriteCommand": {
+      "doc": "Revision-guarded replacement of one environment service section.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "path",
+          "nullable": false,
+          "type": "SettingsPath"
+        },
+        {
+          "decimal": false,
+          "name": "values",
+          "nullable": false,
+          "type": "object"
+        },
+        {
+          "decimal": false,
+          "name": "expected_revision",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "SettingsWriteResult": {
+      "doc": "Secret-free written document and truthful apply metadata.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "document",
+          "nullable": false,
+          "type": "SettingsDocument"
+        },
+        {
+          "decimal": false,
+          "name": "metadata",
+          "nullable": false,
+          "type": "SettingsApplyMetadata"
+        }
+      ]
+    },
+    "SystemStatusView": {
+      "doc": "System identity paired with authoritative readiness state.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "system",
+          "nullable": false,
+          "type": "SystemView"
+        },
+        {
+          "decimal": false,
+          "name": "readiness",
+          "nullable": false,
+          "type": "ReadinessView"
+        }
+      ]
+    },
+    "SystemView": {
+      "doc": "Process identity and environment snapshot.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "service",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "version",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "environment",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp"
+        },
+        {
+          "decimal": false,
+          "name": "mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "backend",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "uptime_seconds",
+          "nullable": false,
+          "type": "number"
+        }
+      ]
+    },
+    "TaskConfigurationView": {
+      "doc": "Complete typed configuration projection for one copy task.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "trigger",
+          "nullable": false,
+          "type": "TaskTriggerView"
+        },
+        {
+          "decimal": false,
+          "name": "spend",
+          "nullable": false,
+          "type": "TaskSpendView"
+        },
+        {
+          "decimal": false,
+          "name": "price",
+          "nullable": false,
+          "type": "TaskPriceView"
+        },
+        {
+          "decimal": false,
+          "name": "reaction",
+          "nullable": false,
+          "type": "TaskReactionView"
+        },
+        {
+          "decimal": false,
+          "name": "market_filter",
+          "nullable": false,
+          "type": "TaskMarketFilterView"
+        },
+        {
+          "decimal": false,
+          "name": "schedule",
+          "nullable": false,
+          "type": "TaskScheduleView"
+        },
+        {
+          "decimal": false,
+          "name": "sizing",
+          "nullable": false,
+          "type": "TaskSizingView"
+        }
+      ]
+    },
+    "TaskCreateCommand": {
+      "doc": "Request creation of a paused copy task.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task",
+          "nullable": false,
+          "type": "CopyTask"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskDetailView": {
+      "doc": "Task summary and complete typed configuration projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task",
+          "nullable": false,
+          "type": "TaskView"
+        },
+        {
+          "decimal": false,
+          "name": "configuration",
+          "nullable": false,
+          "type": "TaskConfigurationView"
+        }
+      ]
+    },
+    "TaskDuplicateCommand": {
+      "doc": "Request a paused duplicate without copying runtime state.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "source_task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "new_task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "new_name",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskMarketFilterView": {
+      "doc": "Task metadata-filter projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "include_keywords",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "exclude_keywords",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "categories",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "tokens",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": false,
+          "name": "timeframes",
+          "nullable": false,
+          "type": "array<string>"
+        },
+        {
+          "decimal": true,
+          "name": "min_liquidity_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "min_volume_24h_usdc",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_days_until_close",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "allow_expired_unresolved",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "TaskPriceView": {
+      "doc": "Exact task source-price and execution-protection projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "min_price",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_price",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "offset_mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "offset_direction",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "offset",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_slippage_percent",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskReactionView": {
+      "doc": "Task source-action reaction policy projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "follow_buys",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "copy_sells",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "buy_on_sells",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "counter_trade",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "copy_side",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "copy_merges",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "copy_splits",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "copy_conversions",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "TaskScheduleView": {
+      "doc": "Task schedule projection using IANA timezone and ISO local times.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "timezone_name",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "start",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "end",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskSizingView": {
+      "doc": "Exact per-task sizing policy projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "percentage",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "fixed_amount",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "trade_multiplier",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "weighted_multiplier",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "buy_min_amount",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "buy_max_amount",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "copyable_balance_percent",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "proportional_balance_cap_enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "require_leader_balance",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "strict_fixed_amount",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "strict_exact_mirror",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "TaskSpendView": {
+      "doc": "Exact task spend and duplicate-entry policy projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "max_total",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_daily",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_per_market",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "one_entry_per_market",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "global_one_entry_per_market",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": false,
+          "name": "one_entry_per_sports_type",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    },
+    "TaskTriggerView": {
+      "doc": "Exact task source-notional eligibility projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean"
+        },
+        {
+          "decimal": true,
+          "name": "min_notional",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": true,
+          "name": "max_notional",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskUpdateCommand": {
+      "doc": "Versioned safe-configuration update for one task.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task",
+          "nullable": false,
+          "type": "CopyTask"
+        },
+        {
+          "decimal": false,
+          "name": "expected_version",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskVersionCommand": {
+      "doc": "Optimistic-concurrency task lifecycle request.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "expected_version",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "actor",
+          "nullable": false,
+          "type": "string"
+        }
+      ]
+    },
+    "TaskView": {
+      "doc": "Safe task identity, lifecycle, and revision projection.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "task_id",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "name",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "monitoring_mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "sizing_mode",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "decimal": false,
+          "name": "version",
+          "nullable": false,
+          "type": "integer"
+        },
+        {
+          "decimal": false,
+          "name": "notifications_muted",
+          "nullable": false,
+          "type": "boolean"
+        }
+      ]
+    }
+  },
+  "websocket": {
+    "client_frames": {
+      "ping": {
+        "type": "ping"
+      },
+      "resync": {
+        "type": "resync"
+      }
+    },
+    "error_codes": {
+      "invalid_stream_message": "Client frame was not a JSON object.",
+      "rate_limited": "Client frame budget exhausted; the socket then closes.",
+      "unsupported_stream_message": "Client frame type is neither ping nor resync."
+    },
+    "path": "/api/v1/stream",
+    "server_frames": {
+      "error": {
+        "code": "string",
+        "type": "error"
+      },
+      "pong": {
+        "type": "pong"
+      },
+      "resync_required": {
+        "dropped_count": "integer",
+        "type": "resync_required"
+      },
+      "stream_ready": {
+        "type": "stream_ready"
+      },
+      "telemetry_event": {
+        "data": "TelemetryEvent",
+        "type": "telemetry_event"
+      },
+      "telemetry_snapshot": {
+        "data": "TelemetrySnapshot | null",
+        "type": "telemetry_snapshot"
+      }
+    },
+    "text_only": true
+  }
+}
