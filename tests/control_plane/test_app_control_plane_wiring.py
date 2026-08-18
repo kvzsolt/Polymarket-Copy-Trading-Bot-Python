@@ -56,6 +56,7 @@ async def test_control_plane_helper_registers_before_start_and_returns_runtime()
     task_activation_guard = object()
     discovery_command_port = object()
     portfolio_cache = object()
+    reads = object()
 
     result = await _start_control_plane_runtime(
         application=application,
@@ -66,6 +67,7 @@ async def test_control_plane_helper_registers_before_start_and_returns_runtime()
         task_activation_guard=task_activation_guard,  # type: ignore[arg-type]
         discovery_command_port=discovery_command_port,  # type: ignore[arg-type]
         portfolio_cache=portfolio_cache,  # type: ignore[arg-type]
+        reads=reads,  # type: ignore[arg-type]
         client_registry=registry,
         factory=factory,  # type: ignore[arg-type]
     )
@@ -86,6 +88,7 @@ async def test_control_plane_helper_registers_before_start_and_returns_runtime()
             "task_activation_guard": task_activation_guard,
             "discovery_command_port": discovery_command_port,
             "portfolio_cache": portfolio_cache,
+            "reads": reads,
         }
     ]
 
@@ -108,6 +111,7 @@ async def test_control_plane_helper_isolates_optional_transport_start_failure() 
         task_activation_guard=None,
         discovery_command_port=None,
         portfolio_cache=None,
+        reads=None,
         client_registry=registry,
         factory=factory,  # type: ignore[arg-type]
     )
@@ -115,6 +119,7 @@ async def test_control_plane_helper_isolates_optional_transport_start_failure() 
     assert result is runtime
     assert registry == [runtime]
     assert runtime.start_count == 1
+    assert factory.calls[0]["reads"] is None
 
 
 async def test_control_plane_helper_has_no_resource_when_disabled() -> None:
@@ -140,3 +145,82 @@ async def test_control_plane_helper_has_no_resource_when_disabled() -> None:
 
     assert result is None
     assert registry == []
+
+
+class FakeContext:
+    """Minimal trading-context stand-in for read composition."""
+
+    def __init__(self, user_id: str, wallet: str) -> None:
+        self.user_id = user_id
+        self.wallet_address = wallet
+        self.pnl_tracker = object()
+        self.positions_repo = object()
+
+
+class FakeUserState:
+    """Minimal user-runtime stand-in exposing one market store."""
+
+    def __init__(self, market_store: object | None) -> None:
+        self.market_store = market_store
+
+
+async def test_reads_composition_maps_accounts_ledgers_and_market_stores() -> None:
+    """Composition publishes exactly the follower state the process owns."""
+
+    from app import _build_control_plane_reads
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry
+    from services.telemetry.emitters import DetectionTelemetryEmitter
+
+    context_a = FakeContext("account-a", "0xaaa")
+    context_b = FakeContext("account-b", "0xbbb")
+    store_a = object()
+    monitored: list[str] = ["0xleader1"]
+
+    reads = _build_control_plane_reads(
+        readiness=ReadinessTracker(),
+        metrics_registry=MetricsRegistry(),
+        contexts_by_leader={
+            "0xLEADER1": [context_a, context_b],
+            "0xleader2": [context_a],
+            "0xleader3": [],
+        },
+        risk_contexts_by_user={"account-a": context_a, "account-b": context_b},
+        user_states={"account-a": FakeUserState(store_a), "account-b": FakeUserState(None)},
+        configured_leaders=("0xLEADER1",),
+        monitored_leaders=lambda: tuple(monitored),
+        detection_counters=DetectionTelemetryEmitter(None),
+        pending_stats=lambda: None,
+        leaders_repo=None,
+        portfolio_cache=None,
+    )
+
+    accounts = {view.follower_account: view for view in reads.accounts}
+    assert accounts["account-a"].leader_count == 2
+    assert accounts["account-a"].wallet_address == "0xaaa"
+    assert accounts["account-b"].leader_count == 1
+    assert set(reads.pnl_trackers) == {"account-a", "account-b"}
+    assert set(reads.market_stores) == {"account-a"}
+    assert reads.configured_leaders == ("0xLEADER1",)
+    assert list(reads.monitored_leaders()) == ["0xleader1"]  # type: ignore[misc]
+    assert reads.detection_supported is True
+    assert reads.pnl_supported is True
+    assert reads.leaders_supported is True
+    assert reads.positions is not None
+    assert await reads.positions.list_open_positions("account-unknown") == ()
+
+    monitored.append("0xleader2")
+    assert list(reads.monitored_leaders()) == ["0xleader1", "0xleader2"]  # type: ignore[misc]
+
+
+def test_detection_connection_probe_reports_unknown_without_runtime_state() -> None:
+    """A runtime with no connection state never reads as disconnected."""
+
+    from app import _detection_connection_probe
+
+    class _Probed:
+        connected = False
+
+    assert _detection_connection_probe(_Probed())() is False
+    assert _detection_connection_probe(object())() is None
+    assert _detection_connection_probe(None)() is None

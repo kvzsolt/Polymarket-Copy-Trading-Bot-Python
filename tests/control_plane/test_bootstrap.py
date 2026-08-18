@@ -607,3 +607,131 @@ async def test_on_chain_capabilities_follow_detection_mode_not_legacy_flags(
         if capability in {"on_chain_pending", "on_chain_confirmed"}
     )
     assert on_chain == expected
+
+
+class FixedReadinessSource:
+    """Return one deterministic readiness snapshot."""
+
+    def snapshot(self) -> dict[str, object]:
+        """Return a minimal readiness projection."""
+
+        return {"wss_market_ok": True, "wss_user_ok": True, "monitored_leader_count": 1}
+
+
+async def test_factory_composes_extended_reads_only_when_injected(tmp_path: Path) -> None:
+    """Detection, fill, PnL, risk, leader, and metrics reads are opt-in."""
+
+    from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
+    from orchestrators.control_plane_reads import ControlPlaneRuntimeReads
+    from services.control_plane.contracts import AccountView
+    from services.telemetry.emitters import DetectionTelemetryEmitter
+
+    config_root = tmp_path / "config"
+    (config_root / "environments" / "paper").mkdir(parents=True)
+    server_factory = RecordingServerFactory()
+    telemetry_service, telemetry_query, telemetry_hub = build_telemetry()
+    metrics = MetricsRegistry()
+    config = build_config()
+    reads = ControlPlaneRuntimeReads(
+        accounts=(
+            AccountView(
+                follower_account="account-a",
+                wallet_address="0x1111111111111111111111111111111111111111",
+                leader_count=1,
+            ),
+        ),
+        detection_counters=DetectionTelemetryEmitter(None),
+        readiness=FixedReadinessSource(),
+        metrics=metrics,
+    )
+    runtime = ControlPlaneRuntimeFactory(
+        server_factory=server_factory,
+        config_root=config_root,
+        version="0.1.0",
+        clock=FixedClock(),
+        monotonic_clock=FixedMonotonicClock(),
+        semantic_validator=AppConfigSemanticValidator(),
+        started_monotonic=100.0,
+    ).build(
+        config=config,
+        pool=FakePool(),
+        readiness=ReadinessTracker(),
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        telemetry_service=telemetry_service,
+        worker_state=FixedWorkerState(),
+        reads=reads,
+    )
+
+    assert runtime is not None
+    dependencies = server_factory.dependencies
+    assert dependencies is not None
+    assert dependencies.accounts is not None
+    assert dependencies.detection is not None
+    assert dependencies.fills is not None
+    assert dependencies.leaders is not None
+    assert dependencies.metrics is not None
+    assert dependencies.risk is not None
+    assert dependencies.pnl is None
+    capabilities = await dependencies.system.get_capabilities()  # type: ignore[union-attr]
+    assert {
+        "account_read",
+        "detection_read",
+        "fill_read",
+        "leader_read",
+        "metrics_snapshot",
+        "risk_read",
+    } <= set(capabilities.capabilities)
+    assert "pnl_read" not in capabilities.capabilities
+    accounts = await dependencies.accounts.list()
+    assert accounts[0].follower_account == "account-a"
+
+
+async def test_factory_without_reads_keeps_the_existing_capability_surface(
+    tmp_path: Path,
+) -> None:
+    """An unwired composition advertises no extended read capability."""
+
+    from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
+
+    config_root = tmp_path / "config"
+    (config_root / "environments" / "paper").mkdir(parents=True)
+    server_factory = RecordingServerFactory()
+    telemetry_service, telemetry_query, telemetry_hub = build_telemetry()
+    ControlPlaneRuntimeFactory(
+        server_factory=server_factory,
+        config_root=config_root,
+        version="0.1.0",
+        clock=FixedClock(),
+        monotonic_clock=FixedMonotonicClock(),
+        semantic_validator=AppConfigSemanticValidator(),
+        started_monotonic=100.0,
+    ).build(
+        config=build_config(),
+        pool=FakePool(),
+        readiness=ReadinessTracker(),
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        telemetry_service=telemetry_service,
+        worker_state=FixedWorkerState(),
+    )
+
+    dependencies = server_factory.dependencies
+    assert dependencies is not None
+    assert dependencies.accounts is None
+    assert dependencies.detection is None
+    assert dependencies.fills is None
+    assert dependencies.leaders is None
+    assert dependencies.metrics is None
+    assert dependencies.pnl is None
+    assert dependencies.risk is None
+    capabilities = await dependencies.system.get_capabilities()  # type: ignore[union-attr]
+    assert not {
+        "account_read",
+        "detection_read",
+        "fill_read",
+        "leader_read",
+        "metrics_snapshot",
+        "pnl_read",
+        "risk_read",
+    } & set(capabilities.capabilities)

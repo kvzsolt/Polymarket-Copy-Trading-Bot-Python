@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from integrations.control_plane import (
@@ -19,7 +20,15 @@ from integrations.control_plane import (
     create_control_plane_app,
 )
 from services.control_plane.contracts import (
+    AccountView,
     CapabilitiesView,
+    DetectionStatusView,
+    FillView,
+    LeaderView,
+    PnlSummaryView,
+    PnlView,
+    RiskPolicyView,
+    RiskStateView,
     ControlPlaneError,
     ControlPlaneReason,
     LockResetResult,
@@ -279,6 +288,13 @@ def test_complete_injected_capabilities_register_the_versioned_endpoint_matrix()
     service = _AllCapabilities()
     dependencies = ControlPlaneDependencies(
         system=service,
+        accounts=service,
+        detection=service,
+        fills=service,
+        pnl=service,
+        risk=service,
+        leaders=service,
+        metrics=service,
         tasks=service,
         task_commands=service,
         task_bulk_commands=service,
@@ -353,6 +369,13 @@ def test_complete_injected_capabilities_register_the_versioned_endpoint_matrix()
         ("POST", "/api/v1/runtime/safety/full-stop"),
         ("GET", "/api/v1/telemetry/snapshot"),
         ("GET", "/api/v1/stream"),
+        ("GET", "/api/v1/accounts"),
+        ("GET", "/api/v1/detection"),
+        ("GET", "/api/v1/fills"),
+        ("GET", "/api/v1/pnl"),
+        ("GET", "/api/v1/risk"),
+        ("GET", "/api/v1/leaders"),
+        ("GET", "/api/v1/metrics/snapshot"),
     } <= routes
 
 
@@ -811,5 +834,294 @@ async def test_bulk_request_is_bounded_before_command_delegation() -> None:
         assert response.status == 400
         assert (await response.json())["error"]["code"] == "bulk_limit_exceeded"
         assert commands.calls == []
+    finally:
+        await client.close()
+
+
+class _AccountsService:
+    async def list(self) -> tuple[AccountView, ...]:
+        return (
+            AccountView(
+                follower_account="account-a",
+                wallet_address="0x68E60000000000000000000000000000000A83F1",
+                leader_count=2,
+            ),
+        )
+
+
+class _DetectionService:
+    async def get(self) -> DetectionStatusView:
+        return DetectionStatusView(
+            mode="on_chain_pending",
+            sources=(),
+            leader_ws_connected=None,
+            market_ws_ok=True,
+            user_ws_ok=True,
+            market_ws_reconnects=0,
+            user_ws_reconnects=0,
+            pending_confirmations=None,
+            watched_leader_count=2,
+            observed_at=_NOW,
+        )
+
+
+class _FillsService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, PageRequest]] = []
+
+    async def list(self, follower_account: str, page: PageRequest) -> Page[FillView]:
+        self.calls.append((follower_account, page))
+        return Page(
+            items=(
+                FillView(
+                    fill_id="9",
+                    follower_account=follower_account,
+                    leader_wallet=None,
+                    order_id=None,
+                    condition_id="condition-a",
+                    token_id="token-a",
+                    side="BUY",
+                    size="12.5",
+                    price="0.42",
+                    fee="0",
+                    filled_at=_NOW,
+                    created_at=_NOW,
+                ),
+            ),
+            next_cursor=None,
+        )
+
+
+class _PnlService:
+    async def get(self, follower_account: str) -> PnlView:
+        return PnlView(
+            follower_account=follower_account,
+            realized=PnlSummaryView(
+                realized_pnl_usdc="2.50",
+                total_invested_usdc="20.00",
+                total_returned_usdc="12.50",
+                max_drawdown_usdc="0.00",
+                trade_count=4,
+                buy_count=3,
+                sell_count=1,
+                win_count=1,
+                loss_count=0,
+                session_started_at=_NOW,
+            ),
+            positions=(),
+            position_count=0,
+            cost_basis_usdc="0",
+            unrealized_pnl_usdc=None,
+            unrealized_basis="unavailable",
+            marked_position_count=0,
+            observed_at=_NOW,
+        )
+
+
+class _RiskService:
+    async def get(self, follower_account: str) -> RiskStateView:
+        return RiskStateView(
+            follower_account=follower_account,
+            policy=RiskPolicyView(
+                name="account_cap",
+                risk_management_enabled=True,
+                tiered_policy_enabled=False,
+                kill_switch=False,
+                max_open_positions=40,
+                max_market_exposure_usdc="300.0",
+                max_category_exposure_usdc="600.0",
+                max_leader_exposure_usdc="500.0",
+                max_daily_drawdown_pct="20.0",
+                reserve_pct="0.12",
+                reserve_floor_usdc="7.0",
+                hard_cap_pct="0.15",
+                hard_cap_ceiling_usdc="8.0",
+                allow_partial_exits=False,
+                allow_pyramiding=False,
+            ),
+            active_blocks=(),
+            recent_triggers=(),
+            headroom=None,
+            day_start_equity_usdc=None,
+            observed_at=_NOW,
+        )
+
+
+class _LeadersService:
+    async def list(self) -> tuple[LeaderView, ...]:
+        return (
+            LeaderView(
+                wallet="0xc4ac0000000000000000000000000000000a9722",
+                configured=True,
+                monitored=True,
+                tier=None,
+                score=None,
+                signals_total=2,
+                deduplicated_total=1,
+                last_signal_at=_NOW,
+                trade_count=4,
+                open_position_count=1,
+            ),
+        )
+
+
+class _MetricsService:
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "generated_at": "2026-08-11T14:00:00+00:00",
+            "counters": {'wss_reconnect_total{stream="market"}': 2.0},
+            "gauges": {},
+            "histograms": [],
+        }
+
+
+def _read_dependencies(fills: _FillsService | None = None) -> ControlPlaneDependencies:
+    return ControlPlaneDependencies(
+        accounts=_AccountsService(),
+        detection=_DetectionService(),
+        fills=fills if fills is not None else _FillsService(),
+        pnl=_PnlService(),
+        risk=_RiskService(),
+        leaders=_LeadersService(),
+        metrics=_MetricsService(),
+    )
+
+
+_READ_PERMISSIONS = (
+    ControlPlanePermission.SYSTEM_READ,
+    ControlPlanePermission.RUNTIME_READ,
+    ControlPlanePermission.FILL_READ,
+    ControlPlanePermission.PORTFOLIO_READ,
+    ControlPlanePermission.RISK_READ,
+    ControlPlanePermission.LEADER_READ,
+    ControlPlanePermission.TELEMETRY_READ,
+)
+
+
+async def test_extended_read_routes_return_decimal_strings_and_utc_timestamps() -> None:
+    """Each new read serves its DTO through the existing JSON envelope."""
+
+    fills = _FillsService()
+    client = await _client(
+        dependencies=_read_dependencies(fills),
+        permissions=_READ_PERMISSIONS,
+    )
+    try:
+        accounts = await client.get("/api/v1/accounts", headers=_headers())
+        detection = await client.get("/api/v1/detection", headers=_headers())
+        fill_page = await client.get(
+            "/api/v1/fills",
+            headers=_headers(),
+            params={"follower_account": "account-a", "limit": "5"},
+        )
+        pnl = await client.get(
+            "/api/v1/pnl", headers=_headers(), params={"follower_account": "account-a"}
+        )
+        risk = await client.get(
+            "/api/v1/risk", headers=_headers(), params={"follower_account": "account-a"}
+        )
+        leaders = await client.get("/api/v1/leaders", headers=_headers())
+        metrics = await client.get("/api/v1/metrics/snapshot", headers=_headers())
+
+        assert accounts.status == 200
+        assert (await accounts.json())["data"][0]["leader_count"] == 2
+        assert detection.status == 200
+        detection_body = (await detection.json())["data"]
+        assert detection_body["mode"] == "on_chain_pending"
+        assert detection_body["leader_ws_connected"] is None
+        assert detection_body["observed_at"] == "2026-08-11T14:00:00Z"
+        assert fill_page.status == 200
+        assert (await fill_page.json())["data"]["items"][0]["size"] == "12.5"
+        assert fills.calls == [("account-a", PageRequest(limit=5, cursor=None))]
+        assert pnl.status == 200
+        pnl_body = (await pnl.json())["data"]
+        assert pnl_body["realized"]["realized_pnl_usdc"] == "2.50"
+        assert pnl_body["unrealized_pnl_usdc"] is None
+        assert pnl_body["unrealized_basis"] == "unavailable"
+        assert risk.status == 200
+        risk_body = (await risk.json())["data"]
+        assert risk_body["headroom"] is None
+        assert risk_body["policy"]["max_market_exposure_usdc"] == "300.0"
+        assert leaders.status == 200
+        assert (await leaders.json())["data"][0]["trade_count"] == 4
+        assert metrics.status == 200
+        metrics_body = (await metrics.json())["data"]
+        assert metrics_body["counters"]['wss_reconnect_total{stream="market"}'] == 2.0
+        assert "events" not in metrics_body
+    finally:
+        await client.close()
+
+
+async def test_follower_scoped_reads_require_an_explicit_account() -> None:
+    """A missing follower account is a stable client error, not a scan."""
+
+    client = await _client(
+        dependencies=_read_dependencies(),
+        permissions=_READ_PERMISSIONS,
+    )
+    try:
+        fills = await client.get("/api/v1/fills", headers=_headers())
+        pnl = await client.get("/api/v1/pnl", headers=_headers())
+        risk = await client.get("/api/v1/risk", headers=_headers())
+
+        for response in (fills, pnl, risk):
+            assert response.status == 400
+            assert (await response.json())["error"]["code"] == "invalid_request"
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    ("path", "permission"),
+    [
+        ("/api/v1/accounts", ControlPlanePermission.SYSTEM_READ),
+        ("/api/v1/detection", ControlPlanePermission.RUNTIME_READ),
+        ("/api/v1/fills?follower_account=account-a", ControlPlanePermission.FILL_READ),
+        ("/api/v1/pnl?follower_account=account-a", ControlPlanePermission.PORTFOLIO_READ),
+        ("/api/v1/risk?follower_account=account-a", ControlPlanePermission.RISK_READ),
+        ("/api/v1/leaders", ControlPlanePermission.LEADER_READ),
+        ("/api/v1/metrics/snapshot", ControlPlanePermission.TELEMETRY_READ),
+    ],
+)
+async def test_each_extended_read_demands_exactly_its_own_permission(
+    path: str,
+    permission: ControlPlanePermission,
+) -> None:
+    """Holding every other read permission is not enough for this route."""
+
+    others = tuple(item for item in _READ_PERMISSIONS if item is not permission)
+    denied = await _client(dependencies=_read_dependencies(), permissions=others)
+    try:
+        response = await denied.get(path, headers=_headers())
+        assert response.status == 403
+        assert (await response.json())["error"]["code"] == "permission_denied"
+    finally:
+        await denied.close()
+
+    allowed = await _client(dependencies=_read_dependencies(), permissions=(permission,))
+    try:
+        assert (await allowed.get(path, headers=_headers())).status == 200
+    finally:
+        await allowed.close()
+
+
+async def test_absent_read_services_publish_no_route_at_all() -> None:
+    """An uncomposed read is an honest 404, never an empty invented payload."""
+
+    client = await _client(
+        dependencies=ControlPlaneDependencies(system=_SystemService()),
+        permissions=_READ_PERMISSIONS,
+    )
+    try:
+        for path in (
+            "/api/v1/accounts",
+            "/api/v1/detection",
+            "/api/v1/fills?follower_account=account-a",
+            "/api/v1/pnl?follower_account=account-a",
+            "/api/v1/risk?follower_account=account-a",
+            "/api/v1/leaders",
+            "/api/v1/metrics/snapshot",
+        ):
+            assert (await client.get(path, headers=_headers())).status == 404
     finally:
         await client.close()

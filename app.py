@@ -6,7 +6,7 @@ import asyncio
 import functools
 import inspect
 import signal
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sized
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from importlib import metadata
@@ -33,6 +33,11 @@ from orchestrators.control_plane_bootstrap import (
     ControlPlaneDatabasePool,
     ControlPlaneRuntime,
     ControlPlaneRuntimeFactory,
+)
+from orchestrators.control_plane_reads import (
+    ControlPlaneRuntimeReads,
+    FollowerScopedPositions,
+    PendingConfirmationStatsProbe,
 )
 from orchestrators.control_plane_runtime import (
     InactiveWorkerStateReader,
@@ -77,10 +82,11 @@ from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.telemetry_bootstrap import TelemetryRuntime
 from orchestrators.user_data_runtime import UserDataRuntime
-from services.healthServer import start_health_server
+from services.healthServer import ReadinessTracker, start_health_server
 from services.metrics import MetricsRegistry, metrics
 from services.control_plane.runtime import OpenOrderControlGateway
 from services.control_plane.commands import DiscoveryCommandPort
+from services.control_plane.contracts import AccountView, PendingConfirmationStatsView
 from services.control_plane.queries import CachedPortfolioQueryPort
 from services.control_plane.tasks import TaskActivationGuard
 from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
@@ -1116,6 +1122,110 @@ def _build_telemetry_emitters(telemetry_runtime: TelemetryRuntime | None) -> Tel
     return TelemetryEmitters.build(telemetry_runtime.service)
 
 
+def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
+    """Return an O(1) transport-health probe for one detection runtime.
+
+    The control plane starts before the detection source exists, so the
+    telemetry emitter is given this probe only after the runtime started. A
+    runtime that exposes no connection state reports ``None`` (unknown) rather
+    than a fabricated ``False``.
+
+    Args:
+        runtime: Started detection source runtime.
+
+    Returns:
+        A callable returning the runtime's connection state, or ``None``.
+    """
+
+    def probe() -> bool | None:
+        state = getattr(runtime, "connected", None)
+        return state if isinstance(state, bool) else None
+
+    return probe
+
+
+def _build_control_plane_reads(
+    *,
+    readiness: ReadinessTracker,
+    metrics_registry: MetricsRegistry,
+    contexts_by_leader: Mapping[str, Sequence[Any]],
+    risk_contexts_by_user: Mapping[str, Any],
+    user_states: Mapping[str, Any],
+    configured_leaders: tuple[str, ...],
+    monitored_leaders: Callable[[], Iterable[str]],
+    detection_counters: Any,
+    pending_stats: Callable[[], PendingConfirmationStatsView | None],
+    leaders_repo: Any | None,
+    portfolio_cache: CachedPortfolioQueryPort | None,
+) -> ControlPlaneRuntimeReads:
+    """Bundle the local runtime state the extended operator reads may observe.
+
+    Only state this process actually composed is published: a follower without
+    a market store contributes no quote source, and a leader with no bound
+    context is not counted for any account.
+
+    Args:
+        readiness: Canonical process readiness truth.
+        metrics_registry: Process metrics registry backing WSS reconnects.
+        contexts_by_leader: Bound trading contexts per leader wallet.
+        risk_contexts_by_user: One canonical trading context per follower.
+        user_states: Composed follower runtimes exposing market stores.
+        configured_leaders: Operator-configured leader wallets.
+        monitored_leaders: Late-bound reader of monitored leader wallets.
+        detection_counters: Detection telemetry emitter counter source.
+        pending_stats: Late-bound provisional-copy tracker probe.
+        leaders_repo: Optional durable discovery roster reader.
+        portfolio_cache: Optional local-only follower portfolio cache.
+
+    Returns:
+        One immutable read bundle for the control-plane factory.
+    """
+
+    leader_counts: dict[str, int] = {}
+    for contexts in contexts_by_leader.values():
+        for context in contexts:
+            user_id = str(getattr(context, "user_id", "") or "")
+            if user_id:
+                leader_counts[user_id] = leader_counts.get(user_id, 0) + 1
+    accounts: list[AccountView] = []
+    pnl_trackers: dict[str, Any] = {}
+    positions: dict[str, Any] = {}
+    market_stores: dict[str, Any] = {}
+    for user_id, context in risk_contexts_by_user.items():
+        wallet = str(getattr(context, "wallet_address", "") or "")
+        if wallet:
+            accounts.append(
+                AccountView(
+                    follower_account=user_id,
+                    wallet_address=wallet,
+                    leader_count=leader_counts.get(user_id, 0),
+                )
+            )
+        tracker = getattr(context, "pnl_tracker", None)
+        if tracker is not None:
+            pnl_trackers[user_id] = tracker
+        positions_repo = getattr(context, "positions_repo", None)
+        if positions_repo is not None:
+            positions[user_id] = positions_repo
+        market_store = getattr(user_states.get(user_id), "market_store", None)
+        if market_store is not None:
+            market_stores[user_id] = market_store
+    return ControlPlaneRuntimeReads(
+        accounts=tuple(accounts),
+        detection_counters=detection_counters,
+        pending_stats=pending_stats,
+        pnl_trackers=pnl_trackers,
+        positions=FollowerScopedPositions(positions),
+        market_stores=market_stores,
+        monitored_leaders=monitored_leaders,
+        configured_leaders=tuple(configured_leaders),
+        leaders_repo=leaders_repo,
+        portfolio=portfolio_cache,
+        readiness=readiness,
+        metrics=metrics_registry,
+    )
+
+
 async def _start_control_plane_runtime(
     *,
     application: object,
@@ -1128,6 +1238,7 @@ async def _start_control_plane_runtime(
     client_registry: list[Any],
     factory: ControlPlaneRuntimeFactory,
     portfolio_cache: CachedPortfolioQueryPort | None = None,
+    reads: ControlPlaneRuntimeReads | None = None,
 ) -> ControlPlaneRuntime | None:
     """Build, register, and start the optional privileged adapter safely.
 
@@ -1142,6 +1253,7 @@ async def _start_control_plane_runtime(
         client_registry: Outer lifecycle registry closed from ``main``.
         factory: Injected application-service and transport composition root.
         portfolio_cache: Optional local-only follower portfolio cache.
+        reads: Optional local runtime state backing the extended reads.
 
     Returns:
         The owned runtime when enabled, otherwise ``None``.
@@ -1168,6 +1280,7 @@ async def _start_control_plane_runtime(
         task_activation_guard=task_activation_guard,
         discovery_command_port=discovery_command_port,
         portfolio_cache=portfolio_cache,
+        reads=reads,
     )
     if runtime is None:
         return None
@@ -1893,6 +2006,20 @@ async def _run_application(client_registry: list[Any]) -> int:
         backend_version = metadata.version("polymarket-copy-trading-bot")
     except metadata.PackageNotFoundError:
         backend_version = "0.1.0"
+    pending_confirmation_stats = PendingConfirmationStatsProbe()
+    control_plane_reads = _build_control_plane_reads(
+        readiness=application.readiness,
+        metrics_registry=metrics,
+        contexts_by_leader=contexts_by_leader,
+        risk_contexts_by_user=risk_contexts_by_user,
+        user_states=user_states,
+        configured_leaders=tuple(configured),
+        monitored_leaders=lambda: tuple(monitored_leaders),
+        detection_counters=telemetry_emitters.detection,
+        pending_stats=pending_confirmation_stats,
+        leaders_repo=leaders_repo,
+        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
+    )
     await _start_control_plane_runtime(
         application=application,
         pool=_pool,
@@ -1904,6 +2031,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         task_activation_guard=task_activation_guard,
         discovery_command_port=discovery_command_queue,
         portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
+        reads=control_plane_reads,
         client_registry=client_registry,
         factory=ControlPlaneRuntimeFactory(
             server_factory=AiohttpControlPlaneServerFactory(),
@@ -2303,6 +2431,13 @@ async def _run_application(client_registry: list[Any]) -> int:
                 )
                 if pending_copy_tracker is not None:
                     await pending_copy_tracker.start()
+                # Late-bound operator read probes. Composition order puts the
+                # control plane before detection, so both are attached here,
+                # after the transport and tracker exist.
+                telemetry_emitters.detection.attach_connection_probe(
+                    _detection_connection_probe(onchain_runtime)
+                )
+                pending_confirmation_stats.attach(pending_copy_tracker)
         except Exception as exc:
             logger.warning(
                 "onchain_detection_start_failed | mode=%s error=%s — bot continues "

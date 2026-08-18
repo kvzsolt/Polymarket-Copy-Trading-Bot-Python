@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from services.control_plane.contracts import (
+    AccountView,
     ActivityView,
     BulkTaskCommand,
     BulkTaskResult,
@@ -18,16 +19,21 @@ from services.control_plane.contracts import (
     DiscoveryRunCommand,
     DiscoveryRunReceipt,
     DiscoveryStatusView,
+    DetectionStatusView,
     EntryControlState,
+    FillView,
+    LeaderView,
     LockResetCommand,
     LockResetResult,
     OrderView,
     Page,
     PageRequest,
+    PnlView,
     PortfolioView,
     PositionView,
     ReentryLockView,
     ReservationView,
+    RiskStateView,
     RuntimeControlCommand,
     RuntimeView,
     SettingsDocument,
@@ -324,11 +330,79 @@ class RuntimeCommandPort(Protocol):
         ...
 
 
+class AccountQueryPort(Protocol):
+    """Read the follower accounts this process composed."""
+
+    async def list(self) -> tuple[AccountView, ...]:
+        """Return every composed follower account."""
+
+        ...
+
+
+class DetectionQueryPort(Protocol):
+    """Read local detection-source health."""
+
+    async def get(self) -> DetectionStatusView:
+        """Return the current detection status projection."""
+
+        ...
+
+
+class FillQueryPort(Protocol):
+    """Read follower-scoped durable fills."""
+
+    async def list(self, follower_account: str, page: PageRequest) -> Page[FillView]:
+        """Return one bounded newest-first fill page."""
+
+        ...
+
+
+class PnlQueryPort(Protocol):
+    """Read session realized PnL and cache-only position valuation."""
+
+    async def get(self, follower_account: str) -> PnlView:
+        """Return one follower PnL projection."""
+
+        ...
+
+
+class RiskQueryPort(Protocol):
+    """Read configured risk policy, durable risk state, and headroom."""
+
+    async def get(self, follower_account: str) -> RiskStateView:
+        """Return one follower risk projection."""
+
+        ...
+
+
+class LeaderQueryPort(Protocol):
+    """Read the merged leader listing."""
+
+    async def list(self) -> tuple[LeaderView, ...]:
+        """Return one bounded merged leader listing."""
+
+        ...
+
+
+class MetricsQueryPort(Protocol):
+    """Read the metrics half of the telemetry projection."""
+
+    def snapshot(self) -> Mapping[str, object]:
+        """Return counters, gauges, and histogram summaries."""
+
+        ...
+
+
 class TelemetryQueryPort(Protocol):
     """Read GUI-safe in-memory telemetry snapshots."""
 
     def snapshot(self, *, limit: int = 100) -> Mapping[str, object]:
         """Return a bounded JSON-compatible snapshot."""
+
+        ...
+
+    def metrics_snapshot(self) -> Mapping[str, object]:
+        """Return the same metrics without the bounded event history."""
 
         ...
 
@@ -357,6 +431,13 @@ class ControlPlaneDependencies:
     """
 
     system: SystemQueryPort | None = None
+    accounts: AccountQueryPort | None = None
+    detection: DetectionQueryPort | None = None
+    fills: FillQueryPort | None = None
+    pnl: PnlQueryPort | None = None
+    risk: RiskQueryPort | None = None
+    leaders: LeaderQueryPort | None = None
+    metrics: MetricsQueryPort | None = None
     tasks: TaskQueryPort | None = None
     task_commands: TaskCommandPort | None = None
     task_bulk_commands: TaskBulkCommandPort | None = None
@@ -386,17 +467,24 @@ class ControlPlaneDependencies:
 
 
 __all__ = [
+    "AccountQueryPort",
     "ActivityQueryPort",
     "ControlPlaneDependencies",
     "CorrelationIdFactory",
     "DiscoveryCommandPort",
+    "DetectionQueryPort",
     "DiscoveryQueryPort",
+    "FillQueryPort",
+    "LeaderQueryPort",
+    "MetricsQueryPort",
     "OrderQueryPort",
+    "PnlQueryPort",
     "PortfolioQueryPort",
     "PositionQueryPort",
     "ReentryLockCommandPort",
     "ReentryLockQueryPort",
     "ReservationQueryPort",
+    "RiskQueryPort",
     "RuntimeCommandPort",
     "RuntimeQueryPort",
     "SecureCorrelationIdFactory",

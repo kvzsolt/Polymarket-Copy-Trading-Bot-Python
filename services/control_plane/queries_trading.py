@@ -366,7 +366,7 @@ class RiskQueryService:
             self._trigger_limit,
         )
         snapshot = await self._snapshot(follower_account)
-        day_start = self._day_start(snapshot)
+        day_start = self._day_start()
         return RiskStateView(
             follower_account=follower_account,
             policy=self._policy(),
@@ -387,10 +387,14 @@ class RiskQueryService:
             return None
         return snapshot
 
-    def _day_start(self, snapshot: PortfolioView | None) -> Decimal | None:
-        """Return the day-start equity the risk engine itself would use."""
+    def _day_start(self) -> Decimal | None:
+        """Return the day-start equity the risk engine itself would use.
 
-        del snapshot
+        The order mirrors ``_resolve_buy_risk_cap`` exactly: an explicitly
+        configured baseline wins, otherwise today's recorded snapshot is read
+        without creating one.
+        """
+
         configured = _decimal(self._config.risk.day_start_equity_usdc)
         if configured > _ZERO:
             return configured
@@ -512,6 +516,7 @@ __all__ = [
     "FillQueryPort",
     "FillQueryService",
     "MarketQuoteSource",
+    "OpenPositionLike",
     "OpenPositionsPort",
     "PnlQueryService",
     "PnlTrackerPort",

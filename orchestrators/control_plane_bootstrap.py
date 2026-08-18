@@ -26,6 +26,7 @@ from integrations.control_plane import (
     TelemetryHubPort,
     TelemetryQueryPort,
 )
+from orchestrators.control_plane_reads import ControlPlaneRuntimeReads
 from orchestrators.control_plane_runtime import (
     Clock,
     MonotonicClock,
@@ -55,6 +56,17 @@ from services.control_plane.queries import (
     RuntimeQueryService,
     SystemQueryService,
     TaskQueryService,
+)
+from services.control_plane.queries_monitoring import (
+    AccountQueryService,
+    DetectionQueryService,
+    LeaderQueryService,
+    MetricsQueryService,
+)
+from services.control_plane.queries_trading import (
+    FillQueryService,
+    PnlQueryService,
+    RiskQueryService,
 )
 from services.control_plane.runtime import (
     OpenOrderControlGateway,
@@ -294,6 +306,7 @@ class ControlPlaneRuntimeFactory:
         task_activation_guard: TaskActivationGuard | None = None,
         discovery_command_port: DiscoveryCommandPort | None = None,
         portfolio_cache: CachedPortfolioQueryPort | None = None,
+        reads: ControlPlaneRuntimeReads | None = None,
     ) -> ControlPlaneRuntime | None:
         """Build an unstarted runtime or return ``None`` when disabled.
 
@@ -309,6 +322,7 @@ class ControlPlaneRuntimeFactory:
             task_activation_guard: Optional fail-closed task resume policy.
             discovery_command_port: Optional started asynchronous cycle queue.
             portfolio_cache: Optional local-only follower portfolio cache.
+            reads: Optional local runtime state backing the extended reads.
 
         Returns:
             An unstarted runtime when enabled, otherwise ``None``.
@@ -347,6 +361,7 @@ class ControlPlaneRuntimeFactory:
                 task_commands_enabled=task_activation_guard is not None,
                 discovery_commands_enabled=discovery_command_port is not None,
                 portfolio_enabled=portfolio_cache is not None,
+                reads=reads,
             ),
             active_task_counter=query_repository,
             clock=self._clock,
@@ -388,6 +403,59 @@ class ControlPlaneRuntimeFactory:
             task_decoder = CopyTaskPayloadDecoder()
         dependencies = ControlPlaneDependencies(
             system=SystemQueryService(system_adapter),
+            accounts=(
+                AccountQueryService(reads.accounts)
+                if reads is not None and reads.accounts
+                else None
+            ),
+            detection=(
+                DetectionQueryService(
+                    counters=reads.detection_counters,  # type: ignore[arg-type]
+                    readiness=reads.readiness,  # type: ignore[arg-type]
+                    metrics=reads.metrics,  # type: ignore[arg-type]
+                    detection_mode=config.detection.detection_mode.value,
+                    pending_stats=reads.pending_stats,
+                    clock=self._clock,
+                )
+                if reads is not None and reads.detection_supported
+                else None
+            ),
+            fills=(FillQueryService(query_repository) if reads is not None else None),
+            pnl=(
+                PnlQueryService(
+                    pnl_trackers=reads.pnl_trackers,
+                    positions=reads.positions,  # type: ignore[arg-type]
+                    market_stores=reads.market_stores,
+                    quote_max_age_seconds=(config.market_data.executable_quote_max_age_seconds),
+                    clock=self._clock,
+                )
+                if reads is not None and reads.pnl_supported
+                else None
+            ),
+            risk=(
+                RiskQueryService(
+                    port=query_repository,
+                    portfolio=reads.portfolio,
+                    config=config,
+                    clock=self._clock,
+                    day_start_equity=reads.day_start_equity,
+                )
+                if reads is not None
+                else None
+            ),
+            leaders=(
+                LeaderQueryService(
+                    roster=reads.leaders_repo,
+                    counts=query_repository,
+                    configured=reads.configured_leaders,
+                    monitored=reads.monitored_leaders or (lambda: ()),
+                    counters=reads.detection_counters,  # type: ignore[arg-type]
+                    clock=self._clock,
+                )
+                if reads is not None and reads.leaders_supported
+                else None
+            ),
+            metrics=(MetricsQueryService(telemetry_query) if reads is not None else None),
             tasks=TaskQueryService(query_repository),
             task_commands=task_commands,
             task_bulk_commands=task_bulk_commands,
@@ -492,6 +560,7 @@ class ControlPlaneRuntimeFactory:
         task_commands_enabled: bool,
         discovery_commands_enabled: bool,
         portfolio_enabled: bool,
+        reads: ControlPlaneRuntimeReads | None = None,
     ) -> tuple[str, ...]:
         """Return sorted capabilities backed by this exact composition."""
 
@@ -535,6 +604,16 @@ class ControlPlaneRuntimeFactory:
             capabilities.add("discovery_manual_run")
         if portfolio_enabled:
             capabilities.add("portfolio_read")
+        if reads is not None:
+            capabilities.update({"fill_read", "metrics_snapshot", "risk_read"})
+            if reads.accounts:
+                capabilities.add("account_read")
+            if reads.detection_supported:
+                capabilities.add("detection_read")
+            if reads.pnl_supported:
+                capabilities.add("pnl_read")
+            if reads.leaders_supported:
+                capabilities.add("leader_read")
         detection_mode = config.detection.detection_mode
         if detection_mode is DetectionMode.ON_CHAIN_CONFIRMED:
             capabilities.add("on_chain_confirmed")

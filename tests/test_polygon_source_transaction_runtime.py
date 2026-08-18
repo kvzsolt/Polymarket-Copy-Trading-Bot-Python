@@ -101,3 +101,17 @@ def test_head_fixture_is_timezone_aware() -> None:
     )
 
     assert head.observed_at.tzinfo is UTC
+
+
+def test_connected_probe_reports_manager_state_and_tolerates_absence() -> None:
+    """The control-plane probe never invents a confirmed-detection state."""
+
+    class _ProbingManager(FakeConnectionManager):
+        connected = True
+
+    pipeline = FakeSourcePipeline()
+    probed = PolygonSourceTransactionRuntime(_ProbingManager(), pipeline)  # type: ignore[arg-type]
+    silent = PolygonSourceTransactionRuntime(FakeConnectionManager(), pipeline)  # type: ignore[arg-type]
+
+    assert probed.connected is True
+    assert silent.connected is None

@@ -377,6 +377,21 @@ class ControlPlaneHttpApplication:
                 self._full_stop_runtime,
             )
 
+        if _supports(self._dependencies.accounts, "list"):
+            router.add_get(f"{API_PREFIX}/accounts", self._list_accounts)
+        if _supports(self._dependencies.detection, "get"):
+            router.add_get(f"{API_PREFIX}/detection", self._get_detection)
+        if _supports(self._dependencies.fills, "list"):
+            router.add_get(f"{API_PREFIX}/fills", self._list_fills)
+        if _supports(self._dependencies.pnl, "get"):
+            router.add_get(f"{API_PREFIX}/pnl", self._get_pnl)
+        if _supports(self._dependencies.risk, "get"):
+            router.add_get(f"{API_PREFIX}/risk", self._get_risk)
+        if _supports(self._dependencies.leaders, "list"):
+            router.add_get(f"{API_PREFIX}/leaders", self._list_leaders)
+        if _supports(self._dependencies.metrics, "snapshot"):
+            router.add_get(f"{API_PREFIX}/metrics/snapshot", self._get_metrics_snapshot)
+
         if _supports(self._dependencies.telemetry_query, "snapshot"):
             router.add_get(f"{API_PREFIX}/telemetry", self._get_telemetry)
             router.add_get(f"{API_PREFIX}/telemetry/snapshot", self._get_telemetry)
@@ -546,6 +561,49 @@ class ControlPlaneHttpApplication:
     async def _get_runtime(self, request: web.Request) -> web.Response:
         self._authorize(request, ControlPlanePermission.RUNTIME_READ)
         return self._ok(request, await self._dependencies.runtime.get())  # type: ignore[union-attr]
+
+    async def _list_accounts(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.SYSTEM_READ)
+        return self._ok(request, await self._dependencies.accounts.list())  # type: ignore[union-attr]
+
+    async def _get_detection(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.RUNTIME_READ)
+        return self._ok(request, await self._dependencies.detection.get())  # type: ignore[union-attr]
+
+    async def _list_fills(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.FILL_READ)
+        return self._ok(
+            request,
+            await self._dependencies.fills.list(  # type: ignore[union-attr]
+                _required_query(request, "follower_account"), _page(request)
+            ),
+        )
+
+    async def _get_pnl(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.PORTFOLIO_READ)
+        return self._ok(
+            request,
+            await self._dependencies.pnl.get(  # type: ignore[union-attr]
+                _required_query(request, "follower_account")
+            ),
+        )
+
+    async def _get_risk(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.RISK_READ)
+        return self._ok(
+            request,
+            await self._dependencies.risk.get(  # type: ignore[union-attr]
+                _required_query(request, "follower_account")
+            ),
+        )
+
+    async def _list_leaders(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.LEADER_READ)
+        return self._ok(request, await self._dependencies.leaders.list())  # type: ignore[union-attr]
+
+    async def _get_metrics_snapshot(self, request: web.Request) -> web.Response:
+        self._authorize(request, ControlPlanePermission.TELEMETRY_READ)
+        return self._ok(request, self._dependencies.metrics.snapshot())  # type: ignore[union-attr]
 
     async def _get_telemetry(self, request: web.Request) -> web.Response:
         self._authorize(request, ControlPlanePermission.TELEMETRY_READ)

@@ -44,6 +44,7 @@ registers only routes backed by composed services; consult
 | Area | Snapshot endpoints |
 | --- | --- |
 | System | `GET /system/status`, `/system/readiness`, `/system/capabilities` |
+| Accounts | `GET /accounts` |
 | Tasks | `GET /tasks`, `GET /tasks/{task_id}` |
 | Portfolio | `GET /portfolio?follower_account=...` |
 | Positions | `GET /positions`, `GET /positions/{position_id}` |
@@ -54,7 +55,19 @@ registers only routes backed by composed services; consult
 | Reservations | `GET /reservations` |
 | Settings | `GET /settings`, `GET /settings/{section}` |
 | Runtime | `GET /runtime/safety` |
-| Telemetry | `GET /telemetry/snapshot` |
+| Detection | `GET /detection` |
+| Fills | `GET /fills?follower_account=...` |
+| PnL | `GET /pnl?follower_account=...` |
+| Risk | `GET /risk?follower_account=...` |
+| Leaders | `GET /leaders` |
+| Telemetry | `GET /telemetry/snapshot`, `GET /metrics/snapshot` |
+
+Each read carries exactly one permission: `system.read` (`/accounts`),
+`runtime.read` (`/detection`), `fill.read` (`/fills`), `portfolio.read`
+(`/pnl`), `risk.read` (`/risk`), `leader.read` (`/leaders`), and
+`telemetry.read` (`/telemetry/snapshot`, `/metrics/snapshot`). A viewer
+credential holds every `*.read` permission plus `telemetry.stream` and no
+mutation permission.
 
 Follower-scoped collections require `follower_account`. Position and order
 detail lookups remain follower-scoped. Portfolio reads use a background cache;
@@ -62,6 +75,43 @@ they never trigger venue calls. Until a first refresh succeeds, or once a
 snapshot is stale, the endpoint returns a stable service error rather than
 inventing balances, marks, or PnL. `valuation_basis: "cost_basis"` means no
 market mark was available and `unrealized_pnl_usdc` remains `null`.
+
+`GET /fills` pages newest-first on the durable fill identity with the same
+opaque `cursor` contract as other collections. `GET /metrics/snapshot` returns
+`generated_at`, `counters`, `gauges`, and `histograms` — the same numbers as
+`/telemetry/snapshot` without the bounded event history.
+
+`GET /detection` reports local counters per detection source plus the WSS
+health this process can actually observe. `leader_ws_connected` is `null` when
+no detection transport probe is attached (the control plane starts before the
+detection runtime), which is different from a probed disconnected transport.
+`pending_confirmations` is `null` unless the selected mode composed a
+provisional-copy confirmation tracker.
+
+`GET /pnl` is deliberately conservative. `realized` comes from the in-process
+session ledger, so it covers this process run only and resets on restart;
+`session_started_at` states when that run began. A position is marked only from
+a cached WSS quote that is two-sided and fresher than
+`market_data.executable_quote_max_age_seconds`; otherwise `mark_price`,
+`market_value_usdc`, and `unrealized_pnl_usdc` are `null`. The account-level
+`unrealized_pnl_usdc` is published only when every open position is marked
+(`unrealized_basis: "wss_mid"`); a partially marked book reports `null` with
+`"partial_wss_mid"`, and an unmarked book reports `"unavailable"`. No PnL read
+ever calls the venue.
+
+`GET /risk` returns the configured policy, active durable risk blocks, recent
+protective-exit triggers, and `headroom`. `headroom` is `null` unless a present
+non-stale cached portfolio snapshot exists, and it applies only the account
+cap, reserve, and daily-drawdown gates — per-market, per-category, and
+per-leader exposure are unknown to a cached snapshot, so the published cap is
+an upper bound on what the trade pipeline computes immediately before a real
+submission. `day_start_equity_usdc` reflects the same day-start baseline the
+risk engine uses and is `null` until one is recorded; reading it never records
+one.
+
+`GET /leaders` merges configured wallets, the discovery roster, the currently
+monitored set, and local detection counters under one lower-cased wallet
+identity, capped at 500 rows.
 
 The immutable DTO definitions in `services/control_plane/contracts.py` are the
 canonical response contract. The narrow HTTP ports are defined in
@@ -130,4 +180,7 @@ paper mode intentionally omits live runtime mutations, and task mutations are
 omitted if the process cannot validate runtime activation. Read capability
 names describe the exact build (`ccxt_backend`, `portfolio_read`,
 `telemetry_snapshot`, and related domain reads); they are not promises about a
-future frontend or unavailable venue feature.
+future frontend or unavailable venue feature. The extended reads advertise
+`account_read`, `detection_read`, `fill_read`, `leader_read`,
+`metrics_snapshot`, `pnl_read`, and `risk_read`, and each appears only when
+this process composed the local state that backs it.

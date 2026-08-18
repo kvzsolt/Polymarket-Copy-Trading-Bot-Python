@@ -560,3 +560,47 @@ async def test_mined_condition_id_resolver_invoked() -> None:
         assert dispatched[0].condition_id == "resolved-cond"
     finally:
         await rt.stop()
+
+
+async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> None:
+    """The control-plane probe reads composed socket state in constant time."""
+
+    class _ProbeSocket(_NoopWebSocket):
+        def __init__(self, connected: bool) -> None:
+            self._connected = connected
+
+        @property
+        def connected(self) -> bool:
+            return self._connected
+
+    sockets: list[_ProbeSocket] = []
+
+    def factory(**_kwargs) -> _ProbeSocket:
+        socket = _ProbeSocket(connected=len(sockets) == 0)
+        sockets.append(socket)
+        return socket
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        del signal
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://polygon.example.invalid/v2/redacted",
+        signal_sink=sink,
+        enable_pending=True,
+        enable_mined=True,
+        websocket_factory=factory,
+    )
+
+    assert runtime.connected is None
+
+    await runtime.start()
+    try:
+        assert len(sockets) == 2
+        assert runtime.connected is True
+        sockets[0]._connected = False
+        assert runtime.connected is False
+    finally:
+        await runtime.stop()
+
+    assert runtime.connected is None

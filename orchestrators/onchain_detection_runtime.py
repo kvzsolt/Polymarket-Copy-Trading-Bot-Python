@@ -137,6 +137,26 @@ class OnchainDetectionRuntime:
     def deduplicator(self) -> MinedFillDeduplicator:
         return self._dedupe
 
+    @property
+    def connected(self) -> bool | None:
+        """Return whether any composed detection socket is subscribed.
+
+        The operator control plane reads this as a late-bound health probe, so
+        it must stay O(1) and must never claim a state it cannot observe:
+        before ``start`` (and after ``stop``) no socket exists and the answer
+        is ``None``, which the read surface renders as "unknown" rather than
+        "disconnected".
+
+        Returns:
+            ``True`` when at least one composed socket is subscribed, ``False``
+            when every composed socket is down, ``None`` when none exists.
+        """
+
+        sockets = [socket for socket in (self._mined_ws, self._pending_ws) if socket is not None]
+        if not sockets:
+            return None
+        return any(bool(getattr(socket, "connected", False)) for socket in sockets)
+
     async def _resolve_condition_id(self, token_id: str) -> str:
         if self._resolver is None or not token_id:
             return ""

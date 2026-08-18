@@ -25,6 +25,21 @@ class PolygonSourceTransactionRuntime:
         self._pipeline = pipeline
         self._running = False
 
+    @property
+    def connected(self) -> bool | None:
+        """Return the connection state of the multiplexed Alchemy session.
+
+        The ``EvmConnectionManager`` contract does not require a health probe,
+        so a manager without one reports ``None`` (unknown) instead of an
+        invented ``False``.
+
+        Returns:
+            The manager's connection state, or ``None`` when it exposes none.
+        """
+
+        probe = getattr(self._manager, "connected", None)
+        return probe if isinstance(probe, bool) else None
+
     async def start(self) -> None:
         """Connect and resynchronize exactly once."""
 
