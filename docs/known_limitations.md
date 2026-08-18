@@ -205,10 +205,16 @@ Consequences and limits:
   standard topic-filter format (`null` wildcard, per-position OR lists), so any
   WSS endpoint serves it (`pending_tx_provider: alchemy` or `generic`).
   Roster changes resubscribe both filters off the signal hot path
-  (`onchain_mined_resubscribed | subscriptions=… watched=…`); beyond
-  `WATCHED_TOPIC_FILTER_CAP` (100) leaders per filter, the filter keeps a
-  deterministic prefix and the WARN `orderfilled_topic_filter_capped` names the
-  counts — leaders beyond the cap keep the REST-polling path only.
+  (`onchain_mined_resubscribed | subscriptions=… watched=…`); the replacement
+  sockets open before the superseded ones stop, so the switch has no detection
+  gap. Beyond `WATCHED_TOPIC_FILTER_CAP` (100) leaders per filter, the filter
+  keeps a deterministic prefix and the WARN `orderfilled_topic_filter_capped`
+  names the counts — leaders beyond the cap keep the REST-polling path only.
+  **An empty roster opens no subscription at all** (never the unfiltered
+  feed): the runtime logs INFO `onchain_mined_subscriptions_idle | watched=0`,
+  `onchain_ws_ok` reads not-ready with reason `not_connected` — distinct from
+  `ws_disconnected`, so it must not be read as a WSS outage — and the first
+  non-empty roster update reopens both filters.
   `on_chain_pending` (mempool, ~0.67 s lead, provisional-copy risks below)
   remains one restart away: `PMCOPY__DETECTION__MODE=on_chain_pending`.
 - The staleness gate `pending_tx_max_signal_age_ms` bounds only the signal's
