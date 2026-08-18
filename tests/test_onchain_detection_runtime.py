@@ -866,6 +866,41 @@ async def test_resubscribe_failure_is_warned_and_the_next_update_still_processes
 
 
 @pytest.mark.asyncio
+async def test_partial_replacement_batch_is_stopped_when_a_later_socket_fails() -> None:
+    """A raise midway through building the replacement set must not leak the
+    sockets already started in that batch: they are stopped before the error
+    propagates to the guarded loop, and the old sockets stay subscribed."""
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    assert len(original) == 2
+    built: list[_RecordingWebSocket] = []
+
+    def _factory_failing_on_second_replacement(**kwargs: object) -> _RecordingWebSocket:
+        if len(recording.instances) == 3:  # second socket of the replacement batch
+            raise RuntimeError("socket construction exploded")
+        socket = _RecordingWebSocket(**kwargs)
+        built.append(socket)
+        return socket
+
+    runtime._websocket_factory = _factory_failing_on_second_replacement
+    try:
+        runtime.update_watched_wallets({"0x" + "88" * 20})
+        await asyncio.sleep(0.05)
+
+        partial = [s for s in built if s not in original]
+        assert len(partial) == 1, "exactly one replacement socket was started before the raise"
+        assert partial[0].started == 1
+        assert partial[0].stopped == 1, "the partially built replacement socket must be stopped"
+        for socket in original:
+            assert socket.stopped == 0, "the old filters survive a failed rebuild"
+        assert runtime._mined_sockets == original
+    finally:
+        runtime._websocket_factory = lambda **kwargs: _RecordingWebSocket(**kwargs)
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
 async def test_update_watched_wallets_before_start_updates_the_set_only() -> None:
     runtime, recording = _make_logs_only_runtime()
     new_leader = "0x" + "77" * 20

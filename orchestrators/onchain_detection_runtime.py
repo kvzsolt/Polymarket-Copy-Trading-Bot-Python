@@ -510,24 +510,24 @@ class OnchainDetectionRuntime:
         """
         new_sockets: list[OnchainWebSocket] = []
         if self._running and self._enable_mined:
-            for params in self._mined_subscription_params():
-                mined_ws = self._websocket_factory(
-                    ws_url=self._ws_url,
-                    subscribe_params=params,
-                    name="orderfilled",
-                    on_message=self._on_mined_log,
-                )
-                mined_ws.start()
-                new_sockets.append(mined_ws)
-        old_sockets, self._mined_sockets = self._mined_sockets, new_sockets
-        for socket in old_sockets:
             try:
-                await socket.stop()
-            except Exception as exc:
-                logger.warning(
-                    "onchain_mined_socket_stop_failed | error=%s",
-                    redact_error_detail(exc),
-                )
+                for params in self._mined_subscription_params():
+                    mined_ws = self._websocket_factory(
+                        ws_url=self._ws_url,
+                        subscribe_params=params,
+                        name="orderfilled",
+                        on_message=self._on_mined_log,
+                    )
+                    mined_ws.start()
+                    new_sockets.append(mined_ws)
+            except Exception:
+                # A partial replacement batch must not leak: stop what was
+                # started, keep the current sockets subscribed, and let the
+                # guarded loop report the failure.
+                await self._stop_sockets(new_sockets, "onchain_mined_partial_batch_stop_failed")
+                raise
+        old_sockets, self._mined_sockets = self._mined_sockets, new_sockets
+        await self._stop_sockets(old_sockets, "onchain_mined_socket_stop_failed")
         if new_sockets:
             logger.info(
                 "onchain_mined_resubscribed | subscriptions=%d watched=%d",
@@ -540,6 +540,20 @@ class OnchainDetectionRuntime:
                 "roster update reopens them",
                 len(self._watched),
             )
+
+    async def _stop_sockets(self, sockets: list[OnchainWebSocket], event: str) -> None:
+        """Stop each socket, logging (never raising) per-socket stop failures.
+
+        Args:
+            sockets: Sockets to stop; each failure is isolated so one bad
+                socket cannot keep its siblings open.
+            event: Structured log event name used for a failed stop.
+        """
+        for socket in sockets:
+            try:
+                await socket.stop()
+            except Exception as exc:
+                logger.warning("%s | error=%s", event, redact_error_detail(exc))
 
     async def stop(self) -> None:
         self._running = False
