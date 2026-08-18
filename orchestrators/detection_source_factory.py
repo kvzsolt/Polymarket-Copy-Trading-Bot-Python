@@ -1,15 +1,20 @@
-"""Select and compose the on-chain leader-detection runtime per ``DetectionMode``.
+"""Select and compose the on-chain leader-detection runtime per detection key.
 
 ``app.main`` no longer branches on detection booleans. It asks one
-``DetectionSourceFactory`` — keyed by ``domain.detection.DetectionMode`` — to
-build the single on-chain source for the configured mode:
+``DetectionSourceFactory`` — keyed by ``domain.detection.DetectionMode`` plus
+the confirmed-source variant — to build the single on-chain source for the
+configured combination:
 
 * ``POLLING`` builds nothing (REST polling always runs and is the fallback in
   every mode);
 * ``ON_CHAIN_PENDING`` builds the gen-1 ``OnchainDetectionRuntime`` with the
   provisional ``alchemy_pendingTransactions`` subscription only;
-* ``ON_CHAIN_CONFIRMED`` builds the gen-2 ``PolygonSourceTransactionRuntime``
-  (mempool-observed, receipt-confirmed) with its durable state store.
+* ``(ON_CHAIN_CONFIRMED, mempool_reserved)`` builds the gen-2
+  ``PolygonSourceTransactionRuntime`` (mempool-observed, receipt-confirmed)
+  with its durable state store;
+* ``(ON_CHAIN_CONFIRMED, logs_only)`` builds the gen-1 runtime with the
+  mined ``OrderFilled`` subscriptions only, topic-filtered on the followed
+  leaders so any plain ``eth_subscribe`` WebSocket provider serves the mode.
 
 Every builder receives the same immutable ``DetectionSourceRequest`` and
 returns an object satisfying ``DetectionSourceRuntime``. WebSocket URLs are
@@ -30,12 +35,20 @@ from orchestration.bootstrap import (
     PolygonSourceRuntimeConfig,
 )
 from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+from services.onchain_detection.order_filled_detector import (
+    log_subscription_params_for_watched,
+)
 from services.onchain_detection.pending_tx_detector import PendingTxConfig
 from services.onchain_detection.trade_detection_models import OnchainTradeSignal
 
 SignalSink = Callable[[OnchainTradeSignal], Awaitable[None]]
 ConditionIdResolver = Callable[[str], Coroutine[Any, Any, str]]
 StateStoreProvider = Callable[[], Awaitable[SourceTransactionStateStore | None]]
+
+#: Confirmed-source variants (``detection.onchain.confirmed_source``).
+CONFIRMED_SOURCE_MEMPOOL_RESERVED = "mempool_reserved"
+CONFIRMED_SOURCE_LOGS_ONLY = "logs_only"
+_CONFIRMED_SOURCE_VALUES = (CONFIRMED_SOURCE_MEMPOOL_RESERVED, CONFIRMED_SOURCE_LOGS_ONLY)
 
 
 class UnsupportedDetectionModeError(LookupError):
@@ -69,6 +82,11 @@ class DetectionSourceRequest:
             never log it).
         chain_id: Configured Polygon EVM chain identifier.
         signal_sink: Consumer that receives every ``OnchainTradeSignal``.
+        confirmed_source: Confirmed-source variant
+            (``detection.onchain.confirmed_source``); selects between the
+            gen-2 mempool-reserved runtime and the logs-only gen-1 runtime
+            for ``ON_CHAIN_CONFIRMED``. Inert for the other modes, where the
+            builders register under the default.
     """
 
     mode: DetectionMode
@@ -76,6 +94,7 @@ class DetectionSourceRequest:
     ws_url: str
     chain_id: int
     signal_sink: SignalSink
+    confirmed_source: str = CONFIRMED_SOURCE_MEMPOOL_RESERVED
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, DetectionMode):
@@ -84,6 +103,11 @@ class DetectionSourceRequest:
             raise ValueError("ws_url is required")
         if int(self.chain_id) <= 0:
             raise ValueError("chain_id must be positive")
+        source = str(self.confirmed_source or "").strip().lower()
+        if source not in _CONFIRMED_SOURCE_VALUES:
+            allowed = ", ".join(_CONFIRMED_SOURCE_VALUES)
+            raise ValueError(f"confirmed_source must be one of: {allowed}.")
+        object.__setattr__(self, "confirmed_source", source)
         object.__setattr__(
             self,
             "watched_wallets",
@@ -96,11 +120,16 @@ class DetectionSourceRequest:
 
 
 class DetectionSourceBuilder(Protocol):
-    """Strategy that composes the runtime for exactly one detection mode."""
+    """Strategy that composes the runtime for exactly one detection key."""
 
     @property
     def mode(self) -> DetectionMode:
         """Return the mode this builder serves."""
+        ...
+
+    @property
+    def confirmed_source(self) -> str:
+        """Return the confirmed-source variant this builder serves."""
         ...
 
     async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime:
@@ -156,6 +185,17 @@ class ProvisionalPendingSourceBuilder:
 
         return DetectionMode.ON_CHAIN_PENDING
 
+    @property
+    def confirmed_source(self) -> str:
+        """Return the default variant (the pending mode has none).
+
+        Config validation rejects ``on_chain_pending`` with any non-default
+        ``confirmed_source``, so a pending request carrying another variant
+        finds no builder here and fails closed.
+        """
+
+        return CONFIRMED_SOURCE_MEMPOOL_RESERVED
+
     async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime:
         """Compose the pending-only gen-1 runtime.
 
@@ -210,6 +250,12 @@ class ConfirmedSourceBuilder:
 
         return DetectionMode.ON_CHAIN_CONFIRMED
 
+    @property
+    def confirmed_source(self) -> str:
+        """Return ``mempool_reserved`` (the gen-2 mempool-observed variant)."""
+
+        return CONFIRMED_SOURCE_MEMPOOL_RESERVED
+
     async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime:
         """Await the state store, then compose the confirmation runtime.
 
@@ -248,38 +294,133 @@ class ConfirmedSourceBuilder:
         return self._bootstrap.build(config, request.signal_sink, state_store=state_store)
 
 
-class DetectionSourceFactory:
-    """Dispatch ``DetectionSourceRequest`` to the builder registered for its mode."""
+class LogsOnlyConfirmedSourceBuilder:
+    """Build the gen-1 mined-only runtime for ``logs_only`` confirmed mode.
 
-    def __init__(self, builders: Iterable[DetectionSourceBuilder]) -> None:
-        """Index builders by mode.
+    The runtime opens the two leader-filtered ``logs`` subscriptions (maker
+    role topic2, taker role topic3) and nothing else: no mempool
+    subscription, no pending signals, no pending-copy confirmation. Signals
+    are ``MINED_AUTHORITATIVE`` with ``log_index``/``order_hash`` set, so the
+    downstream ``CrossSourceTradeClaimPolicy`` dedups them against REST
+    polling exactly like the gen-2 confirmed runtime's signals.
+
+    Roster changes resubscribe: the subscription params factory receives the
+    live watched set on every rebuild (see
+    ``OnchainDetectionRuntime.update_watched_wallets``).
+    """
+
+    def __init__(
+        self,
+        *,
+        exchange_addresses: tuple[str, ...],
+        condition_id_resolver: ConditionIdResolver,
+        runtime_factory: Callable[..., DetectionSourceRuntime] = OnchainDetectionRuntime,
+        websocket_factory: Callable[..., Any] = OnchainWebSocket,
+    ) -> None:
+        """Store the exchange filter and the gen-1 runtime constructors.
 
         Args:
-            builders: Strategy objects, at most one per ``DetectionMode``.
+            exchange_addresses: CTF exchange contracts to filter the mined
+                ``OrderFilled`` logs on.
+            condition_id_resolver: Async token-id -> condition-id lookup.
+            runtime_factory: ``OnchainDetectionRuntime``-compatible
+                constructor; injectable for tests.
+            websocket_factory: ``OnchainWebSocket``-compatible constructor;
+                the composition root binds the health reporter here.
+        """
+
+        self._exchange_addresses = tuple(exchange_addresses)
+        self._condition_id_resolver = condition_id_resolver
+        self._runtime_factory = runtime_factory
+        self._websocket_factory = websocket_factory
+
+    @property
+    def mode(self) -> DetectionMode:
+        """Return ``DetectionMode.ON_CHAIN_CONFIRMED``."""
+
+        return DetectionMode.ON_CHAIN_CONFIRMED
+
+    @property
+    def confirmed_source(self) -> str:
+        """Return ``logs_only`` (the topic-filtered mined variant)."""
+
+        return CONFIRMED_SOURCE_LOGS_ONLY
+
+    def _mined_subscription_params(self, watched: frozenset[str]) -> list[list[Any]]:
+        """Return the maker/taker role filters for ``watched``."""
+
+        return list(
+            log_subscription_params_for_watched(
+                self._exchange_addresses,
+                watched,
+            )
+        )
+
+    async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime:
+        """Compose the mined-only gen-1 runtime.
+
+        Args:
+            request: Shared detection-source inputs.
+
+        Returns:
+            A not-yet-started runtime with ``enable_pending=False``,
+            ``enable_mined=True``, and the leader-filtered subscription
+            params factory bound.
+        """
+
+        return self._runtime_factory(
+            watched_wallets=set(request.watched_wallets),
+            ws_url=request.ws_url,
+            signal_sink=request.signal_sink,
+            enable_pending=False,
+            enable_mined=True,
+            condition_id_resolver=self._condition_id_resolver,
+            websocket_factory=self._websocket_factory,
+            mined_subscription_params_factory=self._mined_subscription_params,
+        )
+
+
+class DetectionSourceFactory:
+    """Dispatch ``DetectionSourceRequest`` to its registered builder.
+
+    Builders are keyed by ``(mode, confirmed_source)``: the confirmed mode has
+    two variants (gen-2 ``mempool_reserved`` and gen-1 ``logs_only``) and the
+    other modes register under the default variant only.
+    """
+
+    def __init__(self, builders: Iterable[DetectionSourceBuilder]) -> None:
+        """Index builders by ``(mode, confirmed_source)``.
+
+        Args:
+            builders: Strategy objects, at most one per detection key.
 
         Raises:
-            ValueError: If two builders claim the same mode or one claims
+            ValueError: If two builders claim the same key or one claims
                 ``POLLING`` (polling never builds an on-chain runtime).
         """
 
-        indexed: dict[DetectionMode, DetectionSourceBuilder] = {}
+        indexed: dict[tuple[DetectionMode, str], DetectionSourceBuilder] = {}
         for builder in builders:
             mode = builder.mode
             if mode is DetectionMode.POLLING:
                 raise ValueError("polling mode does not take a detection-source builder")
-            if mode in indexed:
-                raise ValueError(f"duplicate detection-source builder for {mode.value}")
-            indexed[mode] = builder
+            key = (mode, builder.confirmed_source)
+            if key in indexed:
+                raise ValueError(
+                    "duplicate detection-source builder for "
+                    f"({mode.value}, {builder.confirmed_source})"
+                )
+            indexed[key] = builder
         self._builders = indexed
 
     @property
     def supported_modes(self) -> frozenset[DetectionMode]:
         """Return the on-chain modes this factory can build."""
 
-        return frozenset(self._builders)
+        return frozenset(mode for mode, _source in self._builders)
 
     async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime | None:
-        """Build the runtime for ``request.mode``.
+        """Build the runtime for ``request``'s detection key.
 
         Args:
             request: Shared detection-source inputs.
@@ -288,25 +429,30 @@ class DetectionSourceFactory:
             ``None`` for ``POLLING``; otherwise the not-yet-started runtime.
 
         Raises:
-            UnsupportedDetectionModeError: If no builder serves the mode.
+            UnsupportedDetectionModeError: If no builder serves the
+                ``(mode, confirmed_source)`` combination.
         """
 
         if request.mode is DetectionMode.POLLING:
             return None
-        builder = self._builders.get(request.mode)
+        builder = self._builders.get((request.mode, request.confirmed_source))
         if builder is None:
             raise UnsupportedDetectionModeError(
-                f"no detection-source builder registered for {request.mode.value}"
+                f"no detection-source builder registered for "
+                f"({request.mode.value}, {request.confirmed_source})"
             )
         return await builder.build(request)
 
 
 __all__ = [
+    "CONFIRMED_SOURCE_LOGS_ONLY",
+    "CONFIRMED_SOURCE_MEMPOOL_RESERVED",
     "ConfirmedSourceBuilder",
     "DetectionSourceBuilder",
     "DetectionSourceFactory",
     "DetectionSourceRequest",
     "DetectionSourceRuntime",
+    "LogsOnlyConfirmedSourceBuilder",
     "ProvisionalPendingSourceBuilder",
     "StateStoreProvider",
     "UnsupportedDetectionModeError",
