@@ -2,19 +2,36 @@
 enable_risk_mgmt: true
 risk_mark_max_spread_bps: 2000
 risk_mark_max_abs_distance: 0.03
-max_market_exposure_usdc: 300.0
-max_category_exposure_usdc: 600.0
-max_leader_exposure_usdc: 500.0
-max_open_positions: 40
-max_daily_drawdown_pct: 20.0
+# 350 pUSD moderate profile. Per-market 35 = two 17.5 copies in one
+# condition; per-leader 140 = 40 % of the bankroll (8 copies, 2-leader
+# roster); category 210 = the 60 % exposure ceiling (documented no-op:
+# the pipeline passes category exposure 0).
+max_market_exposure_usdc: 35.0
+max_category_exposure_usdc: 210.0
+max_leader_exposure_usdc: 140.0
+# floor(210 / 17.5) = 12 concurrent copies; matches the tiered value
+# below so the cap is the same whichever branch reads it.
+max_open_positions: 12
+# 10 % of day-start equity = a 35 pUSD daily-loss BUY stop.
+max_daily_drawdown_pct: 10.0
 kill_switch: false
-enable_balance_tiered_policy: false
-balance_policy_reserve_pct: 0.12
-balance_policy_reserve_floor: 7.0
-balance_policy_hard_cap_pct: 0.15
-balance_policy_hard_cap_ceiling: 8.0
+# Master switch for headroom_for_buy — the only consumer of the
+# max_*_exposure_usdc / max_open_positions / max_daily_drawdown_pct /
+# balance_policy_* knobs. Adds no venue or DB IO to the BUY hot path
+# (it reuses the balance snapshot the pipeline already fetched).
+enable_balance_tiered_policy: true
+# reserve = max(35, equity * 0.40) -> 140 held back at 350 pUSD, so
+# tradable cash starts at 210 (the 60 % exposure ceiling).
+balance_policy_reserve_pct: 0.40
+balance_policy_reserve_floor: 35.0
+# hard cap = min(tradable, equity * 0.05, 17.5) -> 5 % per copy.
+balance_policy_hard_cap_pct: 0.05
+balance_policy_hard_cap_ceiling: 17.5
 balance_policy_max_open_positions: 12
-balance_policy_allow_partial_exits: false
+# Keep the near-max 0.6 trim a partial exit: with the tiered policy on,
+# the risk monitor otherwise upgrades every partial protective exit to
+# a full close.
+balance_policy_allow_partial_exits: true
 balance_policy_allow_pyramiding: false
 balance_policy_max_adds_per_position: 1
 balance_policy_base_min_score: 0.22

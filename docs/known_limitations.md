@@ -278,3 +278,44 @@ WSS health is now visible too: `onchain_ws_connected{stream}`,
 `onchain_ws_reconnect_total{stream}`, and the **non-required** readiness check
 `onchain_ws_ok` (non-required on purpose — REST polling keeps copying while
 the subscription is down, so a drop is degraded, not unready).
+
+## Bankroll profile caveats (350 pUSD moderate)
+
+The packaged `sizing` / `risk` / `execution` / `protective_exits` values encode
+one operator profile — a 350 pUSD bankroll at moderate risk, derived in
+`docs/02-configuration.md` and pinned by `tests/test_live_operator_tuning.py`.
+Five properties of that profile are behavioural, not cosmetic, and the operator
+has to know them before running it:
+
+- **`stop_loss_threshold` is an absolute price, not a drawdown percentage.**
+  `PositionManager.evaluate_risk_action` compares the current outcome price
+  directly against the threshold (`services/positionManager.py`), so `0.08`
+  means "exit when a share trades at or below 8 c", not "exit at −8 %". It is
+  set below `execution.min_share_price` (`0.10`) on purpose: at or above the
+  entry floor, every freshly opened position would become stop-eligible the
+  moment `stop_loss_grace_period_seconds` expired. Raising the threshold
+  without raising `min_share_price` re-creates that trap.
+- **`sizing.max_position_pct` is measured against a stale free-cash basis.**
+  The basis is the startup / 24 h free-cash snapshot the trade pipeline
+  caches, not live equity. A restart while capital is deployed re-snapshots a
+  smaller free-cash figure and silently tapers the per-position cap; it is left
+  at `0.1` so it stays slack behind the 17.5 hard cap rather than becoming the
+  binding constraint.
+- **`max_category_exposure_usdc` is a documented no-op.** The active pipeline
+  does not persist per-position categories, so `_resolve_buy_risk_cap` passes
+  `category_exposure_usdc=0` and the cap can never bind. It is set to the 210
+  exposure ceiling for consistency, not because it enforces anything.
+- **`min_balance_headroom_usdc` is a static floor.** `BalanceRegime` compares
+  `free_cash - notional` against a fixed 140, with no awareness of equity,
+  open exposure, or the day's realized PnL. If the bankroll changes materially
+  it must be re-derived by hand — nothing rescales it.
+- **The per-leader cap assumes the two-leader roster.** 140 is 40 % of the
+  bankroll, sized so two leaders can each hold 8 concurrent copies inside the
+  210 ceiling. Adding a third leader without re-deriving the caps lets total
+  exposure exceed the intended 60 %; the account-cap policy has no
+  roster-aware aggregate.
+
+Both BUY gates must clear and neither is a percentage of live equity: the
+account-cap policy (`headroom_for_buy`) works off the balance snapshot the
+pipeline already fetched, and the `BalanceRegime` belt is in-memory and
+absolute. Neither adds IO to the detection-to-submit path.

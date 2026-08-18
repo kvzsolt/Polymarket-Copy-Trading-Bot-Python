@@ -10,7 +10,6 @@ from services.risk.risk_engine import (
     compute_hard_cap,
     compute_reserve_cash,
     compute_soft_cap,
-    get_policy,
     headroom_for_buy,
     policy_name_for_equity,
 )
@@ -49,6 +48,38 @@ def _policy(
         base_min_score=Decimal(str(base_min_score)),
         strategy_min_notional=Decimal(str(strategy_min_notional)),
         dynamic_threshold_raise=dynamic_threshold_raise,
+    )
+
+
+def _exposure_config(
+    *,
+    max_market_exposure_usdc: float = 300,
+    max_category_exposure_usdc: float = 600,
+    max_leader_exposure_usdc: float = 500,
+    max_daily_drawdown_pct: float = 20,
+    day_start_equity_usdc: float = 0.0,
+):
+    """Pin the exposure/drawdown limits ``headroom_for_buy`` reads from config.
+
+    Passing ``policy=`` overrides only the reserve/hard-cap half of the
+    calculation; the exposure caps and the daily-drawdown percentage still come
+    from the injected (or module-cached) ``AppConfig``. Without an explicit
+    config these cases silently inherit whatever the last
+    ``init_risk_engine()`` call left cached — the packaged 350 pUSD operator
+    profile in a full-suite run, the hardcoded fallback when this file runs
+    alone. The defaults here are the pre-tuning packaged values these
+    assertions were written against.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        risk=SimpleNamespace(
+            max_market_exposure_usdc=max_market_exposure_usdc,
+            max_category_exposure_usdc=max_category_exposure_usdc,
+            max_leader_exposure_usdc=max_leader_exposure_usdc,
+            day_start_equity_usdc=day_start_equity_usdc,
+            max_daily_drawdown_pct=max_daily_drawdown_pct,
+        )
     )
 
 
@@ -172,19 +203,21 @@ class TestHeadroomForBuy:
             free_cash_usdc=Decimal("25"),
             open_positions_count=0,
             policy=policy,
+            config=_exposure_config(),
         )
         assert h.allow
         assert h.cap_notional_usdc == Decimal("4.5")
         assert h.policy_name == "account_cap"
 
     def test_daily_loss_blocks(self):
-        policy = get_policy("ignored")
+        policy = _policy()
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
             open_positions_count=0,
             daily_loss_usdc=Decimal("100"),
             policy=policy,
+            config=_exposure_config(),
         )
         assert not h.allow
         assert h.reason == "no_buy_headroom"

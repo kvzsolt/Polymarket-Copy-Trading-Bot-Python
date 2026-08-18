@@ -20,9 +20,14 @@ book_spread_mode: absolute_bps
 max_book_spread_bps: 2500
 max_book_spread_ticks: 0
 circuit_failure_threshold: 15
-max_position_size_usdc: 0.0
+# In-memory belt behind the account-cap policy (350 pUSD moderate
+# profile). 20.0 is the 17.5 per-copy cap plus rounding slack; 140.0 is
+# the 40 % reserve as a free-cash floor. max_daily_spend_usdc stays 0
+# (disabled): it measures gross submitted spend, so any non-zero value
+# would starve re-entries after a normal day of round trips.
+max_position_size_usdc: 20.0
 max_daily_spend_usdc: 0.0
-min_balance_headroom_usdc: 0.0
+min_balance_headroom_usdc: 140.0
 min_book_depth_usdc: 0.0
 book_depth_band_pct: 5.0
 execution_submit_concurrency: 4

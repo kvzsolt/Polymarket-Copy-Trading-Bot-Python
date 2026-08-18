@@ -10,7 +10,8 @@ adaptive_min_percent: 0.0
 adaptive_max_percent: 0.0
 adaptive_threshold_usdc: 500.0
 buy_min_amount: 5.0
-buy_max_amount: 8.0
+# 5 % of the 350 pUSD bankroll — the moderate-profile per-copy cap.
+buy_max_amount: 17.5
 position_threshold: 0
 max_position_pct: 0.1
 enable_trust_size_multipliers: false

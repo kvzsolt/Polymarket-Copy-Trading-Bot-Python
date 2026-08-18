@@ -145,6 +145,54 @@ does not pin it; the typed default is `polling`), either boolean derives
 booleans are ignored with a `detection_legacy_flags_ignored` warning. Each
 distinct warning is logged once per process. Replace them with `detection.mode`.
 
+## Bankroll profile — 350 pUSD moderate
+
+The checked-in `sizing` / `risk` / `execution` / `protective_exits` values are
+tuned for a **350 pUSD** bankroll at **moderate** risk: ~5 % per copy, a ~10 %
+daily-loss stop, ~60 % maximum deployed exposure. They live in the **base**
+files, not in an environment override, because paper and live must resolve
+identical sizing/risk/protective-exit configuration
+(`tests/test_live_environment_overrides.py::test_live_environment_does_not_change_other_services`).
+`tests/test_live_operator_tuning.py` pins every value below and the behaviour
+it produces.
+
+Derivation from a bankroll `B = 350`:
+
+| Quantity | Formula | Value |
+|---|---|---|
+| Per-copy cap | `B x 5 %` | **17.5** |
+| Daily-loss BUY stop | `B x 10 %` | **35** |
+| Maximum deployed exposure | `B x 60 %` | **210** |
+| Cash reserve | `max(35, B x 0.40)` -> tradable `B - reserve` | **140** held, **210** tradable at start |
+| Concurrent open positions | `floor(210 / 17.5)` | **12** |
+| Per-leader cap | 8 copies of one leader (`8 x 17.5`) | **140** |
+| Per-market cap | 2 copies in one condition (`2 x 17.5`) | **35** |
+
+| File | Key | Value | Why |
+|---|---|---|---|
+| `sizing.yml` | `buy_max_amount` | `17.5` | The per-copy cap. `buy_min_amount` stays `5.0`, so every copy is clamped into `[5, 17.5]`. |
+| `sizing.yml` | `percentage`, `max_position_pct` | `5.0`, `0.1` | Unchanged. `percentage` only bites for leader trades between $100 and $350; `max_position_pct` is a 24 h free-cash snapshot (see limitations). |
+| `risk.yml` | `enable_balance_tiered_policy` | `true` | Master switch: `headroom_for_buy` is the only consumer of every cap below. Off, all of them are dead config. |
+| `risk.yml` | `balance_policy_reserve_pct` / `_reserve_floor` | `0.40` / `35.0` | `reserve = max(floor, equity x pct)`; tradable cash is `free - reserve`. |
+| `risk.yml` | `balance_policy_hard_cap_pct` / `_hard_cap_ceiling` | `0.05` / `17.5` | `hard_cap = min(tradable, equity x pct, ceiling)` — the per-copy cap again, from the risk side. |
+| `risk.yml` | `max_open_positions` / `balance_policy_max_open_positions` | `12` / `12` | Same number on both branches, so the cap does not depend on which one the policy reads. |
+| `risk.yml` | `balance_policy_allow_partial_exits` | `true` | Without it the risk monitor upgrades the near-max 0.6 trim to a full close. |
+| `risk.yml` | `max_leader_exposure_usdc` / `max_market_exposure_usdc` / `max_category_exposure_usdc` | `140` / `35` / `210` | 40 % per leader (2-leader roster), 2 copies per condition, 60 % overall. The category cap is a no-op today (see limitations). |
+| `risk.yml` | `max_daily_drawdown_pct` | `10.0` | `max_daily_loss = max(2.5, day_start_equity x 10 %)` = 35; once the day's realized loss reaches it, BUY headroom is zero. |
+| `execution.yml` | `max_position_size_usdc` / `min_balance_headroom_usdc` | `20.0` / `140.0` | In-memory `BalanceRegime` belt behind the risk policy: 17.5 plus rounding slack, and the reserve as a free-cash floor. |
+| `execution.yml` | `max_daily_spend_usdc` | `0.0` (disabled) | It measures *gross submitted* spend, so any non-zero value would starve re-entries after a normal day of round trips. |
+| `execution.yml` | `sub_min_sell_policy` | unset (`round_up`) | `skip` marks a sub-minimum leader SELL `skipped_sell_size_zero` and never retries it, stranding the position. |
+| `protective_exits.yml` | `enable_stop_loss` / `stop_loss_threshold` / `stop_loss_grace_period_seconds` | `true` / `0.08` / `300.0` | Salvage exit. `0.08` is an absolute price, deliberately below `execution.min_share_price` `0.10` (see limitations). |
+
+Both caps must clear for a BUY: the account-cap policy (`headroom_for_buy`,
+equity/exposure-aware) and the `BalanceRegime` belt (absolute, in-memory). The
+smaller one wins. Neither adds IO to the detection-to-submit path — both reuse
+the balance snapshot the pipeline already fetched.
+
+To run a different bankroll, rescale the seven derived numbers together;
+changing `buy_max_amount` alone leaves the risk caps contradicting it. The
+caveats attached to this profile are listed in `docs/known_limitations.md`.
+
 ## Operator API (`control_plane`)
 
 `config/control_plane.yml` owns the transport policy — bind host and port,
