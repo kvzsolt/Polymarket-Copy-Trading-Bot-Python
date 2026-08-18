@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -14,6 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from integrations.control_plane import (
     ALL_CONTROL_PLANE_PERMISSIONS,
     BearerCredential,
+    ControlPlaneAuthCarrier,
     ControlPlaneAuthenticator,
     ControlPlaneDependencies,
     ControlPlaneHttpConfig,
@@ -23,6 +25,7 @@ from integrations.control_plane import (
     ControlPlaneTransportError,
     InProcessActionRateLimiter,
     READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+    WebSocketCredentialExtractor,
     create_control_plane_app,
 )
 from services.control_plane.contracts import Page, PositionView
@@ -90,6 +93,139 @@ def test_invalid_bearer_and_missing_permission_fail_with_stable_public_codes() -
     assert missing.value.code == "authentication_required"
     assert invalid.value.code == "invalid_bearer_token"
     assert forbidden.value.code == "permission_denied"
+
+
+def test_the_subprotocol_carrier_reads_the_credential_in_either_token_order() -> None:
+    extractor = WebSocketCredentialExtractor()
+
+    for offered in ("bearer, token-a", "token-a,bearer", "  bearer ,  token-a  "):
+        offer = extractor.resolve(authorization=None, subprotocol=offered)
+
+        assert offer.carrier is ControlPlaneAuthCarrier.SUBPROTOCOL, offered
+        assert offer.authorization == "Bearer token-a", offered
+        assert offer.unsupported_subprotocol is False, offered
+
+
+def test_an_absent_subprotocol_leaves_the_header_carrier_untouched() -> None:
+    extractor = WebSocketCredentialExtractor()
+
+    header = extractor.resolve(authorization="Bearer token-a", subprotocol=None)
+    loopback = extractor.resolve(authorization=None, subprotocol=None)
+
+    assert header.carrier is ControlPlaneAuthCarrier.HEADER
+    assert header.authorization == "Bearer token-a"
+    assert header.unsupported_subprotocol is False
+    assert loopback.carrier is ControlPlaneAuthCarrier.NONE
+    assert loopback.authorization is None
+    assert loopback.unsupported_subprotocol is False
+
+
+@pytest.mark.parametrize(
+    "offered",
+    (
+        "",
+        "bearer",
+        "bearer, token-a, token-b",
+        "chat",
+        "Bearer, token-a",
+        "bearer, tok en",
+        "bearer, tok\x00en",
+        "bearer, ",
+        "bearer, " + "t" * 1025,
+    ),
+)
+def test_an_offer_outside_the_bearer_carrier_form_never_authenticates(offered: str) -> None:
+    offer = WebSocketCredentialExtractor().resolve(authorization=None, subprotocol=offered)
+
+    assert offer.carrier is ControlPlaneAuthCarrier.NONE
+    assert offer.authorization is None
+    assert offer.unsupported_subprotocol is True
+
+
+def test_the_authorization_header_takes_precedence_over_an_agreeing_offer() -> None:
+    offer = WebSocketCredentialExtractor().resolve(
+        authorization="Bearer token-a",
+        subprotocol="bearer, token-a",
+    )
+
+    assert offer.carrier is ControlPlaneAuthCarrier.HEADER
+    assert offer.authorization == "Bearer token-a"
+    assert offer.unsupported_subprotocol is False
+
+
+@pytest.mark.parametrize("authorization", ("Bearer token-b", "Basic token-a", "Bearer  token-a"))
+def test_a_header_disagreeing_with_the_offer_is_rejected_without_echoing_either(
+    authorization: str,
+) -> None:
+    with pytest.raises(ControlPlaneTransportError) as conflict:
+        WebSocketCredentialExtractor().resolve(
+            authorization=authorization,
+            subprotocol="bearer, token-a",
+        )
+
+    assert conflict.value.status == 401
+    assert conflict.value.code == "conflicting_bearer_credentials"
+    assert "token-a" not in conflict.value.public_message
+    assert "token-b" not in conflict.value.public_message
+
+
+def test_an_unsafe_configured_credential_disables_the_carrier_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("test.websocket.credentials.unsafe")
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        extractor = WebSocketCredentialExtractor.for_credentials(
+            (
+                _credential("safe-token", "operator-a"),
+                _credential("unsafe token", "viewer-a"),
+            ),
+            logger=logger,
+        )
+
+    records = [record for record in caplog.records if record.name == logger.name]
+    assert len(records) == 1
+    assert records[0].getMessage() == "control_plane_websocket_subprotocol_auth_disabled"
+    assert records[0].subjects == ["viewer-a"]
+    assert "unsafe token" not in str(records[0].__dict__)
+    assert extractor.enabled is False
+    assert extractor.echo_protocols == ()
+
+    offer = extractor.resolve(authorization=None, subprotocol="bearer, safe-token")
+
+    assert offer.carrier is ControlPlaneAuthCarrier.NONE
+    assert offer.authorization is None
+    assert offer.unsupported_subprotocol is True
+
+
+def test_safe_configured_credentials_enable_the_carrier_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("test.websocket.credentials.safe")
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        extractor = WebSocketCredentialExtractor.for_credentials(
+            (_credential("safe-token", "operator-a"),),
+            logger=logger,
+        )
+
+    assert [record for record in caplog.records if record.name == logger.name] == []
+    assert extractor.enabled is True
+    assert extractor.echo_protocols == ("bearer",)
+
+
+def test_the_carrier_is_disabled_when_no_credential_is_configured() -> None:
+    extractor = WebSocketCredentialExtractor.for_credentials(())
+
+    assert extractor.enabled is False
+    assert extractor.echo_protocols == ()
+    assert (
+        extractor.resolve(
+            authorization=None,
+            subprotocol="bearer, token-a",
+        ).unsupported_subprotocol
+        is True
+    )
 
 
 def test_non_loopback_bind_without_credentials_is_rejected() -> None:

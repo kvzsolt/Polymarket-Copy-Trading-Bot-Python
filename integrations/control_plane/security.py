@@ -3,15 +3,30 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import math
+import re
 import secrets
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, Self
 from urllib.parse import urlsplit
+
+_LOGGER = logging.getLogger(__name__)
+
+WEBSOCKET_BEARER_SUBPROTOCOL = "bearer"
+"""Marker token that introduces the credential in a subprotocol offer."""
+
+_SUBPROTOCOL_CREDENTIAL = re.compile(r"^[A-Za-z0-9._~+/=-]{1,1024}$")
+"""Credential characters a ``Sec-WebSocket-Protocol`` token can carry intact.
+
+RFC 6455 subprotocol tokens contain no whitespace and no comma, and the value
+is transmitted verbatim, so only this character class survives the round trip.
+It covers ``secrets.token_urlsafe`` and both base64 alphabets.
+"""
 
 
 class ControlPlaneTransportError(RuntimeError):
@@ -200,6 +215,204 @@ class ControlPlaneAuthenticator:
             status=401,
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
+
+
+class ControlPlaneAuthCarrier(StrEnum):
+    """Which transport carried the bearer credential on one request."""
+
+    NONE = "none"
+    HEADER = "header"
+    SUBPROTOCOL = "subprotocol"
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlaneCredentialOffer:
+    """What one request offered as a credential, and how it was carried.
+
+    Attributes:
+        carrier: Transport that supplied ``authorization``.
+        authorization: Exact ``Authorization`` value to authenticate. The
+            subprotocol carrier synthesises ``Bearer <credential>`` so both
+            carriers converge on one constant-time comparison path.
+        unsupported_subprotocol: Whether the request offered a
+            ``Sec-WebSocket-Protocol`` value this endpoint will not echo, so
+            the upgrade must be refused before the handshake runs.
+    """
+
+    carrier: ControlPlaneAuthCarrier
+    authorization: str | None = None
+    unsupported_subprotocol: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.carrier, ControlPlaneAuthCarrier):
+            raise TypeError("carrier must be a ControlPlaneAuthCarrier")
+        if self.carrier is ControlPlaneAuthCarrier.NONE:
+            if self.authorization is not None:
+                raise ValueError("the none carrier cannot supply an authorization value")
+        elif not isinstance(self.authorization, str) or not self.authorization:
+            raise ValueError("a credential carrier must supply an authorization value")
+        if not isinstance(self.unsupported_subprotocol, bool):
+            raise TypeError("unsupported_subprotocol must be a boolean")
+
+
+class WebSocketCredentialExtractor:
+    """Resolve which carrier supplies the bearer credential on one request.
+
+    A browser cannot set request headers on a ``WebSocket`` upgrade, so the
+    telemetry stream also accepts the credential as the second
+    ``Sec-WebSocket-Protocol`` token — ``bearer, <credential>``, in either
+    order.  The extracted credential is handed back as a normal
+    ``Authorization`` value, so it authenticates through exactly the same
+    constant-time :class:`ControlPlaneAuthenticator` path as the header.
+
+    The ``Authorization`` header always wins when both carriers are present;
+    a disagreement is refused rather than silently resolved.  Credentials that
+    cannot survive a subprotocol token disable the carrier entirely, and no
+    method here ever puts a credential into a message, a log record, or a
+    ``repr``.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        compare_digest: Callable[[str, str], bool] = secrets.compare_digest,
+    ) -> None:
+        """Store the carrier switch and the constant-time comparison seam.
+
+        Args:
+            enabled: Whether the subprotocol carrier is available at all.
+            compare_digest: Comparison used to detect a header/subprotocol
+                disagreement.
+        """
+
+        self._enabled = bool(enabled)
+        self._compare_digest = compare_digest
+
+    @classmethod
+    def for_credentials(
+        cls,
+        credentials: tuple[BearerCredential, ...],
+        *,
+        logger: logging.Logger | None = None,
+    ) -> Self:
+        """Build the carrier policy for one configured credential set.
+
+        The carrier is available only when every configured credential can be
+        transmitted as a subprotocol token.  A credential that cannot disables
+        the carrier for the whole deployment — fail closed, with one warning
+        naming the offending subjects and never the credential itself.
+
+        Args:
+            credentials: Configured bearer credentials, possibly empty.
+            logger: Logger for the startup warning; the module logger by
+                default.
+
+        Returns:
+            An extractor whose availability matches the configuration.
+        """
+
+        if not credentials:
+            return cls(enabled=False)
+        unusable = sorted(
+            credential.subject
+            for credential in credentials
+            if not cls.is_subprotocol_safe(credential.token)
+        )
+        if unusable:
+            (logger if logger is not None else _LOGGER).warning(
+                "control_plane_websocket_subprotocol_auth_disabled",
+                extra={"subjects": unusable, "reason": "credential_not_subprotocol_safe"},
+            )
+            return cls(enabled=False)
+        return cls(enabled=True)
+
+    @staticmethod
+    def is_subprotocol_safe(credential: str) -> bool:
+        """Return whether a credential survives a subprotocol token intact."""
+
+        return bool(_SUBPROTOCOL_CREDENTIAL.fullmatch(credential))
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the subprotocol credential carrier is available."""
+
+        return self._enabled
+
+    @property
+    def echo_protocols(self) -> tuple[str, ...]:
+        """Subprotocols the upgrade response may negotiate."""
+
+        return (WEBSOCKET_BEARER_SUBPROTOCOL,) if self._enabled else ()
+
+    def resolve(
+        self,
+        *,
+        authorization: str | None,
+        subprotocol: str | None,
+    ) -> ControlPlaneCredentialOffer:
+        """Decide which carrier authenticates one request.
+
+        Args:
+            authorization: Raw ``Authorization`` header, if any.
+            subprotocol: Raw ``Sec-WebSocket-Protocol`` header, passed only for
+                the stream upgrade; ``None`` for every REST route.
+
+        Returns:
+            The carrier decision, including whether an offered subprotocol
+            must be refused before the handshake.
+
+        Raises:
+            ControlPlaneTransportError: Both carriers are present and do not
+                present the same credential in the same bearer form.
+        """
+
+        header = authorization if authorization and authorization.strip() else None
+        credential = self._offered_credential(subprotocol) if subprotocol is not None else None
+        if credential is not None:
+            if header is None:
+                return ControlPlaneCredentialOffer(
+                    carrier=ControlPlaneAuthCarrier.SUBPROTOCOL,
+                    authorization=f"Bearer {credential}",
+                )
+            self._require_agreement(header, credential)
+        return ControlPlaneCredentialOffer(
+            carrier=ControlPlaneAuthCarrier.HEADER if header else ControlPlaneAuthCarrier.NONE,
+            authorization=header,
+            unsupported_subprotocol=subprotocol is not None and credential is None,
+        )
+
+    def _require_agreement(self, header: str, credential: str) -> None:
+        """Reject a header that does not restate the offered credential."""
+
+        scheme, separator, presented = header.partition(" ")
+        if (
+            separator != " "
+            or scheme.casefold() != "bearer"
+            or not self._compare_digest(presented, credential)
+        ):
+            raise ControlPlaneTransportError(
+                code="conflicting_bearer_credentials",
+                public_message="The header and subprotocol credentials disagree.",
+                status=401,
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            )
+
+    def _offered_credential(self, subprotocol: str) -> str | None:
+        """Return the credential a well-formed offer carries, else ``None``."""
+
+        if not self._enabled:
+            return None
+        tokens = [token.strip() for token in subprotocol.split(",")]
+        if len(tokens) != 2:
+            return None
+        if tokens[0] == WEBSOCKET_BEARER_SUBPROTOCOL:
+            credential = tokens[1]
+        elif tokens[1] == WEBSOCKET_BEARER_SUBPROTOCOL:
+            credential = tokens[0]
+        else:
+            return None
+        return credential if self.is_subprotocol_safe(credential) else None
 
 
 class ControlPlanePermissionPolicy:
@@ -419,8 +632,11 @@ def _require_number(name: str, value: object) -> None:
 __all__ = [
     "ALL_CONTROL_PLANE_PERMISSIONS",
     "READ_ONLY_CONTROL_PLANE_PERMISSIONS",
+    "WEBSOCKET_BEARER_SUBPROTOCOL",
     "BearerCredential",
+    "ControlPlaneAuthCarrier",
     "ControlPlaneAuthenticator",
+    "ControlPlaneCredentialOffer",
     "ControlPlaneHttpConfig",
     "ControlPlanePermission",
     "ControlPlanePermissionPolicy",

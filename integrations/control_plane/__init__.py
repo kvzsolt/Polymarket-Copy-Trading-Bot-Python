@@ -34,8 +34,11 @@ from .http import (
 from .security import (
     ALL_CONTROL_PLANE_PERMISSIONS,
     READ_ONLY_CONTROL_PLANE_PERMISSIONS,
+    WEBSOCKET_BEARER_SUBPROTOCOL,
     BearerCredential,
+    ControlPlaneAuthCarrier,
     ControlPlaneAuthenticator,
+    ControlPlaneCredentialOffer,
     ControlPlaneHttpConfig,
     ControlPlanePermission,
     ControlPlanePermissionPolicy,
@@ -45,6 +48,7 @@ from .security import (
     MonotonicClock,
     RateLimitDecision,
     SystemMonotonicClock,
+    WebSocketCredentialExtractor,
     is_loopback_host,
 )
 from .serialization import (
@@ -58,9 +62,12 @@ from .task_decoder import CopyTaskPayloadDecoder
 __all__ = [
     "ALL_CONTROL_PLANE_PERMISSIONS",
     "API_PREFIX",
+    "WEBSOCKET_BEARER_SUBPROTOCOL",
     "ActivityQueryPort",
     "BearerCredential",
+    "ControlPlaneAuthCarrier",
     "ControlPlaneAuthenticator",
+    "ControlPlaneCredentialOffer",
     "ControlPlaneDependencies",
     "ControlPlaneErrorMapper",
     "ControlPlaneHttpApplication",
@@ -100,6 +107,7 @@ __all__ = [
     "TaskQueryPort",
     "TelemetryHubPort",
     "TelemetryQueryPort",
+    "WebSocketCredentialExtractor",
     "create_control_plane_app",
     "is_loopback_host",
 ]

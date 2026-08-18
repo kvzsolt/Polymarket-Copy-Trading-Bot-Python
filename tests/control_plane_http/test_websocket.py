@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from aiohttp import WSMsgType
@@ -10,6 +11,7 @@ from aiohttp.client_exceptions import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from integrations.control_plane import (
+    READ_ONLY_CONTROL_PLANE_PERMISSIONS,
     BearerCredential,
     ControlPlaneAuthenticator,
     ControlPlaneDependencies,
@@ -23,6 +25,7 @@ from services.telemetry.hub import TelemetryDelivery
 pytestmark = pytest.mark.asyncio
 
 _TOKEN = "local-test-control-plane-token"
+_VIEWER_TOKEN = "local-test-control-plane-viewer-token"
 
 
 class _Subscription:
@@ -59,11 +62,11 @@ class _Clock:
         return 10.0
 
 
-def _auth() -> ControlPlaneAuthenticator:
+def _auth(operator_token: str = _TOKEN) -> ControlPlaneAuthenticator:
     return ControlPlaneAuthenticator(
         credentials=(
             BearerCredential(
-                token=_TOKEN,
+                token=operator_token,
                 subject="operator-a",
                 permissions=frozenset(
                     {
@@ -71,6 +74,11 @@ def _auth() -> ControlPlaneAuthenticator:
                         ControlPlanePermission.TELEMETRY_STREAM,
                     }
                 ),
+            ),
+            BearerCredential(
+                token=_VIEWER_TOKEN,
+                subject="viewer-a",
+                permissions=READ_ONLY_CONTROL_PLANE_PERMISSIONS,
             ),
         )
     )
@@ -80,6 +88,7 @@ async def _client(
     hub: _Hub,
     *,
     rate_limiter: InProcessActionRateLimiter | None = None,
+    authenticator: ControlPlaneAuthenticator | None = None,
 ) -> TestClient:
     app = create_control_plane_app(
         config=ControlPlaneHttpConfig(
@@ -87,7 +96,7 @@ async def _client(
             port=0,
             websocket_queue_capacity=2,
         ),
-        authenticator=_auth(),
+        authenticator=authenticator if authenticator is not None else _auth(),
         dependencies=ControlPlaneDependencies(
             telemetry_query=_TelemetryQuery(),
             telemetry_hub=hub,
@@ -181,5 +190,154 @@ async def test_inbound_stream_messages_are_rate_limited_per_principal() -> None:
             WSMsgType.CLOSED,
             WSMsgType.CLOSING,
         }
+    finally:
+        await client.close()
+
+
+async def test_the_subprotocol_carrier_authenticates_and_echoes_the_bearer_token() -> None:
+    """A browser sends the credential as the second subprotocol token.
+
+    The 101 response must echo exactly ``bearer`` or the browser fails the
+    handshake, and the two tokens are order-insensitive.
+    """
+
+    hub = _Hub()
+    client = await _client(hub)
+    try:
+        operator = await client.ws_connect("/api/v1/stream", protocols=("bearer", _TOKEN))
+        assert operator.protocol == "bearer"
+        assert await operator.receive_json() == {"type": "stream_ready"}
+        await operator.close()
+
+        viewer = await client.ws_connect("/api/v1/stream", protocols=(_VIEWER_TOKEN, "bearer"))
+        assert viewer.protocol == "bearer"
+        assert await viewer.receive_json() == {"type": "stream_ready"}
+        await viewer.close()
+    finally:
+        await client.close()
+
+
+async def test_a_wrong_subprotocol_credential_never_reaches_the_upgrade() -> None:
+    hub = _Hub()
+    client = await _client(hub)
+    try:
+        with pytest.raises(WSServerHandshakeError) as rejected:
+            await client.ws_connect("/api/v1/stream", protocols=("bearer", "not-the-token"))
+
+        assert rejected.value.status == 401
+        assert hub.capacities == []
+        assert hub.subscription is None
+    finally:
+        await client.close()
+
+
+async def test_the_authorization_header_outranks_the_subprotocol_offer() -> None:
+    hub = _Hub()
+    client = await _client(hub)
+    headers = {"Authorization": f"Bearer {_TOKEN}"}
+    try:
+        agreeing = await client.ws_connect(
+            "/api/v1/stream",
+            headers=headers,
+            protocols=("bearer", _TOKEN),
+        )
+        assert agreeing.protocol == "bearer"
+        assert await agreeing.receive_json() == {"type": "stream_ready"}
+        await agreeing.close()
+
+        with pytest.raises(WSServerHandshakeError) as conflicting:
+            await client.ws_connect(
+                "/api/v1/stream",
+                headers=headers,
+                protocols=("bearer", _VIEWER_TOKEN),
+            )
+        assert conflicting.value.status == 401
+
+        with pytest.raises(WSServerHandshakeError) as unrescued:
+            await client.ws_connect(
+                "/api/v1/stream",
+                headers={"Authorization": "Bearer wrong-token"},
+                protocols=("bearer", _TOKEN),
+            )
+        assert unrescued.value.status == 401
+    finally:
+        await client.close()
+
+
+async def test_rest_routes_never_read_the_subprotocol_credential() -> None:
+    hub = _Hub()
+    client = await _client(hub)
+    try:
+        ignored = await client.get(
+            "/api/v1/telemetry",
+            headers={"Sec-WebSocket-Protocol": f"bearer, {_TOKEN}"},
+        )
+        assert ignored.status == 401
+
+        authenticated = await client.get(
+            "/api/v1/telemetry",
+            headers={
+                "Authorization": f"Bearer {_TOKEN}",
+                "Sec-WebSocket-Protocol": f"bearer, {_VIEWER_TOKEN}",
+            },
+        )
+        assert authenticated.status == 200
+    finally:
+        await client.close()
+
+
+async def test_an_offer_the_server_cannot_echo_is_refused_before_the_handshake(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """aiohttp logs the offered tokens when no subprotocol overlaps.
+
+    ``web_ws._handshake`` emits a WARNING containing the client's raw
+    subprotocol list, which would publish a credential to the log. Refusing an
+    offer this endpoint will not echo keeps that branch unreachable.
+    """
+
+    hub = _Hub()
+    client = await _client(hub)
+    try:
+        with caplog.at_level(logging.WARNING, logger="aiohttp.websocket"):
+            with pytest.raises(WSServerHandshakeError) as refused:
+                await client.ws_connect(
+                    "/api/v1/stream",
+                    headers={"Authorization": f"Bearer {_TOKEN}"},
+                    protocols=("graphql-ws",),
+                )
+
+        assert refused.value.status == 400
+        assert [record for record in caplog.records if record.name == "aiohttp.websocket"] == []
+    finally:
+        await client.close()
+
+
+async def test_an_unsafe_configured_credential_disables_the_carrier_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unsafe_token = "local test control plane token"
+    hub = _Hub()
+    with caplog.at_level(logging.WARNING, logger="integrations.control_plane.security"):
+        client = await _client(hub, authenticator=_auth(unsafe_token))
+
+    warnings = [
+        record for record in caplog.records if record.name == "integrations.control_plane.security"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == "control_plane_websocket_subprotocol_auth_disabled"
+    assert unsafe_token not in str(warnings[0].__dict__)
+    try:
+        header_only = await client.ws_connect(
+            "/api/v1/stream",
+            headers={"Authorization": f"Bearer {unsafe_token}"},
+        )
+        assert header_only.protocol is None
+        assert await header_only.receive_json() == {"type": "stream_ready"}
+        await header_only.close()
+
+        with pytest.raises(WSServerHandshakeError) as refused:
+            await client.ws_connect("/api/v1/stream", protocols=("bearer", _VIEWER_TOKEN))
+        assert refused.value.status == 401
     finally:
         await client.close()

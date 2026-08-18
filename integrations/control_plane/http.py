@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 from collections.abc import AsyncIterator, Mapping
 from http import HTTPStatus
 from typing import Any
 
-from aiohttp import WSMsgType, WSCloseCode, web
+from aiohttp import WSMsgType, WSCloseCode, hdrs, web
 
 from services.control_plane.contracts import (
     BulkTaskCommand,
@@ -38,12 +39,14 @@ from .contracts import (
 )
 from .security import (
     ControlPlaneAuthenticator,
+    ControlPlaneCredentialOffer,
     ControlPlaneHttpConfig,
     ControlPlanePermission,
     ControlPlanePermissionPolicy,
     ControlPlanePrincipal,
     ControlPlaneTransportError,
     InProcessActionRateLimiter,
+    WebSocketCredentialExtractor,
     is_loopback_host,
 )
 from .serialization import ControlPlaneErrorMapper, ControlPlaneJsonSerializer
@@ -51,8 +54,14 @@ from .serialization import ControlPlaneErrorMapper, ControlPlaneJsonSerializer
 
 API_PREFIX = "/api/v1"
 
+_LOGGER = logging.getLogger(__name__)
+
 _CORRELATION_ID_KEY = web.RequestKey("control_plane_correlation_id", str)
 _PRINCIPAL_KEY = web.RequestKey("control_plane_principal", ControlPlanePrincipal)
+_CREDENTIAL_OFFER_KEY = web.RequestKey(
+    "control_plane_credential_offer",
+    ControlPlaneCredentialOffer,
+)
 _ADAPTER_KEY = web.AppKey("control_plane_adapter", object)
 _SAFE_CORRELATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CORS_METHODS = "DELETE, GET, PATCH, POST, PUT"
@@ -73,11 +82,17 @@ class ControlPlaneHttpApplication:
         serializer: ControlPlaneJsonSerializer | None = None,
         error_mapper: ControlPlaneErrorMapper | None = None,
         correlation_ids: CorrelationIdFactory | None = None,
+        websocket_credentials: WebSocketCredentialExtractor | None = None,
     ) -> None:
         _validate_bind_auth(config, authenticator)
         self._config = config
         self._authenticator = authenticator
         self._dependencies = dependencies
+        self._websocket_credentials = (
+            websocket_credentials
+            if websocket_credentials is not None
+            else WebSocketCredentialExtractor.for_credentials(authenticator.credentials)
+        )
         self._permission_policy = (
             permission_policy if permission_policy is not None else ControlPlanePermissionPolicy()
         )
@@ -179,8 +194,17 @@ class ControlPlaneHttpApplication:
     ) -> web.StreamResponse:
         if request.method == "OPTIONS":
             return await handler(request)
+        offer = self._websocket_credentials.resolve(
+            authorization=request.headers.get(hdrs.AUTHORIZATION),
+            subprotocol=(
+                request.headers.get(hdrs.SEC_WEBSOCKET_PROTOCOL)
+                if _is_stream_upgrade(request)
+                else None
+            ),
+        )
+        request[_CREDENTIAL_OFFER_KEY] = offer
         principal = self._authenticator.authenticate_header(
-            request.headers.get("Authorization"),
+            offer.authorization,
             remote_address=request.remote,
         )
         request[_PRINCIPAL_KEY] = principal
@@ -829,6 +853,16 @@ class ControlPlaneHttpApplication:
     # ------------------------------------------------------------------
     async def _stream_telemetry(self, request: web.Request) -> web.StreamResponse:
         principal = self._authorize(request, ControlPlanePermission.TELEMETRY_STREAM)
+        offer = request[_CREDENTIAL_OFFER_KEY]
+        if offer.unsupported_subprotocol:
+            # Refuse before ``prepare``: aiohttp's handshake logs every offered
+            # token at WARNING when nothing overlaps, which would publish a
+            # credential a client put in the wrong place.
+            raise ControlPlaneTransportError(
+                code="unsupported_subprotocol",
+                public_message="The requested WebSocket subprotocol is not supported.",
+                status=HTTPStatus.BAD_REQUEST,
+            )
         if self._shutting_down:
             raise ControlPlaneTransportError(
                 code="telemetry_unavailable",
@@ -851,6 +885,7 @@ class ControlPlaneHttpApplication:
             heartbeat=30.0,
             autoping=True,
             max_msg_size=4096,
+            protocols=self._websocket_credentials.echo_protocols,
         )
         ws.headers.update(self._websocket_headers(request))
         try:
@@ -859,6 +894,11 @@ class ControlPlaneHttpApplication:
             hub.unsubscribe(subscription)
             raise
 
+        # Carrier, never credential: this is the only place either is named.
+        _LOGGER.info(
+            "control_plane_stream_opened",
+            extra={"auth_carrier": offer.carrier.value, "principal": principal.subject},
+        )
         self._websockets.add(ws)
         delivery_task: asyncio.Task[Any] | None = None
         receive_task: asyncio.Task[Any] | None = None
@@ -1067,6 +1107,7 @@ class ControlPlaneHttpServer:
         serializer: ControlPlaneJsonSerializer | None = None,
         error_mapper: ControlPlaneErrorMapper | None = None,
         correlation_ids: CorrelationIdFactory | None = None,
+        websocket_credentials: WebSocketCredentialExtractor | None = None,
     ) -> None:
         _validate_bind_auth(config, authenticator)
         self._config = config
@@ -1079,6 +1120,7 @@ class ControlPlaneHttpServer:
             serializer=serializer,
             error_mapper=error_mapper,
             correlation_ids=correlation_ids,
+            websocket_credentials=websocket_credentials,
         )
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -1140,6 +1182,7 @@ def create_control_plane_app(
     serializer: ControlPlaneJsonSerializer | None = None,
     error_mapper: ControlPlaneErrorMapper | None = None,
     correlation_ids: CorrelationIdFactory | None = None,
+    websocket_credentials: WebSocketCredentialExtractor | None = None,
 ) -> web.Application:
     """Build one aiohttp application from explicit injected capabilities."""
 
@@ -1152,7 +1195,18 @@ def create_control_plane_app(
         serializer=serializer,
         error_mapper=error_mapper,
         correlation_ids=correlation_ids,
+        websocket_credentials=websocket_credentials,
     ).app
+
+
+def _is_stream_upgrade(request: web.Request) -> bool:
+    """Return whether this request is the telemetry WebSocket upgrade.
+
+    Only that one route may read a credential from ``Sec-WebSocket-Protocol``;
+    every REST route authenticates from the ``Authorization`` header alone.
+    """
+
+    return request.method == "GET" and request.path == f"{API_PREFIX}/stream"
 
 
 def _validate_bind_auth(
