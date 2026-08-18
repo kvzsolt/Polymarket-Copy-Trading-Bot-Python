@@ -191,9 +191,11 @@ Consequences and limits:
   twice. Consequently there is **no mined correction path** in that mode: the
   per-leader supersession check lives in the mined handler and never fires, so
   a provisional copy of a mempool sighting that is dropped or replaced before
-  mining is not unwound. Run it only after a paper soak and with an explicit
-  operator unwind procedure. The confirmed path is a strict superset and is
-  the recommended first live mode.
+  mining is not *unwound* by the detection runtime. It is now **detected and
+  reported** by the pending-copy confirmation tracker (below), but unwinding
+  remains an operator action. Run it only after a paper soak and with an
+  explicit operator unwind procedure. The confirmed path is a strict superset
+  and is the recommended first live mode.
 - Alchemy CU cost: with the gen-2 pending subscription carrying full tx bodies
   and the `logs` subscription filtered by address only, the confirmed mode was
   measured at ~85k CU/min (≈120M CU/day at 24/7). Follow-up: filter the
@@ -207,3 +209,57 @@ Consequences and limits:
   only an explicit `detection.mode: on_chain_pending` does.
 - Changing `detection.mode` requires a restart; the control plane excludes it
   from editable settings.
+
+### Pending-copy confirmation (detect, report, do not unwind)
+
+In `on_chain_pending`, every copy that actually reached the venue off a
+provisional sighting is recorded by `PendingCopyConfirmationTracker`
+(`services/onchain_detection/pending_copy_confirmation_tracker.py`) and polled
+against the leader transaction's receipt over HTTP RPC
+(`eth_getTransactionReceipt` through the read-only `FallbackWeb3Provider`).
+
+- Recording is synchronous, O(1), and exception-guarded, so the
+  detection-to-submit path is unchanged; all RPC work happens in the
+  background `pending-copy-confirmation` task.
+- Poll offsets are 5/15/30/60 s after the copy, with a
+  `pending_copy_confirmation_deadline_seconds` (default 60 s) cutoff that
+  always forces one final, terminal poll.
+- Outcomes: receipt `status=1` -> DEBUG `pending_copy_confirmed` +
+  `pending_copy_confirmed_total`; `status=0` -> `reverted`; no receipt by the
+  deadline -> `not_mined`; only RPC failures up to the deadline ->
+  `rpc_error`. Each of the latter three logs WARN `pending_copy_unconfirmed |
+  tx=… leader=… age_s=… reason=…`, increments
+  `pending_copy_unconfirmed_total{reason}`, and emits a bounded DETECTION
+  `FailureEvent` (`pending_copy_<reason>`).
+- `pending_copy_tracked` gauges the in-flight set; overflow past
+  `pending_copy_confirmation_max_tracked` evicts the oldest entry and counts
+  `pending_copy_tracker_dropped_total{reason="full"}`.
+
+Residual risks the tracker does **not** remove (operator must accept):
+
+- **No automatic unwind.** `pending_copy_auto_unwind_enabled` is false by
+  default and the requester is design-only: the hook Protocol and the
+  injection point exist, nothing is wired, so the flag cannot move money
+  today. An unconfirmed copy is reported, not closed.
+- **No reorg-after-success detection.** A copy confirmed at `status=1` is
+  never re-checked; a later re-org that unwinds that transaction is invisible.
+- **In-memory state.** Tracked copies do not survive a restart: anything
+  in flight at shutdown is simply forgotten (no verdict, no report).
+- **RPC dependence.** With no `polymarket.rpc_url` configured the tracker is
+  not built at all (a WARN says so at startup); a full-window RPC outage
+  reports `rpc_error`, which is "unknown", not "orphaned".
+- The pending signal's price is the leader's calldata limit price; the
+  pipeline still prices from the live decision quote.
+- The gen-1 decoder still sees only direct `matchOrders` calls, so a
+  Safe-wrapped leader is invisible to both detection and this tracker.
+- The skipped-row / polling asymmetry for pending signals (`tx_key ==
+  fill_key`) is unchanged.
+- Alchemy CU for a full-body `alchemy_pendingTransactions` subscription
+  without a `logs` subscription is still **unmeasured** (the ~85k CU/min
+  figure above is the confirmed-mode baseline); measure it during the paper
+  soak before a 24/7 live run.
+
+WSS health is now visible too: `onchain_ws_connected{stream}`,
+`onchain_ws_reconnect_total{stream}`, and the **non-required** readiness check
+`onchain_ws_ok` (non-required on purpose — REST polling keeps copying while
+the subscription is down, so a drop is degraded, not unready).

@@ -13,7 +13,7 @@ source through `orchestrators/detection_source_factory.py`:
 | mode | runtime | what fires the copy | Postgres |
 |---|---|---|---|
 | `polling` | none | data-api REST polling only | required (always) |
-| `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms` or below `pending_tx_detection_confidence_required`. **No mined correction path** (mined subscription off for dedup): per-leader supersession never fires and a provisional copy of a sighting that never mines is not unwound | required |
+| `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms` or below `pending_tx_detection_confidence_required`. **No mined correction path** (mined subscription off for dedup): per-leader supersession never fires, so a provisional copy of a sighting that never mines is *detected and reported* by the pending-copy confirmation tracker (below) but never unwound automatically | required |
 | `on_chain_confirmed` | gen-2 `PolygonSourceTransactionRuntime` | mempool sighting only *reserves*; execution after `eth_getTransactionReceipt` decodes the `OrderFilled` logs (`MINED_AUTHORITATIVE`, `provisional=False`) | required (`PostgresSourceTransactionStateStore`) |
 
 REST polling keeps running in every mode; `CrossSourceTradeClaimPolicy` in
@@ -119,6 +119,51 @@ signals is resolved via an injectable `condition_id_resolver` (Gamma API
 `/markets?clob_token_ids={tokenId}` in production); for pending signals it
 is extracted directly from the `matchOrders` calldata first arg.
 
+## Pending-copy confirmation (runtime wiring)
+
+`on_chain_pending` copies off an *unmined* sighting, so a follow-up is the only
+thing that can notice an orphaned copy. Composition (all in `app.py`, thin
+glue only):
+
+```text
+_build_pending_copy_tracker(config, telemetry_service=…, metrics_registry=…)
+  └── Web3ReceiptStatusFetcher.from_rpc_url(polymarket.rpc_url,
+                                            polymarket.fallback_rpc_url)
+        └── FallbackWeb3Provider -> AsyncWeb3Adapter.get_transaction_receipt
+              (asyncio.to_thread; TransactionNotFound -> None)
+OnchainSignalDispatchAdapter(pending_copy_tracker=tracker)
+  └── _dispatch_legacy: after the results gather, a provisional signal whose
+      results include executed / paper / submitted_unconfirmed calls
+      tracker.track(TrackedPendingCopy(...)) — sync, never awaited, guarded
+await tracker.start()   # after the on-chain runtime start
+await tracker.stop()    # in _shutdown_runtime, next to onchain_runtime.stop()
+```
+
+The tracker is built **only** when `detection.mode=on_chain_pending`,
+`detection.onchain.pending_copy_confirmation_enabled` is true, and
+`polymarket.rpc_url` is set (otherwise startup logs
+`pending_copy_tracker_disabled | reason=no_rpc_endpoint` and the feature stays
+off). `recorded_at` is stamped with `time.monotonic` on both sides — the
+dispatcher and the tracker must share one time base or ages go negative.
+
+Auto-unwind (`pending_copy_auto_unwind_enabled`, default false) is design only:
+the `PendingCopyUnwindHook` Protocol and the injection point exist, no
+requester is wired, so the flag cannot move money. The intended shape stays
+`PendingCopyUnwindRequester -> PositionManager.request_forced_exit(...,
+reason="pending_copy_unconfirmed")` consulted from `evaluate_risk_action`, so
+an unwind would ride the existing risk-monitor -> coordinator -> forced-sell
+FAK path rather than adding a second execution path.
+
+Operator signals: `pending_copy_confirmed_total`,
+`pending_copy_unconfirmed_total{reason=reverted|not_mined|rpc_error}`,
+`pending_copy_tracked`, `pending_copy_tracker_dropped_total{reason="full"}`,
+the WARN line `pending_copy_unconfirmed | tx=… leader=… age_s=… reason=…`, and
+a bounded DETECTION `FailureEvent` (`pending_copy_<reason>`) on the telemetry
+stream. Subscription health: `onchain_ws_connected{stream}`,
+`onchain_ws_reconnect_total{stream}`, readiness check `onchain_ws_ok`
+(`required=False`). Residual risks are listed in `docs/known_limitations.md`.
+
 ## Config
 `OnchainDetectionConfig` is typed in `config/app_config.py` and documented in
 `config/detection.yml`; overrides belong in `config/environments/<env>/detection.yml`.
+The `pending_copy_*` keys are consulted only in `on_chain_pending`.

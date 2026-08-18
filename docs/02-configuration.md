@@ -65,7 +65,7 @@ trade key, so a signal is copied once regardless of which source saw it first.
 |---|---|---|
 | `polling` (default, checked-in base) | data-api REST polling only | — |
 | `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
-| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is not unwound — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is reported by the pending-copy confirmation tracker below but never unwound automatically — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
 
 In `on_chain_pending`, `pending_tx_detection_confidence_required` must be
 `market_unattributed` or `pending_probable`: a mempool sighting is only ever
@@ -75,11 +75,20 @@ higher two fail startup closed. Other modes are unaffected.
 
 ### Pending-copy confirmation (`detection.onchain.pending_copy_*`)
 
-Keys consumed by the pending-copy confirmation tracker; the tracker itself
-lands separately, so **these keys are inert until then** and the
-`on_chain_pending` row above ("no mined correction path") still describes
-today's behaviour. They exist now so the tracker can be enabled without a
-config migration. Only ever consulted in `on_chain_pending`.
+Keys consumed by the pending-copy confirmation tracker
+(`services/onchain_detection/pending_copy_confirmation_tracker.py`), which
+follows up every copy taken off a mempool sighting by polling the leader
+transaction's receipt. Only ever consulted in `on_chain_pending`, and only
+when `polymarket.rpc_url` is set — without an HTTP RPC endpoint the tracker is
+not built and startup logs `pending_copy_tracker_disabled |
+reason=no_rpc_endpoint`.
+
+The tracker **reports**, it does not unwind: a copy whose leader transaction
+reverted, never mined, or could not be checked logs WARN
+`pending_copy_unconfirmed | tx=… leader=… age_s=… reason=…`, increments
+`pending_copy_unconfirmed_total{reason}`, and emits a bounded DETECTION
+telemetry failure. Closing the resulting position stays an operator action —
+see `docs/known_limitations.md` for the residual risks.
 
 | Key | Default | Meaning |
 |---|---|---|
