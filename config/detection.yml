@@ -26,9 +26,12 @@ onchain:
   # Pending-copy confirmation (mode: on_chain_pending only). A copy executed
   # off a provisional mempool sighting is tracked until its receipt proves the
   # leader tx mined; a sighting that reverts, is replaced, or never mines
-  # would otherwise leave an orphan position nothing detects. Auto-unwind of
-  # such a position stays opt-in.
+  # would otherwise leave an orphan position nothing detects.
   pending_copy_confirmation_enabled: true
   pending_copy_confirmation_deadline_seconds: 60.0
   pending_copy_confirmation_max_tracked: 2048
+  # pending_copy_auto_unwind_enabled is accepted but inert — no unwind
+  # requester is wired, so setting it true changes nothing and cannot move
+  # money. Unwinding an orphan position stays a manual operator procedure
+  # (see docs/known_limitations.md).
   pending_copy_auto_unwind_enabled: false

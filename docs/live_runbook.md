@@ -44,11 +44,16 @@ and fails closed: startup aborts with
 
    ```bash
    read -rs TOKEN                 # paste the operator value, press enter
-   curl -sS -H "Authorization: Bearer $TOKEN" \
-     http://127.0.0.1:9103/api/v1/system/status
-   curl -sS -o /dev/null -w '%{http_code}\n' \
-     -H "Authorization: Bearer $TOKEN" \
-     http://127.0.0.1:9103/api/v1/system/capabilities
+   # -H @- reads the header from stdin, so the credential never reaches the
+   # command line: `ps`, /proc/<pid>/cmdline, and any execve audit trail see
+   # only "-H @-". Passing -H "Authorization: Bearer $TOKEN" would expose it
+   # to every local process for the lifetime of the request.
+   curl -sS -H @- \
+     http://127.0.0.1:9103/api/v1/system/status \
+     <<<"Authorization: Bearer $TOKEN"
+   curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+     http://127.0.0.1:9103/api/v1/system/capabilities \
+     <<<"Authorization: Bearer $TOKEN"
    unset TOKEN
    ```
 
@@ -72,6 +77,45 @@ pmcopy drift check
 
 Investigate `submitted_unconfirmed`, stale market data, reconciliation blocks,
 wallet drift, or an open circuit breaker before allowing another order.
+
+### The pending-copy tracker is inert in paper mode
+
+With `detection.mode: on_chain_pending`, a copy is placed off a provisional
+mempool sighting and the pending-copy confirmation tracker is the only thing
+that notices when the leader transaction reverts, is replaced, or never mines.
+
+**A paper soak cannot exercise it.** The dispatcher tracks a copy only when a
+pipeline outcome reached the venue (`executed` / `submitted_unconfirmed`); in
+paper mode every copy stops at the `paper` tier before submission, so
+`track()` is never called and no `pending_copy_*` metric ever moves. Startup
+says so once: INFO `pending_copy_tracker_idle_in_paper_mode`.
+
+So **zero `pending_copy_*` output during a paper soak means NOT EXERCISED, not
+healthy.** It is not evidence the safeguard works. Do not sign the soak off on
+it.
+
+The real gate is the **first live session**, watched over a bounded window —
+the first 60 minutes of live trading:
+
+| Signal | Reading |
+| --- | --- |
+| `pending_copy_tracked` / `pending_copy_confirmed_total` still `0` after live copies were placed | the tracker is not wired; stop and fix before continuing |
+| `pending_copy_unconfirmed_total{reason="reverted"}` — **any** occurrence | abort |
+| `pending_copy_unconfirmed_total{reason="not_mined"}` — more than **2** | abort |
+| `pending_copy_unconfirmed_total{reason="rpc_error"}` sustained | the safeguard is blind (RPC fault, not a leader verdict); treat as an outage and fix the endpoint |
+
+Each abort case also emits WARN `pending_copy_unconfirmed | tx=… leader=…
+age_s=… reason=…`. Abort means: pause entries, close any orphan position by
+hand (there is no auto-unwind — `pending_copy_auto_unwind_enabled` is inert),
+then roll back to receipt-confirmed detection, which is one line plus a
+restart:
+
+```bash
+PMCOPY__DETECTION__MODE=on_chain_confirmed
+```
+
+`detection.mode` is read only at startup and is deliberately not an editable
+control-plane setting, so the restart is required.
 
 ## Pause
 

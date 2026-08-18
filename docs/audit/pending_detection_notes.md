@@ -60,6 +60,43 @@ Rollback is a one-line environment change plus a restart:
 `PMCOPY__DETECTION__MODE=on_chain_confirmed` (or edit the live file back).
 `detection.mode` is deliberately not an editable control-plane setting.
 
+### The paper soak cannot exercise the pending-copy tracker
+
+The first obligation above — "a paper soak showing pending sightings decode" —
+covers detection only. It says nothing about the confirmation safeguard,
+because **in paper mode the tracker records nothing at all.**
+
+`OnchainSignalDispatchAdapter._track_pending_copy` is reached only for
+followers whose pipeline outcome `_reached_venue()` — status `executed` or
+`submitted_unconfirmed`. Every paper copy returns at the `paper` tier before
+execution with no order id, so `track()` is never called, `pending_copy_tracked`
+stays `0`, and no `pending_copy_*` counter ever moves. Composition announces
+this once at startup: INFO `pending_copy_tracker_idle_in_paper_mode`.
+
+Consequence for the soak report: **zero `pending_copy_*` output in paper is
+NOT EXERCISED, not healthy.** Reading it as a green light is the specific
+mistake this note exists to prevent.
+
+The real gate is the first live session, over a bounded window — the first
+60 minutes of live trading:
+
+- `pending_copy_tracked` / `pending_copy_confirmed_total` must become non-zero
+  once live copies are placed. Still `0` means the tracker is not actually
+  wired (no RPC endpoint, feature off, wrong mode) — stop there.
+- **Abort on any `pending_copy_unconfirmed_total{reason="reverted"}`**: the
+  leader transaction failed and the copy is an orphan.
+- **Abort when `pending_copy_unconfirmed_total{reason="not_mined"}` exceeds
+  2**: the mempool sightings are not reaching a block, so the mode is copying
+  noise.
+- `reason="rpc_error"` is not a verdict on the leader transaction — it means
+  the safeguard is blind. Sustained `rpc_error` is an RPC outage to fix, not a
+  reason to keep trading unconfirmed.
+
+Abort procedure: pause entries, close any orphan position manually (auto-unwind
+is inert, see above), then apply the one-line rollback
+`PMCOPY__DETECTION__MODE=on_chain_confirmed` and restart. The operator runbook
+carries the same gate (`docs/live_runbook.md`).
+
 ## Module layout (shipped)
 ```
 services/onchain_detection/

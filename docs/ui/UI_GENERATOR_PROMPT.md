@@ -153,8 +153,13 @@ is then `"bearer"`. The credential is checked by the same constant-time bearer
 path as the header, so permissions, rate limits and every frame contract are
 identical.
 
-Four rules come with it:
+Five rules come with it:
 
+- **An unauthenticated loopback deployment has no carrier at all.** With
+  `require_authentication: false` no credential is configured, so the carrier is
+  disabled and *every* offer — `bearer` included — is refused with
+  `400 unsupported_subprotocol`. Omit the subprotocol array entirely:
+  ``new WebSocket(`${base}/stream`)`` with no second argument.
 - **Only the upgrade reads it.** Every REST route ignores
   `Sec-WebSocket-Protocol`; a REST call still needs the `Authorization` header.
 - **Send exactly one carrier.** If you send both, they must present the same
