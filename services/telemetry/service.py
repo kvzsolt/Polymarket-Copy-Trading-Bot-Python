@@ -155,6 +155,11 @@ class TelemetryService:
         self._metrics.register_schemas(TELEMETRY_METRIC_SCHEMAS)
         self._history: deque[TelemetryEvent] = deque(maxlen=history_capacity)
         self._history_lock = threading.Lock()
+        # Last value written to the bounded-history gauge. The deque saturates
+        # at ``history_capacity`` and then never changes length again, so
+        # comparing first turns a per-event metrics-lock round trip into an
+        # integer compare for the entire steady-state life of the process.
+        self._history_gauge_value = -1
         self._sequences: dict[TelemetryProducer, int] = {}
         self._sink_subscription: TelemetrySubscription | None = None
         self._sink_task: asyncio.Task[None] | None = None
@@ -207,6 +212,12 @@ class TelemetryService:
             severity: Bounded operator severity.
             correlation_id: Optional opaque correlation token.
 
+        The bounded-history gauge is refreshed only when the deque length
+        actually changes. The deque saturates at ``history_capacity`` and then
+        never changes length again, so the steady-state cost of keeping that
+        gauge truthful is one integer comparison rather than a metrics-lock
+        round trip on every event.
+
         Returns:
             The explicit accepted or dropped result from the hub.
         """
@@ -226,12 +237,15 @@ class TelemetryService:
         if result.status is HubPublishStatus.ACCEPTED:
             with self._history_lock:
                 self._history.append(event)
+                depth = len(self._history)
             self._record_event_metrics(payload)
-            self._metrics.set_gauge(
-                GAUGE_TELEMETRY_CACHE_ENTRIES,
-                float(len(self._history)),
-                labels={"cache": TelemetryCache.EVENT_HISTORY.value},
-            )
+            if depth != self._history_gauge_value:
+                self._history_gauge_value = depth
+                self._metrics.set_gauge(
+                    GAUGE_TELEMETRY_CACHE_ENTRIES,
+                    float(depth),
+                    labels={"cache": TelemetryCache.EVENT_HISTORY.value},
+                )
         return result
 
     def observe_latency(self, *, phase: LatencyPhase, seconds: float) -> None:

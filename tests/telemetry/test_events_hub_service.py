@@ -454,3 +454,32 @@ def test_emit_failure_counter_and_paper_only_reason_are_registered() -> None:
     )
     with pytest.raises(ValueError, match="bounded value"):
         registry.inc(METRIC_TELEMETRY_EMIT_FAILURE, labels={"producer": "0xleader"})
+
+
+@pytest.mark.asyncio
+async def test_history_gauge_is_written_only_when_the_bounded_depth_changes() -> None:
+    """The single pre-submit emit must not pay for an unchanged gauge."""
+    registry = GaugeSpyRegistry()
+    hub = TelemetryHub(ingress_capacity=64, metrics=registry)
+    service = TelemetryService(hub=hub, metrics=registry, history_capacity=2)
+    await service.start()
+
+    def _cache_writes() -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+        return [call for call in registry.gauge_calls if call[0] == "telemetry_cache_entries"]
+
+    for _ in range(2):
+        service.emit(producer=TelemetryProducer.DETECTION, payload=_leader_received())
+    assert len(_cache_writes()) == 2
+
+    # The bounded deque is saturated; its length can never change again, so the
+    # gauge is already truthful and further events must not touch it.
+    registry.gauge_calls.clear()
+    for _ in range(20):
+        service.emit(producer=TelemetryProducer.DETECTION, payload=_leader_received())
+
+    assert _cache_writes() == []
+    _, gauges = registry.snapshot()
+    assert gauges['telemetry_cache_entries{cache="event_history"}'] == 2
+    assert len(service.history_snapshot()) == 2
+
+    await service.close()

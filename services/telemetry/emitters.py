@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -51,14 +52,18 @@ from services.telemetry.contracts import (
     TradeEvent,
     TradeOutcome,
     TradeSide,
+    WSS_STREAM_NAMES,
     WssEvent,
     WssOutcome,
+    is_safe_code,
     is_safe_ref,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from services.telemetry.service import TelemetryService
 
+
+_LOGGER = logging.getLogger(__name__)
 
 _CODE_SANITIZER_RE = re.compile(r"[^a-z0-9_.-]+")
 _CODE_LEADING_RE = re.compile(r"^[^a-z0-9]+")
@@ -103,7 +108,19 @@ _ORDER_OUTCOME_BY_STATUS: Mapping[str, OrderOutcome] = MappingProxyType(
     }
 )
 
-_PARTIAL_FILL_STATUSES = frozenset({"partially_filled", "partial"})
+# Copy-level outcome for an *accepted* execution result. Anything not listed
+# here is a submission whose fill is still unknown, so it reports SUBMITTED:
+# "executed" is owned by fill evidence and reconciliation, never by the act of
+# submitting. Only a venue response that already carries matched size may claim
+# a fill in the same call.
+_TRADE_OUTCOME_BY_STATUS: Mapping[str, TradeOutcome] = MappingProxyType(
+    {
+        "filled": TradeOutcome.EXECUTED,
+        "partially_filled": TradeOutcome.PARTIAL,
+        "partial": TradeOutcome.PARTIAL,
+    }
+)
+
 _UNCONFIRMED_STATUS = "submitted_unconfirmed"
 
 
@@ -113,14 +130,17 @@ class PipelineOutcomeLike(Protocol):
     @property
     def trade_key(self) -> str:
         """Return the canonical copy identity for this row."""
+        ...
 
     @property
     def status(self) -> str:
         """Return the pipeline status such as ``skipped`` or ``paper``."""
+        ...
 
     @property
     def reason(self) -> str | None:
         """Return the internal skip or failure code, when present."""
+        ...
 
 
 class SignalLike(Protocol):
@@ -129,10 +149,12 @@ class SignalLike(Protocol):
     @property
     def side(self) -> str:
         """Return the leader trade side."""
+        ...
 
     @property
     def tx_hash(self) -> str:
         """Return the leader transaction hash used for correlation."""
+        ...
 
 
 class OrderRequestLike(Protocol):
@@ -141,18 +163,27 @@ class OrderRequestLike(Protocol):
     @property
     def user_id(self) -> str:
         """Return the follower account identity."""
+        ...
 
     @property
     def leader_id(self) -> str:
         """Return the copied leader identity."""
+        ...
 
     @property
     def token_id(self) -> str:
         """Return the outcome token identity."""
+        ...
 
     @property
     def side(self) -> str:
         """Return the venue-neutral order side."""
+        ...
+
+    @property
+    def signal_id(self) -> str | None:
+        """Return the detection signal identity, when one exists."""
+        ...
 
 
 class OrderResultLike(Protocol):
@@ -161,18 +192,22 @@ class OrderResultLike(Protocol):
     @property
     def accepted(self) -> bool:
         """Return whether the venue accepted the submission."""
+        ...
 
     @property
     def order_id(self) -> str | None:
         """Return the venue order identity, when one exists."""
+        ...
 
     @property
     def status(self) -> str:
         """Return the execution status code."""
+        ...
 
     @property
     def error(self) -> str | None:
         """Return the sanitized error text, when present."""
+        ...
 
 
 def safe_ref(value: str) -> str:
@@ -206,6 +241,11 @@ def bounded_code(value: str | None) -> str:
     Returns:
         A sanitized code of at most 64 characters, never empty.
     """
+    if value and is_safe_code(value):
+        # Hot path: detection sources and internal skip codes are already
+        # bounded lowercase codes, so the common case is one regex match
+        # instead of two substitutions.
+        return value
     text = (value or "").strip().lower()
     text = _CODE_SANITIZER_RE.sub("_", text)
     text = _CODE_LEADING_RE.sub("", text)
@@ -300,6 +340,28 @@ class TelemetryEmitter:
     def producer(self) -> TelemetryProducer:
         """Return the stable producer identity of this emitter."""
         return self._producer
+
+    def _guarded(self, emit: Callable[[], bool]) -> bool:
+        """Run one complete emit path, argument handling included, under guard.
+
+        Public emitter methods classify their arguments before they can build a
+        payload, and that classification reads attributes and converts types
+        that a hostile or simply wrong caller can make raise. Wrapping the whole
+        method body keeps the promise that no emitter call can ever raise into a
+        producer. A failure inside :meth:`_publish` is already absorbed there, so
+        a single fault is counted exactly once.
+
+        Args:
+            emit: Zero-argument callable performing the full emit path.
+
+        Returns:
+            The emit result, or ``False`` when preparation failed.
+        """
+        try:
+            return emit()
+        except Exception:
+            self._record_failure()
+            return False
 
     def _publish(
         self,
@@ -426,12 +488,16 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
     """Emit leader-detection events and keep bounded local counters.
 
     This is the only pre-submit emit on the copy path: exactly one event per
-    detected signal. Counters are plain in-memory integers with no lock. Every
+    detected signal.
+
+    Counters are plain in-memory integers in plain dicts, with no lock. Every
     production call site (the on-chain dispatch adapter and the polling leader
     dispatcher) runs on the single asyncio loop thread, so the read-modify-write
-    on these integers is never concurrent; a foreign-thread caller may at worst
-    lose one increment, which is acceptable for an operator counter and never
-    affects the money path.
+    is not concurrent there and a lock would be pure hot-path cost. A
+    foreign-thread producer is tolerated but not synchronized: it may lose an
+    increment under a race. :meth:`snapshot` copies each table with a single
+    C-level ``list(dict.items())`` so a concurrent producer can never make an
+    operator read raise. Neither case can affect the money path.
 
     Args:
         service: Telemetry service, or ``None`` for a null object.
@@ -471,19 +537,7 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        code = bounded_code(source)
-        leader_ref = safe_ref(leader_wallet)
-        self._touch(code, leader_ref, deduplicated=False)
-        correlation = safe_ref(tx_hash) if tx_hash else None
-        return self._publish(
-            lambda: LeaderEvent(
-                outcome=LeaderOutcome.RECEIVED,
-                leader_ref=leader_ref,
-                source=code,
-            ),
-            severity=TelemetrySeverity.INFO,
-            correlation_id=correlation,
-        )
+        return self._guarded(lambda: self._signal(source, leader_wallet, tx_hash, dedup=False))
 
     def signal_deduplicated(self, source: str, leader_wallet: str) -> bool:
         """Record and publish one deduplicated leader signal.
@@ -495,16 +549,25 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._signal(source, leader_wallet, None, dedup=True))
+
+    def _signal(
+        self,
+        source: str,
+        leader_wallet: str,
+        tx_hash: str | None,
+        *,
+        dedup: bool,
+    ) -> bool:
         code = bounded_code(source)
         leader_ref = safe_ref(leader_wallet)
-        self._touch(code, leader_ref, deduplicated=True)
+        self._touch(code, leader_ref, deduplicated=dedup)
+        outcome = LeaderOutcome.DEDUP if dedup else LeaderOutcome.RECEIVED
+        severity = TelemetrySeverity.DEBUG if dedup else TelemetrySeverity.INFO
         return self._publish(
-            lambda: LeaderEvent(
-                outcome=LeaderOutcome.DEDUP,
-                leader_ref=leader_ref,
-                source=code,
-            ),
-            severity=TelemetrySeverity.DEBUG,
+            lambda: LeaderEvent(outcome=outcome, leader_ref=leader_ref, source=code),
+            severity=severity,
+            correlation_id=safe_ref(tx_hash) if tx_hash else None,
         )
 
     def roster_updated(self, active_count: int) -> bool:
@@ -516,6 +579,9 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._roster(active_count))
+
+    def _roster(self, active_count: int) -> bool:
         count = int(active_count)
         self._active_leaders = count
         outcome = RosterOutcome.UPDATED if count > 0 else RosterOutcome.EMPTY
@@ -543,6 +609,15 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
         self._probe = probe
         return True
 
+    def _frozen_table(self, table: dict[str, _MutableCounters]) -> Mapping[str, DetectionCounters]:
+        """Return a read-only frozen copy of one live counter table."""
+        # ``list(dict.items())`` is a single C-level copy with no interpreter
+        # checkpoint inside it, so a producer mutating the table from another
+        # thread cannot make this raise "dictionary changed size during
+        # iteration" the way a Python-level comprehension over the live dict can.
+        items = list(table.items())
+        return MappingProxyType({name: counters.frozen() for name, counters in items})
+
     def snapshot(self) -> DetectionCountersSnapshot:
         """Return an immutable, bounded view of local detection state.
 
@@ -558,12 +633,8 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
                 raw = None
             connected = None if raw is None else bool(raw)
         return DetectionCountersSnapshot(
-            sources=MappingProxyType(
-                {name: counters.frozen() for name, counters in self._sources.items()}
-            ),
-            leaders=MappingProxyType(
-                {name: counters.frozen() for name, counters in self._leaders.items()}
-            ),
+            sources=self._frozen_table(self._sources),
+            leaders=self._frozen_table(self._leaders),
             active_leader_count=self._active_leaders,
             leader_ws_connected=connected,
         )
@@ -646,6 +717,17 @@ class TradeTelemetryEmitter(TelemetryEmitter):
         """
         if not self.enabled:
             return False
+        return self._guarded(
+            lambda: self._pipeline_results(user_id, leader_wallet, results, signals_by_key)
+        )
+
+    def _pipeline_results(
+        self,
+        user_id: str,
+        leader_wallet: str,
+        results: Iterable[PipelineOutcomeLike],
+        signals_by_key: Mapping[str, SignalLike],
+    ) -> bool:
         fallback_ref = safe_ref(f"{user_id}:{leader_wallet}")
         accepted = True
         for result in results:
@@ -680,6 +762,9 @@ class TradeTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._pipeline_failed(user_id, leader_wallet, exc))
+
+    def _pipeline_failed(self, user_id: str, leader_wallet: str, exc: BaseException) -> bool:
         code = exception_code(exc)
         correlation = safe_ref(leader_wallet) if leader_wallet else safe_ref(user_id)
         return self._publish(
@@ -722,7 +807,7 @@ class TradeTelemetryEmitter(TelemetryEmitter):
     def _correlation(signals_by_key: Mapping[str, SignalLike], trade_key: str) -> str | None:
         signal = signals_by_key.get(trade_key) if signals_by_key else None
         tx_hash = getattr(signal, "tx_hash", None)
-        return safe_ref(tx_hash) if tx_hash else None
+        return safe_ref(str(tx_hash)) if tx_hash else None
 
 
 class ExecutionTelemetryEmitter(TelemetryEmitter):
@@ -745,9 +830,12 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
     def order_result(self, request: OrderRequestLike, result: OrderResultLike) -> bool:
         """Publish exactly one bounded event for one execution attempt.
 
-        An accepted submission whose POST outcome is ambiguous is reported as
-        an ambiguous operation requiring reconciliation, never as a fill and
-        never as a plain failure that a caller might retry.
+        Submission is never reported as a fill. An accepted result is
+        ``TradeOutcome.SUBMITTED`` unless the venue itself already reported
+        matched size in the same response, and an accepted submission whose POST
+        outcome is ambiguous is reported as an ambiguous operation requiring
+        reconciliation, never as a fill and never as a plain failure a caller
+        might retry.
 
         Args:
             request: The execution request that was attempted.
@@ -756,7 +844,9 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        task_ref = self._task_ref(request)
+        return self._guarded(lambda: self._order_result(request, result))
+
+    def _order_result(self, request: OrderRequestLike, result: OrderResultLike) -> bool:
         order_id = getattr(result, "order_id", None)
         order_ref = safe_ref(str(order_id)) if order_id else None
         status = str(getattr(result, "status", "") or "").strip().lower()
@@ -772,16 +862,14 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
                 ),
                 severity=TelemetrySeverity.WARNING,
             )
+        task_ref = self._task_ref(request)
         if accepted:
-            side = self._side(request)
-            outcome = (
-                TradeOutcome.PARTIAL if status in _PARTIAL_FILL_STATUSES else TradeOutcome.EXECUTED
-            )
+            outcome = _TRADE_OUTCOME_BY_STATUS.get(status, TradeOutcome.SUBMITTED)
             return self._publish(
                 lambda: TradeEvent(
                     outcome=outcome,
                     task_ref=task_ref,
-                    side=side,
+                    side=self._side(request),
                     order_ref=order_ref,
                     order_outcome=OrderOutcome.SUBMITTED,
                 ),
@@ -807,6 +895,9 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._order_exception(request, exc))
+
+    def _order_exception(self, request: OrderRequestLike, exc: BaseException) -> bool:
         code = exception_code(exc)
         task_ref = self._task_ref(request)
         return self._publish(
@@ -829,6 +920,9 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._fill_observed(order_id, matched_total))
+
+    def _fill_observed(self, order_id: str, matched_total: object) -> bool:
         order_ref = safe_ref(str(order_id))
         fill_ref = safe_ref(f"{order_id}:{matched_total}")
         return self._publish(
@@ -849,13 +943,15 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        return self._publish(
-            lambda: ReconciliationEvent(
-                outcome=ReconciliationOutcome.DRIFT,
-                affected_count=1,
-            ),
-            severity=TelemetrySeverity.WARNING,
-            correlation_id=safe_ref(str(order_id)),
+        return self._guarded(
+            lambda: self._publish(
+                lambda: ReconciliationEvent(
+                    outcome=ReconciliationOutcome.DRIFT,
+                    affected_count=1,
+                ),
+                severity=TelemetrySeverity.WARNING,
+                correlation_id=safe_ref(str(order_id)),
+            )
         )
 
     def ambiguous_released(self, order_id: str) -> bool:
@@ -867,14 +963,15 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        order_ref = safe_ref(str(order_id))
-        return self._publish(
-            lambda: AmbiguousEvent(
-                operation=AmbiguousOperation.ORDER_SUBMISSION,
-                order_ref=order_ref,
-                reconciliation_required=False,
-            ),
-            severity=TelemetrySeverity.NOTICE,
+        return self._guarded(
+            lambda: self._publish(
+                lambda: AmbiguousEvent(
+                    operation=AmbiguousOperation.ORDER_SUBMISSION,
+                    order_ref=safe_ref(str(order_id)),
+                    reconciliation_required=False,
+                ),
+                severity=TelemetrySeverity.NOTICE,
+            )
         )
 
     @staticmethod
@@ -924,13 +1021,13 @@ class RiskTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        task_ref = _position_ref(condition_id, token_id)
-        return self._publish(
-            lambda: ProtectiveExitEvent(
-                outcome=ProtectiveOutcome.TRIGGERED,
-                task_ref=task_ref,
-            ),
-            severity=TelemetrySeverity.WARNING,
+        return self._guarded(
+            lambda: self._protective(
+                condition_id,
+                token_id,
+                ProtectiveOutcome.TRIGGERED,
+                TelemetrySeverity.WARNING,
+            )
         )
 
     def exit_filled(self, condition_id: str, token_id: str, reason: str) -> bool:
@@ -944,13 +1041,26 @@ class RiskTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(
+            lambda: self._protective(
+                condition_id,
+                token_id,
+                ProtectiveOutcome.FILLED,
+                TelemetrySeverity.NOTICE,
+            )
+        )
+
+    def _protective(
+        self,
+        condition_id: str,
+        token_id: str,
+        outcome: ProtectiveOutcome,
+        severity: TelemetrySeverity,
+    ) -> bool:
         task_ref = _position_ref(condition_id, token_id)
         return self._publish(
-            lambda: ProtectiveExitEvent(
-                outcome=ProtectiveOutcome.FILLED,
-                task_ref=task_ref,
-            ),
-            severity=TelemetrySeverity.NOTICE,
+            lambda: ProtectiveExitEvent(outcome=outcome, task_ref=task_ref),
+            severity=severity,
         )
 
     def exit_not_filled(self, condition_id: str, token_id: str, reason: str) -> bool:
@@ -964,6 +1074,9 @@ class RiskTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        return self._guarded(lambda: self._exit_not_filled(condition_id, token_id, reason))
+
+    def _exit_not_filled(self, condition_id: str, token_id: str, reason: str) -> bool:
         code = bounded_code(f"exit_not_filled_{reason}" if reason else "exit_not_filled")
         correlation = _position_ref(condition_id, token_id)
         return self._publish(
@@ -986,10 +1099,14 @@ class RiskTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
-        reference = safe_ref(task_ref) if task_ref else None
-        return self._publish(
-            lambda: RiskEvent(outcome=RiskOutcome.REJECTED, task_ref=reference),
-            severity=TelemetrySeverity.NOTICE,
+        return self._guarded(
+            lambda: self._publish(
+                lambda: RiskEvent(
+                    outcome=RiskOutcome.REJECTED,
+                    task_ref=safe_ref(task_ref) if task_ref else None,
+                ),
+                severity=TelemetrySeverity.NOTICE,
+            )
         )
 
 
@@ -1060,7 +1177,17 @@ class WssTelemetryEmitter(TelemetryEmitter):
         outcome: WssOutcome,
         severity: TelemetrySeverity,
     ) -> bool:
-        name = str(stream or "").strip().lower()
+        try:
+            name = str(stream or "").strip().lower()
+        except Exception:
+            self._record_failure()
+            return False
+        if name not in WSS_STREAM_NAMES:
+            # A caller typo is a wiring bug, not a telemetry backend fault, so it
+            # must not land on telemetry_emit_failure_total and make the operator
+            # chase a healthy hub. DEBUG keeps it free in production.
+            _LOGGER.debug("telemetry_wss_stream_rejected | stream=%s", name)
+            return False
         return self._publish(
             lambda: WssEvent(outcome=outcome, stream=name),
             severity=severity,

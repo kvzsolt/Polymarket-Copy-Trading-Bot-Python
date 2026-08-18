@@ -26,6 +26,18 @@ def is_safe_ref(value: str) -> bool:
     return _SAFE_TOKEN_RE.fullmatch(value) is not None
 
 
+def is_safe_code(value: str) -> bool:
+    """Return whether a value is already a bounded lowercase contract code.
+
+    Args:
+        value: Candidate code such as a detection source or failure code.
+
+    Returns:
+        ``True`` when the value may be used verbatim in a ``code``-shaped field.
+    """
+    return _SAFE_CODE_RE.fullmatch(value) is not None
+
+
 def _require_safe_token(name: str, value: str) -> None:
     if not _SAFE_TOKEN_RE.fullmatch(value):
         raise ValueError(f"{name} must be an opaque token of at most 128 characters")
@@ -138,6 +150,10 @@ class TradeOutcome(StrEnum):
     """Bounded copy-trade outcomes."""
 
     CANDIDATE_EVALUATED = "candidate_evaluated"
+    # A copy that reached the venue but whose fill is not yet known. Execution
+    # reports this at submission time; only fill evidence or reconciliation may
+    # promote a copy to PARTIAL or EXECUTED.
+    SUBMITTED = "submitted"
     EXECUTED = "executed"
     PARTIAL = "partial"
     SKIPPED = "skipped"
@@ -255,6 +271,10 @@ class RosterOutcome(StrEnum):
     UPDATED = "updated"
     EMPTY = "empty"
     UNCHANGED = "unchanged"
+
+
+WSS_STREAM_NAMES: frozenset[str] = frozenset({"leader", "market", "user"})
+"""Bounded WebSocket stream names accepted by :class:`WssEvent`."""
 
 
 class WssOutcome(StrEnum):
@@ -455,7 +475,7 @@ class WssEvent:
 
     def __post_init__(self) -> None:
         _require_safe_code("stream", self.stream)
-        if self.stream not in {"leader", "market", "user"}:
+        if self.stream not in WSS_STREAM_NAMES:
             raise ValueError("stream must be leader, market, or user")
 
 

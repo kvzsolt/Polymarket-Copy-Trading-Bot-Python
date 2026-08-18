@@ -19,6 +19,7 @@ from services.metrics import (
     METRIC_TELEMETRY_LEADER_QUEUE_OVERFLOW,
     METRIC_TELEMETRY_LEADER_SIGNAL,
     METRIC_TELEMETRY_ORDER_OUTCOME,
+    TELEMETRY_COPY_OUTCOME_VALUES,
     TELEMETRY_LATENCY_BUCKETS,
     TELEMETRY_METRIC_SCHEMAS,
     LatencyPhase,
@@ -108,9 +109,17 @@ def test_registered_schema_covers_exact_latency_phases_and_operator_families() -
     assert {"received", "dedup", "promoted", "retracted"} <= set(
         dict(schemas[METRIC_TELEMETRY_LEADER_SIGNAL].allowed_label_values)["outcome"]
     )
-    assert {"executed", "partial", "skipped", "failed", "ambiguous"} == set(
+    # The copy-outcome label set is exactly ``TradeOutcome`` minus the
+    # candidate outcome, which has its own counter. Pinning it to the enum
+    # keeps a new outcome from silently escaping the bounded label contract.
+    copy_outcomes = {
+        outcome.value for outcome in TradeOutcome if outcome is not TradeOutcome.CANDIDATE_EVALUATED
+    }
+    schema_outcomes = set(
         dict(schemas[METRIC_TELEMETRY_COPY_OUTCOME].allowed_label_values)["outcome"]
     )
+    assert schema_outcomes == copy_outcomes
+    assert set(TELEMETRY_COPY_OUTCOME_VALUES) == copy_outcomes
     assert {"submitted", "canceled", "rejected", "not_fillable", "ambiguous"} == set(
         dict(schemas[METRIC_TELEMETRY_ORDER_OUTCOME].allowed_label_values)["outcome"]
     )

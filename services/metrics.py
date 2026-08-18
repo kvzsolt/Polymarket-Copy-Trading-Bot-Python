@@ -538,6 +538,17 @@ TELEMETRY_PRODUCER_LABEL_VALUES = (
     "control_plane",
 )
 
+# Copy-level outcomes. Mirrors ``TradeOutcome`` minus ``candidate_evaluated``,
+# which is counted by its own metric; pinned to the enum by a telemetry test.
+TELEMETRY_COPY_OUTCOME_VALUES = (
+    "submitted",
+    "executed",
+    "partial",
+    "skipped",
+    "failed",
+    "ambiguous",
+)
+
 _SKIP_REASONS = (
     "none",
     "duplicate",
@@ -606,7 +617,7 @@ TELEMETRY_METRIC_SCHEMAS: tuple[MetricSchema, ...] = (
         METRIC_TELEMETRY_COPY_OUTCOME,
         MetricKind.COUNTER,
         (
-            ("outcome", ("executed", "partial", "skipped", "failed", "ambiguous")),
+            ("outcome", TELEMETRY_COPY_OUTCOME_VALUES),
             ("reason", _SKIP_REASONS),
         ),
     ),

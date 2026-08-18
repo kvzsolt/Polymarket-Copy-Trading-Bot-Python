@@ -176,6 +176,58 @@ class _Signal:
         self.tx_hash = tx_hash
 
 
+class Hostile:
+    """Argument whose every attribute read and conversion raises.
+
+    Emitter methods must classify their arguments before they can build a
+    payload, so this proves the whole method body is guarded, not just the
+    payload construction.
+    """
+
+    def __getattr__(self, name: str) -> object:
+        """Raise on any attribute read."""
+        raise RuntimeError("hostile attribute")
+
+    def __str__(self) -> str:
+        """Raise on string conversion."""
+        raise RuntimeError("hostile str")
+
+    def __iter__(self) -> object:
+        """Raise on iteration."""
+        raise RuntimeError("hostile iter")
+
+    def __format__(self, spec: str) -> str:
+        """Raise on formatting."""
+        raise RuntimeError("hostile format")
+
+
+def _junk_calls(bundle: TelemetryEmitters) -> list[tuple[str, object, tuple[object, ...]]]:
+    """Return every publishing method paired with arguments that must fail."""
+    hostile = Hostile()
+    return [
+        ("signal_received", bundle.detection.signal_received, (hostile, hostile, hostile)),
+        ("signal_deduplicated", bundle.detection.signal_deduplicated, (hostile, hostile)),
+        ("roster_updated", bundle.detection.roster_updated, ("not-a-number",)),
+        ("roster_updated_negative", bundle.detection.roster_updated, (-1,)),
+        ("pipeline_results", bundle.trade.pipeline_results, (hostile, hostile, hostile, hostile)),
+        ("pipeline_failed", bundle.trade.pipeline_failed, (hostile, hostile, RuntimeError("x"))),
+        ("reconciliation_run", bundle.trade.reconciliation_run, ("not-a-number",)),
+        ("order_result", bundle.execution.order_result, (hostile, hostile)),
+        ("order_exception", bundle.execution.order_exception, (hostile, RuntimeError("x"))),
+        ("fill_observed", bundle.execution.fill_observed, (hostile, hostile)),
+        ("reconciliation_drift", bundle.execution.reconciliation_drift, (hostile,)),
+        ("ambiguous_released", bundle.execution.ambiguous_released, (hostile,)),
+        ("exit_triggered", bundle.risk.exit_triggered, (hostile, hostile, hostile)),
+        ("exit_filled", bundle.risk.exit_filled, (hostile, hostile, hostile)),
+        ("exit_not_filled", bundle.risk.exit_not_filled, (hostile, hostile, hostile)),
+        ("risk_rejected", bundle.risk.risk_rejected, (hostile,)),
+        ("wss_connected", bundle.wss.connected, ("",)),
+        ("wss_reconnected", bundle.wss.reconnected, (None,)),
+        ("wss_disconnected", bundle.wss.disconnected, ("not-a-stream",)),
+        ("wss_stalled", bundle.wss.stalled, (hostile,)),
+    ]
+
+
 def _emit_calls(bundle: TelemetryEmitters) -> list[tuple[object, tuple[object, ...]]]:
     """Return every publishing emitter method with representative arguments."""
     return [
@@ -380,38 +432,31 @@ async def test_execution_result_status_maps_to_bounded_order_outcomes() -> None:
     service = await _started_service()
     emitter = ExecutionTelemetryEmitter(service)
 
-    assert (
-        emitter.order_result(_request(), _result(accepted=True, status="submitted_unconfirmed"))
-        is True
-    )
-    assert (
-        emitter.order_result(_request(), _result(accepted=False, status="rejected", order_id=None))
-        is True
-    )
-    assert (
-        emitter.order_result(_request(), _result(accepted=False, status="expired", order_id=None))
-        is True
-    )
-    assert (
-        emitter.order_result(
-            _request(),
-            _result(
-                accepted=True,
-                status="submitted_unconfirmed",
-                error="connection reset after POST",
-            ),
-        )
-        is True
-    )
+    for result in (
+        _result(accepted=True, status="submitted_unconfirmed"),
+        _result(accepted=False, status="rejected", order_id=None),
+        _result(accepted=False, status="expired", order_id=None),
+        _result(
+            accepted=True,
+            status="submitted_unconfirmed",
+            error="connection reset after POST",
+        ),
+        _result(accepted=True, status="partially_filled", filled="2"),
+        _result(accepted=True, status="filled", filled="5"),
+        _result(accepted=False, status="book_no_liquidity", order_id=None),
+    ):
+        assert emitter.order_result(_request(), result) is True, result.status
 
-    submitted, rejected, expired, ambiguous = (
+    submitted, rejected, expired, ambiguous, partial, filled, gated = (
         event.payload for event in service.history_snapshot()
     )
 
+    # A submission is never a fill: the copy outcome stays SUBMITTED until fill
+    # evidence or reconciliation says otherwise.
     assert isinstance(submitted, TradeEvent)
+    assert submitted.outcome is TradeOutcome.SUBMITTED
     assert submitted.order_outcome is OrderOutcome.SUBMITTED
     assert submitted.side is TradeSide.BUY
-    assert submitted.outcome is TradeOutcome.EXECUTED
 
     assert isinstance(rejected, FailureEvent)
     assert rejected.component is FailureComponent.EXECUTION
@@ -424,6 +469,22 @@ async def test_execution_result_status_maps_to_bounded_order_outcomes() -> None:
     assert isinstance(ambiguous, AmbiguousEvent)
     assert ambiguous.operation is AmbiguousOperation.ORDER_SUBMISSION
     assert ambiguous.reconciliation_required is True
+
+    # Only a venue response that already reports matched size may claim a fill.
+    assert isinstance(partial, TradeEvent)
+    assert partial.outcome is TradeOutcome.PARTIAL
+    assert isinstance(filled, TradeEvent)
+    assert filled.outcome is TradeOutcome.EXECUTED
+
+    # A local pre-submit gate is a failure with no venue order outcome, so it
+    # never inflates the venue rejection counter.
+    assert isinstance(gated, FailureEvent)
+    assert gated.code == "book_no_liquidity"
+    assert gated.order_outcome is None
+
+    counters, _ = service.metrics_registry.snapshot()
+    assert counters['telemetry_copy_outcome_total{outcome="submitted",reason="none"}'] == 1
+    assert counters['telemetry_copy_outcome_total{outcome="executed",reason="none"}'] == 1
 
     await service.close()
 
@@ -496,6 +557,12 @@ async def test_wss_emitter_publishes_bounded_stream_lifecycle() -> None:
     assert emitter.disconnected("leader") is True
     assert emitter.stalled("market") is True
     assert emitter.connected("not-a-stream") is False
+    assert emitter.connected("") is False
+    assert emitter.connected(None) is False  # type: ignore[arg-type]
+
+    # A caller typo is a wiring bug, not a telemetry backend fault.
+    counters, _ = service.metrics_registry.snapshot()
+    assert not [key for key in counters if key.startswith(METRIC_TELEMETRY_EMIT_FAILURE)]
 
     payloads = [event.payload for event in service.history_snapshot()]
     assert all(isinstance(payload, WssEvent) for payload in payloads)
@@ -642,5 +709,40 @@ async def test_bundle_shares_one_service_and_exposes_every_producer() -> None:
 
     with pytest.raises(FrozenInstanceError):
         bundle.detection = None  # type: ignore[misc]
+
+    await service.close()
+
+
+async def test_no_emitter_method_raises_on_junk_arguments() -> None:
+    """Every publishing method absorbs unusable arguments and reports False."""
+    registry = MetricsRegistry()
+    service = await _started_service(registry)
+    bundle = TelemetryEmitters.build(service)
+
+    for name, method, args in _junk_calls(bundle):
+        outcome = method(*args)  # type: ignore[operator]
+        assert outcome is False, name
+
+    # Nothing reached the hub, and no producer saw an exception.
+    assert service.history_snapshot() == ()
+
+    await service.close()
+
+
+async def test_junk_arguments_never_produce_an_unbounded_metric_label() -> None:
+    """Absorbed failures stay on the bounded producer counter."""
+    registry = MetricsRegistry()
+    service = await _started_service(registry)
+    bundle = TelemetryEmitters.build(service)
+
+    for _name, method, args in _junk_calls(bundle):
+        method(*args)  # type: ignore[operator]
+
+    counters, _ = registry.snapshot()
+    failure_keys = {key for key in counters if key.startswith(METRIC_TELEMETRY_EMIT_FAILURE)}
+    assert failure_keys <= {
+        f'{METRIC_TELEMETRY_EMIT_FAILURE}{{producer="{producer.value}"}}'
+        for producer in TelemetryProducer
+    }
 
     await service.close()
