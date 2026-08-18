@@ -1,8 +1,31 @@
 # Live detection source. Base config/detection.yml stays mode: polling.
-# on_chain_confirmed = mempool-observed, receipt-confirmed. Polling keeps running
-# as parallel fallback; copy layer dedups by trade key (CrossSourceTradeClaimPolicy).
-mode: on_chain_confirmed
+# on_chain_pending = copy on the mempool sighting itself (gen-1
+# OnchainDetectionRuntime, alchemy_pendingTransactions with calldata), which is
+# provisional: the leader transaction has not mined yet. Measured mempool lead
+# over mined was 0.67 s median with ~96 % visibility (docs/audit/
+# pending_detection_notes.md), which is why this is the live default.
+#
+# REST polling keeps running as a parallel fallback in this mode exactly as in
+# every other one; the copy layer dedups the same fill by trade key
+# (CrossSourceTradeClaimPolicy), so a fill is copied once no matter which
+# source saw it first.
+#
+# Because the mined OrderFilled subscription is off here (it would double-copy),
+# nothing supersedes a provisional copy. The pending-copy confirmation tracker
+# below follows every executed copy to its receipt and reports
+# reverted / not_mined / rpc_error (metric pending_copy_unconfirmed_total,
+# WARN pending_copy_unconfirmed); it does not unwind — closing an orphaned
+# position stays an operator action (docs/known_limitations.md).
+mode: on_chain_pending
 onchain:
   pending_tx_provider: alchemy
-  pending_tx_max_signal_age_ms: 500
+  # Wider than the 500 ms base budget: a mempool sighting is only useful while
+  # it is still unmined, and 700 ms keeps the queue-age gate above the measured
+  # median lead instead of discarding usable signals under a load spike.
+  pending_tx_max_signal_age_ms: 700
+  # A mempool sighting never reaches better than pending_probable; a higher
+  # floor would drop 100 % of signals in this mode.
   pending_tx_detection_confidence_required: pending_probable
+  pending_copy_confirmation_enabled: true
+  pending_copy_confirmation_deadline_seconds: 60
+  pending_copy_confirmation_max_tracked: 2048

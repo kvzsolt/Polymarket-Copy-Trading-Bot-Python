@@ -193,9 +193,24 @@ Consequences and limits:
   a provisional copy of a mempool sighting that is dropped or replaced before
   mining is not *unwound* by the detection runtime. It is now **detected and
   reported** by the pending-copy confirmation tracker (below), but unwinding
-  remains an operator action. Run it only after a paper soak and with an
-  explicit operator unwind procedure. The confirmed path is a strict superset
-  and is the recommended first live mode.
+  remains an operator action.
+- **`on_chain_pending` is the checked-in live default** as of
+  `config/environments/live/detection.yml` (`mode: on_chain_pending`,
+  `pending_tx_max_signal_age_ms: 700`, tracker on with a 60 s deadline and a
+  2048-entry ceiling). That is a deliberate latency-for-certainty trade: the
+  copy fires on an unmined sighting. It presumes the operator has run the paper
+  soak and holds an explicit unwind procedure for a provisional copy whose
+  transaction never mines. `on_chain_confirmed` remains the strict superset and
+  the fallback to switch back to (`PMCOPY__DETECTION__MODE=on_chain_confirmed`,
+  restart required) if `pending_copy_unconfirmed_total` climbs.
+- The staleness gate `pending_tx_max_signal_age_ms` bounds only the signal's
+  **internal queue age** — the time between the runtime decoding the sighting
+  and the dispatcher picking it up. It is not a bound on how long the
+  transaction has been in the mempool, nor on network propagation delay before
+  the subscription delivered it.
+- Switching the live mode does not touch the gen-2
+  `AlchemyConnectionManager`/`PolygonSourceTransactionRuntime` path; that code
+  is unchanged and still what `on_chain_confirmed` runs.
 - Alchemy CU cost: with the gen-2 pending subscription carrying full tx bodies
   and the `logs` subscription filtered by address only, the confirmed mode was
   measured at ~85k CU/min (≈120M CU/day at 24/7). Follow-up: filter the

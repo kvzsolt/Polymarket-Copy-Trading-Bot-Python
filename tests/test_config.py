@@ -792,14 +792,19 @@ def test_polling_mode_with_copy_tasks_enabled_is_allowed() -> None:
     assert config.detection.mode == "polling"
 
 
-def test_live_environment_selects_on_chain_confirmed() -> None:
-    """The checked-in live environment opts into the receipt-confirmed source."""
+def test_live_environment_selects_on_chain_pending() -> None:
+    """The checked-in live environment copies off the provisional mempool source.
+
+    ``on_chain_pending`` is the live default: it also pins the wider staleness
+    budget the mempool path needs and the pending-copy confirmation tracker
+    that reports a copy whose leader transaction never mines.
+    """
     from domain.detection import DetectionMode
 
     packaged = yaml.safe_load(
         (ROOT / "config" / "environments" / "live" / "detection.yml").read_text()
     )
-    assert packaged["mode"] == "on_chain_confirmed"
+    assert packaged["mode"] == "on_chain_pending"
 
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
@@ -813,8 +818,15 @@ def test_live_environment_selects_on_chain_confirmed() -> None:
 
     assert config.environment == "live"
     assert config.execution.trading_mode == "live"
-    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
-    assert config.detection.onchain.pending_tx_provider == "alchemy"
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
+    onchain = config.detection.onchain
+    assert onchain.pending_tx_provider == "alchemy"
+    assert onchain.pending_tx_max_signal_age_ms == 700
+    assert onchain.pending_tx_detection_confidence_required == "pending_probable"
+    assert onchain.pending_tx_hashes_only is False
+    assert onchain.pending_copy_confirmation_enabled is True
+    assert onchain.pending_copy_confirmation_deadline_seconds == 60.0
+    assert onchain.pending_copy_confirmation_max_tracked == 2048
 
 
 def test_live_environment_without_ws_url_fails_closed() -> None:
@@ -822,5 +834,5 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
     overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
-    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_pending requires"):
         load_config(overrides, environment="live")

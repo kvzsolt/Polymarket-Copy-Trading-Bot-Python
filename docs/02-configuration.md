@@ -65,13 +65,33 @@ trade key, so a signal is copied once regardless of which source saw it first.
 |---|---|---|
 | `polling` (default, checked-in base) | data-api REST polling only | — |
 | `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
-| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is reported by the pending-copy confirmation tracker below but never unwound automatically — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+| `on_chain_pending` (**checked-in live default**, `config/environments/live/detection.yml`) | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is reported by the pending-copy confirmation tracker below but never unwound automatically — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
 
 In `on_chain_pending`, `pending_tx_detection_confidence_required` must be
 `market_unattributed` or `pending_probable`: a mempool sighting is only ever
 labelled `pending_probable`, so `mined_authoritative`/`confirmed_final` is a
 floor that drops every pending signal. The looser floors are accepted; the
 higher two fail startup closed. Other modes are unaffected.
+
+`config/environments/live/detection.yml` selects `on_chain_pending` and pins
+the whole mempool set explicitly, so the live source never depends on a base
+default drifting:
+
+| Live key | Value | Why |
+|---|---|---|
+| `mode` | `on_chain_pending` | Copy on the sighting; measured median mempool lead 0.67 s at ~96 % visibility. |
+| `onchain.pending_tx_provider` | `alchemy` | Only provider with `alchemy_pendingTransactions`; anything else fails closed. |
+| `onchain.pending_tx_max_signal_age_ms` | `700` | Wider than the 500 ms base budget so a load spike does not discard signals that are still unmined. |
+| `onchain.pending_tx_detection_confidence_required` | `pending_probable` | The best a mempool sighting reaches; a higher floor drops 100 % of them. |
+| `onchain.pending_copy_confirmation_enabled` | `true` | Every provisional copy gets a receipt verdict. |
+| `onchain.pending_copy_confirmation_deadline_seconds` | `60` | Terminal verdict age; the last poll is always forced. |
+| `onchain.pending_copy_confirmation_max_tracked` | `2048` | Bounded in-flight set; overflow evicts the oldest and counts it. |
+
+The `wss://` endpoint and `polymarket.rpc_url` (which the tracker needs) still
+come from `secrets.env` — no live YAML file carries a credential. Base
+`config/detection.yml` keeps `mode` unpinned and
+`enable_onchain_pending_detection: false`; selecting `PMCOPY_ENVIRONMENT=paper`
+therefore still runs pure polling.
 
 ### Pending-copy confirmation (`detection.onchain.pending_copy_*`)
 

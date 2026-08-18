@@ -27,14 +27,38 @@ logs `detection_signal | source=... leader=... tx=...` and increments
 
 Mempool visibility was measured, not assumed (read-only probe, 120 s,
 2026-08-17): ~96 % of mined `OrderFilled` transactions had been seen pending
-first, median mempool-to-mined lead 0.67 s. Recommended rollout: first live
-run `on_chain_confirmed`; switch to `on_chain_pending` only after a paper soak
-shows pending sightings decode for the followed leader **and** the operator has
-an explicit unwind procedure for provisional copies whose transaction never
-mines — in this mode nothing supersedes or corrects them (the mined
-subscription is off), and polling never sees an unmined fill either. Also
-gate a 24/7 live run on Alchemy CU cost (~85k CU/min measured for the
-confirmed mode; see `docs/known_limitations.md`).
+first, median mempool-to-mined lead 0.67 s.
+
+## Rollout status (2026-08-18): `on_chain_pending` is the live default
+
+`config/environments/live/detection.yml` now pins `mode: on_chain_pending`
+with `pending_tx_max_signal_age_ms: 700`, `pending_tx_provider: alchemy`,
+`pending_tx_detection_confidence_required: pending_probable`, and the
+pending-copy confirmation tracker on (`pending_copy_confirmation_enabled:
+true`, 60 s deadline, 2048 tracked). Base `config/detection.yml` is unchanged:
+`mode` stays unpinned (typed default `polling`) and
+`enable_onchain_pending_detection` stays `false`, so paper keeps running pure
+polling and no other deployment inherits provisional copy.
+
+The earlier recommendation — first live run on `on_chain_confirmed`, switch to
+pending only after a paper soak — is superseded by this operator decision. The
+preconditions it named still hold as *operator obligations*, not as blockers
+the config enforces:
+
+- a paper soak showing pending sightings decode for the followed leaders;
+- an explicit unwind procedure for a provisional copy whose transaction never
+  mines — nothing supersedes or corrects it in this mode (the mined
+  subscription is off) and polling never sees an unmined fill either. The
+  tracker reports the orphan (`pending_copy_unconfirmed_total{reason}`,
+  WARN `pending_copy_unconfirmed`); the operator closes the position;
+- Alchemy CU cost for a full-body `alchemy_pendingTransactions` subscription
+  *without* a `logs` subscription is still unmeasured — the ~85k CU/min figure
+  is the confirmed-mode baseline. Measure it before a 24/7 live run
+  (`docs/known_limitations.md`).
+
+Rollback is a one-line environment change plus a restart:
+`PMCOPY__DETECTION__MODE=on_chain_confirmed` (or edit the live file back).
+`detection.mode` is deliberately not an editable control-plane setting.
 
 ## Module layout (shipped)
 ```

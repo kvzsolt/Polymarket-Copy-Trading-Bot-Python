@@ -34,7 +34,7 @@ def _overrides() -> dict:
             "private_key": "0x" + "a" * 64,
         },
         "polymarket": {"rpc_url": "https://rpc.invalid"},
-        # The live environment selects ``detection.mode: on_chain_confirmed``,
+        # The live environment selects ``detection.mode: on_chain_pending``,
         # which fails closed without the Alchemy wss:// endpoint the operator
         # keeps in ``secrets.env`` (``PMCOPY__DETECTION__ONCHAIN__PENDING_TX_WS_URL``).
         "detection": {
@@ -79,7 +79,7 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     assert set(execution) == {"trading_mode"}
     assert set(copy_trading) == {"wallets"}
     assert set(detection) == {"mode", "onchain"}
-    assert detection["mode"] == "on_chain_confirmed"
+    assert detection["mode"] == "on_chain_pending"
     assert set(app_cfg) == {
         "enable_metrics_server",
         "metrics_bind_host",
