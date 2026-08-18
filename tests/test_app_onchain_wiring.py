@@ -55,7 +55,7 @@ async def test_app_composes_factory_from_config() -> None:
             onchain=OnchainDetectionConfig(
                 pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
                 pending_tx_max_signal_age_ms=321,
-                pending_tx_detection_confidence_required="mined_authoritative",
+                pending_tx_detection_confidence_required="pending_probable",
             ),
         ),
         wallet=SimpleNamespace(chain_id=137),
@@ -89,7 +89,7 @@ async def test_app_composes_factory_from_config() -> None:
     assert pending._enable_pending is True
     assert pending._enable_mined is False
     assert pending._pending_config.max_signal_age_ms == 321
-    assert pending._pending_config.confidence_required is DetectionConfidence.MINED_AUTHORITATIVE
+    assert pending._pending_config.confidence_required is DetectionConfidence.PENDING_PROBABLE
     confirmed = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
     assert isinstance(confirmed, PolygonSourceTransactionRuntime)
 
@@ -200,6 +200,48 @@ def test_pending_tx_config_fields_match_onchain_detection_config() -> None:
     assert ptx.max_signal_age_ms == oc.pending_tx_max_signal_age_ms
     assert ptx.hashes_only == oc.pending_tx_hashes_only
     assert ptx.confidence_required == DetectionConfidence.MINED_AUTHORITATIVE
+
+
+def test_detection_confidence_from_config_fails_closed() -> None:
+    """An unparseable confidence floor must raise, never default silently.
+
+    Defaulting to ``PENDING_PROBABLE`` turned a typo (or a future enum rename)
+    into a live detection policy the operator never configured. The config
+    loader already rejects the value; this is the defence-in-depth for a
+    directly constructed config.
+    """
+    from app import _detection_confidence_from_config
+    from config.app_config import EnvValidationError
+    from services.onchain_detection.trade_detection_models import DetectionConfidence
+
+    for unparseable in ("almost_certain", "PENDING-PROBABLE", "", None):
+        with pytest.raises(EnvValidationError) as excinfo:
+            _detection_confidence_from_config(unparseable)
+        message = str(excinfo.value)
+        assert "pending_tx_detection_confidence_required" in message
+        # The raw value is never echoed: a mis-mapped override could carry a
+        # secret, and the config layer's message for this field omits it too.
+        if unparseable:
+            assert str(unparseable) not in message
+
+    assert (
+        _detection_confidence_from_config("pending_probable")
+        is DetectionConfidence.PENDING_PROBABLE
+    )
+    assert (
+        _detection_confidence_from_config("  Mined_Authoritative  ")
+        is DetectionConfidence.MINED_AUTHORITATIVE
+    )
+
+
+def test_build_pending_tx_config_propagates_the_fail_closed_error() -> None:
+    """The startup builder must not absorb the invalid-confidence failure."""
+    from app import _build_pending_tx_config
+    from config.app_config import EnvValidationError, OnchainDetectionConfig
+
+    broken = OnchainDetectionConfig(pending_tx_detection_confidence_required="not_a_confidence")
+    with pytest.raises(EnvValidationError):
+        _build_pending_tx_config(broken)
 
 
 def test_onchain_condition_resolver_builder_returns_callable() -> None:

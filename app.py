@@ -218,12 +218,36 @@ def _should_wait_for_discovery_roster(config: object) -> bool:
 
 
 def _detection_confidence_from_config(value: object):
+    """Parse ``detection.onchain.pending_tx_detection_confidence_required``.
+
+    Fails closed. Silently substituting ``PENDING_PROBABLE`` turned a typo (or
+    a future enum rename) into a detection policy the operator never chose:
+    for ``detection.mode=on_chain_pending`` that floor decides whether every
+    mempool sighting is copied or dropped. ``load_config`` already rejects an
+    unknown value, so reaching this branch means the config was constructed
+    outside the loader or the two value sets have drifted apart.
+
+    Args:
+        value: Raw configured value; compared case-insensitively after strip.
+
+    Returns:
+        The matching ``DetectionConfidence`` member.
+
+    Raises:
+        EnvValidationError: If *value* is not a known confidence level. The
+            raw value is deliberately not echoed (a mis-mapped override could
+            carry a credential), matching the config layer's own message.
+    """
+
     from services.onchain_detection.trade_detection_models import DetectionConfidence
 
     try:
         return DetectionConfidence(str(value or "").strip().lower())
-    except ValueError:
-        return DetectionConfidence.PENDING_PROBABLE
+    except ValueError as exc:
+        allowed = ", ".join(level.value for level in DetectionConfidence)
+        raise EnvValidationError(
+            f"detection.onchain.pending_tx_detection_confidence_required must be one of: {allowed}."
+        ) from exc
 
 
 def _build_pending_tx_config(oc_cfg: object):
