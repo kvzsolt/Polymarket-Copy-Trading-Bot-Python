@@ -67,8 +67,30 @@ trade key, so a signal is copied once regardless of which source saw it first.
 | `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
 | `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is not unwound — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
 
+In `on_chain_pending`, `pending_tx_detection_confidence_required` must be
+`market_unattributed` or `pending_probable`: a mempool sighting is only ever
+labelled `pending_probable`, so `mined_authoritative`/`confirmed_final` is a
+floor that drops every pending signal. The looser floors are accepted; the
+higher two fail startup closed. Other modes are unaffected.
+
+### Pending-copy confirmation (`detection.onchain.pending_copy_*`)
+
+Only consulted in `on_chain_pending`, by the pending-copy confirmation
+tracker. A copy placed off a provisional sighting is tracked until the leader
+transaction's receipt proves it mined; a sighting that reverts, is replaced, or
+never mines would otherwise leave an orphan position no other loop detects.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `pending_copy_confirmation_enabled` | `true` | Track each provisional copy and log/count whether the leader tx confirmed. |
+| `pending_copy_confirmation_deadline_seconds` | `60.0` | Age after which an unmined tracked copy is reported unconfirmed. Must be `> 0`. |
+| `pending_copy_confirmation_max_tracked` | `2048` | Ceiling on concurrently tracked copies; the oldest entry is evicted when full. Must be `> 0`. |
+| `pending_copy_auto_unwind_enabled` | `false` | Opt-in forced protective exit of an unconfirmed copy. Off by default: unwinding is a money-path action and stays operator-driven. |
+
 An invalid mode, a non-polling mode without a `wss://` endpoint, a non-Alchemy
-provider, `on_chain_pending` with `pending_tx_hashes_only: true`, or any
+provider, `on_chain_pending` with `pending_tx_hashes_only: true`, a
+`pending_copy_confirmation_deadline_seconds`/`pending_copy_confirmation_max_tracked`
+of zero or less in `on_chain_pending`, or any
 non-polling mode together with `copy_trading.copy_tasks.enabled: true` (the v1
 copy-task route has no on-chain-vs-polling dedup yet) fails startup closed. Select an on-chain mode per environment
 (`config/environments/<env>/detection.yml`) or via the environment variable;

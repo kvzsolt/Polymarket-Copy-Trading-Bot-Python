@@ -641,6 +641,116 @@ def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
         )
 
 
+def test_on_chain_pending_rejects_confidence_above_pending_probable() -> None:
+    """A floor above ``pending_probable`` silently drops every pending signal.
+
+    ``PendingTxDetector`` emits at most ``PENDING_PROBABLE`` for a mempool
+    sighting, so requiring ``mined_authoritative``/``confirmed_final`` in
+    ``on_chain_pending`` mode is a mode that detects nothing at all.
+    """
+    with pytest.raises(EnvValidationError) as excinfo:
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_detection_confidence_required="mined_authoritative",
+            )
+        )
+    message = str(excinfo.value)
+    assert "pending_tx_detection_confidence_required" in message
+    assert "drops every pending signal" in message
+
+
+def test_on_chain_pending_accepts_market_unattributed_confidence() -> None:
+    """The looser floor is still a usable pending configuration."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_pending",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_tx_detection_confidence_required="market_unattributed",
+        )
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_tx_detection_confidence_required == "market_unattributed"
+
+
+def test_on_chain_confirmed_allows_confidence_above_pending_probable() -> None:
+    """The confirmed source is receipt-backed; the pending floor does not bind."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_tx_detection_confidence_required="mined_authoritative",
+        )
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_tx_detection_confidence_required == "mined_authoritative"
+
+
+def test_on_chain_pending_requires_positive_confirmation_deadline() -> None:
+    """A non-positive deadline would mark every tracked copy unconfirmed at once."""
+    with pytest.raises(
+        EnvValidationError, match="pending_copy_confirmation_deadline_seconds must be > 0"
+    ):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_copy_confirmation_deadline_seconds=0,
+            )
+        )
+
+
+def test_on_chain_pending_requires_positive_confirmation_max_tracked() -> None:
+    """A non-positive ceiling would drop every tracked pending copy."""
+    with pytest.raises(
+        EnvValidationError, match="pending_copy_confirmation_max_tracked must be > 0"
+    ):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_copy_confirmation_max_tracked=0,
+            )
+        )
+
+
+def test_pending_copy_confirmation_defaults_load_from_packaged_yaml() -> None:
+    """The packaged base file carries the tracker defaults the typed model uses."""
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    onchain_yaml = packaged["onchain"]
+
+    assert onchain_yaml["pending_copy_confirmation_enabled"] is True
+    assert onchain_yaml["pending_copy_confirmation_deadline_seconds"] == 60.0
+    assert onchain_yaml["pending_copy_confirmation_max_tracked"] == 2048
+    assert onchain_yaml["pending_copy_auto_unwind_enabled"] is False
+
+    onchain = load_config(_overrides()).detection.onchain
+    assert onchain.pending_copy_confirmation_enabled is True
+    assert onchain.pending_copy_confirmation_deadline_seconds == 60.0
+    assert onchain.pending_copy_confirmation_max_tracked == 2048
+    assert onchain.pending_copy_auto_unwind_enabled is False
+
+
+def test_pending_copy_confirmation_keys_are_overridable() -> None:
+    """Operators can retune the tracker without touching the base file."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_pending",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_copy_confirmation_enabled=False,
+            pending_copy_confirmation_deadline_seconds=30.5,
+            pending_copy_confirmation_max_tracked=64,
+            pending_copy_auto_unwind_enabled=True,
+        )
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_copy_confirmation_enabled is False
+    assert onchain.pending_copy_confirmation_deadline_seconds == 30.5
+    assert onchain.pending_copy_confirmation_max_tracked == 64
+    assert onchain.pending_copy_auto_unwind_enabled is True
+
+
 def test_invalid_detection_mode_rejected() -> None:
     """``DetectionConfig.mode`` is a ``Literal``: pydantic rejects an unknown
     mode before semantic validation, so ``detection_mode`` is total."""

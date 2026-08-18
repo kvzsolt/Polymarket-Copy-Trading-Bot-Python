@@ -23,3 +23,12 @@ onchain:
   pending_tx_hashes_only: false
   pending_tx_max_signal_age_ms: 500
   pending_tx_detection_confidence_required: pending_probable
+  # Pending-copy confirmation (mode: on_chain_pending only). A copy executed
+  # off a provisional mempool sighting is tracked until its receipt proves the
+  # leader tx mined; a sighting that reverts, is replaced, or never mines
+  # would otherwise leave an orphan position nothing detects. Auto-unwind of
+  # such a position stays opt-in.
+  pending_copy_confirmation_enabled: true
+  pending_copy_confirmation_deadline_seconds: 60.0
+  pending_copy_confirmation_max_tracked: 2048
+  pending_copy_auto_unwind_enabled: false

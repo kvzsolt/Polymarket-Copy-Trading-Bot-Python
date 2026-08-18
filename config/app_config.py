@@ -100,6 +100,12 @@ _ONCHAIN_DETECTION_CONFIDENCE_VALUES = {
     "mined_authoritative",
     "confirmed_final",
 }
+#: Confidence floors a mempool sighting can actually clear. ``PendingTxDetector``
+#: labels every pending signal ``PENDING_PROBABLE`` and
+#: ``OnchainDetectionRuntime`` drops anything ranked below the configured floor,
+#: so ``mined_authoritative``/``confirmed_final`` in ``detection.mode=
+#: on_chain_pending`` is a mode that detects nothing at all.
+_PENDING_MODE_CONFIDENCE_VALUES = ("market_unattributed", "pending_probable")
 logger = logging.getLogger("AppConfig")
 
 from config.addresses import (  # noqa: E402
@@ -990,6 +996,12 @@ class OnchainDetectionConfig:
     transaction subscription is provisional and gated by
     ``enable_onchain_pending_detection`` (default False) — it must not feed
     the copy path until the operator opts in.
+
+    The ``pending_copy_*`` fields govern the follow-up confirmation of a copy
+    that was executed off a *provisional* mempool sighting: the sighting may
+    never mine, may revert, or may be replaced, leaving an orphan position
+    that nothing else in the runtime detects. They are inert in ``polling``
+    and ``on_chain_confirmed`` modes.
     """
 
     enable_onchain_pending_detection: bool = False
@@ -1000,6 +1012,10 @@ class OnchainDetectionConfig:
     pending_tx_hashes_only: bool = False
     pending_tx_max_signal_age_ms: int = 500
     pending_tx_detection_confidence_required: str = "pending_probable"
+    pending_copy_confirmation_enabled: bool = True
+    pending_copy_confirmation_deadline_seconds: float = 60.0
+    pending_copy_confirmation_max_tracked: int = 2048
+    pending_copy_auto_unwind_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -1296,6 +1312,11 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
     non-polling mode is also rejected while the v1 copy-task engine is
     enabled: that route bypasses ``CrossSourceTradeClaimPolicy`` and would
     copy the same fill from both sources.
+
+    ``on_chain_pending`` additionally pins the confidence floor to a value a
+    mempool sighting can actually reach and requires a usable pending-copy
+    confirmation budget, so the mode cannot be configured into silently
+    detecting (or silently confirming) nothing.
     """
 
     detection = cfg.detection
@@ -1334,6 +1355,27 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
             errors.append(
                 "detection.onchain.pending_tx_hashes_only must be false for "
                 "detection.mode=on_chain_pending (calldata is required)."
+            )
+        confidence = str(oc.pending_tx_detection_confidence_required or "").strip().lower()
+        if (
+            confidence in _ONCHAIN_DETECTION_CONFIDENCE_VALUES
+            and confidence not in _PENDING_MODE_CONFIDENCE_VALUES
+        ):
+            allowed = ", ".join(_PENDING_MODE_CONFIDENCE_VALUES)
+            errors.append(
+                "detection.onchain.pending_tx_detection_confidence_required must be one of: "
+                f"{allowed} for detection.mode=on_chain_pending — a mempool sighting only ever "
+                "reaches pending_probable, so a higher floor drops every pending signal."
+            )
+        if float(oc.pending_copy_confirmation_deadline_seconds) <= 0:
+            errors.append(
+                "detection.onchain.pending_copy_confirmation_deadline_seconds must be > 0 for "
+                "detection.mode=on_chain_pending."
+            )
+        if int(oc.pending_copy_confirmation_max_tracked) <= 0:
+            errors.append(
+                "detection.onchain.pending_copy_confirmation_max_tracked must be > 0 for "
+                "detection.mode=on_chain_pending."
             )
 
 
