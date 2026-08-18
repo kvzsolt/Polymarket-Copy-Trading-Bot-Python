@@ -505,3 +505,38 @@ async def test_stream_events_use_z_while_the_snapshot_uses_an_explicit_offset() 
         assert snapshot["events"][0]["timestamp"] == "2026-08-18T14:00:00+00:00"
     finally:
         await hub.close()
+
+
+async def test_non_ascii_bearer_header_is_rejected_as_an_invalid_token() -> None:
+    """A non-ASCII credential must answer ``401``, never crash the comparison.
+
+    ``secrets.compare_digest`` raises ``TypeError`` when either ``str`` operand
+    carries a non-ASCII character, so an unauthenticated caller could otherwise
+    turn a header of their own choosing into a ``500`` on every REST route.
+    """
+
+    app = create_control_plane_app(
+        config=ControlPlaneHttpConfig(host="127.0.0.1", port=0),
+        authenticator=ControlPlaneAuthenticator(
+            credentials=(
+                BearerCredential(
+                    token="operator-credential-value",
+                    subject="operator",
+                    permissions=ALL_CONTROL_PLANE_PERMISSIONS,
+                ),
+            )
+        ),
+        dependencies=ControlPlaneDependencies(positions=_ViewerPositions()),
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/api/v1/positions?follower_account=account-a",
+            headers={"Authorization": "Bearer ünicode"},
+        )
+
+        assert response.status == 401
+        assert (await response.json())["error"]["code"] == "invalid_bearer_token"
+    finally:
+        await client.close()

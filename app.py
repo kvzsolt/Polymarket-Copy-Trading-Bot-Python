@@ -374,6 +374,12 @@ def _build_pending_copy_tracker(
     endpoint is configured — receipt confirmation cannot run without one, and
     a tracker that can never confirm would report every copy as ``rpc_error``.
 
+    A composed tracker is still inert under ``execution.trading_mode=paper``:
+    the dispatcher only tracks a copy whose pipeline outcome reached the
+    venue, and every paper copy stops at the ``paper`` tier before submission.
+    That is announced once here so a paper soak with zero ``pending_copy_*``
+    output is read as "not exercised", never as "healthy".
+
     Args:
         config: Typed application configuration.
         telemetry_service: Process telemetry service, or ``None``.
@@ -403,6 +409,13 @@ def _build_pending_copy_tracker(
             "copies will not be confirmed against the leader transaction receipt"
         )
         return None
+    if bool(getattr(getattr(config, "execution", None), "paper_trade_only", False)):
+        logger.info(
+            "pending_copy_tracker_idle_in_paper_mode | the tracker is composed but "
+            "records nothing while execution.trading_mode=paper: every copy stops at "
+            "the paper tier before reaching the venue, so zero pending_copy_* output "
+            "means NOT EXERCISED, not healthy"
+        )
     return PendingCopyConfirmationTracker(
         receipt_fetcher=Web3ReceiptStatusFetcher.from_rpc_url(
             rpc_url,
@@ -2380,107 +2393,111 @@ async def _run_application(client_registry: list[Any]) -> int:
     # polling below keeps running in every mode as the parallel fallback;
     # the copy layer dedups the same fill by trade key.
     detection_mode = DetectionStartupReporter(logger, metrics).report(application.config)
-    if detection_mode is not DetectionMode.POLLING:
-        # The confidence floor was already validated at startup (before any
-        # runtime was built) precisely so an unparseable value aborts instead
-        # of being absorbed by the guard below.
-        #
-        # The observability collaborators are likewise built OUTSIDE that
-        # guard: a failure to compose a tracker or a health reporter is a
-        # structural fault, and swallowing it there would silently downgrade
-        # the operator's chosen detection mode to REST polling.
-        pending_copy_tracker = _build_pending_copy_tracker(
-            application.config,
-            telemetry_service=telemetry_runtime.service,
-            metrics_registry=metrics,
-        )
-        _ws_health_reporter = _build_onchain_ws_health_reporter(
-            application.readiness,
-            metrics,
-            mode=detection_mode,
-        )
-        try:
-            from orchestrators.detection_source_factory import DetectionSourceRequest
-            from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
-            from orchestrators.trade_pipeline import (
-                execute_trades as _execute_trade_pipeline,
-            )
-
-            # One adapter routes every on-chain signal into the same copy
-            # pipeline the REST-polling leader monitor uses (v1 runtime when
-            # enabled, else the legacy per-context pipeline), logging
-            # ``detection_signal | source=...`` provenance per signal.
-            _onchain_signal_sink = OnchainSignalDispatchAdapter(
-                contexts_by_leader=contexts_by_leader,
-                v1_runtime=v1_runtime,
-                execute_trades=_execute_trade_pipeline,
-                pending_copy_tracker=pending_copy_tracker,
-                telemetry=telemetry_emitters.detection,
-            )
-            oc_cfg = application.config.detection.onchain
-            onchain_runtime = await _build_detection_source_factory(
-                application.config,
-                websocket_factory=_build_onchain_websocket_factory(_ws_health_reporter),
-            ).build(
-                DetectionSourceRequest(
-                    mode=detection_mode,
-                    watched_wallets=frozenset(monitored_leaders),
-                    ws_url=oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url,
-                    chain_id=application.config.wallet.chain_id,
-                    signal_sink=_onchain_signal_sink,
-                )
-            )
-            if onchain_runtime is not None:
-                await _start_onchain_runtime(onchain_runtime, mode=detection_mode)
-                logger.info(
-                    "onchain_detection_started | mode=%s watched=%d",
-                    detection_mode.value,
-                    len(monitored_leaders),
-                )
-                if pending_copy_tracker is not None:
-                    await pending_copy_tracker.start()
-                # Late-bound operator read probes. Composition order puts the
-                # control plane before detection, so both are attached here,
-                # after the transport and tracker exist.
-                telemetry_emitters.detection.attach_connection_probe(
-                    _detection_connection_probe(onchain_runtime)
-                )
-                pending_confirmation_stats.attach(pending_copy_tracker)
-        except Exception as exc:
-            logger.warning(
-                "onchain_detection_start_failed | mode=%s error=%s — bot continues "
-                "without on-chain detection (REST-polling leader path unaffected)",
-                detection_mode.value,
-                redact_error_detail(exc),
-            )
-            onchain_runtime = None
-
-    # Seed the stream with the startup roster size, so a UI attached at boot
-    # sees the roster without waiting for the first discovery promotion (which
-    # is the only other place ``roster_updated`` fires). Off-path: it runs once,
-    # before any monitor exists, and the emit is synchronous and guarded.
-    telemetry_emitters.detection.roster_updated(len(monitored_leaders))
-
-    for wallet in monitored_leaders:
-        monitor_task = asyncio.create_task(
-            run_leader_monitor(
-                wallet,
-                contexts_by_leader[wallet],
-                readiness_tracker=application.readiness,
-                config=application.config,
-                fetch_interval=fetch_interval,
-                monitored_leader_count=len(monitored_leaders),
-                research_capture_service=research_capture_service,
-                v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
-                telemetry=telemetry_emitters.detection,
-            )
-        )
-        monitor_tasks.append(monitor_task)
-        monitor_wallet_by_task[monitor_task] = wallet
-    task_monitoring_state.add(monitored_leaders)
-
-    loop = asyncio.get_running_loop()
     try:
+        if detection_mode is not DetectionMode.POLLING:
+            # The confidence floor was already validated at startup (before any
+            # runtime was built) precisely so an unparseable value aborts instead
+            # of being absorbed by the guard below.
+            #
+            # The observability collaborators are likewise built OUTSIDE the
+            # degrade-to-polling ``except`` below: a failure to compose a
+            # tracker or a health reporter is a structural fault, and
+            # swallowing it there would silently downgrade the operator's
+            # chosen detection mode to REST polling. They are nonetheless
+            # inside the ``try`` whose ``finally`` runs ``_shutdown_runtime``,
+            # so failing loud still tears down every runtime already started
+            # instead of leaking market/user streams and the connection pool.
+            pending_copy_tracker = _build_pending_copy_tracker(
+                application.config,
+                telemetry_service=telemetry_runtime.service,
+                metrics_registry=metrics,
+            )
+            _ws_health_reporter = _build_onchain_ws_health_reporter(
+                application.readiness,
+                metrics,
+                mode=detection_mode,
+            )
+            try:
+                from orchestrators.detection_source_factory import DetectionSourceRequest
+                from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+                from orchestrators.trade_pipeline import (
+                    execute_trades as _execute_trade_pipeline,
+                )
+
+                # One adapter routes every on-chain signal into the same copy
+                # pipeline the REST-polling leader monitor uses (v1 runtime when
+                # enabled, else the legacy per-context pipeline), logging
+                # ``detection_signal | source=...`` provenance per signal.
+                _onchain_signal_sink = OnchainSignalDispatchAdapter(
+                    contexts_by_leader=contexts_by_leader,
+                    v1_runtime=v1_runtime,
+                    execute_trades=_execute_trade_pipeline,
+                    pending_copy_tracker=pending_copy_tracker,
+                    telemetry=telemetry_emitters.detection,
+                )
+                oc_cfg = application.config.detection.onchain
+                onchain_runtime = await _build_detection_source_factory(
+                    application.config,
+                    websocket_factory=_build_onchain_websocket_factory(_ws_health_reporter),
+                ).build(
+                    DetectionSourceRequest(
+                        mode=detection_mode,
+                        watched_wallets=frozenset(monitored_leaders),
+                        ws_url=oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url,
+                        chain_id=application.config.wallet.chain_id,
+                        signal_sink=_onchain_signal_sink,
+                    )
+                )
+                if onchain_runtime is not None:
+                    await _start_onchain_runtime(onchain_runtime, mode=detection_mode)
+                    logger.info(
+                        "onchain_detection_started | mode=%s watched=%d",
+                        detection_mode.value,
+                        len(monitored_leaders),
+                    )
+                    if pending_copy_tracker is not None:
+                        await pending_copy_tracker.start()
+                    # Late-bound operator read probes. Composition order puts the
+                    # control plane before detection, so both are attached here,
+                    # after the transport and tracker exist.
+                    telemetry_emitters.detection.attach_connection_probe(
+                        _detection_connection_probe(onchain_runtime)
+                    )
+                    pending_confirmation_stats.attach(pending_copy_tracker)
+            except Exception as exc:
+                logger.warning(
+                    "onchain_detection_start_failed | mode=%s error=%s — bot continues "
+                    "without on-chain detection (REST-polling leader path unaffected)",
+                    detection_mode.value,
+                    redact_error_detail(exc),
+                )
+                onchain_runtime = None
+
+        # Seed the stream with the startup roster size, so a UI attached at boot
+        # sees the roster without waiting for the first discovery promotion (which
+        # is the only other place ``roster_updated`` fires). Off-path: it runs once,
+        # before any monitor exists, and the emit is synchronous and guarded.
+        telemetry_emitters.detection.roster_updated(len(monitored_leaders))
+
+        for wallet in monitored_leaders:
+            monitor_task = asyncio.create_task(
+                run_leader_monitor(
+                    wallet,
+                    contexts_by_leader[wallet],
+                    readiness_tracker=application.readiness,
+                    config=application.config,
+                    fetch_interval=fetch_interval,
+                    monitored_leader_count=len(monitored_leaders),
+                    research_capture_service=research_capture_service,
+                    v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    telemetry=telemetry_emitters.detection,
+                )
+            )
+            monitor_tasks.append(monitor_task)
+            monitor_wallet_by_task[monitor_task] = wallet
+        task_monitoring_state.add(monitored_leaders)
+
+        loop = asyncio.get_running_loop()
         while True:
             # Wait on leader monitors AND every live supervised aux loop, so a
             # crash in risk / discovery is observed here rather than dying

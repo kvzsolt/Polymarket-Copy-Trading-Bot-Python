@@ -329,16 +329,29 @@ async def test_account_query_service_projects_live_composition_per_request() -> 
     assert scope.contains("account-unknown") is False
 
 
-async def test_account_scope_degrades_a_defective_projection_to_empty() -> None:
-    """A broken projection cannot turn an operator read into a 500."""
+async def test_account_scope_reports_a_defective_projection_as_internal_error() -> None:
+    """A broken projection is a fault, never an empty scope.
+
+    Swallowing it made every follower-scoped read answer ``404 not_found`` —
+    an operator-visible lie that reads as "this account does not exist" while
+    the real cause is a defective composition. It must surface as
+    ``INTERNAL_ERROR`` (500) so the fault is diagnosable.
+    """
 
     def explode() -> tuple[AccountView, ...]:
         raise RuntimeError("composition exploded")
 
     scope = AccountScope(explode)
 
-    assert await AccountQueryService(scope).list() == ()
-    assert scope.contains("account-a") is False
+    with pytest.raises(ControlPlaneError) as listed:
+        await AccountQueryService(scope).list()
+    assert listed.value.reason is ControlPlaneReason.INTERNAL_ERROR
+
+    with pytest.raises(ControlPlaneError) as contained:
+        scope.contains("account-a")
+    assert contained.value.reason is ControlPlaneReason.INTERNAL_ERROR
+    # The projection's own message must not reach the operator envelope.
+    assert "composition exploded" not in contained.value.public_message
 
 
 def test_account_view_rejects_a_negative_leader_count() -> None:

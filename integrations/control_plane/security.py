@@ -186,10 +186,14 @@ class ControlPlaneAuthenticator:
             )
 
         scheme, separator, presented = authorization.partition(" ")
+        # ``secrets.compare_digest`` raises TypeError on a non-ASCII str, and a
+        # request header can carry one; screen it out here so an attacker-chosen
+        # header answers 401 rather than turning every route into a 500.
         if (
             separator != " "
             or scheme.casefold() != "bearer"
             or not presented
+            or not presented.isascii()
             or presented.strip() != presented
             or len(presented) > 1024
         ):

@@ -10,6 +10,8 @@ caught at test time, not at runtime.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -332,7 +334,49 @@ def _pending_config(**overrides):
             fallback_rpc_url=overrides.pop("fallback_rpc_url", ""),
         ),
         wallet=SimpleNamespace(chain_id=137),
+        execution=SimpleNamespace(paper_trade_only=overrides.pop("paper_trade_only", False)),
     )
+
+
+def _captured_builder_records(config, level: int) -> list[str]:
+    """Build the tracker while capturing ``app.logger`` at ``level``.
+
+    ``app``'s child logger does not propagate to the root, so ``caplog`` alone
+    would observe nothing; attach a handler directly to it.
+
+    Args:
+        config: Configuration to hand :func:`app._build_pending_copy_tracker`.
+        level: Minimum record level to capture.
+
+    Returns:
+        The formatted messages emitted during the build.
+    """
+
+    import logging
+
+    import app as app_module
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=level)
+    previous_level = app_module.logger.level
+    app_module.logger.addHandler(handler)
+    app_module.logger.setLevel(level)
+    try:
+        app_module._build_pending_copy_tracker(
+            config,
+            telemetry_service=None,
+            metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        )
+    finally:
+        app_module.logger.setLevel(previous_level)
+        app_module.logger.removeHandler(handler)
+    return [record.getMessage() for record in records]
 
 
 def test_pending_copy_tracker_is_built_in_pending_mode() -> None:
@@ -736,3 +780,95 @@ async def test_a_failing_tracker_stop_is_logged_and_shutdown_continues(
     # The remaining steps still ran.
     assert pool_closed["n"] == 1
     assert any("pending_copy_tracker_shutdown_failed" in record.getMessage() for record in records)
+
+
+def _run_application_node() -> ast.AsyncFunctionDef:
+    """Return the parsed ``_run_application`` coroutine from ``app.py``."""
+
+    source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_application":
+            return node
+    raise AssertionError("app.py must define _run_application")
+
+
+def _shutdown_guarded_try() -> ast.Try:
+    """Return the ``try`` in ``_run_application`` whose ``finally`` tears down."""
+
+    for node in ast.walk(_run_application_node()):
+        if not isinstance(node, ast.Try) or not node.finalbody:
+            continue
+        for final_node in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])):
+            func = final_node.func if isinstance(final_node, ast.Call) else None
+            if isinstance(func, ast.Name) and func.id == "_shutdown_runtime":
+                return node
+    raise AssertionError("_run_application must tear down runtimes in a finally block")
+
+
+def _call_lines(node: ast.AST, func_name: str) -> list[int]:
+    """Return every line in ``node`` that invokes the named bare function."""
+
+    lines: list[int] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if isinstance(func, ast.Name) and func.id == func_name:
+            lines.append(child.lineno)
+    return sorted(lines)
+
+
+@pytest.mark.parametrize(
+    "builder",
+    ("_build_pending_copy_tracker", "_build_onchain_ws_health_reporter"),
+)
+def test_observability_collaborators_are_built_under_the_shutdown_guard(builder: str) -> None:
+    """A construction failure must still tear down the runtimes already started.
+
+    The tracker and the WS health reporter are deliberately built outside the
+    ``except`` that degrades on-chain detection to REST polling — a structural
+    fault must fail loud, not silently downgrade the operator's chosen mode.
+    Being outside the ``try`` that owns ``_shutdown_runtime`` is a different
+    thing entirely: it leaked every started market/user runtime, supervised
+    task, and connection pool on the way out.
+    """
+
+    guarded = _shutdown_guarded_try()
+    built = _call_lines(_run_application_node(), builder)
+
+    assert built, f"app.py must call {builder}"
+    body_start = guarded.body[0].lineno
+    body_end = max(guarded.body[-1].end_lineno or 0, body_start)
+    for line in built:
+        assert body_start <= line <= body_end, (
+            f"{builder} is called at line {line}, outside the try "
+            f"({body_start}-{body_end}) whose finally runs _shutdown_runtime — "
+            "a construction failure there leaks every started runtime"
+        )
+
+
+def test_paper_mode_composition_announces_that_the_tracker_records_nothing() -> None:
+    """Paper mode never reaches the venue, so the tracker can never be exercised.
+
+    ``OnchainSignalDispatchAdapter`` only tracks a copy whose pipeline outcome
+    reached the venue; in paper mode every copy stops at the ``paper`` tier
+    before submission, so ``track()`` is never called. Without this line an
+    operator reads a soak with zero ``pending_copy_*`` output as healthy when
+    it in fact proves nothing.
+    """
+
+    import logging
+
+    messages = _captured_builder_records(_pending_config(paper_trade_only=True), logging.INFO)
+
+    assert any("pending_copy_tracker_idle_in_paper_mode" in message for message in messages)
+
+
+def test_live_mode_composition_stays_quiet_about_the_paper_caveat() -> None:
+    """The idle notice must not fire for a deployment that does reach the venue."""
+
+    import logging
+
+    messages = _captured_builder_records(_pending_config(paper_trade_only=False), logging.INFO)
+
+    assert not any("pending_copy_tracker_idle_in_paper_mode" in message for message in messages)

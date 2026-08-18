@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
+from services.control_plane.contracts import ControlPlaneError, ControlPlaneReason
 from services.control_plane.contracts_reads import (
     AccountView,
     DetectionSourceStatusView,
@@ -177,6 +178,12 @@ class AccountScope:
     The composition root supplies a projection rather than a snapshot: leader
     bindings change while the process runs, so an account listing captured at
     startup would report a stale ``leader_count`` forever.
+
+    A projection that raises is a fault of this process, not an answer. It is
+    reported as :attr:`ControlPlaneReason.INTERNAL_ERROR` rather than degraded
+    to an empty scope: an empty scope makes every follower-scoped read answer
+    ``404 not_found``, which tells the operator the account does not exist
+    when the truth is that the composition is broken.
     """
 
     def __init__(self, projection: Callable[[], Sequence[AccountView]]) -> None:
@@ -189,15 +196,34 @@ class AccountScope:
         self._projection = projection
 
     def list(self) -> tuple[AccountView, ...]:
-        """Return the current composed accounts, tolerating a bad projection."""
+        """Return the current composed accounts.
+
+        Returns:
+            Every follower account this process currently composes.
+
+        Raises:
+            ControlPlaneError: The projection failed. Raised as
+                ``INTERNAL_ERROR`` so the sanitized envelope carries no
+                composition detail.
+        """
 
         try:
             return tuple(self._projection())
-        except Exception:
-            return ()
+        except Exception as exc:
+            raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR) from exc
 
     def contains(self, follower_account: str) -> bool:
-        """Return whether this process composed the named follower account."""
+        """Return whether this process composed the named follower account.
+
+        Args:
+            follower_account: Follower identity to test.
+
+        Returns:
+            Whether the projection currently carries that account.
+
+        Raises:
+            ControlPlaneError: The projection failed (see :meth:`list`).
+        """
 
         return any(view.follower_account == follower_account for view in self.list())
 

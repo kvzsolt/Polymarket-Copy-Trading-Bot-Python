@@ -47,6 +47,21 @@ _CONDITION_ID = "cond-1"
 _POSITION_REF = safe_ref(f"{_CONDITION_ID}:{FAKE_TOKEN_ID}")
 
 
+class _CountingExecutionService(_FakeExecutionService):
+    """Filling execution service that records how often it was asked to act."""
+
+    def __init__(self) -> None:
+        """Start with no recorded submissions."""
+
+        self.calls = 0
+
+    async def execute(self, req):
+        """Count the submission, then fill it like the shared fake does."""
+
+        self.calls += 1
+        return await super().execute(req)
+
+
 class _ZeroFillExecutionService:
     """Accepted submission that terminally matched nothing (killed FAK)."""
 
@@ -158,9 +173,25 @@ async def test_raising_telemetry_backend_never_breaks_the_risk_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_context_without_telemetry_still_runs_the_risk_loop() -> None:
+    """A context with no emitters must still take the protective action.
+
+    Asserting only that the call returns would pass even if the absent
+    telemetry attribute short-circuited the whole risk loop, so this mirrors
+    the raising-backend sibling: the exit is submitted and the position closes.
+    """
+
     async with _pg_pool() as pool:
         await _seed_position(pool)
-        context = _make_context(pool, execution_service=_FakeExecutionService())
+        exec_svc = _CountingExecutionService()
+        context = _make_context(pool, execution_service=exec_svc)
+        # The composition default: every emitter is a no-op returning False.
+        assert context.telemetry.risk.exit_triggered(_CONDITION_ID, FAKE_TOKEN_ID, "x") is False
         await rehydrate_position_manager(context)
 
         await run_risk_check_for_context(context)
+
+        assert exec_svc.calls >= 1
+        position = await context.positions_repo.get_position(
+            user_id="u1", condition_id=_CONDITION_ID, token_id=FAKE_TOKEN_ID
+        )
+        assert position is None or position.size_tokens == Decimal("0")
