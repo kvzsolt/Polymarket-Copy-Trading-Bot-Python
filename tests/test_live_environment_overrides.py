@@ -13,9 +13,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
-from config.app_config import load_config
+from config.app_config import EnvValidationError, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_DIR = ROOT / "config" / "environments" / "live"
@@ -39,6 +40,11 @@ def _overrides() -> dict:
         "detection": {
             "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
         },
+        # The live environment enables the operator API, which fails closed
+        # without the bearer credential the operator keeps in ``secrets.env``
+        # (``PMCOPY__CONTROL_PLANE__AUTH__TOKEN``). This placeholder exists only
+        # here; no live YAML file may carry credential material.
+        "control_plane": {"auth": {"token": "test-control-credential"}},
     }
 
 
@@ -56,10 +62,19 @@ def test_live_environment_reproduces_the_operator_overrides() -> None:
 def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     """live/execution.yml carries only execution keys, etc. — no cross-service
     values hide inside another service's environment file."""
+    assert {path.name for path in LIVE_DIR.glob("*.yml")} == {
+        "app.yml",
+        "control_plane.yml",
+        "copy_trading.yml",
+        "detection.yml",
+        "execution.yml",
+    }
+
     execution = yaml.safe_load((LIVE_DIR / "execution.yml").read_text())
     copy_trading = yaml.safe_load((LIVE_DIR / "copy_trading.yml").read_text())
     app_cfg = yaml.safe_load((LIVE_DIR / "app.yml").read_text())
     detection = yaml.safe_load((LIVE_DIR / "detection.yml").read_text())
+    control_plane = yaml.safe_load((LIVE_DIR / "control_plane.yml").read_text())
 
     assert set(execution) == {"trading_mode"}
     assert set(copy_trading) == {"wallets"}
@@ -70,6 +85,29 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "metrics_bind_host",
         "metrics_port",
     }
+    assert set(control_plane) == {"enabled"}
+    assert control_plane["enabled"] is True
+
+
+def test_live_environment_enables_the_loopback_operator_api() -> None:
+    """The live environment turns the control plane on without moving the bind."""
+
+    config = load_config(_overrides(), environment="live")
+
+    assert config.control_plane.enabled is True
+    assert config.control_plane.host == "127.0.0.1"
+    assert config.control_plane.port == 9103
+    assert config.control_plane.require_authentication is True
+
+
+def test_live_environment_control_plane_fails_closed_without_the_credential() -> None:
+    """Enabling the API in YAML never implies a credential exists."""
+
+    overrides = _overrides()
+    overrides.pop("control_plane")
+
+    with pytest.raises(EnvValidationError, match=r"PMCOPY__CONTROL_PLANE__AUTH__TOKEN"):
+        load_config(overrides, environment="live")
 
 
 def test_live_environment_does_not_change_other_services() -> None:
