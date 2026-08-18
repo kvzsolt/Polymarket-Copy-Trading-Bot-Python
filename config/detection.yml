@@ -18,6 +18,11 @@ trade_queue_max_batches: 64
 onchain:
   enable_onchain_pending_detection: false
   enable_onchain_mined_detection: false
+  # on_chain_confirmed variant: mempool_reserved (default) = gen-2
+  # Alchemy mempool-observed runtime; logs_only = mined OrderFilled
+  # subscriptions topic-filtered on the followed leaders, on any wss://
+  # provider. Inert in polling and on_chain_pending.
+  confirmed_source: mempool_reserved
   onchain_ws_url: ''
   pending_tx_ws_url: ''
   pending_tx_hashes_only: false

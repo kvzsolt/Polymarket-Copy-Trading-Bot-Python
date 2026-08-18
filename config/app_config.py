@@ -1017,6 +1017,12 @@ class OnchainDetectionConfig:
 
     enable_onchain_pending_detection: bool = False
     enable_onchain_mined_detection: bool = False
+    # Confirmed-source variant for ``detection.mode=on_chain_confirmed``:
+    # ``mempool_reserved`` is the gen-2 Alchemy mempool-observed,
+    # receipt-confirmed runtime; ``logs_only`` runs the gen-1 mined
+    # ``OrderFilled`` subscriptions topic-filtered on the followed leaders, on
+    # any plain ``eth_subscribe`` WSS provider. Inert in every other mode.
+    confirmed_source: Literal["mempool_reserved", "logs_only"] = "mempool_reserved"
     pending_tx_provider: str = "alchemy"
     onchain_ws_url: str = ""
     pending_tx_ws_url: str = ""
@@ -1332,6 +1338,15 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
     enabled: that route bypasses ``CrossSourceTradeClaimPolicy`` and would
     copy the same fill from both sources.
 
+    ``on_chain_confirmed`` with ``confirmed_source=logs_only`` only opens
+    plain ``eth_subscribe`` ``logs`` subscriptions, so it runs on any
+    ``wss://`` provider (``pending_tx_provider`` ``alchemy`` or ``generic``)
+    and still needs the WebSocket URL. Every other non-polling combination
+    requires ``pending_tx_provider=alchemy`` because the mempool
+    subscriptions (``on_chain_pending``, gen-2 ``mempool_reserved``) are
+    Alchemy-specific; ``on_chain_pending`` additionally has no logs-only
+    variant at all.
+
     ``on_chain_pending`` additionally pins the confidence floor to a value a
     mempool sighting can actually reach and requires a usable pending-copy
     confirmation budget, so the mode cannot be configured into silently
@@ -1359,8 +1374,22 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
             f"detection.mode={mode} requires a wss:// endpoint in "
             "detection.onchain.onchain_ws_url or detection.onchain.pending_tx_ws_url."
         )
+    confirmed_source = str(getattr(oc, "confirmed_source", "mempool_reserved") or "mempool_reserved")
+    confirmed_source = confirmed_source.strip().lower()
     provider = str(oc.pending_tx_provider or "").strip().lower()
-    if provider != "alchemy":
+    if mode == DetectionMode.ON_CHAIN_PENDING.value and confirmed_source != "mempool_reserved":
+        errors.append(
+            "detection.mode=on_chain_pending requires "
+            "detection.onchain.confirmed_source=mempool_reserved: the pending mempool path "
+            "has no logs-only variant."
+        )
+    if mode == DetectionMode.ON_CHAIN_CONFIRMED.value and confirmed_source == "logs_only":
+        if provider not in ("alchemy", "generic"):
+            errors.append(
+                f"detection.mode={mode} with detection.onchain.confirmed_source=logs_only "
+                "requires detection.onchain.pending_tx_provider=alchemy or generic."
+            )
+    elif provider != "alchemy":
         errors.append(
             f"detection.mode={mode} requires detection.onchain.pending_tx_provider=alchemy."
         )

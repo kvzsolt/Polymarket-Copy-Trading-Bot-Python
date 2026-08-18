@@ -1,23 +1,27 @@
 # Live detection source. Base config/detection.yml stays mode: polling.
-# on_chain_pending = copy on the mempool sighting itself (gen-1
-# OnchainDetectionRuntime, alchemy_pendingTransactions with calldata), which is
-# provisional: the leader transaction has not mined yet. Measured mempool lead
-# over mined was 0.67 s median with ~96 % visibility (docs/audit/
-# pending_detection_notes.md), which is why this is the live default.
+# on_chain_confirmed + confirmed_source: logs_only = copy on the mined
+# OrderFilled event itself, delivered by a plain eth_subscribe "logs"
+# subscription filtered on the OrderFilled topic0 and the followed leader
+# wallets (gen-1 OnchainDetectionRuntime, mined subscriptions only). Detection
+# lands at block inclusion (~2 s Polygon blocks), behind the mempool by
+# roughly 0.7 s median (docs/audit/pending_detection_notes.md), but a mined
+# fill is authoritative: no orphan-position risk and no pending-copy
+# confirmation to run. A handful of filtered events per hour sits inside the
+# provider free tiers (Alchemy 30M CU/month, Infura 3M credits/day), so the
+# mempool path is no longer a cost decision away — flip
+# PMCOPY__DETECTION__MODE=on_chain_pending to go back to it.
 #
 # REST polling keeps running as a parallel fallback in this mode exactly as in
 # every other one; the copy layer dedups the same fill by trade key
 # (CrossSourceTradeClaimPolicy), so a fill is copied once no matter which
 # source saw it first.
 #
-# Because the mined OrderFilled subscription is off here (it would double-copy),
-# nothing supersedes a provisional copy. The pending-copy confirmation tracker
-# below follows every executed copy to its receipt and reports
-# reverted / not_mined / rpc_error (metric pending_copy_unconfirmed_total,
-# WARN pending_copy_unconfirmed); it does not unwind — closing an orphaned
-# position stays an operator action (docs/known_limitations.md).
-mode: on_chain_pending
+# The pending_* keys below are inert in this mode (kept for the mempool
+# fallback) and pending_tx_provider stays alchemy — the operator's WSS is
+# Alchemy, and logs_only also accepts any generic eth_subscribe endpoint.
+mode: on_chain_confirmed
 onchain:
+  confirmed_source: logs_only
   pending_tx_provider: alchemy
   # Wider than the 500 ms base budget: a mempool sighting is only useful while
   # it is still unmined, and 700 ms keeps the queue-age gate above the measured
