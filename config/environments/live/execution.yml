@@ -3,8 +3,8 @@
 # trading_mode remains the single authoritative live/paper selector.
 trading_mode: live
 # Live profile: reservations on (double-spend protection); every discretionary
-# entry gate off. The book spread/depth gates are retired in favour of the
-# leader-price band, which is the single price-quality gate for a copy entry.
+# entry gate off. Copied FAK entries derive one tolerance-bounded limit from
+# the leader fill and do not consume book spread/depth data.
 reservations_enabled: true
 enable_copy_decision_gate: false
 enable_near_resolution_gate: false

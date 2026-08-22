@@ -17,12 +17,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from http import HTTPStatus
 from typing import Any, Iterable, Literal, NoReturn
 
+from domain.execution import ExecutionMetadata
 from domain.units import BASIS_POINTS_PER_UNIT
 from integrations.polymarket.ccxt_compat.capabilities import build_ccxt_health_payload
 from integrations.polymarket.ccxt_compat.precision import CcxtPrecisionError
@@ -91,16 +91,6 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 _KEY_MATERIAL_RE = re.compile(r"0x[0-9a-fA-F]{64,}")
 
 OrderSide = Literal["BUY", "SELL"]
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionMetadata:
-    """Describe authoritative metadata required to construct an order."""
-
-    token_id: str
-    tick_size: Decimal
-    min_order_size: Decimal
-    neg_risk: bool
 
 
 def _exception_name(exc: BaseException) -> str:
@@ -514,6 +504,101 @@ class CcxtPredictionGateway:
             return raw
         return await self._fetch_raw_order_book(token_id)
 
+    async def _fetch_clob_market_metadata(self, condition_id: str) -> dict[str, Any]:
+        """Fetch V2 market metadata without reading order-book levels."""
+
+        method = self._resolve_method(
+            "clobPublicGetClobMarketsConditionId",
+            "clob_public_get_clob_markets_condition_id",
+        )
+        if method is None:
+            raise VenueUnavailableError(
+                "CCXT does not expose clob-markets/{condition_id}; refusing execution"
+            )
+        try:
+            async with asyncio.timeout(_READ_TIMEOUT_SECONDS):
+                value = await _await_call(method, {"condition_id": str(condition_id)})
+        except BaseException as exc:
+            _raise_read_error(exc, not_found="orderbook")
+        payload = _maybe_dict(value)
+        return _nested_dict_or_self(payload, "data")
+
+    async def _fetch_neg_risk_metadata(self, token_id: str) -> dict[str, Any]:
+        """Fetch and validate the token's explicit negative-risk flag."""
+
+        method = self._resolve_method(
+            "clobPublicGetNegRiskTokenId",
+            "clob_public_get_neg_risk_token_id",
+        )
+        if method is None:
+            raise VenueUnavailableError(
+                "CCXT does not expose neg-risk/{token_id}; refusing execution"
+            )
+        try:
+            async with asyncio.timeout(_READ_TIMEOUT_SECONDS):
+                value = await _await_call(method, {"token_id": str(token_id)})
+        except BaseException as exc:
+            _raise_read_error(exc, not_found="orderbook")
+        if isinstance(value, bool):
+            return {"neg_risk": value}
+        payload = _nested_dict_or_self(_maybe_dict(value), "data")
+        neg_risk = _first(payload, "neg_risk", "negRisk", "nr")
+        if not isinstance(neg_risk, bool):
+            raise VenueInvalidOrderError(
+                "CCXT omitted neg_risk from token metadata; refusing execution"
+            )
+        return {"neg_risk": neg_risk}
+
+    @staticmethod
+    def _validate_metadata_token(
+        token_id: str,
+        market_metadata: dict[str, Any],
+    ) -> None:
+        """Ensure condition-scoped metadata contains the requested token."""
+
+        tokens = _first(market_metadata, "tokens", "t")
+        if not isinstance(tokens, list):
+            raise VenueInvalidOrderError(
+                "CCXT omitted tokens from condition metadata; refusing execution"
+            )
+        token_ids: set[str] = set()
+        for value in tokens:
+            if isinstance(value, (str, int)):
+                token_ids.add(str(value))
+                continue
+            item = _maybe_dict(value)
+            candidate = _first(item, "token_id", "tokenId", "asset_id", "assetId", "id", "t")
+            if candidate is not None:
+                token_ids.add(str(candidate))
+        if str(token_id) not in token_ids:
+            raise VenueInvalidOrderError(
+                "condition metadata does not contain the requested token; refusing execution"
+            )
+
+    async def _fetch_execution_metadata_without_book(
+        self,
+        token_id: str,
+        condition_id: str,
+    ) -> ExecutionMetadata:
+        """Return fresh signed-order metadata without fetching `/book`."""
+
+        market_metadata, neg_risk_metadata = await asyncio.gather(
+            self._fetch_clob_market_metadata(condition_id),
+            self._fetch_neg_risk_metadata(token_id),
+        )
+        self._validate_metadata_token(token_id, market_metadata)
+        metadata = self._metadata_from_sources(
+            token_id,
+            market_metadata,
+            neg_risk_metadata,
+        )
+        if metadata is None:
+            raise VenueInvalidOrderError(
+                "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
+            )
+        self._metadata[str(token_id)] = metadata
+        return metadata
+
     async def _load_outcome(self, token_id: str) -> dict[str, Any]:
         method = getattr(self._exchange, "load_outcome", None)
         outcome: Any = None
@@ -545,7 +630,7 @@ class CcxtPredictionGateway:
                 continue
             info = _nested_dict(source, "info")
             if tick is None:
-                tick = _first(source, "tick_size", "tickSize")
+                tick = _first(source, "tick_size", "tickSize", "mts")
                 tick = tick if tick is not None else _first(info, "tick_size", "tickSize")
                 tick = tick if tick is not None else _nested(source, "precision", "price")
                 # Gamma-market spellings carried in a CCXT outcome's raw info.
@@ -555,7 +640,7 @@ class CcxtPredictionGateway:
                     else _first(info, "orderPriceMinTickSize", "minimumTickSize")
                 )
             if minimum is None:
-                minimum = _first(source, "min_order_size", "minOrderSize")
+                minimum = _first(source, "min_order_size", "minOrderSize", "mos")
                 minimum = (
                     minimum
                     if minimum is not None
@@ -567,7 +652,7 @@ class CcxtPredictionGateway:
                 # Gamma-market spelling carried in a CCXT outcome's raw info.
                 minimum = minimum if minimum is not None else _first(info, "orderMinSize")
             if neg_risk is None:
-                neg_risk = _first(source, "neg_risk", "negRisk")
+                neg_risk = _first(source, "neg_risk", "negRisk", "nr")
                 neg_risk = neg_risk if neg_risk is not None else _first(info, "neg_risk", "negRisk")
 
         if tick is None or minimum is None or not isinstance(neg_risk, bool):
@@ -588,6 +673,7 @@ class CcxtPredictionGateway:
         token_id: str,
         raw_book: dict[str, Any] | None = None,
         *,
+        condition_id: str | None = None,
         refresh: bool = False,
     ) -> ExecutionMetadata:
         token = str(token_id)
@@ -613,6 +699,11 @@ class CcxtPredictionGateway:
                 return cached
 
         if refresh:
+            if condition_id:
+                return await self._fetch_execution_metadata_without_book(
+                    token,
+                    condition_id,
+                )
             # A fresh order-book snapshot is the execution authority. This is
             # intentionally done immediately before every signed order, using
             # the raw CLOB book because the parsed book drops the metadata.
@@ -718,15 +809,19 @@ class CcxtPredictionGateway:
             "best_ask": str(book.best_ask) if book.best_ask is not None else None,
         }
 
-    async def get_execution_metadata(self, token_id: str) -> dict[str, Any]:
-        """Return authoritative tick, minimum-size, and negative-risk metadata."""
-        metadata = await self._execution_metadata(str(token_id))
-        return {
-            "token_id": metadata.token_id,
-            "tick_size": str(metadata.tick_size),
-            "min_order_size": str(metadata.min_order_size),
-            "neg_risk": metadata.neg_risk,
-        }
+    async def get_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata:
+        """Return authoritative metadata without a book when condition is known."""
+
+        return await self._execution_metadata(
+            str(token_id),
+            condition_id=condition_id,
+            refresh=condition_id is not None,
+        )
 
     @staticmethod
     def _validate_order(
@@ -872,7 +967,11 @@ class CcxtPredictionGateway:
             raise VenueInvalidOrderError("price_limit is required for marketable orders")
         side = _normalize_side(request.side)
         order_type = _normalize_market_order_type(request.order_type)
-        metadata = await self._execution_metadata(request.token_id, refresh=True)
+        metadata = await self._execution_metadata(
+            request.token_id,
+            condition_id=request.condition_id,
+            refresh=True,
+        )
         tick_size = await self._resolved_tick_size(request.token_id, metadata)
         size = _decimal(request.size, field="size")
         price_limit = _decimal(request.price_limit, field="price_limit")

@@ -2,8 +2,8 @@
 
 Centralises BUY and SELL effective-size computation so that:
 
-* Venue min-size and tick-size are read from market metadata — never
-  hardcoded.
+* The executable floor is the larger of the dynamic venue share minimum and
+  the $1 taker notional minimum.
 * BUY effective notional uses the **worst-case protected price** (live
   price × (1 + slippage)), rounded up to the tick, so the downstream
   execution layer receives enough USDC to fill the desired shares even
@@ -76,17 +76,45 @@ class SizingDecision:
     worst_notional: Decimal = Decimal("0")
 
 
-def _taker_min_tokens(live_price: Number, lot_size: Decimal = _DEFAULT_LOT_SIZE) -> Decimal:
-    """Compute minimum token count for a taker order given the $1 USDC floor.
+@dataclass(frozen=True, slots=True)
+class MinimumOrderPolicy:
+    """Combine dynamic share and fixed notional minimums for taker orders."""
 
-    Quantizes UP to *lot_size* so the minimum is always venue-submittable.
-    """
-    d_price = _to_decimal(live_price)
-    if d_price <= 0:
-        return Decimal("0")
-    raw = Decimal("1") / d_price
-    # Round UP to the next lot grid so the minimum is at least $1 notional.
-    return (raw / lot_size).to_integral_value(rounding=ROUND_CEILING) * lot_size
+    minimum_notional_usdc: Decimal = _TAKER_MIN_NOTIONAL_USDC
+
+    def required_shares(
+        self,
+        *,
+        price: Number,
+        market_min_size: Number,
+        lot_size: Number = _DEFAULT_LOT_SIZE,
+    ) -> Decimal:
+        """Return the lot-aligned share floor for one marketable order.
+
+        Args:
+            price: Copied or protected execution price in USDC per share.
+            market_min_size: Dynamic venue minimum expressed in shares.
+            lot_size: Venue-compatible share quantity grid.
+
+        Returns:
+            The larger of ``market_min_size`` and the shares needed to reach
+            ``minimum_notional_usdc``, rounded upward to ``lot_size``.
+
+        Raises:
+            ValueError: If ``lot_size`` is not positive.
+        """
+
+        d_price = _to_decimal(price)
+        d_market_min = max(Decimal("0"), _to_decimal(market_min_size))
+        d_lot_size = _to_decimal(lot_size)
+        if d_lot_size <= 0:
+            raise ValueError("lot_size must be positive")
+        notional_min_shares = self.minimum_notional_usdc / d_price if d_price > 0 else Decimal("0")
+        required = max(d_market_min, notional_min_shares)
+        return (required / d_lot_size).to_integral_value(rounding=ROUND_CEILING) * d_lot_size
+
+
+_MINIMUM_ORDER_POLICY = MinimumOrderPolicy()
 
 
 def size_buy_order(
@@ -110,9 +138,8 @@ def size_buy_order(
     max_notional_usdc:
         Hard cap on USDC notional (account cap, per-trade cap, etc.).
     market_min_size:
-        **Ignored for taker orders.**  Kept for backward-compatible
-        signatures; the actual floor is derived from the Polymarket
-        taker-minimum of **$1 USDC notional**.
+        Dynamic CLOB share minimum. The effective floor is the larger of this
+        value and the shares required for **$1 USDC notional**.
     tick_size:
         Tick size for price rounding (from market metadata).
     slippage_ratio:
@@ -138,7 +165,11 @@ def size_buy_order(
     _raw_lot = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
     d_lot_size = _raw_lot if _raw_lot > 0 else _DEFAULT_LOT_SIZE
 
-    d_market_min = _taker_min_tokens(d_live_price, d_lot_size)
+    d_market_min = _MINIMUM_ORDER_POLICY.required_shares(
+        price=d_live_price,
+        market_min_size=market_min_size,
+        lot_size=d_lot_size,
+    )
 
     if d_live_price <= 0:
         return SizingDecision(
@@ -242,9 +273,8 @@ def size_sell_order(
     live_price:
         Current mid/bid price.
     market_min_size:
-        **Ignored for taker orders.**  Kept for backward-compatible
-        signatures; the actual floor is derived from the Polymarket
-        taker-minimum of **$1 USDC notional**.
+        Dynamic CLOB share minimum. The effective floor is the larger of this
+        value and the shares required for **$1 USDC notional**.
     lot_size:
         Token-lot grid from market metadata. Defaults to ``Decimal("0.0001")``
         (Polymarket CTF historical lot) when omitted; markets with a coarser
@@ -258,10 +288,9 @@ def size_sell_order(
 
     Notes
     -----
-    SELL quantization uses ``ROUND_FLOOR``: we never round up a SELL,
-    even if the held clamp would catch us. The defensive direction for
-    SELL is to leave a tiny residual rather than risk attempting to
-    submit more than the operator requested.
+    A sub-minimum proportional SELL may be deliberately upsized to the
+    executable floor only when held shares cover it. Final lot quantization
+    uses ``ROUND_FLOOR`` so the bot never submits more shares than held.
     """
     # Greptile P1: same zero-guard as the BUY path — ``lot_size=0`` from a
     # bad market-metadata response would otherwise divide by zero inside
@@ -269,7 +298,11 @@ def size_sell_order(
     _raw_lot = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
     d_lot_size = _raw_lot if _raw_lot > 0 else _DEFAULT_LOT_SIZE
     d_live_price = _to_decimal(live_price) if _to_decimal(live_price) > 0 else Decimal("0")
-    d_market_min = _taker_min_tokens(d_live_price, d_lot_size)
+    d_market_min = _MINIMUM_ORDER_POLICY.required_shares(
+        price=d_live_price,
+        market_min_size=market_min_size,
+        lot_size=d_lot_size,
+    )
     d_sell_in = _to_decimal(sell_tokens)
 
     if d_sell_in <= 0:

@@ -100,8 +100,8 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "MIN_SHARE_PRICE": "Minimum acceptable BUY price (0 disables).",
     "MAX_SHARE_PRICE": "Maximum acceptable BUY price (0 disables).",
     "MAX_ENTRY_PRICE_DRIFT_PCT": (
-        "Percent band around the leader fill price for copy entries — BUY cap / SELL floor "
-        "(0 disables the band)."
+        "Tolerance around the leader fill for one-shot copy FAKs — BUY cap / SELL floor; "
+        "supported range 5-10%."
     ),
     "FETCH_INTERVAL": "Seconds between leader trade polling cycles.",
     "RISK_CHECK_INTERVAL": "Seconds between risk monitor evaluations.",

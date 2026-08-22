@@ -73,6 +73,11 @@ class ExecutionIntent:
     reason: str | None = None
     recovery_metadata: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    order_type: ExecutionOrderType | None = None
+    price_limit: Decimal | None = None
+    tick_size: Decimal | None = None
+    min_order_size: Decimal | None = None
+    neg_risk: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -710,17 +715,17 @@ class ExecutionCoordinator:
         recovery_metadata = dict(intent.recovery_metadata or {})
         recovery_metadata["reservation_id"] = reservation_id
         recovery_metadata.setdefault("source", source_override)
-        price_limit = None
+        price_limit = intent.price_limit
         raw_price_limit = recovery_metadata.get("price_limit")
-        if raw_price_limit is not None:
+        if price_limit is None and raw_price_limit is not None:
             try:
                 price_limit = Decimal(str(raw_price_limit))
             except Exception:
                 price_limit = None
 
         raw_order_type = recovery_metadata.get("order_type")
-        order_type = None
-        if raw_order_type is not None:
+        order_type = intent.order_type
+        if order_type is None and raw_order_type is not None:
             try:
                 order_type = ExecutionOrderType(str(raw_order_type).upper())
             except ValueError:
@@ -743,6 +748,9 @@ class ExecutionCoordinator:
             recovery_metadata=recovery_metadata,
             order_type=order_type,
             price_limit=price_limit,
+            tick_size=intent.tick_size,
+            min_order_size=intent.min_order_size,
+            neg_risk=intent.neg_risk,
         )
 
         # ---- Submit through ExecutionService (dup-guard layer #2) -----

@@ -9,8 +9,9 @@ silent ``0.01`` default anywhere on this path.
 
 from __future__ import annotations
 
+import inspect
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Literal, Protocol
@@ -169,23 +170,19 @@ class PolymarketTickSizeResolver:
 
         self._cache.pop(str(token_id), None)
 
-    async def _source_tick(self, token: str) -> Decimal | None:
+    async def _source_tick(self, token: str) -> object | None:
         if self._ccxt_client is not None:
             getter = getattr(self._ccxt_client, "get_tick_size", None)
             if callable(getter):
                 tick = getter(token)
-                if hasattr(tick, "__await__"):
+                if inspect.isawaitable(tick):
                     tick = await tick
                 if tick is not None:
                     return tick
         if self._market_metadata_client is not None:
-            getter = getattr(self._market_metadata_client, "get_tick_size", None)
-            if callable(getter):
-                tick = getter(token)
-                if hasattr(tick, "__await__"):
-                    tick = await tick
-                if tick is not None:
-                    return tick
+            tick = await self._market_metadata_client.get_tick_size(token)
+            if tick is not None:
+                return tick
         return None
 
 
@@ -202,7 +199,7 @@ class PublicClobTickSizeSource:
     def __init__(
         self,
         *,
-        fetch_json: Callable[[str], object] | None = None,
+        fetch_json: Callable[[str], Awaitable[object]] | None = None,
         base_url: str = _PUBLIC_CLOB_BOOK_URL,
     ) -> None:
         if fetch_json is None:

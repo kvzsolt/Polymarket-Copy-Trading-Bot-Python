@@ -7,7 +7,8 @@ sell_fraction_missing_policy: skip
 slippage_tolerance: 2.0
 min_share_price: 0.10
 max_share_price: 0.90
-# Copy-entry band around the leader fill price (percent). 0 disables it.
+# Maximum copied-price movement accepted by a one-shot FAK (percent). The
+# supported operator range is 5-10%; protective exits reuse the same band.
 max_entry_price_drift_pct: 5.0
 non_terminal_failure_max_attempts: 3
 trading_mode: paper

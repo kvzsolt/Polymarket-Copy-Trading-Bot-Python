@@ -3,12 +3,11 @@
 Single production entry point for execution/sizing/risk to obtain executable
 market data for one Polymarket token.
 
-Design (PR10.4):
-  - When ``policy.primary_source == "rest_snapshot"`` (default), copy-trade
-    execution calls :meth:`MarketDataService.require_execution_snapshot` which
-    fetches a fresh REST `/book` immediately before sizing, validates it
-    against millisecond budgets and book-quality gates, and writes it into
-    :class:`MarketStateStore` for downstream sizing/execution.
+Design:
+  - Copy-trade sizing calls :meth:`MarketDataService.require_execution_metadata`
+    for dynamic tick/minimum/negative-risk fields and never fetches `/book`.
+  - ``require_execution_snapshot`` remains available to non-copy consumers
+    that explicitly need a gated REST book and cache refresh.
   - When ``policy.primary_source == "wss"``, the legacy WSS-first path is
     used: :meth:`require_fresh_data` validates the WSS-fed cache and falls
     back to REST resync if explicitly allowed.
@@ -28,6 +27,7 @@ from enum import Enum
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from domain.execution import ExecutionMetadata
 from domain.units import BASIS_POINTS_PER_UNIT
 
 from cache.market_state_store import (
@@ -132,6 +132,48 @@ class MarketDataService:
         self._gateway = gateway
         self._policy = policy or MarketDataPolicy()
         self._is_wss_down_fn = is_wss_down_fn
+
+    async def require_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata:
+        """Return validated dynamic order metadata without fetching a book.
+
+        Args:
+            token_id: Raw Polymarket outcome token identifier.
+            condition_id: Condition used by the metadata-only CLOB endpoint.
+
+        Returns:
+            Current tick size, share minimum, and negative-risk flag.
+
+        Raises:
+            StaleDataError: If the gateway cannot provide complete metadata.
+        """
+
+        try:
+            metadata = await self._gateway.get_execution_metadata(
+                token_id,
+                condition_id=condition_id,
+            )
+        except Exception as exc:
+            raise StaleDataError(
+                f"execution metadata unavailable for {token_id}: {type(exc).__name__}",
+                skip_code="market_metadata_unavailable",
+            ) from exc
+        if (
+            not isinstance(metadata, ExecutionMetadata)
+            or metadata.token_id != str(token_id)
+            or metadata.tick_size <= 0
+            or metadata.min_order_size <= 0
+            or not isinstance(metadata.neg_risk, bool)
+        ):
+            raise StaleDataError(
+                f"execution metadata invalid for {token_id}",
+                skip_code="market_metadata_unavailable",
+            )
+        return metadata
 
     async def require_fresh_data(
         self,

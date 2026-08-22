@@ -13,19 +13,27 @@ class ExecutionOrderType(StrEnum):
     FAK = "FAK"
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionMetadata:
+    """Validated venue fields required to size and sign an order."""
+
+    token_id: str
+    tick_size: Decimal
+    min_order_size: Decimal
+    neg_risk: bool
+
+
 _BAND_QUANTUM = Decimal("0.0001")
 _PERCENT = Decimal("100")
 
 
 @dataclass(frozen=True)
 class LeaderPriceBand:
-    """Adjustable price band around the leader's own fill price.
+    """Adjustable execution band around a reference fill price.
 
-    A copy entry is only worth submitting while the executable side of the
-    book is still close to the price the leader paid. The band turns that
-    tolerance into an explicit BUY cap / SELL floor so a copy is either
-    submitted marketable or refused before it reaches the venue — never sent
-    as a FAK that cannot cross the spread.
+    The policy turns a tolerance into an explicit BUY cap or SELL floor. Copy
+    entries derive the limit once from leader metadata; protective exits use
+    the same arithmetic against their caller-provided reference.
 
     Attributes:
         leader_price: The leader's own fill price for the copied trade.
@@ -86,4 +94,4 @@ class LeaderPriceBand:
         return quote_price < limit
 
 
-__all__ = ["ExecutionOrderType", "LeaderPriceBand"]
+__all__ = ["ExecutionMetadata", "ExecutionOrderType", "LeaderPriceBand"]

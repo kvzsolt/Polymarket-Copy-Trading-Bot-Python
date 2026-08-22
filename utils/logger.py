@@ -549,6 +549,7 @@ class RichConsoleHandler(logging.Handler):
         venue_status = getattr(record, "venueStatus", None)
         submission_state = getattr(record, "submissionState", None)
         size_raw = getattr(record, "size", None)
+        size_estimated = bool(getattr(record, "sizeEstimated", False))
         price_raw = getattr(record, "price", None)
         usdc_raw = getattr(record, "usdcValue", None)
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -572,12 +573,14 @@ class RichConsoleHandler(logging.Handler):
         price_str = _fmt_float(price_raw, ".4f")
         usdc_str = _fmt_float(usdc_raw, ".2f")
 
+        size_label = "Estimated Size" if size_estimated else "Size"
+        size_field = {size_label: f"{size_str} tokens" if size_str else None}
         lines = _build_panel_lines(
             Side=f"[{side_style}]{side}[/{side_style}]",
             Status=status or None,
             VenueStatus=str(venue_status) if venue_status else None,
             State=str(submission_state) if submission_state else None,
-            Size=f"{size_str} tokens" if size_str else None,
+            **size_field,
             Price=price_str,
             Value=f"[money]${usdc_str}[/money]" if usdc_str else None,
             Condition=cond if cond != "N/A" else None,

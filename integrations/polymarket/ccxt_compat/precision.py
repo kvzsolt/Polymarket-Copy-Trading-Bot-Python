@@ -11,7 +11,7 @@ fork CCXT and is safe to remove once upstream accepts arbitrary tick sizes.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from types import MethodType
 from typing import Any
 
@@ -96,8 +96,10 @@ def polymarket_raw_amounts(
         if spend <= 0:
             raise CcxtPrecisionError("cost must be positive")
         maker = _truncate(spend, _SIZE_QUANTUM)
-        # Round received shares upward so maker/taker never exceeds max price.
-        taker = (maker / px).quantize(amount_quantum, rounding=ROUND_CEILING)
+        # CCXT truncates received shares so the implied maker/taker price is
+        # marketable at ``px``. Rounding shares upward signs a price just below
+        # the selected tick, causing an otherwise executable FAK to be killed.
+        taker = (maker / px).quantize(amount_quantum, rounding=ROUND_DOWN)
     elif normalized_side == "BUY":
         taker = _truncate(requested_size, _SIZE_QUANTUM)
         # Round spend downward so the implied BUY price stays at/below the cap.

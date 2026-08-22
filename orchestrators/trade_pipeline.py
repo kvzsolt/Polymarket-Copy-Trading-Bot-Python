@@ -23,8 +23,10 @@ from services.execution.reconciliation_service import ReconciliationService
 from services.execution.pending_order_reconciliation import (
     PendingOrderReconciliationQueryService,
 )
+from services.execution.types import ExecutionAmountProjection
 from services.executionService import ExecutionRequest
 from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
+from services.order_sizing import MinimumOrderPolicy
 from services.telemetry import (
     ExecutionTelemetryEmitter,
     TelemetryEmitters,
@@ -63,6 +65,7 @@ _DISABLED_TELEMETRY = TelemetryEmitters.disabled()
 # them, so a projected event carries the same correlation token the detection
 # emitters published for that signal.
 _TX_HASH_KEYS = ("transactionHash", "txHash", "transaction_hash", "tx_hash")
+_LEADER_SELL_MINIMUM_POLICY = MinimumOrderPolicy()
 
 
 def _copy_entry_price_plan(
@@ -70,42 +73,54 @@ def _copy_entry_price_plan(
     signal: Any,
     side: str,
 ) -> tuple[Decimal, dict[str, str]]:
-    """Build the FAK price limit and recovery metadata for one copy entry.
+    """Build one tolerance-bounded FAK limit from the leader fill price.
 
-    The limit is a band around the leader's own fill price rather than the
-    leader price itself: a BUY may pay up to ``leader * (1 + drift)`` and a
-    SELL may accept down to ``leader * (1 - drift)``. Submitting at the bare
-    leader price produced FAK orders that could not cross a book which had
-    already moved. ``execution.max_entry_price_drift_pct`` sizes the band;
-    ``0`` disables it and passes the leader price straight through, which the
-    executor then treats as "no band".
+    The configured tolerance is applied once to the copied price without a
+    book read, reprice, or retry. The global BUY ceiling remains authoritative.
 
     Args:
-        context: Trading context carrying the typed application config.
-        signal: Normalized leader signal; only ``price`` is read.
+        context: Trading context containing execution tolerance and price caps.
+        signal: Normalized leader signal containing the copied fill price.
         side: ``"BUY"`` or ``"SELL"``.
 
     Returns:
-        A ``(price_limit, recovery_metadata)`` pair. The metadata records the
-        derived limit, the leader reference price, and the configured drift so
-        a submission can be audited after the fact.
+        A ``(price_limit, recovery_metadata)`` pair for one FAK submission.
     """
-    drift_pct = getattr(
-        getattr(getattr(context, "config", None), "execution", None),
-        "max_entry_price_drift_pct",
-        ExecutionConfig.max_entry_price_drift_pct,
-    )
-    drift_pct = float(drift_pct)
     leader_price = Decimal(str(signal.price or 0))
-    band = LeaderPriceBand(leader_price=leader_price, drift_pct=Decimal(str(drift_pct)))
-    price_limit = band.limit_for(side)
+    execution_config = getattr(getattr(context, "config", None), "execution", None)
+    drift_pct = Decimal(
+        str(
+            getattr(
+                execution_config,
+                "max_entry_price_drift_pct",
+                ExecutionConfig.max_entry_price_drift_pct,
+            )
+        )
+    )
+    band = LeaderPriceBand(leader_price=leader_price, drift_pct=drift_pct)
+    unclamped_price_limit = band.limit_for(side)
+    price_limit = unclamped_price_limit
     metadata = {
         "source": "copy_trade",
         "order_type": "FAK",
-        "price_limit": str(price_limit),
         "leader_price": str(leader_price),
         "price_drift_pct": str(drift_pct),
+        "unclamped_price_limit": str(unclamped_price_limit),
     }
+    if side.upper() == "BUY":
+        max_share_price = Decimal(
+            str(
+                getattr(
+                    execution_config,
+                    "max_share_price",
+                    ExecutionConfig.max_share_price,
+                )
+            )
+        )
+        if max_share_price > 0:
+            price_limit = min(price_limit, max_share_price)
+        metadata["max_share_price"] = str(max_share_price)
+    metadata["price_limit"] = str(price_limit)
     return price_limit, metadata
 
 
@@ -338,6 +353,11 @@ async def _submit_copy_through_coordinator(
         max_slippage_bps=int(exec_req.max_slippage_bps),
         reason=exec_req.reason or "copy_trade",
         recovery_metadata=exec_req.recovery_metadata,
+        order_type=getattr(exec_req, "order_type", None),
+        price_limit=getattr(exec_req, "price_limit", None),
+        tick_size=getattr(exec_req, "tick_size", None),
+        min_order_size=getattr(exec_req, "min_order_size", None),
+        neg_risk=getattr(exec_req, "neg_risk", None),
     )
     coord_result = await coordinator.submit_copy_trade(intent)
     raw = coord_result.raw_result
@@ -391,22 +411,6 @@ def _market_data_primary_source(context: TradingContext) -> str:
     return str(getattr(md_cfg, "primary_source", "rest_snapshot")).lower()
 
 
-def _copy_entry_requires_rest_snapshot(context: TradingContext) -> bool:
-    """Return whether a copy entry must clear the blocking REST pre-gate.
-
-    Args:
-        context: Trading context carrying the typed application config.
-
-    Returns:
-        ``True`` when ``market_data.copy_entry_requires_rest_snapshot`` is set.
-        Defaults to ``False`` so an unconfigured/legacy context never
-        reintroduces the blocking pre-gate.
-    """
-    cfg = getattr(context, "config", None)
-    md_cfg = getattr(cfg, "market_data", None) if cfg is not None else None
-    return bool(getattr(md_cfg, "copy_entry_requires_rest_snapshot", False))
-
-
 #: Strong references to in-flight market-data warm-up tasks. A bare
 #: ``asyncio.create_task`` result is only weakly held by the event loop, so a
 #: warm-up could be garbage-collected mid-flight; the set is drained by the
@@ -418,10 +422,9 @@ _market_data_warmup_tasks: set[asyncio.Task] = set()
 def _spawn_market_data_warmup(context: TradingContext, token_ids: set[str]) -> None:
     """Warm the market-data cache for ``token_ids`` without blocking the copy.
 
-    The REST snapshot is a cache-feeding fallback, not an entry gate: the copy
-    path must reach the executor immediately while the token's WSS
-    subscription is established in the background. Failures are logged once
-    and swallowed — sizing/execution still fail closed on their own read.
+    Metadata-only prefetch is the copy entry gate; WSS subscription remains a
+    background concern for later cache consumers. Warm-up failures are logged
+    and swallowed because required execution metadata fails closed separately.
 
     Args:
         context: Trading context carrying the market-data runtime.
@@ -527,32 +530,24 @@ async def _prefetch_market_data_for_signals(
     context: TradingContext,
     normalized: list,
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
-    """Resolve a fresh executable market bundle for each signal token.
+    """Resolve the execution inputs required for each signal token.
 
-    In REST primary mode (``MARKET_DATA_PRIMARY_SOURCE=rest_snapshot``) this
-    calls :meth:`MarketDataService.require_execution_snapshot` once per unique
-    ``(token_id, side)`` pair, immediately before sizing. After the REST
-    snapshot has seeded ``MarketStateStore``, the token is best-effort
-    subscribed to market WSS so later book/quote updates can overwrite the
-    REST source in the same store. No WSS readiness wait, no retry loop — one
-    fresh REST `/book` per pair, gated against the millisecond budgets
-    configured on :class:`MarketDataPolicy`.
+    In REST-primary mode this reads only dynamic execution metadata. It never
+    fetches `/book`, never gates on spread/depth, and never substitutes a book
+    quote for the copied price. WSS is warmed in the background.
 
     In WSS primary mode the legacy path is used: subscribe → wait for
     ``ensure_token_ready_or_bootstrapped`` → ``require_fresh_data`` retry loop.
 
     Returns:
-        bundles_by_token: token_id -> MarketDataBundle for any token that
-            resolved successfully. Used by the per-signal loop to extract
-            ``tick_size`` / ``min_order_size`` for sizing.
+        bundles_by_token: token_id -> MarketDataBundle for WSS-primary tokens.
+            Metadata-only results are stored on ``context.extra`` instead.
         stale_tokens: token_ids whose primary-mode lookup failed at least
             once. Retained for back-compat with callers that key off the
             token only.
         stale_skip_codes: ``(token_id, side)`` -> ``skip_code`` for each
             failed lookup. Used by the per-signal loop to surface a
-            specific reason (``market_data_stale``,
-            ``market_data_timeout``, ``book_no_liquidity``,
-            ``book_spread_wide``, ``market_resolved``).
+            specific fail-closed reason.
     """
     if not normalized:
         return {}, set(), {}
@@ -560,208 +555,95 @@ async def _prefetch_market_data_for_signals(
     primary_source = _market_data_primary_source(context)
 
     if primary_source == "rest_snapshot":
-        return await _prefetch_market_data_rest_snapshot(context, normalized)
+        return await _prefetch_copy_execution_metadata(context, normalized)
 
     return await _prefetch_market_data_wss(context, normalized)
 
 
-async def _prefetch_market_data_rest_snapshot(
+async def _prefetch_copy_execution_metadata(
     context: TradingContext,
     normalized: list,
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
-    """REST-primary path. One fresh `/book` per unique (token_id, side).
+    """Fetch copy sizing metadata without reading or gating an order book.
 
-    Gated by ``market_data.copy_entry_requires_rest_snapshot``. When that
-    switch is off (the default) this pre-gate returns immediately with no
-    bundles and no skips: the copy goes straight to the executor, whose
-    cache-first ``require_fresh_data`` is the single fetch before signing, and
-    the tokens are subscribed to the market WSS in the background so the cache
-    warms without the entry waiting on it.
-
-    When the switch is on, one fresh `/book` per unique ``(token_id, side)``
-    is fetched before sizing and every rejection becomes a per-signal skip.
-    This path still does not wait for WSS readiness, but it subscribes the
-    token after the REST snapshot write, preserving the intended handoff: REST
-    seeds ``MarketStateStore`` immediately; WSS then owns ongoing quote/book
-    updates in the same token-keyed store.
+    The copied signal price remains the sole FAK price. This prefetch obtains
+    only dynamic tick size, share minimum, and negative-risk metadata, then
+    warms WSS subscriptions in the background for non-execution consumers.
     """
-    if not _copy_entry_requires_rest_snapshot(context):
-        context.extra["_md_bundles_by_pair"] = {}
-        warm_tokens = {
-            token_id for signal, _ in normalized if (token_id := getattr(signal, "token_id", None))
-        }
-        logger.info(
-            "trade_pipeline_market_data_pregate_disabled | tokens=%d",
-            len(warm_tokens),
-        )
-        _spawn_market_data_warmup(context, warm_tokens)
-        return {}, set(), {}
+    context.extra["_md_bundles_by_pair"] = {}
+    context.extra["_copy_execution_metadata_by_token"] = {}
+    warm_tokens = {
+        token_id for signal, _ in normalized if (token_id := getattr(signal, "token_id", None))
+    }
+    logger.info(
+        "trade_pipeline_copy_metadata_prefetch | tokens=%d",
+        len(warm_tokens),
+    )
+    _spawn_market_data_warmup(context, warm_tokens)
 
     mds = getattr(context, "market_data_service", None)
     if mds is None:
-        # No MDS → fail closed: every signal will skip with market_data_stale.
-        stale_tokens: set[str] = set()
-        stale_codes: dict[tuple[str, str], str] = {}
-        for signal, _ in normalized:
-            token_id = getattr(signal, "token_id", None)
-            side = str(getattr(signal, "side", "") or "").upper()
-            if not token_id:
-                continue
-            stale_tokens.add(token_id)
-            stale_codes[(token_id, side)] = "market_data_stale"
-        return {}, stale_tokens, stale_codes
+        stale_codes = {
+            (
+                str(getattr(signal, "token_id", "") or ""),
+                str(getattr(signal, "side", "") or "").upper(),
+            ): "market_metadata_unavailable"
+            for signal, _ in normalized
+            if getattr(signal, "token_id", None)
+        }
+        return {}, {token_id for token_id, _side in stale_codes}, stale_codes
 
-    from services.market_data_service import (  # noqa: WPS433  local import
-        MarketDataError,
-        MarketDataNotReady,
-        StaleDataError,
-    )
-
-    unique_pairs: list[tuple[str, str, str | None]] = []
-    seen: set[tuple[str, str]] = set()
+    unique_tokens: dict[str, str | None] = {}
+    sides_by_token: dict[str, set[str]] = {}
     for signal, _ in normalized:
-        token_id = getattr(signal, "token_id", None)
-        side = str(getattr(signal, "side", "") or "").upper()
-        condition_id = getattr(signal, "condition_id", None)
-        if not token_id or not side:
+        token_id = str(getattr(signal, "token_id", "") or "")
+        if not token_id:
             continue
-        key = (token_id, side)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_pairs.append((token_id, side, condition_id))
-
-    if not unique_pairs:
-        return {}, set(), {}
+        unique_tokens.setdefault(token_id, getattr(signal, "condition_id", None))
+        sides_by_token.setdefault(token_id, set()).add(
+            str(getattr(signal, "side", "") or "").upper()
+        )
 
     analysis_sem = _analysis_semaphore(context)
-    bundles_by_token: dict[str, Any] = {}
-    bundles_by_pair: dict[tuple[str, str], Any] = {}
-    stale_tokens: set[str] = set()
-    stale_codes: dict[tuple[str, str], str] = {}
 
-    async def _resolve_one(
+    async def _resolve_metadata(
         token_id: str,
-        side: str,
         condition_id: str | None,
-    ) -> tuple[str, str, Any, str | None]:
+    ) -> tuple[str, Any | None, str | None]:
         async with analysis_sem:
-            logger.info(
-                "trade_pipeline_market_data_snapshot_start | token_id=%s side=%s cond=%s",
-                token_id,
-                side,
-                condition_id,
-            )
             try:
-                bundle = await mds.require_execution_snapshot(
+                value = await mds.require_execution_metadata(
                     token_id,
-                    side=side,
                     condition_id=condition_id,
                 )
-            except MarketDataNotReady as exc:
-                code = exc.skip_code or "market_resolved"
-                logger.info(
-                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
-                    token_id,
-                    side,
-                    code,
-                )
-                return token_id, side, None, code
-            except StaleDataError as exc:
-                code = exc.skip_code or "market_data_stale"
-                if code == "market_data_timeout":
-                    logger.info(
-                        "trade_pipeline_market_data_snapshot_timeout | token_id=%s side=%s",
-                        token_id,
-                        side,
-                    )
-                logger.info(
-                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
-                    token_id,
-                    side,
-                    code,
-                )
-                return token_id, side, None, code
-            except MarketDataError as exc:
-                code = getattr(exc, "skip_code", None) or "market_data_stale"
-                logger.info(
-                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
-                    token_id,
-                    side,
-                    code,
-                )
-                return token_id, side, None, code
-            except Exception as exc:  # pragma: no cover - defensive
+                return token_id, value, None
+            except Exception as exc:
+                skip_code = getattr(exc, "skip_code", None) or "market_metadata_unavailable"
                 logger.warning(
-                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=unexpected error=%r",
+                    "trade_pipeline_execution_metadata_failed | token=%s error_type=%s",
                     token_id,
-                    side,
-                    exc,
+                    type(exc).__name__,
                 )
-                return token_id, side, None, "market_data_stale"
+                return token_id, None, str(skip_code)
 
-            quote = getattr(bundle, "quote", None)
-            book = getattr(bundle, "book", None)
-            best_bid = getattr(quote, "best_bid", None) if quote is not None else None
-            best_ask = getattr(quote, "best_ask", None) if quote is not None else None
-            spread_bps: int | None = None
-            if best_bid is not None and best_ask is not None and best_ask > 0:
-                try:
-                    spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
-                except Exception:
-                    spread_bps = None
-            bid_count = len(getattr(book, "bids", {}) or {}) if book is not None else 0
-            ask_count = len(getattr(book, "asks", {}) or {}) if book is not None else 0
-            logger.info(
-                "trade_pipeline_market_data_snapshot_ready | token_id=%s side=%s source=rest_snapshot"
-                " bid_count=%d ask_count=%d spread_bps=%s",
-                token_id,
-                side,
-                bid_count,
-                ask_count,
-                spread_bps,
-            )
-            return token_id, side, bundle, None
-
-    results = await asyncio.gather(
+    resolved = await asyncio.gather(
         *(
-            _resolve_one(token_id, side, condition_id)
-            for token_id, side, condition_id in unique_pairs
-        ),
-        return_exceptions=True,
+            _resolve_metadata(token_id, condition_id)
+            for token_id, condition_id in unique_tokens.items()
+        )
     )
-    for entry in results:
-        if isinstance(entry, BaseException):
-            logger.warning(
-                "trade_pipeline_market_data_snapshot_rejected | reason=gather_error error=%r",
-                entry,
-            )
+    metadata_by_token: dict[str, Any] = {}
+    stale_tokens: set[str] = set()
+    stale_codes: dict[tuple[str, str], str] = {}
+    for token_id, metadata, skip_code in resolved:
+        if metadata is not None:
+            metadata_by_token[token_id] = metadata
             continue
-        token_id, side, bundle, skip_code = entry
-        if bundle is None:
-            stale_tokens.add(token_id)
-            stale_codes[(token_id, side)] = skip_code or "market_data_stale"
-            continue
-        bundles_by_pair[(token_id, side)] = bundle
-        # Any per-token sizing data (tick/min_order_size) is side-independent;
-        # keep one bundle keyed by token for downstream sizing inputs.
-        bundles_by_token.setdefault(token_id, bundle)
-
-    # Attach per-pair bundles on the context so the per-signal loop can pull
-    # the exact side's bundle when constructing decision/execute metadata.
-    # SHP-09: ``context.extra`` is the canonical extension point — direct
-    # ``__dict__`` writes bypass the dataclass field set and would break
-    # under a future ``frozen=True`` / ``__slots__`` switch.
-    context.extra["_md_bundles_by_pair"] = bundles_by_pair
-
-    # REST-primary execution seeds the store from `/book`, then immediately
-    # hands the token to WSS for ongoing updates. Do not call
-    # ensure_token_ready_or_bootstrapped() here: that would reintroduce a WSS
-    # readiness wait on the latency-critical copy-trade path.
-    for token_id in {token_id for token_id, _side, _condition_id in unique_pairs}:
-        await _ensure_token_subscribed(context, token_id)
-
-    return bundles_by_token, stale_tokens, stale_codes
+        stale_tokens.add(token_id)
+        for side in sides_by_token.get(token_id, {""}):
+            stale_codes[(token_id, side)] = skip_code or "market_metadata_unavailable"
+    context.extra["_copy_execution_metadata_by_token"] = metadata_by_token
+    return {}, stale_tokens, stale_codes
 
 
 async def _prefetch_market_data_wss(
@@ -1302,18 +1184,19 @@ def _resolve_leader_sell_tokens(
     *,
     requested_sell_tokens: Decimal,
     max_sell_tokens: Decimal,
-    market_min_size: float,
+    market_min_size: Decimal | float,
+    live_price: Decimal = Decimal("1"),
     sub_min_sell_policy: str = "round_up",
 ) -> Decimal:
     """Resolve leader-follow SELL size without decision-gate scoring.
 
     Leader SELLs are authoritative exits: copy the same fraction of our held
-    position, capped by what we can actually sell. ``sub_min_sell_policy``
-    controls what happens when that fraction is below the venue minimum:
+    position, capped by what we can actually sell. The executable minimum is
+    the larger of the dynamic share minimum and the shares worth $1 at the
+    copied price. ``sub_min_sell_policy`` controls sub-minimum fractions:
 
-    - ``round_up`` (legacy): sell the minimum when possible; otherwise sell
-      the largest remaining sellable amount. A leader's small nibble becomes
-      a near-full exit on small positions.
+    - ``round_up`` (legacy): sell the effective minimum when holdings cover
+      it; otherwise fail closed without submitting a known-invalid order.
     - ``skip`` (fail-closed, Phase 2.8): drop the copy sell (return 0) rather
       than overshoot the leader's intent. The signal is retried on the next
       poll when the leader's remaining fraction crosses the minimum.
@@ -1326,12 +1209,15 @@ def _resolve_leader_sell_tokens(
     if target <= 0:
         return Decimal("0")
 
-    min_tokens = _to_decimal(market_min_size)
+    min_tokens = _LEADER_SELL_MINIMUM_POLICY.required_shares(
+        price=live_price,
+        market_min_size=market_min_size,
+    )
     if min_tokens > 0 and target < min_tokens:
         if str(sub_min_sell_policy).strip().lower() == "skip":
             # Fail-closed: do not overshoot a sub-minimum proportional sell.
             return Decimal("0")
-        return min(max_sell_tokens, min_tokens)
+        return min_tokens if max_sell_tokens >= min_tokens else Decimal("0")
     return target
 
 
@@ -1817,27 +1703,17 @@ async def reconcile_submitted_unconfirmed(
 
 
 def _decision_live_price(signal: Any, bundle: Any) -> float:
-    """Price used to score the copy decision (drift/edge gates + BUY sizing).
+    """Return the copied fill price used for decision sizing.
 
-    P1-c: this must be the FRESH executable quote — ``best_ask`` for a BUY,
-    ``best_bid`` for a SELL — not the stale leader signal price. Scoring against
-    ``signal.price`` made ``price_drift_pct`` / ``edge_decay_pct`` identically
-    zero (the signal compared against itself) and sized BUYs off the old price,
-    leaving the protective drift gate inert on every copy. Falls back to the
-    signal price when no fresh quote is available; the degraded/REST path is
-    gated separately upstream.
+    A supplied bundle is deliberately ignored. Copy FAK execution uses the
+    leader's observed fill as its sole price, while dynamic venue metadata is
+    fetched separately for sizing and signing safety.
     """
-    fallback = float(getattr(signal, "price", 0) or 0)
-    quote = getattr(bundle, "quote", None) if bundle is not None else None
-    if quote is None:
-        return fallback
-    side = str(getattr(signal, "side", "") or "").upper()
-    fresh = getattr(quote, "best_ask", None) if side == "BUY" else getattr(quote, "best_bid", None)
+    del bundle
     try:
-        fresh_f = float(fresh) if fresh is not None else 0.0
+        return float(getattr(signal, "price", 0) or 0)
     except (TypeError, ValueError):
-        return fallback
-    return fresh_f if fresh_f > 0 else fallback
+        return 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2036,31 +1912,49 @@ async def _execute_trades_impl(
         recent_trade_count=len(signals),
     )
 
-    market_min_size_by_token: dict[str, float] = {}
-    tick_size_by_token: dict[str, float] = {}
+    market_min_size_by_token: dict[str, Decimal] = {}
+    tick_size_by_token: dict[str, Decimal] = {}
+    neg_risk_by_token: dict[str, bool] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    # ``_prefetch_market_data_for_signals`` dispatches on the primary source
-    # internally (rest_snapshot -> REST /book prefetch; otherwise the WSS
-    # subscribe/bootstrap/require_fresh_data path), so this gate must run for
-    # BOTH modes — restricting it to one mode disables the other's pre-loop
-    # bundling and its per-signal freshness gate. (2dea338 inverted this gate
-    # to ``== rest_snapshot``, which silently dropped WSS-mode stale gating.)
+    context.extra["_copy_execution_metadata_by_token"] = {}
+    # The compatibility source name ``rest_snapshot`` now selects metadata-only
+    # copy prefetch; WSS mode retains its subscribe/bootstrap/bundle path. Both
+    # modes must run before sizing so absent dynamic metadata fails closed.
     if normalized:
         (
             bundles_by_token,
             market_data_stale_tokens,
             market_data_stale_codes,
         ) = await _prefetch_market_data_for_signals(context, normalized)
+        metadata_by_token = context.extra.get("_copy_execution_metadata_by_token", {})
+        if isinstance(metadata_by_token, dict):
+            for token_id, metadata in metadata_by_token.items():
+                try:
+                    tick_size = Decimal(str(metadata.tick_size))
+                    min_order_size = Decimal(str(metadata.min_order_size))
+                    neg_risk = metadata.neg_risk
+                    if tick_size <= 0 or min_order_size <= 0 or not isinstance(neg_risk, bool):
+                        raise ValueError("invalid execution metadata")
+                    tick_size_by_token[str(token_id)] = tick_size
+                    market_min_size_by_token[str(token_id)] = min_order_size
+                    neg_risk_by_token[str(token_id)] = neg_risk
+                except (AttributeError, TypeError, ValueError):
+                    market_data_stale_tokens.add(str(token_id))
         for token_id, bundle in bundles_by_token.items():
             try:
-                market_min_size_by_token[token_id] = float(bundle.tick.min_order_size)
-                tick_size_by_token[token_id] = float(bundle.tick.tick_size)
+                market_min_size_by_token[token_id] = Decimal(str(bundle.tick.min_order_size))
+                tick_size_by_token[token_id] = Decimal(str(bundle.tick.tick_size))
+                neg_risk = bundle.tick.neg_risk
+                if not isinstance(neg_risk, bool):
+                    raise ValueError("invalid neg_risk metadata")
+                neg_risk_by_token[token_id] = neg_risk
             except (TypeError, ValueError, AttributeError):
                 # Defensive: a malformed bundle should not crash the loop.
                 market_data_stale_tokens.add(token_id)
                 market_min_size_by_token.pop(token_id, None)
                 tick_size_by_token.pop(token_id, None)
+                neg_risk_by_token.pop(token_id, None)
                 for sig, _raw in normalized:
                     if sig.token_id == token_id:
                         side = str(getattr(sig, "side", "") or "").upper()
@@ -2145,7 +2039,7 @@ async def _execute_trades_impl(
         # MarketDataService is the sole authority for executable market data.
         # If subscription + WSS handshake did not converge inside the
         # configured window, skip the signal rather than trade on stale or
-        # REST-only prices/books.
+        # Fail closed when either metadata-only or WSS input resolution failed.
         _signal_side_norm = str(getattr(signal, "side", "") or "").upper()
         _stale_pair_key = (signal.token_id, _signal_side_norm)
         _bundle_for_pair = None
@@ -2158,9 +2052,9 @@ async def _execute_trades_impl(
         ):
             skip_code = market_data_stale_codes.get(_stale_pair_key, "market_data_stale")
             print_skip_reason(
-                "Market data stale",
+                "Execution inputs unavailable",
                 f"{signal.side} {signal.title or shorten_addr(signal.token_id, 8, 6)} "
-                f"— {skip_code} (fail-closed: no fresh quote/book)",
+                f"— {skip_code} (fail-closed: required metadata unavailable)",
             )
             log_trade_skip(
                 logger,
@@ -2171,7 +2065,7 @@ async def _execute_trades_impl(
                 price=float(signal.price) if signal.price else None,
                 usdc_value=float(signal.usdc_size),
                 skip_code=skip_code,
-                reason="REST snapshot not executable: " + skip_code,
+                reason="execution inputs unavailable: " + skip_code,
                 event_slug=signal.event_slug,
                 meta={"user_id": context.user_id, "leader_id": leader_id},
             )
@@ -2380,12 +2274,18 @@ async def _execute_trades_impl(
                 continue
 
             # --- Decision gate: score the leader and this specific trade ---
-            # Fetch live price for decision scoring from the FRESH quote
-            # (best_ask for BUY / best_bid for SELL), not the stale leader
-            # signal price — see _decision_live_price (P1-c).
+            # The copied fill is the sole price for sizing and the one-shot FAK.
             live_price = _decision_live_price(signal, _bundle_for_pair)
-            market_min_size = market_min_size_by_token.get(signal.token_id, 0.0)
-            market_tick_size = tick_size_by_token.get(signal.token_id, 0.0)
+            market_min_size_decimal = market_min_size_by_token.get(
+                signal.token_id,
+                Decimal("0"),
+            )
+            market_tick_size_decimal = tick_size_by_token.get(
+                signal.token_id,
+                Decimal("0"),
+            )
+            market_min_size = float(market_min_size_decimal)
+            market_tick_size = float(market_tick_size_decimal)
 
             if signal.side == "BUY":
                 sizing_result = context.copy_notional(signal.usdc_size)
@@ -2849,6 +2749,9 @@ async def _execute_trades_impl(
                     recovery_metadata=buy_recovery_metadata,
                     order_type=ExecutionOrderType.FAK,
                     price_limit=buy_price_limit,
+                    tick_size=market_tick_size_decimal,
+                    min_order_size=market_min_size_decimal,
+                    neg_risk=neg_risk_by_token.get(signal.token_id),
                 )
             else:
                 pos = await context.positions_repo.get_position(
@@ -3092,7 +2995,8 @@ async def _execute_trades_impl(
                 sell_tokens = _resolve_leader_sell_tokens(
                     requested_sell_tokens=requested_sell_tokens,
                     max_sell_tokens=max_sell_tokens,
-                    market_min_size=market_min_size,
+                    market_min_size=market_min_size_decimal,
+                    live_price=Decimal(str(signal.price or 0)),
                     sub_min_sell_policy=str(
                         getattr(_trade_config(context).execution, "sub_min_sell_policy", "round_up")
                     ),
@@ -3175,6 +3079,9 @@ async def _execute_trades_impl(
                     recovery_metadata=sell_recovery_metadata,
                     order_type=ExecutionOrderType.FAK,
                     price_limit=sell_price_limit,
+                    tick_size=market_tick_size_decimal,
+                    min_order_size=market_min_size_decimal,
+                    neg_risk=neg_risk_by_token.get(signal.token_id),
                 )
 
             print_executing_strategy(signal.side)
@@ -3325,18 +3232,30 @@ async def _execute_trades_impl(
                     "execution_failures_total",
                     labels={**labels, "reason": exec_result.status},
                 )
-                print_skip_reason(
-                    f"Copy not accepted: {exec_result.status}",
-                    exec_result.error or exec_result.status,
+                failure_price = Decimal(
+                    str(getattr(exec_req, "price_limit", None) or signal.price or 0)
+                )
+                failure_amounts = ExecutionAmountProjection.from_request(
+                    side=signal.side,
+                    amount=Decimal(str(exec_req.amount)),
+                    price=failure_price,
                 )
                 log_trade_skip(
                     logger,
                     side=signal.side,
                     condition_id=signal.condition_id,
                     asset=signal.token_id,
-                    size=float(signal.size) if signal.size else None,
-                    price=float(signal.price) if signal.price else None,
-                    usdc_value=float(signal.usdc_size),
+                    size=(
+                        float(failure_amounts.token_size)
+                        if failure_amounts.token_size is not None
+                        else None
+                    ),
+                    price=float(failure_price) if failure_price > 0 else None,
+                    usdc_value=(
+                        float(failure_amounts.usdc_value)
+                        if failure_amounts.usdc_value is not None
+                        else None
+                    ),
                     skip_code=exec_result.status,
                     reason=exec_result.error or exec_result.status,
                     status="failed",
@@ -3345,9 +3264,15 @@ async def _execute_trades_impl(
                         "user_id": context.user_id,
                         "leader_id": leader_id,
                         "order_id": exec_result.order_id,
+                        "sizeEstimated": failure_amounts.token_size_estimated,
+                        "requestAmount": str(failure_amounts.request_amount),
+                        "requestAmountUnit": failure_amounts.request_amount_unit,
                     },
                 )
-                is_terminal = exec_result.status == "rejected"
+                is_terminal = exec_result.status == "rejected" or (
+                    getattr(exec_req, "order_type", None) is ExecutionOrderType.FAK
+                    and exec_result.status in {"canceled", "cancelled", "expired"}
+                )
                 max_non_terminal_attempts = _max_non_terminal_failure_attempts(context)
                 prev_trade = await context.orders_repo.get_processed_trade(trade_key) or {}
                 prev_retry_attempt = _retry_attempt_from_status(

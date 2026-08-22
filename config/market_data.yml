@@ -1,16 +1,15 @@
 # Market-data WSS health monitoring and REST snapshot/bootstrap policy.
+# The compatibility value ``rest_snapshot`` selects metadata-only copy
+# prefetch; `/book` remains scoped to cache recovery and non-copy consumers.
 primary_source: rest_snapshot
-# false: the REST snapshot only warms the price cache; a FAK copy entry is
-# never blocked by a pipeline-level snapshot pre-gate.
-copy_entry_requires_rest_snapshot: false
 # The REST round trip itself counts against this budget (age is anchored on
 # fetch_start); live round trips measure 520-570 ms, so 500 rejected the very
 # fallback it was meant to provide.
 rest_snapshot_max_age_ms: 1500
 rest_snapshot_request_timeout_ms: 1250
 rest_snapshot_total_budget_ms: 2000
-# 0 disables the spread gate: execution.max_entry_price_drift_pct (the
-# leader-price band) is the price-quality gate for a copy entry.
+# Copy entries do not consume this spread gate; it remains for non-copy REST
+# snapshot consumers.
 rest_snapshot_max_spread_bps: 0
 enable_rest_bootstrap: true
 rest_bootstrap_max_age_ms: 500

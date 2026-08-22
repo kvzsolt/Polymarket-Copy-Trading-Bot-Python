@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from domain.execution import ExecutionMetadata
 from integrations.polymarket.models import (
     LimitOrderRequest,
     MarketableOrderRequest,
@@ -46,6 +47,13 @@ class ClobGateway(Protocol):
     async def get_market_info(self, token_id: str) -> dict[str, Any]: ...
 
     async def get_orderbook(self, token_id: str) -> OrderBook: ...
+
+    async def get_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata: ...
 
     async def submit_marketable_order(
         self, request: MarketableOrderRequest

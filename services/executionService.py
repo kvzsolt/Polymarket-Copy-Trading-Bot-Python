@@ -32,6 +32,7 @@ from integrations.polymarket.models import MarketableOrderRequest
 from domain.execution import ExecutionOrderType
 from services.circuitBreaker import CircuitBreaker
 from services.idempotency import compute_effective_key as _compute_effective_key
+from services.order_sizing import MinimumOrderPolicy
 from services.trading_permission import (
     SubmissionPurpose,
     TradingPausedError,
@@ -48,6 +49,7 @@ from services.market_data_quality import is_thin_or_empty_book as _is_thin_or_em
 
 # Re-exported from submodules for backward compatibility
 from services.execution.types import (
+    ExecutionAmountProjection,
     ExecutionRequest,
     ExecutionResult,
 )
@@ -73,6 +75,7 @@ _CLOB_CIRCUIT = CircuitBreaker(
     failure_threshold=5,
     cooldown_seconds=60,
 )
+_COPY_MINIMUM_ORDER_POLICY = MinimumOrderPolicy()
 
 
 def _positive_int(raw: Any, default: int) -> int:
@@ -99,12 +102,12 @@ def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
 
 
 # Mirrors ``ExecutionConfig.max_entry_price_drift_pct`` so a partially built
-# config object (older test doubles) still enforces the shipped band.
+# config object still enforces the legacy protective-exit band.
 _DEFAULT_ENTRY_PRICE_DRIFT_PCT = ExecutionConfig.max_entry_price_drift_pct
 
 
 def _quote_outside_band(quote_price: Decimal, band_limit: Decimal, side: str) -> bool:
-    """Return True when a quote sits beyond the caller's leader-price band.
+    """Return True when a quote sits beyond a protective price band.
 
     Args:
         quote_price: Best ask for a BUY, best bid for a SELL.
@@ -648,28 +651,23 @@ class ExecutionService:
         requested_order_type = (
             ExecutionOrderType(str(raw_order_type).strip().upper()) if raw_order_type else None
         )
-        instant_fak = requested_order_type is ExecutionOrderType.FAK and req.price_limit is not None
+        copy_source = str(metadata.get("source") or req.reason or "").strip().lower()
+        is_copy_intent = copy_source in {"copy_trade", "leader_sell"}
+        instant_fak = (
+            requested_order_type is ExecutionOrderType.FAK
+            and req.price_limit is not None
+            and is_copy_intent
+            and not forced_sell_exit
+        )
+        caller_price_limit = Decimal(str(req.price_limit)) if req.price_limit is not None else None
+        market_data_service = self._market_data_service
 
-        # --- Single fresh-data fetch — fail closed if market data not ready ---
-        # Copy-trade FAK orders still need a current executable side of book,
-        # but they intentionally do not use the REST-snapshot spread cap. FAK
-        # is the fill-control mechanism here: buy the available best ask / sell
-        # the available best bid, cancel the rest, then refresh before reposts.
-        if self._market_data_service is None:
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="rejected",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error="market_data_service not wired — refusing execution",
-            )
-
+        # Copy FAKs use only the copied price and pre-fetched dynamic metadata.
+        # No bid, ask, spread, depth, or REST `/book` value may reprice or cap
+        # this one-shot intent. Non-copy and protective execution retains the
+        # full fresh-book path below.
         if instant_fak:
-            caller_price_limit = Decimal(str(req.price_limit))
-            if caller_price_limit <= 0:
+            if caller_price_limit is None or caller_price_limit <= 0:
                 return ExecutionResult(
                     accepted=False,
                     order_id=None,
@@ -680,56 +678,105 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error="price_limit must be > 0 for instant FAK execution",
                 )
+            missing_metadata = [
+                field
+                for field, value in (
+                    ("tick_size", req.tick_size),
+                    ("min_order_size", req.min_order_size),
+                    ("neg_risk", req.neg_risk),
+                )
+                if value is None
+            ]
+            if missing_metadata:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="market_metadata_unavailable",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=("missing copy execution metadata: " + ", ".join(missing_metadata)),
+                )
+            tick_size = Decimal(str(req.tick_size))
+            min_order_size = Decimal(str(req.min_order_size))
+            neg_risk = req.neg_risk
+            if tick_size <= 0 or min_order_size <= 0 or not isinstance(neg_risk, bool):
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="market_metadata_unavailable",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="copy execution metadata must contain positive tick/min and bool neg_risk",
+                )
+            bundle = None
+            best_bid = None
+            best_ask = None
+            quote_price = caller_price_limit
+        else:
+            if market_data_service is None:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="rejected",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="market_data_service not wired — refusing execution",
+                )
+            try:
+                from services.market_data_service import MarketDataNotReady, MarketDataPolicy
 
-        try:
-            from services.market_data_service import MarketDataNotReady, MarketDataPolicy
+                market_data_policy = None
+                if forced_sell_exit:
+                    base_policy = getattr(market_data_service, "_policy", None)
+                    if isinstance(base_policy, MarketDataPolicy):
+                        market_data_policy = replace(
+                            base_policy,
+                            rest_snapshot_max_spread_bps=1_000_000,
+                            require_book_depth=False,
+                        )
+                market_data_kwargs = {
+                    "side": req.side,
+                    "condition_id": getattr(req, "condition_id", None),
+                }
+                if market_data_policy is not None:
+                    market_data_kwargs["policy"] = market_data_policy
+                bundle = await market_data_service.require_fresh_data(
+                    req.token_id,
+                    **market_data_kwargs,
+                )
+            except Exception as exc:
+                if isinstance(exc, MarketDataNotReady):
+                    status = "market_not_ready"
+                else:
+                    status = "stale_market_data"
+                logger.warning(
+                    "market_data_not_executable | token=%s reason=%s",
+                    req.token_id,
+                    exc,
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status=status,
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=str(exc),
+                )
 
-            market_data_policy = None
-            if instant_fak or forced_sell_exit:
-                base_policy = getattr(self._market_data_service, "_policy", None)
-                if isinstance(base_policy, MarketDataPolicy):
-                    market_data_policy = replace(
-                        base_policy,
-                        rest_snapshot_max_spread_bps=1_000_000,
-                        require_book_depth=False,
-                    )
-            market_data_kwargs = {
-                "side": req.side,
-                "condition_id": getattr(req, "condition_id", None),
-            }
-            if market_data_policy is not None:
-                market_data_kwargs["policy"] = market_data_policy
-            bundle = await self._market_data_service.require_fresh_data(
-                req.token_id,
-                **market_data_kwargs,
-            )
-        except Exception as exc:
-            if isinstance(exc, MarketDataNotReady):
-                status = "market_not_ready"
-            else:
-                status = "stale_market_data"
-            logger.warning(
-                "market_data_not_executable | token=%s reason=%s",
-                req.token_id,
-                exc,
-            )
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status=status,
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error=str(exc),
-            )
-
-        best_bid = bundle.quote.best_bid
-        best_ask = bundle.quote.best_ask
-        tick_size = bundle.tick.tick_size
-        neg_risk = bundle.tick.neg_risk
-        min_order_size = bundle.tick.min_order_size
-        quote_price = best_ask if side == "BUY" else best_bid
+            best_bid = bundle.quote.best_bid
+            best_ask = bundle.quote.best_ask
+            tick_size = bundle.tick.tick_size
+            neg_risk = bundle.tick.neg_risk
+            min_order_size = bundle.tick.min_order_size
+            quote_price = best_ask if side == "BUY" else best_bid
 
         # --- Book quality gate: reject if spread is too wide ---
         spread_mode = _resolve_book_spread_mode(ec.book_spread_mode)
@@ -901,6 +948,17 @@ class ExecutionService:
         except Exception:
             min_book_depth = Decimal("0")
         if min_book_depth > 0 and not forced_sell_exit and not instant_fak:
+            if bundle is None:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="stale_market_data",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="book data unavailable for depth validation",
+                )
             band_pct_raw = getattr(ec, "book_depth_band_pct", 5) or 5
             try:
                 band_pct = Decimal(str(band_pct_raw))
@@ -969,6 +1027,50 @@ class ExecutionService:
             ec.max_share_price if ec else 0,
             Decimal("0"),
         )
+        leader_reference_price = quote_price
+        if instant_fak and side == "BUY":
+            leader_reference_price = _parse_decimal_or_default(
+                metadata.get("leader_price"),
+                quote_price,
+            )
+        if (
+            instant_fak
+            and side == "BUY"
+            and min_share_price > 0
+            and leader_reference_price < min_share_price
+        ):
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "leader price below min_share_price "
+                    f"({leader_reference_price} < {min_share_price})"
+                ),
+            )
+        if (
+            instant_fak
+            and side == "BUY"
+            and max_share_price > 0
+            and leader_reference_price > max_share_price
+        ):
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "leader price above max_share_price "
+                    f"({leader_reference_price} > {max_share_price})"
+                ),
+            )
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
             return ExecutionResult(
                 accepted=False,
@@ -992,41 +1094,40 @@ class ExecutionService:
                 error=f"price above max_share_price ({quote_price} > {max_share_price})",
             )
 
-        # Leader-price band. For a copy FAK, ``caller_price_limit`` is the band
-        # edge the pipeline derived from the leader's own fill price. When the
-        # executable side of the book has already moved past that edge,
-        # clamping the marketable price down to it only produces a FAK that
-        # cannot cross and must expire, so the copy is refused before the POST.
-        # ``max_entry_price_drift_pct = 0`` disables the band, and with it the
-        # caller-limit clamp: pricing falls back to quote * (1 +/- slippage).
         band_drift_pct = _parse_decimal_or_default(
             getattr(ec, "max_entry_price_drift_pct", _DEFAULT_ENTRY_PRICE_DRIFT_PCT) if ec else 0,
             Decimal("0"),
         )
-        band_enforced = instant_fak and band_drift_pct > 0
-        if band_enforced and _quote_outside_band(quote_price, caller_price_limit, side):
-            leader_price = metadata.get("leader_price") or caller_price_limit
+        protective_band_limit = (
+            caller_price_limit
+            if forced_sell_exit and caller_price_limit is not None and band_drift_pct > 0
+            else None
+        )
+        if protective_band_limit is not None and _quote_outside_band(
+            quote_price,
+            protective_band_limit,
+            side,
+        ):
+            leader_price = metadata.get("leader_price") or protective_band_limit
             logger.info(
-                "copy_price_band_rejected | token=%s side=%s quote=%s cap=%s "
+                "protective_exit_price_band_rejected | token=%s side=%s quote=%s limit=%s "
                 "leader=%s drift_pct=%s",
                 req.token_id,
                 side,
                 quote_price,
-                caller_price_limit,
+                protective_band_limit,
                 leader_price,
                 band_drift_pct,
                 extra={
-                    "type": "copy_price_band_rejected",
+                    "type": "protective_exit_price_band_rejected",
                     "token_id": req.token_id,
                     "side": side,
                     "quote_price": str(quote_price),
-                    "band_limit": str(caller_price_limit),
+                    "band_limit": str(protective_band_limit),
                     "leader_price": str(leader_price),
                     "drift_pct": str(band_drift_pct),
                 },
             )
-            quote_label = "best ask" if side == "BUY" else "best bid"
-            relation = "exceeds leader band cap" if side == "BUY" else "is below leader band floor"
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -1036,59 +1137,44 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=(
-                    f"{quote_label} {quote_price} {relation} {caller_price_limit} "
-                    f"(leader {leader_price}, drift {band_drift_pct}%)"
+                    f"protective {side} quote {quote_price} is outside limit "
+                    f"{protective_band_limit} (leader {leader_price}, drift {band_drift_pct}%)"
                 ),
             )
 
-        slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
-        if side == "BUY":
-            worst_price = quote_price * (Decimal("1") + slippage)
-        else:
-            worst_price = quote_price * (Decimal("1") - slippage)
-        worst_price = _quantize_price(worst_price, tick_size, side)
-        if band_enforced:
+        if instant_fak:
+            copied_price_limit = Decimal(str(req.price_limit))
             worst_price = self._apply_marketable_price_protection(
-                calculated_price=worst_price,
-                caller_limit=caller_price_limit,
+                calculated_price=copied_price_limit,
+                caller_limit=copied_price_limit,
                 tick_size=tick_size,
                 side=side,
             )
+        else:
+            slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
+            if side == "BUY":
+                worst_price = quote_price * (Decimal("1") + slippage)
+            else:
+                worst_price = quote_price * (Decimal("1") - slippage)
+            worst_price = _quantize_price(worst_price, tick_size, side)
+            if protective_band_limit is not None:
+                worst_price = self._apply_marketable_price_protection(
+                    calculated_price=worst_price,
+                    caller_limit=protective_band_limit,
+                    tick_size=tick_size,
+                    side=side,
+                )
 
         effective_order_amount = req.amount
-        if instant_fak:
-            top_level_amount = _top_level_marketable_amount(bundle, side, quote_price)
-            if top_level_amount <= 0:
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status="book_no_liquidity",
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error=(f"no executable top-level liquidity for {side} at {quote_price}"),
-                )
-            effective_order_amount = min(req.amount, top_level_amount)
-            logger.info(
-                "copy_fak_sized_from_fresh_book | token=%s side=%s requested=%s "
-                "order_amount=%s quote=%s top_level_amount=%s spread_gate=disabled",
-                req.token_id,
-                side,
-                req.amount,
-                effective_order_amount,
-                quote_price,
-                top_level_amount,
-            )
 
         # M5 — BUY min-size check is a unit mismatch: ``effective_order_amount``
         # is USDC spend for BUY but shares for SELL, while ``min_order_size`` is
         # always share-denominated. Compare in shares: for BUY, the share count
-        # is ``effective_order_amount / quote_price``. Previously a 3 USDC BUY
+        # is ``effective_order_amount / worst_price``. Previously a 3 USDC BUY
         # at 0.10 (≈30 shares) was rejected against a 5-share minimum, while a
         # 6 USDC BUY at 0.95 (≈6.3 shares) passed — both wrong directions.
-        if side == "BUY" and quote_price > 0:
-            min_check_amount = effective_order_amount / quote_price
+        if side == "BUY" and worst_price > 0:
+            min_check_amount = effective_order_amount / worst_price
         else:
             min_check_amount = effective_order_amount
         if min_check_amount < min_order_size:
@@ -1103,6 +1189,20 @@ class ExecutionService:
                 error=(
                     f"effective size {min_check_amount} is below venue minimum {min_order_size}"
                 ),
+            )
+        execution_notional = (
+            effective_order_amount if side == "BUY" else effective_order_amount * worst_price
+        )
+        if instant_fak and execution_notional < _COPY_MINIMUM_ORDER_POLICY.minimum_notional_usdc:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="size_below_min",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(f"effective notional {execution_notional} is below the $1 CLOB minimum"),
             )
 
         # Effective idempotency key computed after sizing/rounding so
@@ -1196,6 +1296,7 @@ class ExecutionService:
         if req.price_limit is not None:
             request_doc["price_limit"] = str(req.price_limit)
         request_doc["tick_size"] = str(tick_size)
+        request_doc["min_order_size"] = str(min_order_size)
         request_doc["neg_risk"] = neg_risk
         request_doc["effective_idempotency_key"] = idem_key
         request_doc["effective_side"] = side
@@ -1646,8 +1747,12 @@ class ExecutionService:
                                 fak_attempt,
                             )
                             break
+                    repost_market_data_service = self._market_data_service
+                    if repost_market_data_service is None:
+                        last_no_fill_error = "market_data_service not wired for protective FAK exit"
+                        break
                     try:
-                        next_bundle = await self._market_data_service.require_fresh_data(
+                        next_bundle = await repost_market_data_service.require_fresh_data(
                             req.token_id,
                             **market_data_kwargs,
                         )
@@ -1689,25 +1794,28 @@ class ExecutionService:
                                 next_quote_price,
                             )
                             break
-                        if band_enforced and _quote_outside_band(
-                            next_quote_price, caller_price_limit, side
+                        if protective_band_limit is not None and _quote_outside_band(
+                            next_quote_price,
+                            protective_band_limit,
+                            side,
                         ):
                             logger.info(
-                                "copy_price_band_rejected | token=%s side=%s quote=%s cap=%s "
+                                "protective_exit_price_band_rejected | "
+                                "token=%s side=%s quote=%s limit=%s "
                                 "leader=%s drift_pct=%s attempt=%d",
                                 req.token_id,
                                 side,
                                 next_quote_price,
-                                caller_price_limit,
-                                metadata.get("leader_price") or caller_price_limit,
+                                protective_band_limit,
+                                metadata.get("leader_price") or protective_band_limit,
                                 band_drift_pct,
                                 fak_attempt,
                                 extra={
-                                    "type": "copy_price_band_rejected",
+                                    "type": "protective_exit_price_band_rejected",
                                     "token_id": req.token_id,
                                     "side": side,
                                     "quote_price": str(next_quote_price),
-                                    "band_limit": str(caller_price_limit),
+                                    "band_limit": str(protective_band_limit),
                                     "drift_pct": str(band_drift_pct),
                                     "fak_attempt": fak_attempt,
                                 },
@@ -1725,10 +1833,10 @@ class ExecutionService:
                             next_tick_size,
                             side,
                         )
-                        if band_enforced:
+                        if protective_band_limit is not None:
                             next_worst_price = self._apply_marketable_price_protection(
                                 calculated_price=next_worst_price,
-                                caller_limit=caller_price_limit,
+                                caller_limit=protective_band_limit,
                                 tick_size=next_tick_size,
                                 side=side,
                             )
@@ -1919,11 +2027,11 @@ class ExecutionService:
         try:
             from utils.logger import log_order_lifecycle
 
-            usdc_value: float | None = None
-            try:
-                usdc_value = float(req.amount) * float(worst_price or 0)
-            except Exception:
-                usdc_value = None
+            projection = ExecutionAmountProjection.from_request(
+                side=side,
+                amount=req.amount,
+                price=worst_price,
+            )
             log_order_lifecycle(
                 logger,
                 status=lifecycle_status,
@@ -1931,12 +2039,19 @@ class ExecutionService:
                 condition_id=getattr(req, "condition_id", None),
                 asset=req.token_id,
                 order_id=order_id,
-                size=float(req.amount) if req.amount is not None else None,
+                size=(float(projection.token_size) if projection.token_size is not None else None),
                 price=float(worst_price) if worst_price is not None else None,
-                usdc_value=usdc_value,
+                usdc_value=(
+                    float(projection.usdc_value) if projection.usdc_value is not None else None
+                ),
                 venue_status=venue_status,
                 submission_state=lifecycle_status,
                 signal_id=getattr(req, "signal_id", None),
+                meta={
+                    "sizeEstimated": projection.token_size_estimated,
+                    "requestAmount": str(projection.request_amount),
+                    "requestAmountUnit": projection.request_amount_unit,
+                },
             )
         except Exception as exc:
             # SHP-08: logging must never break execution, but it shouldn't

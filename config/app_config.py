@@ -349,11 +349,8 @@ class ExecutionConfig:
     slippage_tolerance: float = 2.0
     min_share_price: float = 0.03
     max_share_price: float = 0.95
-    # Copy-entry band around the leader's own fill price, in percent. BUY caps
-    # the FAK limit at ``leader * (1 + pct/100)``; SELL floors it at
-    # ``leader * (1 - pct/100)``. A quote outside the band is rejected before
-    # submission instead of being sent as a non-marketable order. ``0``
-    # disables the band, leaving pure ``quote * (1 +/- slippage)`` pricing.
+    # One-shot copy-entry tolerance and protective-exit band. Configuration
+    # validation constrains operator values to the approved 5-10% range.
     max_entry_price_drift_pct: float = 5.0
     non_terminal_failure_max_attempts: int = 3
     trading_mode: Literal["paper", "live"] = "paper"
@@ -1036,20 +1033,12 @@ class DiscoveryConfig(_FrozenSettingsModel):
 class MarketDataConfig:
     """Market data WSS health monitoring and REST fallback policy.
 
-    PR10.4: REST `/book` snapshot is the primary execution source when
-    ``primary_source == "rest_snapshot"``. WSS keeps running for background
-    cache, prewarm, diagnostics, and resolved-market events, but copy-trade
-    execution no longer waits for WSS subscribe/bootstrap.
+    REST `/book` remains available for cache recovery and non-copy consumers.
+    In REST-primary mode, copy FAK execution fetches metadata only and never
+    waits for a book or WSS subscribe/bootstrap.
     """
 
     primary_source: str = "rest_snapshot"
-    # Master switch for the pipeline's blocking REST-snapshot pre-gate. When
-    # False (default) a copy entry never waits on a pipeline-level `/book`
-    # fetch: the snapshot only warms the price cache, and the executor's
-    # cache-first ``require_fresh_data`` remains the single fetch before
-    # signing. When True the legacy pre-gate runs and its rejections become
-    # per-signal skips (``book_spread_wide``, ``market_data_stale``, ...).
-    copy_entry_requires_rest_snapshot: bool = False
     rest_snapshot_max_age_ms: int = 500
     rest_snapshot_request_timeout_ms: int = 750
     rest_snapshot_total_budget_ms: int = 1000
@@ -1271,10 +1260,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
     if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
         errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
-    if e.max_entry_price_drift_pct < 0:
-        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be non-negative (0 disables the band).")
-    if e.max_entry_price_drift_pct > 100:
-        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be <= 100.")
+    if e.max_entry_price_drift_pct < 5:
+        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be >= 5.")
+    if e.max_entry_price_drift_pct > 10:
+        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be <= 10.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
     if e.reservation_ttl_seconds <= 0:

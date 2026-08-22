@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Mapping
 
 TRANSPORT_LABEL = "ccxt.prediction.polymarket"
-PRECISION_PATCH_ID = "pmcopy-arbitrary-tick-v1"
+PRECISION_PATCH_ID = "pmcopy-arbitrary-tick-v2"
 
 CCXT_CAPABILITY_METHODS = (
     "create_order",

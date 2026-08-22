@@ -137,10 +137,9 @@ class LimitOrderRequest:
 class MarketableOrderRequest:
     """Request to submit a marketable (FOK/IOC) order.
 
-    ``tick_size`` and ``neg_risk`` are optional pre-fetched market metadata.
-    When the caller has already fetched metadata via ``MarketDataService``,
-    passing them avoids a redundant venue round-trip inside the gateway. When
-    ``None`` the gateway fetches metadata itself.
+    ``tick_size`` and ``neg_risk`` preserve the caller's audit observation.
+    The live CCXT adapter still refreshes all execution metadata immediately
+    before signing; it never trusts stale caller values.
     """
 
     token_id: str

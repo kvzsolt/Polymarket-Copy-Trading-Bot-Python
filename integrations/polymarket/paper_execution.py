@@ -9,12 +9,14 @@ a live order from a paper runtime.
 
 from __future__ import annotations
 
+import inspect
 import itertools
 from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from domain.execution import ExecutionMetadata
 from integrations.polymarket.errors import VenueOrderNotFoundError
 from integrations.polymarket.models import (
     LimitOrderRequest,
@@ -243,6 +245,19 @@ class PaperExecutionGateway:
     async def get_orderbook(self, token_id: str) -> OrderBook:
         return await self._market_data_gateway.get_orderbook(token_id)
 
+    async def get_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata:
+        """Return live venue metadata while keeping paper writes local."""
+
+        return await self._market_data_gateway.get_execution_metadata(
+            token_id,
+            condition_id=condition_id,
+        )
+
     async def get_price(self, token_id: str, side: str) -> dict[str, str] | object:
         getter = getattr(self._market_data_gateway, "get_price", None)
         if getter is None:
@@ -292,7 +307,7 @@ class PaperExecutionGateway:
         close = getattr(self._market_data_gateway, "close", None)
         if close is not None and callable(close):
             result = close()
-            if hasattr(result, "__await__"):
+            if inspect.isawaitable(result):
                 await result
 
 
