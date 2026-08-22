@@ -1,15 +1,13 @@
-"""The REST snapshot pre-gate is an opt-in switch, off by default.
+"""Copy entries use metadata-only prefetch when the REST book gate is off.
 
 Live evidence (2026-08-20): 25 copies were skipped by the pipeline pre-gate
 with ``reason=wide_spread`` and several more with ``reason=stale`` because the
 REST round trip itself (~520-570 ms) outran its own freshness budget. The REST
-snapshot's job is to feed the price cache, not to block a FAK copy: the
-executor's cache-first ``require_fresh_data`` is the single fetch on the entry
-path, and the leader-price band is the price-quality gate.
+snapshot must not block or reprice a FAK copy. The disabled path fetches only
+the dynamic tick, minimum-size, and negative-risk fields needed for safe
+sizing; the copied price remains the sole order limit.
 
-``market_data.copy_entry_requires_rest_snapshot`` restores the blocking
-pre-gate for operators who want it; the switch is checked as the first
-statement of the pre-gate and returns without side effects when disabled.
+No operator switch can restore the removed book gate.
 """
 
 from __future__ import annotations
@@ -27,11 +25,18 @@ TOKEN = "71321045679252212594626385532706912750332728571942532223535764789812338
 
 
 class _RecordingMDS:
-    """Fake MarketDataService recording every pre-gate snapshot request."""
+    """Fake market-data service recording metadata and snapshot requests."""
 
-    def __init__(self, *, error: Exception | None = None) -> None:
-        self.calls: list[tuple[str, str]] = []
-        self._error = error
+    def __init__(
+        self,
+        *,
+        snapshot_error: Exception | None = None,
+        metadata_error: Exception | None = None,
+    ) -> None:
+        self.snapshot_calls: list[tuple[str, str]] = []
+        self.metadata_calls: list[tuple[str, str | None]] = []
+        self._snapshot_error = snapshot_error
+        self._metadata_error = metadata_error
 
     async def require_execution_snapshot(
         self,
@@ -40,14 +45,32 @@ class _RecordingMDS:
         side: str,
         condition_id: str | None = None,
     ):
-        self.calls.append((token_id, side))
-        if self._error is not None:
-            raise self._error
+        self.snapshot_calls.append((token_id, side))
+        if self._snapshot_error is not None:
+            raise self._snapshot_error
         return SimpleNamespace(
             quote=SimpleNamespace(best_bid=Decimal("0.49"), best_ask=Decimal("0.51")),
             book=SimpleNamespace(bids={}, asks={}),
             tick=SimpleNamespace(tick_size=Decimal("0.01"), min_order_size=Decimal("5")),
             source="rest_snapshot",
+        )
+
+    async def require_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> SimpleNamespace:
+        """Return deterministic execution metadata without an order book."""
+
+        self.metadata_calls.append((token_id, condition_id))
+        if self._metadata_error is not None:
+            raise self._metadata_error
+        return SimpleNamespace(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
         )
 
 
@@ -91,7 +114,7 @@ async def _drain_background_tasks() -> None:
 
 class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
     @pytest.mark.asyncio
-    async def test_disabled_switch_skips_the_snapshot_call_entirely(self) -> None:
+    async def test_disabled_switch_fetches_metadata_without_a_snapshot(self) -> None:
         mds = _RecordingMDS()
         runtime = _RecordingRuntime()
         context = _context(requires_snapshot=False, mds=mds, runtime=runtime)
@@ -100,15 +123,21 @@ class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
             context, _normalized()
         )
 
-        assert mds.calls == []
+        assert mds.snapshot_calls == []
+        assert mds.metadata_calls == [(TOKEN, "0xcond")]
         assert bundles == {}
         assert stale_tokens == set()
         assert stale_codes == {}
+        metadata = context.extra["_copy_execution_metadata_by_token"][TOKEN]
+        assert metadata.tick_size == Decimal("0.01")
+        assert metadata.min_order_size == Decimal("5")
 
     @pytest.mark.asyncio
     async def test_disabled_switch_produces_no_skip_for_a_wide_book(self) -> None:
         """The gate that skipped 25 live copies must not fire when disabled."""
-        mds = _RecordingMDS(error=StaleDataError("spread too wide", skip_code="book_spread_wide"))
+        mds = _RecordingMDS(
+            snapshot_error=StaleDataError("spread too wide", skip_code="book_spread_wide")
+        )
         runtime = _RecordingRuntime()
         context = _context(requires_snapshot=False, mds=mds, runtime=runtime)
 
@@ -118,6 +147,32 @@ class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
 
         assert stale_tokens == set()
         assert stale_codes == {}
+        assert mds.snapshot_calls == []
+        assert mds.metadata_calls == [(TOKEN, "0xcond")]
+
+    @pytest.mark.asyncio
+    async def test_disabled_switch_fails_closed_when_metadata_is_unavailable(self) -> None:
+        """Do not size or submit a copy without the dynamic venue minimum."""
+
+        mds = _RecordingMDS(
+            metadata_error=StaleDataError(
+                "metadata unavailable",
+                skip_code="market_metadata_unavailable",
+            )
+        )
+        context = _context(
+            requires_snapshot=False,
+            mds=mds,
+            runtime=_RecordingRuntime(),
+        )
+
+        bundles, stale_tokens, stale_codes = await _prefetch_market_data_for_signals(
+            context, _normalized()
+        )
+
+        assert bundles == {}
+        assert stale_tokens == {TOKEN}
+        assert stale_codes == {(TOKEN, "BUY"): "market_metadata_unavailable"}
 
     @pytest.mark.asyncio
     async def test_disabled_switch_still_warms_the_wss_subscription(self) -> None:
@@ -143,9 +198,12 @@ class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
         await _drain_background_tasks()
 
         assert result == ({}, set(), {})
+        assert mds.metadata_calls == [(TOKEN, "0xcond")]
 
     @pytest.mark.asyncio
-    async def test_enabled_switch_keeps_the_blocking_pre_gate(self) -> None:
+    async def test_legacy_enabled_value_cannot_restore_the_book_snapshot(self) -> None:
+        """A stale context flag cannot re-enable book-derived copy pricing."""
+
         mds = _RecordingMDS()
         runtime = _RecordingRuntime()
         context = _context(requires_snapshot=True, mds=mds, runtime=runtime)
@@ -154,15 +212,19 @@ class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
             context, _normalized()
         )
 
-        assert mds.calls == [(TOKEN, "BUY")]
-        assert set(bundles) == {TOKEN}
+        assert mds.snapshot_calls == []
+        assert mds.metadata_calls == [(TOKEN, "0xcond")]
+        assert bundles == {}
         assert stale_tokens == set()
         assert stale_codes == {}
-        assert runtime.subscribed == [TOKEN]
 
     @pytest.mark.asyncio
-    async def test_enabled_switch_still_surfaces_the_rejection_skip_code(self) -> None:
-        mds = _RecordingMDS(error=StaleDataError("spread too wide", skip_code="book_spread_wide"))
+    async def test_legacy_enabled_value_ignores_snapshot_rejections(self) -> None:
+        """A wide REST book cannot reject a copied FAK."""
+
+        mds = _RecordingMDS(
+            snapshot_error=StaleDataError("spread too wide", skip_code="book_spread_wide")
+        )
         runtime = _RecordingRuntime()
         context = _context(requires_snapshot=True, mds=mds, runtime=runtime)
 
@@ -170,5 +232,7 @@ class TestCopyEntryDoesNotBlockOnTheRestSnapshot:
             context, _normalized()
         )
 
-        assert stale_tokens == {TOKEN}
-        assert stale_codes == {(TOKEN, "BUY"): "book_spread_wide"}
+        assert mds.snapshot_calls == []
+        assert mds.metadata_calls == [(TOKEN, "0xcond")]
+        assert stale_tokens == set()
+        assert stale_codes == {}

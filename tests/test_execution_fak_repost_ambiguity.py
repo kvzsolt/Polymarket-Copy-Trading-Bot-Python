@@ -126,6 +126,9 @@ def _req(*, side="BUY", amount="10", order_type="FAK", price_limit="0.55") -> Ex
         order_type=order_type,
         price_limit=Decimal(price_limit),
         signal_id="sig-1",
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("1"),
+        neg_risk=False,
     )
 
 
@@ -227,7 +230,7 @@ async def test_partial_fak_keeps_original_price_protection_without_repost(
     initial_bundle: MarketDataBundle,
     repost_bundle: MarketDataBundle,
 ) -> None:
-    """The one allowed POST uses the source-derived cap or floor."""
+    """The one allowed POST uses the copied cap or floor without a book read."""
 
     mds = _mock_mds()
     mds.require_fresh_data.side_effect = [initial_bundle, repost_bundle]
@@ -259,7 +262,7 @@ async def test_partial_fak_keeps_original_price_protection_without_repost(
         assert submitted.price_limit <= Decimal(price_limit)
     else:
         assert submitted.price_limit >= Decimal(price_limit)
-    assert mds.require_fresh_data.await_count == 1
+    assert mds.require_fresh_data.await_count == 0
 
 
 @pytest.mark.asyncio

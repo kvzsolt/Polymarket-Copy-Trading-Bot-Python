@@ -1,14 +1,4 @@
-"""Fail-closed leader-price band enforcement inside ``ExecutionService``.
-
-The copy pipeline derives a FAK ``price_limit`` from the leader's own fill
-price widened by ``execution.max_entry_price_drift_pct``. When the executable
-side of the book has already moved past that band, clamping the marketable
-price down to the limit only produces a FAK that cannot cross and must expire.
-The band is therefore enforced as a pre-submit rejection, not a silent clamp.
-
-``max_entry_price_drift_pct = 0`` disables the band entirely: the caller limit
-stops binding and pricing falls back to ``quote * (1 +/- slippage)``.
-"""
+"""Copied-price FAK behavior and protective-exit band regressions."""
 
 from __future__ import annotations
 
@@ -38,9 +28,16 @@ from tests.test_execution_kill_switch_acttime import (
 TOKEN = "t1"
 
 
-def _config(drift_pct: float):
+def _config(
+    drift_pct: float,
+    *,
+    min_share_price: float = 0.0,
+    max_share_price: float = 0.0,
+):
     cfg = _make_exec_config()
     cfg.execution.max_entry_price_drift_pct = drift_pct
+    cfg.execution.min_share_price = min_share_price
+    cfg.execution.max_share_price = max_share_price
     cfg.execution.exit_fak_max_attempts = 3
     return cfg
 
@@ -82,12 +79,24 @@ def _mds(*, bid: str, ask: str, tick: str = "0.01") -> AsyncMock:
     return mds
 
 
-def _service(gateway, *, drift_pct: float, bid: str, ask: str) -> ExecutionService:
+def _service(
+    gateway,
+    *,
+    drift_pct: float,
+    bid: str,
+    ask: str,
+    min_share_price: float = 0.0,
+    max_share_price: float = 0.0,
+) -> ExecutionService:
     return ExecutionService(
         _StubClob(),
         _FeeSvc(),
         _mock_order_repo(),
-        config=_config(drift_pct),
+        config=_config(
+            drift_pct,
+            min_share_price=min_share_price,
+            max_share_price=max_share_price,
+        ),
         clob_gateway=gateway,
         market_data_service=_mds(bid=bid, ask=ask),
     )
@@ -112,6 +121,9 @@ def _copy_req(*, side: str, price_limit: str, leader_price: str) -> ExecutionReq
         },
         order_type=ExecutionOrderType.FAK,
         price_limit=Decimal(price_limit),
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("1"),
+        neg_risk=False,
     )
 
 
@@ -120,40 +132,36 @@ def _submitted(gateway):
 
 
 @pytest.mark.asyncio
-async def test_buy_quote_beyond_the_band_is_refused_before_any_post() -> None:
-    """Ask 0.53 against a 0.45 leader (+5 % = 0.4725) never reaches the venue."""
+async def test_buy_copy_ignores_book_quote_and_submits_copied_limit() -> None:
+    """A moved ask cannot reprice a one-shot tolerance-bounded BUY."""
     gw = _success_gateway()
     svc = _service(gw, drift_pct=5.0, bid="0.52", ask="0.53")
 
     result = await svc.execute(_copy_req(side="BUY", price_limit="0.4725", leader_price="0.45"))
 
-    assert result.accepted is False
-    assert result.status == "price_drift_exceeded"
-    gw.submit_marketable_order.assert_not_awaited()
-    assert "0.53" in result.error
-    assert "0.4725" in result.error
-    assert "0.45" in result.error
-    assert "5" in result.error
+    assert result.status != "price_drift_exceeded"
+    gw.submit_marketable_order.assert_awaited_once()
+    assert _submitted(gw).price_limit == Decimal("0.47")
+    svc._market_data_service.require_fresh_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_sell_quote_beneath_the_band_is_refused_before_any_post() -> None:
-    """Bid 0.50 against a 0.55 leader (-5 % = 0.5225) never reaches the venue."""
+async def test_sell_copy_ignores_book_quote_and_submits_copied_limit() -> None:
+    """A moved bid cannot reprice a one-shot tolerance-bounded SELL."""
     gw = _success_gateway()
     svc = _service(gw, drift_pct=5.0, bid="0.50", ask="0.51")
 
     result = await svc.execute(_copy_req(side="SELL", price_limit="0.5225", leader_price="0.55"))
 
-    assert result.accepted is False
-    assert result.status == "price_drift_exceeded"
-    gw.submit_marketable_order.assert_not_awaited()
-    assert "0.50" in result.error
-    assert "0.5225" in result.error
+    assert result.status != "price_drift_exceeded"
+    gw.submit_marketable_order.assert_awaited_once()
+    assert _submitted(gw).price_limit == Decimal("0.53")
+    svc._market_data_service.require_fresh_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_buy_inside_the_band_submits_a_marketable_limit() -> None:
-    """Ask 0.46 inside the 0.4725 cap submits at the marketable slippage price."""
+async def test_buy_copy_does_not_add_local_slippage_to_the_limit() -> None:
+    """The copied BUY limit remains unchanged by local slippage settings."""
     gw = _success_gateway()
     svc = _service(gw, drift_pct=5.0, bid="0.45", ask="0.46")
 
@@ -162,25 +170,85 @@ async def test_buy_inside_the_band_submits_a_marketable_limit() -> None:
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited()
     submitted = _submitted(gw)
-    # quote * (1 + 200bps) = 0.4692, ceiled to the 0.01 tick = 0.47,
-    # still under the 0.4725 band cap.
     assert submitted.price_limit == Decimal("0.47")
-    assert submitted.price_limit >= Decimal("0.46")
 
 
 @pytest.mark.asyncio
-async def test_zero_drift_disables_the_band_and_the_caller_clamp() -> None:
-    """With the band off, pricing is pure quote * (1 + slippage)."""
+async def test_executor_does_not_rederive_the_pipeline_limit() -> None:
+    """The executor submits the already-derived limit exactly once."""
     gw = _success_gateway()
-    svc = _service(gw, drift_pct=0.0, bid="0.52", ask="0.53")
+    svc = _service(gw, drift_pct=10.0, bid="0.52", ask="0.53")
 
-    result = await svc.execute(_copy_req(side="BUY", price_limit="0.45", leader_price="0.45"))
+    result = await svc.execute(_copy_req(side="BUY", price_limit="0.4725", leader_price="0.45"))
 
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited()
-    # 0.53 * 1.02 = 0.5406 -> ceiled to the 0.01 tick = 0.55, above the
-    # caller limit, which no longer binds.
-    assert _submitted(gw).price_limit == Decimal("0.55")
+    assert _submitted(gw).price_limit == Decimal("0.47")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("leader_price", "price_limit", "expected_fragment"),
+    [
+        ("0.09", "0.10", "below min_share_price"),
+        ("0.91", "0.90", "above max_share_price"),
+    ],
+)
+async def test_copy_buy_rejects_out_of_range_leader_reference(
+    leader_price: str,
+    price_limit: str,
+    expected_fragment: str,
+) -> None:
+    """A clamped limit must not hide an already-forbidden leader reference."""
+    gw = _success_gateway()
+    svc = _service(
+        gw,
+        drift_pct=5.0,
+        bid="0.50",
+        ask="0.51",
+        min_share_price=0.10,
+        max_share_price=0.90,
+    )
+
+    result = await svc.execute(
+        _copy_req(side="BUY", price_limit=price_limit, leader_price=leader_price)
+    )
+
+    assert result.accepted is False
+    assert result.status == "rejected"
+    assert expected_fragment in (result.error or "")
+    gw.submit_marketable_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_copy_buy_retains_quote_price_boundary_reason() -> None:
+    """Leader-reference wording must stay scoped to copied FAK metadata."""
+    gw = _success_gateway()
+    svc = _service(
+        gw,
+        drift_pct=5.0,
+        bid="0.08",
+        ask="0.09",
+        min_share_price=0.10,
+        max_share_price=0.90,
+    )
+    request = ExecutionRequest(
+        user_id="u1",
+        leader_id="l1",
+        token_id=TOKEN,
+        side="BUY",
+        amount=Decimal("5"),
+        max_slippage_bps=200,
+        reason="manual",
+        signal_id="sig-manual",
+        condition_id="cond-1",
+    )
+
+    result = await svc.execute(request)
+
+    assert result.accepted is False
+    assert result.error == "price below min_share_price (0.09 < 0.1)"
+    gw.submit_marketable_order.assert_not_awaited()
 
 
 def _bundle(*, bid: str, ask: str, tick: str = "0.01") -> MarketDataBundle:

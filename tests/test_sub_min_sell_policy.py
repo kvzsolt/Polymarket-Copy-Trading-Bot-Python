@@ -55,3 +55,31 @@ def test_skip_caps_at_max_sell_tokens():
         sub_min_sell_policy="skip",
     )
     assert result == Decimal("50")
+
+
+def test_round_up_uses_one_usdc_floor_when_larger_than_share_minimum() -> None:
+    """At ten cents, six shares round to ten so notional reaches one USDC."""
+
+    result = _resolve_leader_sell_tokens(
+        requested_sell_tokens=Decimal("6"),
+        max_sell_tokens=Decimal("100"),
+        market_min_size=5.0,
+        live_price=Decimal("0.10"),
+        sub_min_sell_policy="round_up",
+    )
+
+    assert result == Decimal("10")
+
+
+def test_round_up_fails_closed_when_holdings_cannot_reach_one_usdc() -> None:
+    """Do not submit a known sub-minimum SELL when only eight shares are held."""
+
+    result = _resolve_leader_sell_tokens(
+        requested_sell_tokens=Decimal("6"),
+        max_sell_tokens=Decimal("8"),
+        market_min_size=5.0,
+        live_price=Decimal("0.10"),
+        sub_min_sell_policy="round_up",
+    )
+
+    assert result == Decimal("0")

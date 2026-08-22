@@ -19,6 +19,7 @@ import config.app_config as app_config_mod
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from tests.config_helpers import load_test_config
 from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades
 from services.accountingService import AccountingService
 from services.copyDecisionService import CopyDecision
@@ -278,6 +279,11 @@ def _make_context(
                 signal_id=intent.signal_id,
                 condition_id=intent.condition_id,
                 recovery_metadata=dict(intent.recovery_metadata or {}),
+                order_type=intent.order_type,
+                price_limit=intent.price_limit,
+                tick_size=intent.tick_size,
+                min_order_size=intent.min_order_size,
+                neg_risk=intent.neg_risk,
             )
             result = await exec_svc.execute(req)
             return ExecutionCoordinatorResult(
@@ -494,46 +500,22 @@ async def test_pipeline_executes_when_bootstrap_returns_true_and_mds_fresh(tmp_p
 
 
 # ---------------------------------------------------------------------------
-# PR10.4: REST snapshot primary mode
+# Metadata-only copy prefetch in the legacy REST-primary configuration mode
 # ---------------------------------------------------------------------------
 
 
-def _rest_bundle(
+def _rest_metadata(
     *,
     token_id: str = FAKE_TOKEN_ID,
     min_order_size: Decimal = Decimal("3"),
     tick_size: Decimal = Decimal("0.01"),
-) -> MarketDataBundle:
-    now = time.monotonic()
-    return MarketDataBundle(
+) -> ExecutionMetadata:
+    """Return dynamic venue metadata without constructing an order book."""
+    return ExecutionMetadata(
         token_id=token_id,
-        quote=QuoteSnapshot(
-            token_id=token_id,
-            best_bid=Decimal("0.49"),
-            best_ask=Decimal("0.51"),
-            last_trade_price=None,
-            source="rest_snapshot",
-            monotonic_ts=now,
-        ),
-        book=BookSnapshot(
-            token_id=token_id,
-            bids={Decimal("0.49"): Decimal("100")},
-            asks={Decimal("0.51"): Decimal("100")},
-            best_bid=Decimal("0.49"),
-            best_ask=Decimal("0.51"),
-            source="rest_snapshot",
-            monotonic_ts=now,
-        ),
-        tick=TickSnapshot(
-            token_id=token_id,
-            tick_size=tick_size,
-            min_order_size=min_order_size,
-            neg_risk=False,
-            source="rest_snapshot",
-            monotonic_ts=now,
-        ),
-        source=MarketDataSource.REST_SNAPSHOT,
-        reason="rest_snapshot",
+        tick_size=tick_size,
+        min_order_size=min_order_size,
+        neg_risk=False,
     )
 
 
@@ -557,23 +539,23 @@ def _rest_config(**overrides):
 
 
 class _FakeRestMDS:
-    def __init__(self, bundle=None, *, raise_exc=None):
-        self._bundle = bundle
+    def __init__(self, metadata=None, *, raise_exc=None):
+        self._metadata = metadata
         self._raise = raise_exc
-        self.snapshot_calls: list[tuple[str, str, str | None]] = []
+        self.metadata_calls: list[tuple[str, str | None]] = []
         self.fresh_calls: list[str] = []
 
-    async def require_execution_snapshot(self, token_id, *, side, condition_id=None):
-        self.snapshot_calls.append((token_id, side, condition_id))
+    async def require_execution_metadata(self, token_id, *, condition_id=None):
+        self.metadata_calls.append((token_id, condition_id))
         if self._raise is not None:
             raise self._raise
-        return self._bundle
+        return self._metadata
 
     async def require_fresh_data(self, token_id, **kwargs):
         self.fresh_calls.append(token_id)
         if self._raise is not None:
             raise self._raise
-        return self._bundle
+        return self._metadata
 
 
 def _make_rest_context(pool, tmp_path, *, exec_svc, mds, runtime, decision_svc=None):
@@ -615,6 +597,11 @@ def _make_rest_context(pool, tmp_path, *, exec_svc, mds, runtime, decision_svc=N
                 signal_id=intent.signal_id,
                 condition_id=intent.condition_id,
                 recovery_metadata=dict(intent.recovery_metadata or {}),
+                order_type=intent.order_type,
+                price_limit=intent.price_limit,
+                tick_size=intent.tick_size,
+                min_order_size=intent.min_order_size,
+                neg_risk=intent.neg_risk,
             )
             result = await exec_svc.execute(req)
             return ExecutionCoordinatorResult(
@@ -632,12 +619,12 @@ def _make_rest_context(pool, tmp_path, *, exec_svc, mds, runtime, decision_svc=N
 
 
 @pytest.mark.asyncio
-async def test_rest_primary_calls_require_execution_snapshot_once_per_pair(tmp_path):
+async def test_rest_primary_calls_require_execution_metadata_once_per_token(tmp_path):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result_filled()
 
-        mds = _FakeRestMDS(_rest_bundle())
+        mds = _FakeRestMDS(_rest_metadata())
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
         runtime.subscribe_tokens = AsyncMock()
@@ -653,13 +640,12 @@ async def test_rest_primary_calls_require_execution_snapshot_once_per_pair(tmp_p
 
         await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-        assert len(mds.snapshot_calls) == 1
-        token_id, side, condition_id = mds.snapshot_calls[0]
+        assert len(mds.metadata_calls) == 1
+        token_id, condition_id = mds.metadata_calls[0]
         assert token_id == FAKE_TOKEN_ID
-        assert side == "BUY"
         assert condition_id == "cond-pr3"
-        # REST primary seeds from `/book`, then best-effort subscribes WSS for
-        # ongoing store updates. It must NOT wait for WSS bootstrap/readiness here.
+        # The compatibility mode fetches metadata only, then warms WSS for
+        # ongoing store updates without waiting for WSS readiness.
         runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
         runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
 
@@ -669,7 +655,10 @@ async def test_rest_primary_skips_with_specific_skip_code(tmp_path):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
 
-        err = StaleDataError("wide", skip_code="book_spread_wide")
+        err = StaleDataError(
+            "metadata unavailable",
+            skip_code="market_metadata_unavailable",
+        )
         mds = _FakeRestMDS(raise_exc=err)
         runtime = AsyncMock()
 
@@ -685,17 +674,17 @@ async def test_rest_primary_skips_with_specific_skip_code(tmp_path):
 
         assert len(results) == 1
         assert results[0].status == "skipped"
-        assert results[0].reason == "book_spread_wide"
+        assert results[0].reason == "market_metadata_unavailable"
         exec_svc.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_rest_primary_decision_meta_carries_rest_snapshot_source(tmp_path, capsys):
+async def test_rest_primary_logs_metadata_prefetch_without_snapshot(tmp_path, capsys):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result_filled()
 
-        mds = _FakeRestMDS(_rest_bundle())
+        mds = _FakeRestMDS(_rest_metadata())
         runtime = AsyncMock()
 
         ctx = _make_rest_context(
@@ -710,12 +699,9 @@ async def test_rest_primary_decision_meta_carries_rest_snapshot_source(tmp_path,
         await execute_trades(ctx, "leader1", [_signal()], time.time())
 
         out = capsys.readouterr().out
-        assert "trade_pipeline_market_data_snapshot_start" in out
-        assert "trade_pipeline_market_data_snapshot_ready" in out
-        # The ready log carries source=rest_snapshot directly; the decision meta
-        # is also threaded through ``log_trade_decision`` when the copy-decision
-        # gate is enabled. Both paths refer to the same source label.
-        assert "source=rest_snapshot" in out
+        assert "trade_pipeline_copy_metadata_prefetch" in out
+        assert "trade_pipeline_market_data_snapshot_start" not in out
+        assert "trade_pipeline_market_data_snapshot_ready" not in out
 
 
 @pytest.mark.asyncio
@@ -724,7 +710,7 @@ async def test_rest_primary_subscribes_wss_without_waiting_for_readiness(tmp_pat
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result_filled()
 
-        mds = _FakeRestMDS(_rest_bundle())
+        mds = _FakeRestMDS(_rest_metadata())
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
         runtime.subscribe_tokens = AsyncMock()

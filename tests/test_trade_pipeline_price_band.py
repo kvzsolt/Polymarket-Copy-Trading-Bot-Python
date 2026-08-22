@@ -1,12 +1,4 @@
-"""Leader-price band applied to copy FAK entries.
-
-Root cause #3: the pipeline used to hand the executor the leader's own fill
-price as the FAK ``price_limit``. ``_apply_marketable_price_protection`` then
-clamped the marketable price down to it, so every copy whose book had moved
-against the leader was submitted at a non-marketable price and expired
-unfilled. The limit is now an adjustable band around the leader price,
-configured by ``execution.max_entry_price_drift_pct``.
-"""
+"""Leader-price tolerance planning for one-shot copy FAK entries."""
 
 from __future__ import annotations
 
@@ -17,17 +9,28 @@ from domain.execution import LeaderPriceBand
 from orchestrators.trade_pipeline import _copy_entry_price_plan
 
 
-def _context(drift_pct: float) -> SimpleNamespace:
+def _context(
+    drift_pct: float,
+    *,
+    max_share_price: str = "0.90",
+) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(execution=SimpleNamespace(max_entry_price_drift_pct=drift_pct))
+        config=SimpleNamespace(
+            execution=SimpleNamespace(
+                max_entry_price_drift_pct=drift_pct,
+                max_share_price=max_share_price,
+            )
+        )
     )
 
 
-def _signal(price: float) -> SimpleNamespace:
+def _signal(price: str) -> SimpleNamespace:
     return SimpleNamespace(price=price)
 
 
 class TestLeaderPriceBand:
+    """Characterize the pure reference-price band calculation."""
+
     def test_buy_cap_is_leader_price_plus_drift(self) -> None:
         band = LeaderPriceBand(leader_price=Decimal("0.45"), drift_pct=Decimal("5"))
         assert band.limit_for("BUY") == Decimal("0.4725")
@@ -68,31 +71,74 @@ class TestLeaderPriceBand:
 
 
 class TestCopyEntryPricePlan:
+    """Verify the pipeline derives one bounded FAK limit from leader data."""
+
     def test_buy_limit_and_metadata(self) -> None:
-        price_limit, metadata = _copy_entry_price_plan(_context(5.0), _signal(0.45), "BUY")
+        """Widen a BUY by the configured tolerance and preserve its audit data."""
+        price_limit, metadata = _copy_entry_price_plan(_context(5.0), _signal("0.45"), "BUY")
 
         assert price_limit == Decimal("0.4725")
         assert metadata["price_limit"] == "0.4725"
         assert metadata["leader_price"] == "0.45"
         assert metadata["price_drift_pct"] == "5.0"
+        assert metadata["unclamped_price_limit"] == "0.4725"
         assert metadata["order_type"] == "FAK"
         assert metadata["source"] == "copy_trade"
 
     def test_sell_limit_and_metadata(self) -> None:
-        price_limit, metadata = _copy_entry_price_plan(_context(5.0), _signal(0.55), "SELL")
+        """Widen a SELL downwards without applying the BUY-only hard cap."""
+        price_limit, metadata = _copy_entry_price_plan(_context(5.0), _signal("0.55"), "SELL")
 
         assert price_limit == Decimal("0.5225")
         assert metadata["price_limit"] == "0.5225"
         assert metadata["leader_price"] == "0.55"
+        assert metadata["price_drift_pct"] == "5.0"
 
-    def test_zero_drift_passes_the_leader_price_through(self) -> None:
-        price_limit, metadata = _copy_entry_price_plan(_context(0.0), _signal(0.45), "BUY")
+    def test_ten_percent_is_operator_configurable(self) -> None:
+        """Honor the upper accepted tolerance without book-derived repricing."""
+        price_limit, metadata = _copy_entry_price_plan(_context(10.0), _signal("0.45"), "BUY")
 
-        assert price_limit == Decimal("0.45")
-        assert metadata["price_limit"] == "0.45"
-        assert metadata["price_drift_pct"] == "0.0"
+        assert price_limit == Decimal("0.4950")
+        assert metadata["price_drift_pct"] == "10.0"
 
-    def test_missing_config_falls_back_to_the_shipped_default(self) -> None:
-        price_limit, _ = _copy_entry_price_plan(SimpleNamespace(config=None), _signal(0.45), "BUY")
+    def test_buy_limit_is_clamped_to_the_global_price_ceiling(self) -> None:
+        """Do not let tolerance weaken the configured maximum BUY price."""
+        leader_price = "0.8844257692428440966707673026"
+
+        price_limit, metadata = _copy_entry_price_plan(
+            _context(5.0, max_share_price="0.90"),
+            _signal(leader_price),
+            "BUY",
+        )
+
+        assert price_limit == Decimal("0.90")
+        assert metadata["leader_price"] == leader_price
+        assert metadata["unclamped_price_limit"] == "0.9287"
+        assert metadata["max_share_price"] == "0.90"
+
+    def test_reported_failures_gain_a_marketable_tolerance(self) -> None:
+        """Reproduce the three stale-price examples from the operator log."""
+        cases = (
+            ("0.84", Decimal("0.8820")),
+            ("0.8844257692428440966707673026", Decimal("0.90")),
+            ("0.1260365854", Decimal("0.1324")),
+        )
+
+        for leader_price, expected_limit in cases:
+            price_limit, _ = _copy_entry_price_plan(
+                _context(5.0, max_share_price="0.90"),
+                _signal(leader_price),
+                "BUY",
+            )
+            assert price_limit == expected_limit
+
+    def test_missing_config_uses_the_shipped_defaults(self) -> None:
+        """Keep the safe five-percent behavior for lightweight contexts."""
+        price_limit, metadata = _copy_entry_price_plan(
+            SimpleNamespace(config=None),
+            _signal("0.45"),
+            "BUY",
+        )
 
         assert price_limit == Decimal("0.4725")
+        assert metadata["price_drift_pct"] == "5.0"

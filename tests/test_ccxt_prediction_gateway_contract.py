@@ -27,9 +27,11 @@ class FakeExchange:
         self.options = {"chainId": 137, "signatureType": 3}
         self.privateKey = "secret"
         self.walletAddress = "0xwallet"
-        self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v1"
+        self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v2"
         self.created: list[tuple] = []
         self.fetch_order_book_calls = 0
+        self.metadata_market_calls = 0
+        self.neg_risk_calls = 0
         # Real CCXT parsed books carry only levels and identity fields: the raw
         # CLOB response's tick_size/min_order_size/neg_risk are dropped by
         # parse_order_book + safe_prediction_order_book and there is no "info".
@@ -76,6 +78,13 @@ class FakeExchange:
         self.open_orders = [self.order]
         self.trades = []
         self.cancel_response = {"canceled": ["order-1"]}
+        self.clob_market = {
+            "condition_id": "condition",
+            "t": [{"token_id": TOKEN}],
+            "mos": "5",
+            "mts": "0.0025",
+        }
+        self.neg_risk_response = {"neg_risk": True}
 
     async def load_outcome(self, token_id):
         assert token_id == TOKEN
@@ -85,6 +94,20 @@ class FakeExchange:
         assert token_id == TOKEN
         self.fetch_order_book_calls += 1
         return self.book
+
+    async def clobPublicGetClobMarketsConditionId(self, params):  # noqa: N802
+        """Return current V2 market metadata without returning book levels."""
+
+        assert params == {"condition_id": "condition"}
+        self.metadata_market_calls += 1
+        return self.clob_market
+
+    async def clobPublicGetNegRiskTokenId(self, params):  # noqa: N802
+        """Return the token's explicit current negative-risk flag."""
+
+        assert params == {"token_id": TOKEN}
+        self.neg_risk_calls += 1
+        return self.neg_risk_response
 
     async def create_order(self, *args):
         self.created.append(args)
@@ -156,6 +179,59 @@ async def test_missing_execution_metadata_fails_closed() -> None:
 
     with pytest.raises(VenueInvalidOrderError, match="omitted"):
         await gateway.get_orderbook(TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_marketable_order_refreshes_metadata_without_fetching_a_book() -> None:
+    """Use V2 metadata endpoints before one FAK POST and never call `/book`."""
+
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    metadata = await gateway.get_execution_metadata(TOKEN, condition_id="condition")
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("3.50"),
+            price_limit=Decimal("0.70"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert metadata.tick_size == Decimal("0.0025")
+    assert metadata.min_order_size == Decimal("5")
+    assert metadata.neg_risk is True
+    assert result.success is True
+    assert exchange.fetch_order_book_calls == 0
+    assert exchange.metadata_market_calls == 2
+    assert exchange.neg_risk_calls == 2
+    assert len(exchange.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_marketable_order_fails_closed_when_neg_risk_metadata_is_missing() -> None:
+    """Do not sign when the metadata-only endpoint omits negative risk."""
+
+    exchange = FakeExchange()
+    exchange.neg_risk_response = {}
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="neg_risk"):
+        await gateway.submit_marketable_order(
+            MarketableOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                size=Decimal("3.50"),
+                price_limit=Decimal("0.70"),
+                condition_id="condition",
+                order_type="FAK",
+            )
+        )
+
+    assert exchange.fetch_order_book_calls == 0
+    assert exchange.created == []
 
 
 @pytest.mark.asyncio
@@ -497,7 +573,7 @@ async def test_compatibility_probe_reports_prediction_and_patch() -> None:
     assert report["transport"] == "ccxt.prediction.polymarket"
     assert report["prediction"] is True
     assert report["signature_type"] == 3
-    assert report["precision_patch"] == "pmcopy-arbitrary-tick-v1"
+    assert report["precision_patch"] == "pmcopy-arbitrary-tick-v2"
     assert report["capabilities"]["create_order"] is True
     assert "sdk_available" not in report
 

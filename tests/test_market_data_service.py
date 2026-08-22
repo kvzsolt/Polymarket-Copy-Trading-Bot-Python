@@ -1054,7 +1054,7 @@ class TestRestSnapshotBudgetsMatchTheRoundTrip:
 
     @pytest.mark.asyncio
     async def test_zero_spread_cap_never_rejects_a_wide_book(self) -> None:
-        """0 disables the spread gate; the leader-price band owns price quality."""
+        """Zero disables the spread gate for remaining snapshot consumers."""
         store = MarketStateStore()
         gw = _gateway_returning(
             _book(

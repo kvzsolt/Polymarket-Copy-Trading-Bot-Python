@@ -935,7 +935,7 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
 
 
 def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None:
-    """The leader-price band is on by default at +/-5 % of the leader fill."""
+    """Use a five-percent copy-entry tolerance by default."""
 
     from config.app_config import ExecutionConfig
 
@@ -943,18 +943,21 @@ def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None
     assert load_config(_overrides()).execution.max_entry_price_drift_pct == 5.0
 
 
-def test_execution_max_entry_price_drift_pct_zero_disables_the_band() -> None:
-    """0 is a valid, meaningful value: no band, pure slippage pricing."""
+@pytest.mark.parametrize("value", [5, 7.5, 10])
+def test_execution_max_entry_price_drift_pct_accepts_supported_tolerance(
+    value: float,
+) -> None:
+    """Accept operator-selected copy tolerances in the inclusive safe range."""
 
     overrides = _overrides()
-    overrides["execution"] = {"max_entry_price_drift_pct": 0}
+    overrides["execution"] = {"max_entry_price_drift_pct": value}
 
-    assert load_config(overrides).execution.max_entry_price_drift_pct == 0.0
+    assert load_config(overrides).execution.max_entry_price_drift_pct == value
 
 
-@pytest.mark.parametrize("value", [-0.1, -5, 100.1, 250])
+@pytest.mark.parametrize("value", [-0.1, 0, 4.999, 10.001, 100, 250])
 def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) -> None:
-    """Negative inverts the band; >100 makes a BUY cap exceed certainty."""
+    """Reject tolerances outside the operator-approved five-to-ten range."""
 
     overrides = _overrides()
     overrides["execution"] = {"max_entry_price_drift_pct": value}
@@ -963,38 +966,35 @@ def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) 
         load_config(overrides)
 
 
-def test_copy_entry_requires_rest_snapshot_defaults_to_false() -> None:
-    """The REST snapshot feeds the price cache; it must not pre-gate a FAK copy.
+def test_cli_explains_copy_entry_tolerance_range() -> None:
+    """Keep operator guidance aligned with the validated five-to-ten range."""
+    from bot_cli.commands.config import _CONFIG_EXPLANATIONS
 
-    The blocking pipeline pre-gate is opt-in: the executor's own cache-first
-    ``require_fresh_data`` is the single fetch on the copy entry path.
-    """
+    explanation = _CONFIG_EXPLANATIONS["MAX_ENTRY_PRICE_DRIFT_PCT"]
+
+    assert "5-10%" in explanation
+    assert "0 disables" not in explanation
+
+
+def test_market_data_config_has_no_copy_snapshot_switch() -> None:
+    """No operator setting can restore book-derived copy pricing."""
 
     from config.app_config import MarketDataConfig
 
-    assert MarketDataConfig().copy_entry_requires_rest_snapshot is False
-    assert load_config(_overrides()).market_data.copy_entry_requires_rest_snapshot is False
-
-
-def test_copy_entry_requires_rest_snapshot_is_operator_switchable() -> None:
-    """Setting the switch to true restores the blocking pre-gate."""
-
-    overrides = _overrides()
-    overrides["market_data"] = {"copy_entry_requires_rest_snapshot": True}
-
-    assert load_config(overrides).market_data.copy_entry_requires_rest_snapshot is True
+    assert not hasattr(MarketDataConfig(), "copy_entry_requires_rest_snapshot")
+    assert not hasattr(load_config(_overrides()).market_data, "copy_entry_requires_rest_snapshot")
 
 
 def test_packaged_market_data_yaml_pins_the_relaxed_rest_snapshot_budgets() -> None:
     """The shipped REST fallback must be able to deliver its own round trip.
 
-    A ~520-570 ms live REST round trip was rejected by the 500 ms age budget,
-    and the spread cap is retired in favour of the leader-price band.
+    A ~520-570 ms live REST round trip was rejected by the 500 ms age budget.
+    Copy entries no longer consume this snapshot or its spread cap.
     """
 
     payload = yaml.safe_load((ROOT / "config" / "market_data.yml").read_text(encoding="utf-8"))
 
-    assert payload["copy_entry_requires_rest_snapshot"] is False
+    assert "copy_entry_requires_rest_snapshot" not in payload
     assert payload["rest_snapshot_max_age_ms"] == 1500
     assert payload["rest_snapshot_request_timeout_ms"] == 1250
     assert payload["rest_snapshot_total_budget_ms"] == 2000

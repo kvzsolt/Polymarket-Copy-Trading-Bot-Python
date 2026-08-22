@@ -1,10 +1,10 @@
-"""Skip-reason visibility in the trade pipeline.
+"""Skip and failure visibility in the trade pipeline.
 
-Every decision path that declines to copy a detected trade must surface a
-``⚠️ COPY NOT EXECUTED`` panel (``print_skip_reason``) so the operator is not
-left with a silent "NEW TRADE DETECTED" followed by nothing. These tests patch
-``orchestrators.trade_pipeline.print_skip_reason`` and assert it fires on the
-paths that were previously JSONL-only.
+Every decision path that declines to copy a detected trade must surface one
+``⚠️ COPY NOT EXECUTED`` panel so the operator is not left with a silent
+"NEW TRADE DETECTED" followed by nothing. Pre-submit skips use
+``print_skip_reason``; post-execution failures use the richer
+``print_trade_result`` panel exactly once.
 
 The pipeline requires a Postgres-backed repo set, so each test uses the same
 testcontainers harness as ``test_trade_pipeline_market_data_authority`` and
@@ -24,6 +24,7 @@ import config.app_config as app_config_mod
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from tests.config_helpers import load_test_config
 from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades
 from services.accountingService import AccountingService
 from services.executionService import ExecutionResult
@@ -162,10 +163,7 @@ def _signal(*, side="BUY", tx_hash="0xvis", price=0.50, size=10.0):
 
 
 class _FakeMDS:
-    """Serves both the WSS (`require_fresh_data`) and REST-snapshot
-    (`require_execution_snapshot`) freshness entry points. When
-    ``raise_stale`` is set, the matching call raises ``StaleDataError`` with
-    ``skip_code='market_data_stale'`` so the pipeline fails closed."""
+    """Serve WSS bundles and metadata-only copy execution lookups."""
 
     def __init__(self, bundle, *, raise_stale: bool = False):
         self._bundle = bundle
@@ -176,10 +174,18 @@ class _FakeMDS:
             raise StaleDataError(f"stale {token_id}")
         return self._bundle
 
-    async def require_execution_snapshot(self, token_id, *, side, condition_id=None):
+    async def require_execution_metadata(self, token_id, *, condition_id=None):
         if self._raise_stale:
-            raise StaleDataError(f"stale {token_id}", skip_code="market_data_stale")
-        return self._bundle
+            raise StaleDataError(
+                f"metadata unavailable {token_id}",
+                skip_code="market_metadata_unavailable",
+            )
+        return ExecutionMetadata(
+            token_id=token_id,
+            tick_size=self._bundle.tick.tick_size,
+            min_order_size=self._bundle.tick.min_order_size,
+            neg_risk=self._bundle.tick.neg_risk,
+        )
 
 
 def _passthrough_coordinator(exec_svc):
@@ -193,12 +199,17 @@ def _passthrough_coordinator(exec_svc):
                 leader_id=intent.leader_wallet or "",
                 token_id=intent.token_id,
                 side=intent.side,
-                amount=intent.size,
+                amount=(intent.notional_usdc if intent.side.upper() == "BUY" else intent.size),
                 max_slippage_bps=intent.max_slippage_bps,
                 reason=intent.reason or intent.source,
                 signal_id=intent.signal_id,
                 condition_id=intent.condition_id,
                 recovery_metadata=dict(intent.recovery_metadata or {}),
+                order_type=intent.order_type,
+                price_limit=intent.price_limit,
+                tick_size=intent.tick_size,
+                min_order_size=intent.min_order_size,
+                neg_risk=intent.neg_risk,
             )
             result = await exec_svc.execute(req)
             return ExecutionCoordinatorResult(
@@ -246,8 +257,7 @@ async def test_market_data_stale_prints_panel(tmp_path):
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
         runtime.subscribe_tokens = AsyncMock()
-        # rest_snapshot is the production default; its pre-loop snapshot gate
-        # is where the market_data_stale panel fires.
+        # The legacy rest_snapshot mode now performs a metadata-only pre-gate.
         ctx = _make_context(
             pool,
             tmp_path,
@@ -259,10 +269,10 @@ async def test_market_data_stale_prints_panel(tmp_path):
         with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "skipped"
-        assert results[0].reason == "market_data_stale"
+        assert results[0].reason == "market_metadata_unavailable"
         exec_svc.execute.assert_not_awaited()
         p.assert_called()
-        assert "stale" in p.call_args.args[0].lower()
+        assert "unavailable" in p.call_args.args[0].lower()
 
 
 @pytest.mark.asyncio
@@ -288,18 +298,19 @@ async def test_sell_never_held_prints_panel(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_not_accepted_reservation_conflict_prints_panel(tmp_path):
+async def test_terminal_copy_failure_has_one_panel_and_follower_amounts(tmp_path):
+    """A killed FAK has one panel, copy-scoped units, and no later retry."""
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = ExecutionResult(
             accepted=False,
             order_id=None,
-            status="reservation_conflict",
+            status="canceled",
             requested_amount=Decimal("5"),
             filled_amount=Decimal("0"),
             avg_price=Decimal("0"),
             fees_paid=Decimal("0"),
-            error="active reservation exists for intent",
+            error="order_not_fillable",
         )
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
@@ -310,11 +321,26 @@ async def test_not_accepted_reservation_conflict_prints_panel(tmp_path):
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
         )
-        with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
-            await execute_trades(ctx, "leader1", [_signal()], time.time())
-        p.assert_called()
-        titles = " ".join(str(c.args[0]) for c in p.call_args_list)
-        assert "reservation_conflict" in titles
+        with (
+            patch("orchestrators.trade_pipeline.print_skip_reason") as generic_panel,
+            patch("orchestrators.trade_pipeline.print_trade_result") as detailed_panel,
+            patch("orchestrators.trade_pipeline.log_trade_skip") as skip_log,
+        ):
+            results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        generic_panel.assert_not_called()
+        detailed_panel.assert_called_once()
+        assert "order_not_fillable" in detailed_panel.call_args.kwargs["reason"]
+
+        submitted_request = exec_svc.execute.await_args.args[0]
+        payload = skip_log.call_args.kwargs
+        assert payload["price"] == float(submitted_request.price_limit)
+        assert payload["usdc_value"] == float(submitted_request.amount)
+        assert payload["size"] * payload["price"] == pytest.approx(
+            payload["usdc_value"],
+            rel=1e-6,
+        )
+        persisted = await ctx.orders_repo.get_processed_trade(results[0].trade_key)
+        assert persisted["status"] == "terminal_failed"
 
 
 @pytest.mark.asyncio
@@ -362,7 +388,7 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
         log_sub.assert_called()
         sub_kwargs = log_sub.call_args.kwargs
         assert sub_kwargs["meta"]["submissionState"] == "submitted_unconfirmed"
-        assert sub_kwargs["price"] == pytest.approx(0.50)
+        assert sub_kwargs["price"] == pytest.approx(0.525)
         if sub_kwargs["size"] is not None and sub_kwargs["usdc_value"] is not None:
             assert sub_kwargs["size"] * sub_kwargs["price"] == pytest.approx(
                 sub_kwargs["usdc_value"], rel=1e-6

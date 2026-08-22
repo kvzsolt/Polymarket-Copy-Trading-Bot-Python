@@ -131,7 +131,6 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     assert set(discovery) == {"scheduler", "falcon"}
     assert discovery["falcon"]["candidate_limit"] == 50
     assert set(market_data) == {
-        "copy_entry_requires_rest_snapshot",
         "rest_snapshot_max_spread_bps",
         "rest_snapshot_max_age_ms",
         "rest_snapshot_request_timeout_ms",
@@ -189,7 +188,6 @@ LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
     ("discovery.falcon.enabled", False),
     ("discovery.falcon.candidate_limit", 50),
     ("copy_trading.copy_tasks.enabled", False),
-    ("market_data.copy_entry_requires_rest_snapshot", False),
     ("market_data.rest_snapshot_max_spread_bps", 0),
     ("market_data.rest_snapshot_max_age_ms", 1500),
     ("market_data.rest_snapshot_request_timeout_ms", 1250),

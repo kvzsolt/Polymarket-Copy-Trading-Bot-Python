@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from domain.execution import ExecutionMetadata
 from integrations.polymarket.models import (
     VenueCancelResult,
     VenueOrderState,
@@ -165,6 +166,14 @@ def make_clob_gateway(
     gateway.get_fills = AsyncMock(return_value=[])
     gateway.get_market_info = AsyncMock(
         return_value={"tick_size": "0.01", "neg_risk": False, "min_order_size": "1"}
+    )
+    gateway.get_execution_metadata = AsyncMock(
+        return_value=ExecutionMetadata(
+            token_id="0xtest_token",
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+        )
     )
     gateway.get_orderbook = AsyncMock()
     gateway.cancel_order = AsyncMock(

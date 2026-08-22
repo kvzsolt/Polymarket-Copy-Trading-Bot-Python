@@ -51,6 +51,14 @@ class Exchange:
             "asks": [],
         }
 
+    async def clobPublicGetClobMarketsConditionId(self, _params):
+        """Return the metadata precondition so POST-error tests reach POST."""
+        return {"tokens": [TOKEN], "mts": "0.01", "mos": "5"}
+
+    async def clobPublicGetNegRiskTokenId(self, _params):
+        """Return explicit token risk metadata without fetching a book."""
+        return {"neg_risk": False}
+
     async def create_order(self, *_args):
         if self.create_error:
             raise self.create_error

@@ -1,8 +1,7 @@
 """Release-gate: metadata-driven sizing (Issue #75 item 6).
 
-``services.order_sizing`` must always compute the effective minimum
-from the **$1 USDC taker-minimum** (not the raw ``min_order_size``
-which is for GTC-limit/maker orders). Tests:
+``services.order_sizing`` must compute the effective minimum as the larger of
+the venue's dynamic share minimum and the $1 USDC taker floor. Tests:
 * sub-min sizes are skipped when the cap can't cover the upsize;
 * tick-rounded worst-case price is reflected in ``effective_price``;
 * SELL sizing is bounded by held shares (the bot never invents shares);
@@ -17,20 +16,54 @@ from services.order_sizing import size_buy_order, size_sell_order
 
 
 def test_buy_below_min_rejected_when_cap_cannot_cover_upsize() -> None:
-    """BUY too small to meet taker min ($1 notional) and cap covers upsize → accept."""
-    # live_price=0.50 => taker_min = ceil(1/0.50) = 2 tokens
-    # base_notional=1.0 => desired=2 tokens = exact min, worst_notional ~ 1.02
-    # max_notional=1.5 >= 1.02 => accept
+    """Reject when the cap cannot fund the venue's ten-share minimum."""
+
     decision = size_buy_order(
         live_price=0.50,
         base_notional_usdc=1.0,
         max_notional_usdc=1.5,
-        market_min_size=10.0,  # ignored for taker orders
+        market_min_size=10.0,
         tick_size=0.01,
         slippage_ratio=0.02,
     )
+    assert decision.accept is False
+    assert decision.reason == "buy_cap_blocks_upsize_to_venue_min"
+
+
+def test_buy_rounds_up_to_dynamic_five_share_minimum() -> None:
+    """Round a small BUY to five shares when risk headroom covers it."""
+
+    decision = size_buy_order(
+        live_price=Decimal("0.70"),
+        base_notional_usdc=Decimal("0.50"),
+        max_notional_usdc=Decimal("4.00"),
+        market_min_size=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        slippage_ratio=Decimal("0"),
+    )
+
     assert decision.accept is True
-    assert decision.upsized is False  # exactly at taker min
+    assert decision.upsized is True
+    assert decision.effective_size == Decimal("5")
+    assert decision.worst_notional == Decimal("3.50")
+
+
+def test_buy_uses_one_usdc_floor_when_it_exceeds_share_minimum() -> None:
+    """At a ten-cent price, round to ten shares so notional reaches $1."""
+
+    decision = size_buy_order(
+        live_price=Decimal("0.10"),
+        base_notional_usdc=Decimal("0.50"),
+        max_notional_usdc=Decimal("2.00"),
+        market_min_size=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        slippage_ratio=Decimal("0"),
+    )
+
+    assert decision.accept is True
+    assert decision.upsized is True
+    assert decision.effective_size == Decimal("10")
+    assert decision.worst_notional == Decimal("1.00")
 
 
 def test_buy_at_cap_uses_tick_rounded_worst_price() -> None:
@@ -82,14 +115,13 @@ def test_sell_bounded_by_held_position() -> None:
 
 
 def test_sell_below_min_rejected() -> None:
-    """SELL below taker min where held shares can't cover upsize → skip."""
-    # live_price=0.50 => taker_min=2 tokens
-    # sell=0.5, held=0.5 < 2 => skip
+    """Skip a SELL when held shares cannot cover the venue minimum."""
+
     decision = size_sell_order(
         sell_tokens=0.5,
         held_size=0.5,
         live_price=0.50,
-        market_min_size=10.0,  # ignored for taker orders
+        market_min_size=10.0,
     )
     assert decision.accept is False
     assert decision.reason == "sell_held_below_venue_min"
@@ -99,68 +131,58 @@ def test_sell_below_min_rejected() -> None:
 
 
 def test_sell_below_min_upsized_when_held_allows() -> None:
-    """SELL below taker min upsizes to taker min if held shares cover it.
+    """Upsize a small SELL to the dynamic five-share venue minimum."""
 
-    ``_taker_min_tokens`` quantizes to 4 decimals (not whole tokens), so the
-    floor at live_price=0.99 is ``ceil(1/0.99, 4dp) = 1.0102`` tokens, not 2.
-    Pick a requested size strictly below that floor to exercise the upsize.
-    """
-    # live_price=0.99 => taker_min = 1.0102 tokens
     decision = size_sell_order(
         sell_tokens=1.0,
         held_size=12.0,
         live_price=0.99,
-        market_min_size=5.0,  # ignored
+        market_min_size=5.0,
     )
     assert decision.accept is True
     assert decision.upsized is True
-    assert decision.effective_size == Decimal("1.0102")
+    assert decision.effective_size == Decimal("5")
     assert decision.reason == "upsized"
 
 
 def test_sell_below_min_skipped_when_held_short() -> None:
-    """SELL below taker min and held shares can't cover upsize → skip.
+    """Skip when held shares cannot cover the ten-share venue minimum."""
 
-    ``held_size`` must be strictly below the taker minimum (1.0102 tokens
-    at 0.99) to trip the held-below-min branch; previously 2.0 covered it
-    and the sizer (correctly) upsized to the floor.
-    """
     decision = size_sell_order(
         sell_tokens=1.0,
-        held_size=1.0,  # below taker_min 1.0102
+        held_size=1.0,
         live_price=0.99,
-        market_min_size=10.0,  # ignored
+        market_min_size=10.0,
     )
     assert decision.accept is False
     assert decision.reason == "sell_held_below_venue_min"
 
 
 def test_sell_exactly_at_venue_min_accepted_unchanged() -> None:
-    """SELL exactly at taker min is accepted without upsize."""
-    # live_price=0.99 => taker_min = ceil(1/0.99) = 2 tokens
+    """Accept a SELL exactly at the dynamic minimum without an upsize."""
+
     decision = size_sell_order(
-        sell_tokens=2.0,
-        held_size=2.0,
+        sell_tokens=5.0,
+        held_size=5.0,
         live_price=0.99,
-        market_min_size=5.0,  # ignored
+        market_min_size=5.0,
     )
     assert decision.accept is True
     assert decision.upsized is False
-    assert decision.effective_size == Decimal("2")
+    assert decision.effective_size == Decimal("5")
 
 
 def test_sell_clamped_to_held_then_min_check() -> None:
-    """Requested > held → clamp to held; then min-size guard runs."""
-    # live_price=0.99 => taker_min = ceil(1/0.99) = 2 tokens
-    # sell=100 -> clamp to held=3; 3 >= 2 => accept (no upsize needed)
+    """Reject after the held clamp leaves fewer than ten shares."""
+
     decision = size_sell_order(
         sell_tokens=100.0,
         held_size=3.0,
         live_price=0.99,
-        market_min_size=10.0,  # ignored
+        market_min_size=10.0,
     )
-    assert decision.accept is True
-    assert decision.effective_size == Decimal("3")
+    assert decision.accept is False
+    assert decision.reason == "sell_held_below_venue_min"
 
 
 def test_sell_full_position_at_near_resolution_price() -> None:
@@ -169,7 +191,7 @@ def test_sell_full_position_at_near_resolution_price() -> None:
         sell_tokens=42.5,
         held_size=42.5,
         live_price=0.995,
-        market_min_size=5.0,  # ignored
+        market_min_size=5.0,
     )
     assert decision.accept is True
     assert decision.effective_size == Decimal("42.5")

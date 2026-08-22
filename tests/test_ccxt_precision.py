@@ -1,3 +1,5 @@
+"""Regression tests for exact Polymarket order amount construction."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -9,6 +11,7 @@ from integrations.polymarket.ccxt_compat.precision import (
     install_ccxt_polymarket_precision_patch,
     polymarket_raw_amounts,
 )
+from integrations.polymarket.ccxt_compat.capabilities import PRECISION_PATCH_ID
 from integrations.polymarket.ccxt_compat.tick_size import quantize_price_to_tick
 
 
@@ -34,18 +37,41 @@ def test_price_quantization_is_side_conservative_and_exact() -> None:
     ) == Decimal("0.4125")
 
 
-def test_cost_sized_market_buy_preserves_explicit_price_limit() -> None:
+@pytest.mark.parametrize(
+    ("cost", "price", "tick_size"),
+    [
+        ("4.999932", "0.84", "0.01"),
+        ("5.12", "0.415", "0.005"),
+        ("5.12", "0.4125", "0.0025"),
+    ],
+)
+def test_cost_sized_market_buy_crosses_selected_tick_without_reaching_next_tick(
+    cost: str,
+    price: str,
+    tick_size: str,
+) -> None:
+    """Keep a cost BUY marketable without exposing the next price level."""
+
     result = polymarket_raw_amounts(
         "BUY",
-        size="5.12",
-        price="0.4125",
-        tick_size="0.0025",
-        cost="5.12",
+        size=cost,
+        price=price,
+        tick_size=tick_size,
+        cost=cost,
     )
     maker = Decimal(result["makerAmount"]) / Decimal("1000000")
     taker = Decimal(result["takerAmount"]) / Decimal("1000000")
-    assert maker == Decimal("5.12")
-    assert maker / taker <= Decimal("0.4125")
+    signed_price = maker / taker
+
+    assert maker <= Decimal(cost)
+    assert signed_price >= Decimal(price)
+    assert signed_price < Decimal(price) + Decimal(tick_size)
+
+
+def test_precision_patch_marker_identifies_marketable_cost_buy_semantics() -> None:
+    """Expose the behavior change so stale exchange instances are repatched."""
+
+    assert PRECISION_PATCH_ID == "pmcopy-arbitrary-tick-v2"
 
 
 def test_zero_after_quantization_is_rejected() -> None:

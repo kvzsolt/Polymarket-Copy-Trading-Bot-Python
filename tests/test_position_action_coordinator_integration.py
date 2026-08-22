@@ -25,6 +25,7 @@ import pytest
 import config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
 from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades
 from services.accountingService import AccountingService
 from services.executionService import ExecutionResult
@@ -162,8 +163,13 @@ class _CoordFakeMDS:
     async def require_fresh_data(self, token_id, **_kwargs):
         return self._bundle
 
-    async def require_execution_snapshot(self, token_id, **_kwargs):
-        return self._bundle
+    async def require_execution_metadata(self, token_id, **_kwargs):
+        return ExecutionMetadata(
+            token_id=token_id,
+            tick_size=self._bundle.tick.tick_size,
+            min_order_size=self._bundle.tick.min_order_size,
+            neg_risk=self._bundle.tick.neg_risk,
+        )
 
 
 def _make_context(pool, *, execution_service=None, config=None, tmp_path=None) -> TradingContext:

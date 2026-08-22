@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from domain.execution import ExecutionOrderType
 from services.execution.coordinator import ExecutionCoordinator
 from services.executionService import ExecutionResult
 from orchestrators.trade_pipeline import _submit_copy_through_coordinator
@@ -103,7 +104,16 @@ def _exec_req(*, side: str, amount: Decimal) -> SimpleNamespace:
         reason="copy_trade",
         signal_id="0xsig",
         condition_id="cond-1",
-        recovery_metadata={"source": "copy_trade", "order_type": "FAK"},
+        recovery_metadata={
+            "source": "copy_trade",
+            "order_type": "FAK",
+            "price_limit": "0.70",
+        },
+        order_type=ExecutionOrderType.FAK,
+        price_limit=Decimal("0.70"),
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("5"),
+        neg_risk=False,
     )
 
 
@@ -172,3 +182,24 @@ async def test_sell_still_submits_share_amount() -> None:
     [submitted] = exec_svc.requests
     assert submitted.side == "SELL"
     assert Decimal(str(submitted.amount)) == Decimal("12.5")
+
+
+@pytest.mark.asyncio
+async def test_copy_execution_metadata_survives_pipeline_and_coordinator() -> None:
+    """Preserve the metadata required for one metadata-only FAK submission."""
+    exec_svc = _RecordingExecutionService()
+    coordinator = _coordinator(exec_svc)
+
+    await _submit_copy_through_coordinator(
+        _context(coordinator),
+        _exec_req(side="BUY", amount=Decimal("5.10")),
+        _signal(side="BUY", price=0.70, usdc_size=30.45, size=43.5),
+        leader_id=LEADER,
+    )
+
+    [submitted] = exec_svc.requests
+    assert submitted.order_type is ExecutionOrderType.FAK
+    assert submitted.price_limit == Decimal("0.70")
+    assert submitted.tick_size == Decimal("0.01")
+    assert submitted.min_order_size == Decimal("5")
+    assert submitted.neg_risk is False

@@ -22,7 +22,7 @@ class PaginatedExchange:
         self.options = {"chainId": 137, "signatureType": 3}
         self.privateKey = "secret"
         self.walletAddress = "0xwallet"
-        self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v1"
+        self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v2"
         self.order_requests: list[dict[str, object]] = []
         self.trade_requests: list[dict[str, object]] = []
         self.unified_open_orders_called = False

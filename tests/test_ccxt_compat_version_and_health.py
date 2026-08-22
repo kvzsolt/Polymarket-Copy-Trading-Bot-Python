@@ -68,7 +68,7 @@ def test_health_payload_uses_ccxt_terminology_only() -> None:
     assert payload["ccxt_version"] == "4.5.73"
     assert payload["authenticated"] is True
     assert payload["live_execution_ready"] is True
-    assert payload["precision_patch"] == "pmcopy-arbitrary-tick-v1"
+    assert payload["precision_patch"] == "pmcopy-arbitrary-tick-v2"
     assert payload["capabilities"] == {
         "create_order": True,
         "cancel_order": True,

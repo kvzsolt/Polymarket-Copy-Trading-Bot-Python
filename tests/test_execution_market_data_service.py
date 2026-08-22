@@ -270,13 +270,9 @@ class TestMissingMinOrderSizeBlocks:
             assert result.status == "stale_market_data"
 
     @pytest.mark.asyncio
-    async def test_small_amount_not_rejected_for_taker_orders(self) -> None:
+    async def test_copy_order_below_dynamic_market_minimum_is_rejected(self) -> None:
+        """Reject an undersized copy request if upstream sizing missed the floor."""
         async with _pg_pool() as pool:
-            """ExecutionService no longer rejects BUY orders below tick min_order_size.
-
-            Taker (marketable) orders have a $1 USDC notional minimum, not the 5-token
-            GTC limit minimum.  Upstream sizing already handles the taker floor, so
-            ExecutionService must accept small BUY orders."""
             mds = AsyncMock()
             mds.require_fresh_data = AsyncMock(
                 return_value=_make_bundle(min_order_size=Decimal("10"))
@@ -284,8 +280,9 @@ class TestMissingMinOrderSizeBlocks:
             svc, gateway = _make_svc(mds, pool=pool)
             result = await svc.execute(_request(amount=Decimal("3")))
 
-            assert result.accepted is True
-            gateway.submit_marketable_order.assert_awaited_once()
+            assert result.accepted is False
+            assert result.status == "size_below_min"
+            gateway.submit_marketable_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

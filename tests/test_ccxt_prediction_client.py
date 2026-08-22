@@ -138,7 +138,7 @@ async def test_authenticated_client_is_type3_and_patched() -> None:
     assert client.signature_type == 3
     assert client.exchange.options["signatureType"] == 3
     assert client.exchange.options["funder"] == wallet
-    assert client.exchange._pmcopy_precision_patch == "pmcopy-arbitrary-tick-v1"
+    assert client.exchange._pmcopy_precision_patch == "pmcopy-arbitrary-tick-v2"
     client.exchange.load_api_credentials.assert_awaited_once()
 
 

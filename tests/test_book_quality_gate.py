@@ -136,6 +136,9 @@ def _req(amount: str = "10", side: str = "BUY", **overrides):
         amount=Decimal(amount),
         max_slippage_bps=200,
         reason="copy_trade",
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("1"),
+        neg_risk=False,
     )
     data.update(overrides)
     return ExecutionRequest(
@@ -249,8 +252,8 @@ class TestBookQualityGate:
         submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
         assert submitted.order_type == "FAK"
 
-    def test_copy_trade_fak_uses_fresh_snapshot_without_spread_gate(self):
-        """Copy FAKs read current top-of-book but do not reject on wide spread."""
+    def test_copy_trade_fak_uses_copied_price_without_book_snapshot(self):
+        """Copy FAKs use prefetched metadata and ignore the local wide book."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
@@ -275,17 +278,11 @@ class TestBookQualityGate:
         assert result.accepted is True
         assert result.status == "filled"
         assert result.filled_amount == Decimal("4")
-        svc._market_data_service.require_fresh_data.assert_awaited_once()
-        _, snapshot_kwargs = svc._market_data_service.require_fresh_data.await_args
-        assert snapshot_kwargs["side"] == "BUY"
-        assert snapshot_kwargs["policy"].rest_snapshot_max_spread_bps == 1_000_000
-        assert snapshot_kwargs["policy"].require_book_depth is False
+        svc._market_data_service.require_fresh_data.assert_not_awaited()
         svc.clob_gateway.submit_marketable_order.assert_awaited_once()
         submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
         assert submitted.order_type == "FAK"
-        # H2: the caller price_limit (0.95) caps the fill; the slippage-derived
-        # worst_price (0.92) is below the cap so it stands.
-        assert submitted.price_limit == Decimal("0.92")
+        assert submitted.price_limit == Decimal("0.95")
 
     def test_copy_trade_fak_partial_fill_never_chases_the_remainder(self):
         """Partial FAK accounting uses only the first order's matched amount."""
@@ -312,9 +309,8 @@ class TestBookQualityGate:
         req = _req(
             amount="2",
             order_type="FAK",
-            # Above the 0.90 ask: these cases characterize repost / circuit /
-            # ack behavior, not the leader-price band, so the caller limit must
-            # not reject the quote before a POST happens.
+            # The copied limit is independent of the local book; this case
+            # characterizes partial-fill accounting and single-POST behavior.
             price_limit=Decimal("0.95"),
             recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
@@ -327,7 +323,7 @@ class TestBookQualityGate:
         assert result.order_id == "ord-fak-1"
         assert svc.clob_gateway.submit_marketable_order.await_count == 1
         assert svc.clob_gateway.submit_marketable_order.await_args.args[0].order_type == "FAK"
-        assert svc._market_data_service.require_fresh_data.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
 
     def test_copy_trade_fak_zero_fill_never_reposts(self):
         """A zero-fill FAK is terminal for this copy intent."""
@@ -352,9 +348,8 @@ class TestBookQualityGate:
         req = _req(
             amount="1",
             order_type="FAK",
-            # Above the 0.90 ask: these cases characterize repost / circuit /
-            # ack behavior, not the leader-price band, so the caller limit must
-            # not reject the quote before a POST happens.
+            # The copied limit is independent of the local book; this case
+            # characterizes terminal zero-fill handling.
             price_limit=Decimal("0.95"),
             recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
@@ -366,7 +361,7 @@ class TestBookQualityGate:
         assert result.filled_amount == Decimal("0")
         assert result.error == "fak_no_match"
         assert svc.clob_gateway.submit_marketable_order.await_count == 1
-        assert svc._market_data_service.require_fresh_data.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
         assert svc.circuit_breaker.allow_request() is True
 
     def test_copy_trade_fak_delayed_ack_is_not_reposted(self):
@@ -382,8 +377,8 @@ class TestBookQualityGate:
         req = _req(
             amount="5",
             order_type="FAK",
-            # Above the 0.90 ask — see the note above; this case is about
-            # delayed acks, not the leader-price band.
+            # The copied limit is independent of the local book; this case is
+            # about delayed acknowledgements.
             price_limit=Decimal("0.95"),
             recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
@@ -396,7 +391,7 @@ class TestBookQualityGate:
         assert result.filled_amount == Decimal("0")
         assert result.error is None
         assert svc.clob_gateway.submit_marketable_order.await_count == 1
-        assert svc._market_data_service.require_fresh_data.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
 
     def test_copy_trade_fak_no_match_does_not_trip_circuit_or_retry(self):
         """A normal no-match cancellation consumes one request only."""
@@ -429,9 +424,8 @@ class TestBookQualityGate:
         req = _req(
             amount="2",
             order_type="FAK",
-            # Above the 0.90 ask: these cases characterize repost / circuit /
-            # ack behavior, not the leader-price band, so the caller limit must
-            # not reject the quote before a POST happens.
+            # The copied limit is independent of the local book; this case
+            # characterizes terminal no-match handling.
             price_limit=Decimal("0.95"),
             recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
@@ -442,7 +436,7 @@ class TestBookQualityGate:
         assert result.status == "cancelled"
         assert result.error == "fak_no_match"
         assert svc.clob_gateway.submit_marketable_order.await_count == 1
-        assert svc._market_data_service.require_fresh_data.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
         assert svc.circuit_breaker.allow_request() is True
 
     def test_custom_threshold(self):
