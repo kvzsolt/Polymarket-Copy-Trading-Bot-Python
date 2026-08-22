@@ -7,13 +7,23 @@ import asyncio
 
 
 def register_run_command(subparsers: argparse._SubParsersAction) -> None:
-    subparsers.add_parser(
+    """Register the main-loop command and its process-local overrides.
+
+    Args:
+        subparsers: Parent CLI subparser registry.
+    """
+    parser = subparsers.add_parser(
         "run",
         help="Start the main loop using the fail-closed configured trading mode",
     )
+    parser.add_argument(
+        "--auto-trader",
+        action="store_true",
+        help="Ignore configured leaders and force automatic trader discovery",
+    )
 
 
-async def _run_bot() -> int:
+async def _run_bot(*, auto_trader: bool = False) -> int:
     """Delegate to app.py without a CLI mode override.
 
     The previous ``--live`` flag could conflict with the environment master
@@ -27,18 +37,30 @@ async def _run_bot() -> int:
     # being swallowed and reported as success (P2-q).
     from app import main as app_main
 
-    code = await app_main()
+    code = await app_main(auto_trader=auto_trader)
     return int(code) if code is not None else 0
 
 
 async def _run_run_async(args: argparse.Namespace) -> int:
-    del args
-    return await _run_bot()
+    return await _run_bot(auto_trader=bool(args.auto_trader))
 
 
 def run_run(args: argparse.Namespace) -> int:
-    """Start the main trading loop synchronously (wraps the async entrypoint)."""
+    """Start the main trading loop synchronously.
+
+    Args:
+        args: Parsed command arguments.
+
+    Returns:
+        Process exit code from the asynchronous application entrypoint; ``0``
+        when the operator stops the loop with Ctrl-C (``asyncio.Runner``
+        re-raises ``KeyboardInterrupt`` / ``CancelledError`` after graceful
+        teardown, mirroring the handler in ``app.py``'s ``__main__`` path).
+    """
     from utils.event_loop import new_event_loop
 
-    with asyncio.Runner(loop_factory=new_event_loop) as runner:
-        return runner.run(_run_run_async(args))
+    try:
+        with asyncio.Runner(loop_factory=new_event_loop) as runner:
+            return runner.run(_run_run_async(args))
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        return 0

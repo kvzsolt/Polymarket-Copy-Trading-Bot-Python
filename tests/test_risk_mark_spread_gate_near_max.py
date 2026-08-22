@@ -51,14 +51,14 @@ class TestSpreadGateNearMax:
         )
 
     def test_abs_distance_gate_rejects_wide_spread_near_1_0(self):
-        """With an absolute distance cap of 0.02, a 0.02-wide book near 1.0
-        (bid=0.95, ask=0.97) is rejected — the bps gate is inert here but the
-        absolute gap is exactly at the limit."""
+        """With an absolute distance cap of 0.02, a 0.03-wide book near 1.0
+        (bid=0.95, ask=0.98) is rejected — the bps gate is inert here but the
+        absolute gap exceeds the limit."""
         ctx = _ctx(max_spread_bps=2000, max_abs_distance=0.02)
-        # gap = 0.97 - 0.95 = 0.02 == cap -> reject (>= cap fails closed)
+        # gap = 0.98 - 0.95 = 0.03 > cap -> reject
         assert (
             _risk_mark_passes_sanity(
-                ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.97")
+                ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.98")
             )
             is False
         )
@@ -108,3 +108,31 @@ class TestRestMarkPathAppliesSanityGate:
         entry = cache.get_fresh("t1", stale_after=100.0)
         assert entry is not None
         assert entry.price == Decimal("0.95")
+
+
+class TestAbsDistanceGateStrictComparison:
+    """A book whose gap equals the cap is a normal book, not a wide one.
+
+    Live sports markets routinely quote a 3-cent gap (e.g. 0.26/0.29); with
+    ``risk_mark_max_abs_distance: 0.03`` the previous ``>=`` comparison
+    rejected every such book and degraded protective-exit marks to REST
+    polling. The gate is strict: only a gap *wider* than the cap is rejected.
+    """
+
+    def test_gap_equal_to_cap_is_accepted(self):
+        ctx = _ctx(max_spread_bps=0, max_abs_distance=0.03)
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.26"), best_ask=Decimal("0.29")
+            )
+            is True
+        )
+
+    def test_gap_wider_than_cap_is_rejected(self):
+        ctx = _ctx(max_spread_bps=0, max_abs_distance=0.03)
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.13"), best_ask=Decimal("0.98")
+            )
+            is False
+        )

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from config.app_config import EnvValidationError, load_config
+from config.app_config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_DIR = ROOT / "config" / "environments" / "live"
@@ -55,7 +55,7 @@ def test_live_environment_reproduces_the_operator_overrides() -> None:
 
     assert config.execution.trading_mode == "live"
     assert config.execution.paper_trade_only is False
-    assert config.copy_trading.wallets == LEADER_WALLETS
+    assert config.copy_trading.enabled_wallets() == LEADER_WALLETS
     assert config.app.enable_metrics_server is True
     assert config.app.metrics_bind_host == "127.0.0.1"
     assert config.app.metrics_port == 9102
@@ -69,7 +69,12 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "control_plane.yml",
         "copy_trading.yml",
         "detection.yml",
+        "discovery.yml",
         "execution.yml",
+        "market_data.yml",
+        "protective_exits.yml",
+        "risk.yml",
+        "sizing.yml",
     }
 
     execution = yaml.safe_load((LIVE_DIR / "execution.yml").read_text())
@@ -77,9 +82,23 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     app_cfg = yaml.safe_load((LIVE_DIR / "app.yml").read_text())
     detection = yaml.safe_load((LIVE_DIR / "detection.yml").read_text())
     control_plane = yaml.safe_load((LIVE_DIR / "control_plane.yml").read_text())
+    risk = yaml.safe_load((LIVE_DIR / "risk.yml").read_text())
+    protective_exits = yaml.safe_load((LIVE_DIR / "protective_exits.yml").read_text())
+    sizing = yaml.safe_load((LIVE_DIR / "sizing.yml").read_text())
+    discovery = yaml.safe_load((LIVE_DIR / "discovery.yml").read_text())
+    market_data = yaml.safe_load((LIVE_DIR / "market_data.yml").read_text())
 
-    assert set(execution) == {"trading_mode"}
-    assert set(copy_trading) == {"wallets"}
+    assert set(execution) == {
+        "trading_mode",
+        "reservations_enabled",
+        "enable_copy_decision_gate",
+        "enable_near_resolution_gate",
+        "max_book_spread_bps",
+        "min_book_depth_usdc",
+        "max_entry_price_drift_pct",
+        "kill_switch",
+    }
+    assert set(copy_trading) == {"wallets", "copy_tasks"}
     assert set(detection) == {"mode", "onchain"}
     assert detection["mode"] == "on_chain_confirmed"
     assert detection["onchain"]["confirmed_source"] == "logs_only"
@@ -89,39 +108,125 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "metrics_port",
     }
     assert set(control_plane) == {"enabled"}
-    assert control_plane["enabled"] is True
+    # The operator API stays off in live until its credential rotation lands;
+    # nothing else in the live profile depends on it.
+    assert control_plane["enabled"] is False
+    assert set(risk) == {
+        "enable_risk_mgmt",
+        "enable_balance_tiered_policy",
+        "kill_switch",
+        "risk_mark_max_spread_bps",
+        "risk_mark_max_abs_distance",
+    }
+    assert set(protective_exits) == {
+        "enable_stop_loss",
+        "enable_near_max_exit",
+        "enable_staged_tp",
+        "enable_trailing_stop",
+        "enable_profit_lock",
+        "enable_leader_divergence_exit",
+    }
+    assert set(sizing) == {"enable_trust_size_multipliers"}
+    assert set(discovery) == {"scheduler", "falcon"}
+    assert discovery["falcon"]["candidate_limit"] == 50
+    assert set(market_data) == {
+        "copy_entry_requires_rest_snapshot",
+        "rest_snapshot_max_spread_bps",
+        "rest_snapshot_max_age_ms",
+        "rest_snapshot_total_budget_ms",
+    }
 
 
-def test_live_environment_enables_the_loopback_operator_api() -> None:
-    """The live environment turns the control plane on without moving the bind."""
+def test_live_environment_keeps_the_loopback_operator_api_off() -> None:
+    """The live overlay pins the control plane off without moving the bind."""
 
     config = load_config(_overrides(), environment="live")
 
-    assert config.control_plane.enabled is True
+    assert config.control_plane.enabled is False
     assert config.control_plane.host == "127.0.0.1"
     assert config.control_plane.port == 9103
     assert config.control_plane.require_authentication is True
 
 
-def test_live_environment_control_plane_fails_closed_without_the_credential() -> None:
-    """Enabling the API in YAML never implies a credential exists."""
+def test_live_environment_control_plane_needs_no_credential_while_disabled() -> None:
+    """A disabled API has nothing to authenticate; startup must not fail."""
 
     overrides = _overrides()
     overrides.pop("control_plane")
 
-    with pytest.raises(EnvValidationError, match=r"PMCOPY__CONTROL_PLANE__AUTH__TOKEN"):
-        load_config(overrides, environment="live")
+    config = load_config(overrides, environment="live")
+
+    assert config.control_plane.enabled is False
 
 
-def test_live_environment_does_not_change_other_services() -> None:
+#: The operator's live profile: risk management on, every other engine off.
+#: Each entry is a dotted path into the loaded :class:`AppConfig`.
+LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
+    ("execution.trading_mode", "live"),
+    # Risk management: on.
+    ("risk.enable_risk_mgmt", True),
+    ("risk.enable_balance_tiered_policy", True),
+    ("risk.kill_switch", False),
+    ("risk.risk_mark_max_spread_bps", 0),
+    ("protective_exits.enable_stop_loss", True),
+    ("protective_exits.enable_near_max_exit", True),
+    # Every other engine: off.
+    ("protective_exits.enable_staged_tp", False),
+    ("protective_exits.enable_trailing_stop", False),
+    ("protective_exits.enable_profit_lock", False),
+    ("protective_exits.enable_leader_divergence_exit", False),
+    ("execution.reservations_enabled", True),
+    ("execution.enable_copy_decision_gate", False),
+    ("execution.enable_near_resolution_gate", False),
+    ("execution.max_book_spread_bps", 0),
+    ("execution.min_book_depth_usdc", 0.0),
+    ("execution.max_entry_price_drift_pct", 5.0),
+    ("execution.kill_switch", False),
+    ("sizing.enable_trust_size_multipliers", False),
+    ("discovery.scheduler.enabled", False),
+    ("discovery.falcon.enabled", False),
+    ("discovery.falcon.candidate_limit", 50),
+    ("copy_trading.copy_tasks.enabled", False),
+    ("market_data.copy_entry_requires_rest_snapshot", False),
+    ("market_data.rest_snapshot_max_spread_bps", 0),
+    ("market_data.rest_snapshot_max_age_ms", 1500),
+    ("market_data.rest_snapshot_total_budget_ms", 2000),
+)
+
+
+@pytest.mark.parametrize(("path", "expected"), LIVE_PROFILE_MATRIX)
+def test_live_profile_matrix(path: str, expected: object) -> None:
+    """The live overlay resolves to the operator-approved engine matrix."""
+
+    config = load_config(_overrides(), environment="live")
+
+    value: object = config
+    for part in path.split("."):
+        value = getattr(value, part)
+
+    assert value == expected, path
+    assert type(value) is type(expected), path
+
+
+def test_live_environment_restates_rather_than_diverges_from_the_base_profile() -> None:
+    """The live overlay is explicit but nearly redundant.
+
+    Every live engine switch is pinned in ``config/environments/live/`` so the
+    live profile is auditable in one place, yet only the risk-mark spread gate
+    actually differs from the packaged base — a smaller live/paper delta means
+    fewer behaviours that exist only in production.
+    """
     paper = load_config(_overrides())
     live = load_config(_overrides(), environment="live")
 
     assert live.sizing == paper.sizing
-    assert live.risk == paper.risk
     assert live.protective_exits == paper.protective_exits
     assert live.market_data == paper.market_data
     assert live.discovery == paper.discovery
+    assert live.copy_trading.copy_tasks == paper.copy_trading.copy_tasks
+    assert live.risk != paper.risk
+    assert paper.risk.risk_mark_max_spread_bps == 2000
+    assert live.risk.risk_mark_max_spread_bps == 0
 
 
 def test_live_environment_contains_no_secret_material() -> None:

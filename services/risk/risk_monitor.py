@@ -717,12 +717,14 @@ def _risk_mark_passes_sanity(
         # Phase 2.8 — absolute bid/ask distance check. The bps-of-mid gate is
         # inert near 1.0 (bid >= 0.82 -> max spread < 2000 bps of mid), exactly
         # where near-max triggers live. This absolute price-point gap rejects
-        # wide books near 1.0 that the bps gate misses. 0 disables.
+        # wide books near 1.0 that the bps gate misses. 0 disables. Strict:
+        # a gap equal to the cap is a normal book (sports markets routinely
+        # quote a 3-cent gap), only a wider gap is rejected.
         if reason is None:
             max_abs_distance = _risk_mark_max_abs_distance(context)
             if max_abs_distance > 0:
                 abs_distance = float(ask - best_bid)
-                if abs_distance >= max_abs_distance:
+                if abs_distance > max_abs_distance:
                     reason = "wide_abs_distance"
     if reason is None:
         return True

@@ -1,0 +1,10 @@
+# Live profile: risk management is the one engine that stays ON.
+# risk_mark_max_spread_bps 0 disables the bps-of-mid mark gate; the crossed-book
+# and risk_mark_max_abs_distance checks still apply (abs distance overridden below).
+enable_risk_mgmt: true
+enable_balance_tiered_policy: true
+kill_switch: false
+risk_mark_max_spread_bps: 0
+# Sports/O-U books routinely sit 3–5 cents wide; 0.05 keeps WSS marks usable
+# there while still rejecting the 0.13/0.98-style empty books (strict > gap).
+risk_mark_max_abs_distance: 0.05
