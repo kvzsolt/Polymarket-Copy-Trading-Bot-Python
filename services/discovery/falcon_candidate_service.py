@@ -16,7 +16,9 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from integrations.falcon.errors import FalconError
 from integrations.falcon.models import (
+    MARKET_TOXICITY_FLAGS,
     LeaderboardEntry,
     Market360Snapshot,
     MarketSnapshot,
@@ -30,6 +32,7 @@ from services.discovery.bankroll_compatibility import (
     BankrollCompatibilityPolicy,
     evaluate_bankroll_compatibility,
 )
+from services.discovery.bot_signals import WalletActivitySignals
 from services.discovery.discovery_models import (
     DiscoveryEvidence,
     DiscoveryResult,
@@ -39,6 +42,14 @@ from services.discovery.discovery_models import (
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
+
+#: Leaderboard sort orders the provider agent accepts.
+LEADERBOARD_SORT_MODES = frozenset({"h_score", "roi", "win_rate", "pnl", "sharpe", "trades"})
+
+#: Rows the provider returns for one sort order, regardless of the requested
+#: page size: offset 200 repeats ranks 1-200 with ``has_more=false``. Reaching
+#: a larger shortlist therefore requires unioning several sort orders.
+PROVIDER_LEADERBOARD_ROW_CAP = 200
 
 
 class CapacityProbe(Protocol):
@@ -90,14 +101,15 @@ def _is_evm_address(value: str) -> bool:
 class FalconDiscoveryPolicy:
     """Evaluate provider evidence using bankroll-compatible safety policy."""
 
-    candidate_limit: int = 50
+    candidate_limit: int = 500
     candidate_concurrency: int = 6
     wallet360_windows: tuple[int, ...] = (1, 3, 7, 15)
     required_wallet360_windows: int = 3
     max_wallet360_snapshot_age_hours: int = 72
     recent_trade_lookback_hours: int = 48
-    max_last_trade_age_hours: int = 12
-    min_today_trades: int = 1
+    max_last_trade_age_hours: int = 36
+    activity_window_hours: int = 24
+    min_activity_window_trades: int = 1
     min_recent_trades: int = 10
     max_recent_trades: int = 500
     max_recent_markets_per_wallet: int = 30
@@ -108,21 +120,42 @@ class FalconDiscoveryPolicy:
     max_recent_price_jumps: int = 8
     enable_price_jump_risk: bool = True
     short_market_max_days: int = 30
-    min_short_trade_count: int = 10
-    min_short_trade_share: Decimal = Decimal("0.50")
-    min_h_score: Decimal = Decimal("65")
+    min_short_trade_count: int = 0
+    min_short_trade_share: Decimal = Decimal("0")
+    min_h_score: Decimal = Decimal("60")
     min_liquidity_percentile: Decimal = Decimal("50")
-    max_toxic_market_share: Decimal = Decimal("0.25")
+    toxic_market_flags: tuple[str, ...] = ("liquidity_risk", "volume_collapse", "whale_control")
+    max_toxic_market_share: Decimal = Decimal("0.50")
     max_market_concentration: Decimal = Decimal("0.65")
     max_missing_field_ratio: Decimal = Decimal("0.25")
+    drawdown_gate_enabled: bool = False
     max_drawdown: Decimal = Decimal("0.35")
     max_sybil_score: Decimal = Decimal("20")
+    reject_perfect_timing_flag: bool = True
+    reject_suspicious_win_rate_flag: bool = True
+    max_similar_wallets: int = 2
+    max_trades_per_day: Decimal = Decimal("300")
+    min_avg_trade_size_usdc: Decimal = Decimal("5")
+    excluded_categories: tuple[str, ...] = ("Crypto",)
+    max_excluded_category_trade_share: Decimal = Decimal("0.50")
+    specialist_bonus_enabled: bool = True
+    specialist_min_dominant_share: Decimal = Decimal("0.80")
+    specialist_min_win_rate: Decimal = Decimal("0.57")
+    specialist_bonus_weight: Decimal = Decimal("0.10")
     leaderboard_min_win_rate_15d: Decimal = Decimal("0.45")
     leaderboard_max_win_rate_15d: Decimal = Decimal("0.95")
     leaderboard_min_roi_15d: Decimal = Decimal("0")
-    leaderboard_min_trades_15d: int = 25
-    leaderboard_max_trades_15d: int = 100_000
+    leaderboard_min_trades_15d: int = 15
+    leaderboard_max_trades_15d: int = 3_000
     leaderboard_min_pnl_15d: Decimal = Decimal("0")
+    leaderboard_sort_modes: tuple[str, ...] = (
+        "h_score",
+        "roi",
+        "win_rate",
+        "pnl",
+        "sharpe",
+        "trades",
+    )
     bankroll: BankrollCompatibilityPolicy = field(default_factory=BankrollCompatibilityPolicy)
 
     def __post_init__(self) -> None:
@@ -149,6 +182,7 @@ class FalconDiscoveryPolicy:
             "price_jump_lookback_hours",
             "short_market_max_days",
             "leaderboard_max_trades_15d",
+            "activity_window_hours",
         )
         for name in positive_ints:
             value = getattr(self, name)
@@ -156,7 +190,8 @@ class FalconDiscoveryPolicy:
                 raise ValueError(f"{name} must be positive")
 
         non_negative_ints = (
-            "min_today_trades",
+            "min_activity_window_trades",
+            "max_similar_wallets",
             "min_recent_trades",
             "max_depth_probes_per_wallet",
             "max_price_jump_probes_per_wallet",
@@ -181,9 +216,21 @@ class FalconDiscoveryPolicy:
             raise ValueError(
                 "leaderboard_min_trades_15d must not exceed leaderboard_max_trades_15d"
             )
+        if self.activity_window_hours > self.recent_trade_lookback_hours:
+            raise ValueError("activity_window_hours must not exceed recent_trade_lookback_hours")
+
+        object.__setattr__(self, "toxic_market_flags", self._normalized_flags())
+        object.__setattr__(self, "excluded_categories", self._normalized_categories())
+        object.__setattr__(self, "leaderboard_sort_modes", self._normalized_sort_modes())
 
         decimal_fields = (
             "price_jump_min_change_pct",
+            "max_trades_per_day",
+            "min_avg_trade_size_usdc",
+            "max_excluded_category_trade_share",
+            "specialist_min_dominant_share",
+            "specialist_min_win_rate",
+            "specialist_bonus_weight",
             "min_short_trade_share",
             "min_h_score",
             "min_liquidity_percentile",
@@ -208,6 +255,10 @@ class FalconDiscoveryPolicy:
 
         zero_to_one = (
             "min_short_trade_share",
+            "max_excluded_category_trade_share",
+            "specialist_min_dominant_share",
+            "specialist_min_win_rate",
+            "specialist_bonus_weight",
             "max_toxic_market_share",
             "max_market_concentration",
             "max_missing_field_ratio",
@@ -227,12 +278,76 @@ class FalconDiscoveryPolicy:
             raise ValueError("max_sybil_score must not be negative")
         if self.price_jump_min_change_pct < _ZERO:
             raise ValueError("price_jump_min_change_pct must not be negative")
+        if self.max_trades_per_day < _ZERO:
+            raise ValueError("max_trades_per_day must not be negative")
+        if self.min_avg_trade_size_usdc < _ZERO:
+            raise ValueError("min_avg_trade_size_usdc must not be negative")
         if self.leaderboard_min_win_rate_15d > self.leaderboard_max_win_rate_15d:
             raise ValueError(
                 "leaderboard_min_win_rate_15d must not exceed leaderboard_max_win_rate_15d"
             )
         if not isinstance(self.bankroll, BankrollCompatibilityPolicy):
             raise ValueError("bankroll must be a BankrollCompatibilityPolicy")
+
+    def _normalized_flags(self) -> tuple[str, ...]:
+        """Return the configured market-toxicity flag names, case-normalized.
+
+        Returns:
+            De-duplicated lowercase flag names in configuration order.
+
+        Raises:
+            ValueError: If the selection is empty or names an unknown flag.
+        """
+        try:
+            names = tuple(str(item).strip().casefold() for item in self.toxic_market_flags)
+        except TypeError as exc:
+            raise ValueError("toxic_market_flags must be a sequence of names") from exc
+        unique = tuple(dict.fromkeys(name for name in names if name))
+        if not unique:
+            raise ValueError("toxic_market_flags must select at least one flag")
+        unknown = sorted(set(unique) - MARKET_TOXICITY_FLAGS)
+        if unknown:
+            raise ValueError(f"toxic_market_flags contains unknown flags: {', '.join(unknown)}")
+        return unique
+
+    def _normalized_categories(self) -> tuple[str, ...]:
+        """Return the excluded top-level category names, case-normalized.
+
+        Returns:
+            De-duplicated lowercase category names in configuration order.
+
+        Raises:
+            ValueError: If any configured category name is blank.
+        """
+        try:
+            names = tuple(str(item).strip().casefold() for item in self.excluded_categories)
+        except TypeError as exc:
+            raise ValueError("excluded_categories must be a sequence of names") from exc
+        if any(not name for name in names):
+            raise ValueError("excluded_categories must not contain blank names")
+        return tuple(dict.fromkeys(names))
+
+    def _normalized_sort_modes(self) -> tuple[str, ...]:
+        """Return the leaderboard sort orders to union, case-normalized.
+
+        Returns:
+            De-duplicated lowercase sort-mode names in configuration order;
+            the first entry drives shortlist precedence.
+
+        Raises:
+            ValueError: If the selection is empty or names an unknown mode.
+        """
+        try:
+            names = tuple(str(item).strip().casefold() for item in self.leaderboard_sort_modes)
+        except TypeError as exc:
+            raise ValueError("leaderboard_sort_modes must be a sequence of names") from exc
+        unique = tuple(dict.fromkeys(name for name in names if name))
+        if not unique:
+            raise ValueError("leaderboard_sort_modes must select at least one mode")
+        unknown = sorted(set(unique) - LEADERBOARD_SORT_MODES)
+        if unknown:
+            raise ValueError(f"leaderboard_sort_modes contains unknown modes: {', '.join(unknown)}")
+        return unique
 
 
 @dataclass(slots=True)
@@ -248,6 +363,7 @@ class _CandidateContext:
     visible_capacity: dict[str, Decimal]
     price_jump_count: int
     official_leaderboard_rank: int | None
+    signals: WalletActivitySignals
 
 
 class FalconCandidateService:
@@ -273,53 +389,35 @@ class FalconCandidateService:
             str, asyncio.Task[tuple[Market360Snapshot | None, str | None]]
         ] = {}
 
-    async def discover(self, funds: Decimal) -> DiscoveryResult:
-        """Return safe discovery candidates from persisted provider evidence."""
+    async def discover(
+        self,
+        funds: Decimal,
+        *,
+        wallets: Sequence[Mapping[str, Any]] | None = None,
+    ) -> DiscoveryResult:
+        """Return safe discovery candidates from persisted provider evidence.
+
+        Args:
+            funds: Follower bankroll the candidates are scored against.
+            wallets: Optional targeted rows in the tolerant leaderboard wire
+                shape (at minimum a wallet and its stored ``h_score``). When
+                supplied, the provider leaderboard shortlist is skipped and
+                exactly these wallets are analysed. ``None`` runs the normal
+                full sweep.
+
+        Returns:
+            The ranked and rejected wallets for this cycle.
+        """
         generated_at = self._normalize_now(self._now())
         self._market_tasks = {}
         self._quality_tasks = {}
         official_ranks = await self._load_official_leaderboard()
-        raw = await self._client.leaderboard(
-            min_win_rate_15d=self._policy.leaderboard_min_win_rate_15d,
-            max_win_rate_15d=self._policy.leaderboard_max_win_rate_15d,
-            min_roi_15d=self._policy.leaderboard_min_roi_15d,
-            min_total_trades_15d=self._policy.leaderboard_min_trades_15d,
-            max_total_trades_15d=self._policy.leaderboard_max_trades_15d,
-            min_pnl_15d=self._policy.leaderboard_min_pnl_15d,
-            sort_by="h_score",
-            limit=self._policy.candidate_limit,
-        )
-        entries: list[LeaderboardEntry] = []
-        rejected: list[RejectedTrader] = []
-        seen: set[str] = set()
-        for row in raw:
-            entry = LeaderboardEntry.from_mapping(row)
-            if not entry.wallet or entry.wallet in seen:
-                continue
-            seen.add(entry.wallet)
-            if not _is_evm_address(entry.wallet):
-                rejected.append(
-                    RejectedTrader(
-                        wallet=entry.wallet,
-                        reasons=("invalid_wallet_address",),
-                        source=self.SOURCE,
-                        h_score=entry.h_score,
-                    )
-                )
-                continue
-            if entry.h_score < self._policy.min_h_score:
-                rejected.append(
-                    RejectedTrader(
-                        wallet=entry.wallet,
-                        reasons=("h_score_below_threshold",),
-                        source=self.SOURCE,
-                        h_score=entry.h_score,
-                    )
-                )
-                continue
-            entries.append(entry)
-            if len(entries) >= self._policy.candidate_limit:
-                break
+        if wallets is None:
+            raw, shortlist_warnings = await self._load_shortlist_rows()
+            entries, rejected = self._shortlist_entries(raw)
+        else:
+            shortlist_warnings = []
+            entries, rejected = self._targeted_entries(wallets)
 
         analyses = await asyncio.gather(
             *(
@@ -334,7 +432,7 @@ class FalconCandidateService:
             return_exceptions=True,
         )
         ranked: list[RankedTrader] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(shortlist_warnings)
         for entry, analysis in zip(entries, analyses, strict=False):
             if isinstance(analysis, BaseException):
                 if isinstance(analysis, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
@@ -364,6 +462,150 @@ class FalconCandidateService:
             source=self.SOURCE,
             generated_at=generated_at,
             warnings=tuple(warnings),
+        )
+
+    def _shortlist_entries(
+        self,
+        rows: Sequence[Any],
+    ) -> tuple[list[LeaderboardEntry], list[RejectedTrader]]:
+        """Normalize provider leaderboard rows into the analysis shortlist.
+
+        Args:
+            rows: Concatenated provider leaderboard rows, in sort-order order.
+
+        Returns:
+            The deduplicated shortlist truncated to ``candidate_limit``, and the
+            rows rejected before any per-wallet evidence was fetched.
+        """
+        entries: list[LeaderboardEntry] = []
+        rejected: list[RejectedTrader] = []
+        seen: set[str] = set()
+        for row in rows:
+            entry = LeaderboardEntry.from_mapping(row)
+            if not entry.wallet or entry.wallet in seen:
+                continue
+            seen.add(entry.wallet)
+            if not _is_evm_address(entry.wallet):
+                rejected.append(self._pre_analysis_rejection(entry, "invalid_wallet_address"))
+                continue
+            if entry.h_score < self._policy.min_h_score:
+                rejected.append(self._pre_analysis_rejection(entry, "h_score_below_threshold"))
+                continue
+            entries.append(entry)
+            if len(entries) >= self._policy.candidate_limit:
+                break
+        return entries, rejected
+
+    def _targeted_entries(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> tuple[list[LeaderboardEntry], list[RejectedTrader]]:
+        """Normalize an explicit wallet list into the analysis shortlist.
+
+        Targeted rows come from the persisted accepted roster, which already
+        passed ``min_h_score`` when it was scored, so that shortlist gate is not
+        re-applied and ``candidate_limit`` does not truncate the caller's list.
+        Every evidence gate in ``_analyze`` still runs against fresh data.
+
+        Args:
+            rows: Targeted rows in the tolerant leaderboard wire shape.
+
+        Returns:
+            The deduplicated targeted entries, and the rows rejected before any
+            per-wallet evidence was fetched.
+        """
+        entries: list[LeaderboardEntry] = []
+        rejected: list[RejectedTrader] = []
+        seen: set[str] = set()
+        for row in rows:
+            entry = LeaderboardEntry.from_mapping(row)
+            if not entry.wallet or entry.wallet in seen:
+                continue
+            seen.add(entry.wallet)
+            if not _is_evm_address(entry.wallet):
+                rejected.append(self._pre_analysis_rejection(entry, "invalid_wallet_address"))
+                continue
+            entries.append(entry)
+        return entries, rejected
+
+    def _pre_analysis_rejection(self, entry: LeaderboardEntry, reason: str) -> RejectedTrader:
+        """Return a rejection recorded before any evidence was fetched.
+
+        Args:
+            entry: The normalized leaderboard row that was rejected.
+            reason: Stable machine-readable rejection reason.
+
+        Returns:
+            The sanitized rejection record for this cycle.
+        """
+        return RejectedTrader(
+            wallet=entry.wallet,
+            reasons=(reason,),
+            source=self.SOURCE,
+            h_score=entry.h_score,
+        )
+
+    async def _load_shortlist_rows(self) -> tuple[list[Any], list[str]]:
+        """Union the configured leaderboard sort orders into one shortlist.
+
+        The provider returns at most ``PROVIDER_LEADERBOARD_ROW_CAP`` rows per
+        sort order, so a larger shortlist is assembled by querying several
+        orders concurrently and concatenating them in configuration order.
+        Row-level de-duplication stays in the caller, which already tracks
+        seen wallets.
+
+        Returns:
+            The concatenated provider rows and one warning per sort order that
+            failed.
+
+        Raises:
+            FalconError: If every configured sort order failed, so the cycle
+                has no shortlist evidence at all.
+        """
+        modes = self._policy.leaderboard_sort_modes
+        per_call = min(self._policy.candidate_limit, PROVIDER_LEADERBOARD_ROW_CAP)
+        results = await asyncio.gather(
+            *(self._leaderboard_page(mode, per_call) for mode in modes),
+            return_exceptions=True,
+        )
+        rows: list[Any] = []
+        warnings: list[str] = []
+        first_error: FalconError | None = None
+        succeeded = 0
+        for mode, result in zip(modes, results, strict=False):
+            if isinstance(result, BaseException):
+                if not isinstance(result, FalconError):
+                    raise result
+                first_error = first_error or result
+                warnings.append(f"leaderboard:{mode}:{type(result).__name__}")
+                continue
+            succeeded += 1
+            rows.extend(result)
+        if succeeded == 0 and first_error is not None:
+            raise first_error
+        return rows, warnings
+
+    async def _leaderboard_page(self, sort_by: str, limit: int) -> list[Any]:
+        """Return one provider leaderboard page for a single sort order.
+
+        Args:
+            sort_by: Provider sort order name.
+            limit: Row cap for this call, never above the provider row cap.
+
+        Returns:
+            The decoded provider rows for that sort order.
+        """
+        return list(
+            await self._client.leaderboard(
+                min_win_rate_15d=self._policy.leaderboard_min_win_rate_15d,
+                max_win_rate_15d=self._policy.leaderboard_max_win_rate_15d,
+                min_roi_15d=self._policy.leaderboard_min_roi_15d,
+                min_total_trades_15d=self._policy.leaderboard_min_trades_15d,
+                max_total_trades_15d=self._policy.leaderboard_max_trades_15d,
+                min_pnl_15d=self._policy.leaderboard_min_pnl_15d,
+                sort_by=sort_by,
+                limit=limit,
+            )
         )
 
     @staticmethod
@@ -511,6 +753,7 @@ class FalconCandidateService:
             visible_capacity=visible_capacity,
             price_jump_count=price_jump_count,
             official_leaderboard_rank=official_rank,
+            signals=WalletActivitySignals.from_windows(wallet360),
         )
 
     async def _load_official_leaderboard(self) -> dict[str, int]:
@@ -783,11 +1026,12 @@ class FalconCandidateService:
 
         trades = context.trades
         last_trade = trades[0].timestamp if trades else None
-        today_count = sum(1 for item in trades if item.timestamp.date() == now.date())
+        activity_window = timedelta(hours=self._policy.activity_window_hours)
+        activity_count = sum(1 for item in trades if now - item.timestamp <= activity_window)
         stale = (
             last_trade is None
             or now - last_trade > timedelta(hours=self._policy.max_last_trade_age_hours)
-            or today_count < self._policy.min_today_trades
+            or activity_count < self._policy.min_activity_window_trades
         )
         if stale:
             reasons.append("inactive_or_stale")
@@ -795,14 +1039,17 @@ class FalconCandidateService:
             reasons.append("insufficient_recent_trades")
 
         short_count = 0
+        classified_count = 0
         for trade in trades:
             market = context.markets.get(trade.condition_id)
-            if market is not None and market.is_short_horizon(
-                trade.timestamp,
-                self._policy.short_market_max_days,
-            ):
+            if market is None:
+                continue
+            classified_count += 1
+            if market.is_short_horizon(trade.timestamp, self._policy.short_market_max_days):
                 short_count += 1
-        short_share = Decimal(short_count) / Decimal(len(trades)) if trades else _ZERO
+        short_share = (
+            Decimal(short_count) / Decimal(classified_count) if classified_count else _ZERO
+        )
         if short_count < self._policy.min_short_trade_count:
             reasons.append("insufficient_short_duration_sample")
         if short_share < self._policy.min_short_trade_share:
@@ -818,18 +1065,9 @@ class FalconCandidateService:
             reasons.append("market_liquidity_below_threshold")
         if context.price_jump_count > self._policy.max_recent_price_jumps:
             reasons.append("excessive_recent_price_jumps")
+        selected_flags = frozenset(self._policy.toxic_market_flags)
         toxic_market_count = sum(
-            1
-            for item in context.market_quality.values()
-            if (
-                item.liquidity_risk_flag
-                or item.volume_collapse_risk_flag
-                or item.whale_control_flag
-                or item.trade_concentration_flag
-                or item.squeeze_risk_flag
-                or not item.market_active
-                or item.market_closed
-            )
+            1 for item in context.market_quality.values() if item.toxic_flags() & selected_flags
         )
         toxic_market_share = (
             Decimal(toxic_market_count) / Decimal(len(context.market_quality))
@@ -844,8 +1082,20 @@ class FalconCandidateService:
         max_drawdown = long_snapshot.max_drawdown if long_snapshot else None
         if concentration is not None and concentration > self._policy.max_market_concentration:
             reasons.append("wallet_market_concentration")
-        if max_drawdown is not None and max_drawdown > self._policy.max_drawdown:
+        if (
+            self._policy.drawdown_gate_enabled
+            and max_drawdown is not None
+            and max_drawdown > self._policy.max_drawdown
+        ):
             reasons.append("drawdown_above_threshold")
+
+        signals = context.signals
+        excluded_share = (
+            None
+            if signals.category_profile.is_empty
+            else signals.category_profile.share_of(self._policy.excluded_categories)
+        )
+        reasons.extend(self._bot_signal_reasons(signals, excluded_share))
 
         required_values = [
             self._avg_position_size(context.wallet360),
@@ -872,7 +1122,7 @@ class FalconCandidateService:
             latest_wallet360_at=latest_snapshot_at,
             last_trade_at=last_trade,
             recent_trade_count=len(trades),
-            today_trade_count=today_count,
+            activity_window_trade_count=activity_count,
             short_trade_count=short_count,
             short_trade_share=short_share,
             median_liquidity_percentile=median_liquidity,
@@ -898,9 +1148,70 @@ class FalconCandidateService:
             "max_drawdown": str(max_drawdown) if max_drawdown is not None else None,
             "recent_price_jump_count": context.price_jump_count,
             "official_leaderboard_rank": context.official_leaderboard_rank,
+            "trades_per_day": (
+                str(signals.trades_per_day) if signals.trades_per_day is not None else None
+            ),
+            "avg_trade_size": (
+                str(signals.avg_trade_size) if signals.avg_trade_size is not None else None
+            ),
+            "similar_wallets_count": signals.similar_wallets_count,
+            "excluded_category_share": (
+                str(excluded_share) if excluded_share is not None else None
+            ),
+            "specialist_dominant_category": signals.category_profile.dominant_specialty(),
+            "specialist_dominant_share": str(signals.category_profile.dominant_specialty_share()),
+            "specialist_win_rate": (
+                str(signals.recent_win_rate) if signals.recent_win_rate is not None else None
+            ),
             "source_errors": tuple(context.source_errors),
         }
         return list(dict.fromkeys(reasons)), evidence, metrics
+
+    def _bot_signal_reasons(
+        self,
+        signals: WalletActivitySignals,
+        excluded_share: Decimal | None,
+    ) -> list[str]:
+        """Return every bot or uncopyability rejection reason for one wallet.
+
+        Each heuristic depends on an optional provider field.  A missing value
+        skips its own gate instead of guessing, which is documented fail-open
+        behaviour; the core evidence-completeness gate stays fail-closed.
+
+        Args:
+            signals: Optional activity evidence for the wallet.
+            excluded_share: Share of trades in excluded top-level categories,
+                or ``None`` when no category evidence exists.
+
+        Returns:
+            Stable machine-readable rejection reasons, possibly empty.
+        """
+        reasons: list[str] = []
+        if self._policy.reject_perfect_timing_flag and signals.perfect_timing_flag:
+            reasons.append("perfect_timing")
+        if self._policy.reject_suspicious_win_rate_flag and signals.suspicious_win_rate_flag:
+            reasons.append("suspicious_win_rate")
+        if (
+            signals.similar_wallets_count is not None
+            and signals.similar_wallets_count > self._policy.max_similar_wallets
+        ):
+            reasons.append("sybil_risk")
+        if (
+            signals.trades_per_day is not None
+            and signals.trades_per_day > self._policy.max_trades_per_day
+        ):
+            reasons.append("hyperactive_trader")
+        if (
+            signals.avg_trade_size is not None
+            and signals.avg_trade_size < self._policy.min_avg_trade_size_usdc
+        ):
+            reasons.append("micro_trade_bot")
+        if (
+            excluded_share is not None
+            and excluded_share > self._policy.max_excluded_category_trade_share
+        ):
+            reasons.append("excluded_category_dominant")
+        return reasons
 
     @staticmethod
     def _avg_position_size(windows: Mapping[int, Wallet360Snapshot]) -> Decimal | None:
@@ -979,6 +1290,40 @@ class FalconCandidateService:
         )
         return _clamp(trade_confidence * Decimal("0.75") + roi_sanity * Decimal("0.25"))
 
+    def _specialist_bonus(self, context: _CandidateContext) -> Decimal:
+        """Return one when the wallet is a winning single-category specialist.
+
+        Specialization is measured as the share of the dominant specialty
+        bucket (sub-category such as ``"Esports / MOBA"``, or a childless
+        top-level category) rather than as a category count or top-level share:
+        almost every wallet carries a small residual bucket, and the provider
+        files every esports market under the ``"Sports"`` umbrella too, so
+        coarser measures fire for generalists.  The bonus is a soft preference,
+        never a gate: wallets without category or win-rate evidence simply
+        score zero here.
+
+        Args:
+            context: Loaded provider evidence for one wallet.
+
+        Returns:
+            ``Decimal("1")`` when the dominant specialty bucket holds at least
+            ``specialist_min_dominant_share`` of the wallet's trades and its
+            recent win rate reaches ``specialist_min_win_rate``, otherwise
+            ``Decimal("0")``.
+        """
+        if not self._policy.specialist_bonus_enabled:
+            return _ZERO
+        signals = context.signals
+        profile = signals.category_profile
+        if profile.is_empty:
+            return _ZERO
+        if profile.dominant_specialty_share() < self._policy.specialist_min_dominant_share:
+            return _ZERO
+        win_rate = signals.recent_win_rate
+        if win_rate is None or win_rate < self._policy.specialist_min_win_rate:
+            return _ZERO
+        return _ONE
+
     def _score(
         self,
         context: _CandidateContext,
@@ -988,7 +1333,7 @@ class FalconCandidateService:
         entry = context.leaderboard
         h_quality = _clamp((entry.h_score - Decimal("60")) / Decimal("40"))
         short_quality = _clamp(evidence.short_trade_share)
-        activity = _clamp(Decimal(evidence.today_trade_count) / Decimal("5"))
+        activity = _clamp(Decimal(evidence.activity_window_trade_count) / Decimal("5"))
         bankroll = _clamp(bankroll_fit.fit_score)
 
         short_window = context.wallet360.get(3) or context.wallet360.get(7)
@@ -1035,10 +1380,12 @@ class FalconCandidateService:
         if context.all_time is not None:
             sample = sample * Decimal("0.90") + all_time_confidence * Decimal("0.10")
 
+        specialist = self._specialist_bonus(context)
         components = {
             "h_score": h_quality,
             "short_duration": short_quality,
-            "today_activity": activity,
+            "recent_activity": activity,
+            "specialist": specialist,
             "bankroll_fit": bankroll,
             "performance": performance,
             "liquidity": liquidity,
@@ -1057,6 +1404,7 @@ class FalconCandidateService:
             + liquidity * Decimal("0.05")
             + trajectory * Decimal("0.04")
             + sample * Decimal("0.03")
+            + specialist * self._policy.specialist_bonus_weight
         )
 
         penalty = _ZERO

@@ -18,7 +18,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from integrations.polymarket.errors import (
+    VenueAuthError,
+    VenueInsufficientBalanceError,
+    VenueInvalidOrderError,
+)
 from integrations.polymarket.models import VenueSubmitResult
+import services.executionService as execution_module
 from services.execution.types import ExecutionResult
 from services.executionService import ExecutionService
 from services.telemetry import (
@@ -283,3 +289,77 @@ class TestSafety:
         )
 
         assert svc._telemetry is None
+
+
+def _rejecting_service(exc: BaseException, repo) -> ExecutionService:
+    """Build a service whose venue submission raises ``exc``."""
+    gateway = _success_gateway()
+    gateway.submit_marketable_order = AsyncMock(side_effect=exc)
+    return ExecutionService(
+        _StubClob(),
+        _FeeSvc(),
+        repo,
+        config=_make_exec_config(),
+        clob_gateway=gateway,
+        market_data_service=_make_mds(),
+    )
+
+
+class TestVenueRejectionReason:
+    """A terminal CLOB rejection must say *why*, not just name the class.
+
+    ``redact_error_detail`` collapses a ``VenueInvalidOrderError`` to its class
+    name, which erased the CLOB body the gateway had just preserved — the
+    operator saw ``VenueInvalidOrderError`` with no cause.
+    """
+
+    @pytest.mark.asyncio
+    async def test_invalid_order_reason_reaches_result_record_and_log(self) -> None:
+        repo = _mock_order_repo()
+        svc = _rejecting_service(
+            VenueInvalidOrderError("Polymarket CCXT order rejected (InvalidOrder): invalid amount"),
+            repo,
+        )
+
+        # The bot's logger tree sets ``propagate = False`` below the root, so
+        # ``caplog`` never sees this record; capture the call itself instead.
+        with patch.object(execution_module.logger, "warning") as warn:
+            result = await svc.execute(_req("BUY"))
+
+        assert result.accepted is False
+        assert "invalid amount" in (result.error or "")
+
+        record = repo.save_submission.await_args.args[0]
+        assert "invalid amount" in str(record.response_payload.get("error"))
+        assert "invalid amount" in str(record.response_payload.get("venue_reason"))
+        assert "invalid amount" in str(record.last_error)
+
+        rejections = [
+            call for call in warn.call_args_list if "non-retryable CLOB rejection" in call.args[0]
+        ]
+        assert rejections and "invalid amount" in str(rejections[0].args[1])
+
+    @pytest.mark.asyncio
+    async def test_insufficient_balance_keeps_its_drift_marker_and_gains_the_reason(self) -> None:
+        """The drift detector matches on the prefix; the reason rides along."""
+        repo = _mock_order_repo()
+        svc = _rejecting_service(
+            VenueInsufficientBalanceError("Polymarket balance/allowance is insufficient"),
+            repo,
+        )
+
+        result = await svc.execute(_req("BUY"))
+
+        assert (result.error or "").startswith("insufficient_balance | ")
+        assert "insufficient" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_auth_rejection_stays_opaque(self) -> None:
+        """Auth failures keep the category-only redaction: bodies carry keys."""
+        repo = _mock_order_repo()
+        svc = _rejecting_service(VenueAuthError("POLY_API_KEY deadbeef is not authorized"), repo)
+
+        result = await svc.execute(_req("BUY"))
+
+        assert result.accepted is False
+        assert "deadbeef" not in (result.error or "")

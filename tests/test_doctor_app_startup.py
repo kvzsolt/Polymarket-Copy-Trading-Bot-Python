@@ -21,10 +21,14 @@ def _ast_tree() -> ast.AST:
     return ast.parse(_app_source())
 
 
-def test_app_runs_live_doctor_only_when_not_paper_mode():
+def test_app_runs_live_doctor_only_when_not_paper_mode() -> None:
+    """Live startup passes the leader-source override into doctor checks."""
     src = _app_source()
     # Look for the live doctor call inside a `mode == "live"` branch.
-    assert 'run_doctor_checks("live", config=startup_config)' in src
+    assert "run_doctor_checks(" in src
+    assert '"live",' in src
+    assert "config=startup_config" in src
+    assert "auto_trader=startup_policy.auto_trader" in src
     # And there should be a paper guard preceding it.
     assert "paper_trade_only" in src or 'mode == "live"' in src
 
@@ -68,7 +72,8 @@ def test_paper_mode_skips_live_doctor():
 
 
 @pytest.mark.asyncio
-async def test_live_doctor_runs_before_build_app(monkeypatch):
+async def test_live_doctor_runs_before_build_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The doctor receives default manual mode before runtime composition."""
     import app as app_module
 
     events: list[str] = []
@@ -84,8 +89,9 @@ async def test_live_doctor_runs_before_build_app(monkeypatch):
         ),
     )
 
-    async def _fake_doctor(_mode: str, *, config=None):
+    async def _fake_doctor(_mode: str, *, config=None, auto_trader: bool = False):
         assert config is fake_config
+        assert auto_trader is False
         events.append("doctor")
         return {"status": "ok", "checks": []}
 
@@ -105,7 +111,10 @@ async def test_live_doctor_runs_before_build_app(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
+async def test_blocked_live_doctor_short_circuits_before_build_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked doctor result still prevents application construction."""
     import app as app_module
 
     fake_config = SimpleNamespace(
@@ -121,8 +130,9 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
     )
     build_app = AsyncMock()
 
-    async def _fake_doctor(_mode: str, *, config=None):
+    async def _fake_doctor(_mode: str, *, config=None, auto_trader: bool = False):
         assert config is fake_config
+        assert auto_trader is False
         return {
             "status": "blocked",
             "checks": [

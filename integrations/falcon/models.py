@@ -100,6 +100,20 @@ def _wallet(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+MARKET_TOXICITY_FLAGS: frozenset[str] = frozenset(
+    {
+        "liquidity_risk",
+        "volume_collapse",
+        "whale_control",
+        "trade_concentration",
+        "squeeze",
+        "not_active",
+        "closed",
+    }
+)
+"""Stable names of every market-toxicity signal exposed by Market360."""
+
+
 @dataclass(frozen=True, slots=True)
 class LeaderboardEntry:
     """Represent one normalized Falcon leaderboard row."""
@@ -165,8 +179,14 @@ class Wallet360Snapshot:
     timing_anomaly_flag: bool
     suspicious_win_rate_flag: bool
     position_size_volatility_flag: bool
+    perfect_timing_flag: bool
+    similar_wallets_count: int | None
+    days_active: int | None
+    markets_traded: int | None
+    avg_trade_size: Decimal | None
     total_trades: int | None
     win_rate: Decimal | None
+    win_rate_last_30d: Decimal | None
     total_pnl: Decimal | None
     risk_level: str | None
     combined_risk_score: Decimal | None
@@ -203,8 +223,16 @@ class Wallet360Snapshot:
             position_size_volatility_flag=bool(
                 _bool(row.get("position_size_volatility_flag")) or False
             ),
+            perfect_timing_flag=bool(_bool(row.get("perfect_timing_flag")) or False),
+            similar_wallets_count=_integer(row.get("similar_wallets_count")),
+            days_active=_integer(row.get("days_active")),
+            markets_traded=_integer(_first(row, "markets_traded", "num_markets_traded")),
+            avg_trade_size=_decimal(_first(row, "avg_trade_size", "avg_position_size")),
             total_trades=_integer(row.get("total_trades")),
             win_rate=_fraction_from_percent(row.get("win_rate")),
+            win_rate_last_30d=_fraction_from_percent(
+                _first(row, "win_rate_last_30d", "win_rate_last_30day")
+            ),
             total_pnl=_decimal(row.get("total_pnl")),
             risk_level=str(row.get("risk_level") or "").strip().upper() or None,
             combined_risk_score=_decimal(row.get("combined_risk_score")),
@@ -330,8 +358,22 @@ class MarketSnapshot:
         )
 
     def is_short_horizon(self, at: datetime, max_days: int) -> bool:
-        """Return whether the open market resolves within ``max_days``."""
-        if self.closed or self.end_date is None:
+        """Return whether the market resolves within ``max_days`` after ``at``.
+
+        Resolution horizon is derived from ``end_date`` alone.  A market that
+        has already been settled early still describes a short-duration trade
+        when it was still open at trade time, so the ``closed`` lifecycle flag
+        must not suppress the classification.
+
+        Args:
+            at: Reference instant, normally the trade timestamp.
+            max_days: Inclusive upper bound of the resolution horizon in days.
+
+        Returns:
+            True when ``end_date`` is known and lies between ``at`` and
+            ``at + max_days``.
+        """
+        if self.end_date is None:
             return False
         horizon = self.end_date - at
         return horizon.total_seconds() >= 0 and horizon <= timedelta(days=max_days)
@@ -399,6 +441,25 @@ class Market360Snapshot:
             raw=dict(row),
         )
 
+    def toxic_flags(self) -> frozenset[str]:
+        """Return the stable names of every raised market-toxicity signal.
+
+        Returns:
+            The subset of ``liquidity_risk``, ``volume_collapse``,
+            ``whale_control``, ``trade_concentration``, ``squeeze``,
+            ``not_active`` and ``closed`` that currently applies.
+        """
+        raised = {
+            "liquidity_risk": self.liquidity_risk_flag,
+            "volume_collapse": self.volume_collapse_risk_flag,
+            "whale_control": self.whale_control_flag,
+            "trade_concentration": self.trade_concentration_flag,
+            "squeeze": self.squeeze_risk_flag,
+            "not_active": not self.market_active,
+            "closed": self.market_closed,
+        }
+        return frozenset(name for name, active in raised.items() if active)
+
 
 def select_latest_wallet360(
     rows: Iterable[Mapping[str, Any]],
@@ -425,6 +486,7 @@ def select_latest_market360(rows: Iterable[Mapping[str, Any]]) -> Market360Snaps
 
 
 __all__ = [
+    "MARKET_TOXICITY_FLAGS",
     "LeaderboardEntry",
     "Market360Snapshot",
     "MarketSnapshot",

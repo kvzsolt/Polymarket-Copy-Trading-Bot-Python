@@ -1,0 +1,8 @@
+# Live profile: the REST snapshot only warms the price cache — it never
+# pre-gates a FAK copy entry, and its spread gate is retired in favour of the
+# leader-price band (execution.max_entry_price_drift_pct).
+copy_entry_requires_rest_snapshot: false
+rest_snapshot_max_spread_bps: 0
+rest_snapshot_max_age_ms: 1500
+rest_snapshot_request_timeout_ms: 1250
+rest_snapshot_total_budget_ms: 2000

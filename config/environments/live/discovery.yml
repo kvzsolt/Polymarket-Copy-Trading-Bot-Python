@@ -1,0 +1,10 @@
+# Live profile: the leader roster is the explicit copy_trading.wallets list.
+# Automatic discovery (scheduler) and the Falcon provider both stay off.
+scheduler:
+  enabled: false
+falcon:
+  enabled: false
+  # One `--auto-trader` sweep costs several provider calls per shortlisted
+  # wallet, so the sweep is bounded at 50. The startup burst re-checks the
+  # persisted roster first and only sweeps when that yields nothing.
+  candidate_limit: 50

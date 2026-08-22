@@ -33,6 +33,7 @@ from config.app_config import (
     load_config,
 )
 from config.env import secret_value
+from orchestrators.trader_startup_policy import TraderStartupPolicy
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +299,18 @@ async def run_doctor_checks(
     mode: str,
     *,
     config: AppConfig | None = None,
+    auto_trader: bool = False,
 ) -> dict[str, Any]:
-    """Structured readiness gate. Returns dict shape documented above."""
+    """Run the structured readiness gate.
+
+    Args:
+        mode: Requested ``paper`` or ``live`` diagnostic mode.
+        config: Optional immutable config snapshot shared with startup.
+        auto_trader: Ignore manual leaders and validate discovery startup.
+
+    Returns:
+        Structured diagnostic result documented by this module.
+    """
     ctx = _DoctorContext(mode=mode)
 
     # ----- config_load --------------------------------------------------
@@ -694,7 +705,8 @@ async def run_doctor_checks(
         )
 
     # ----- leaders -----------------------------------------------------
-    if config.copy_trading.wallets:
+    startup_policy = TraderStartupPolicy(auto_trader=auto_trader)
+    if startup_policy.configured_leaders(config):
         ctx.ok("leaders", "leader wallets configured")
     elif not config.discovery.scheduler.start_from_roster:
         ctx.blocked(
@@ -718,7 +730,7 @@ async def run_doctor_checks(
                     "leaders",
                     f"startup auto detection enabled; {db_candidate_count} eligible DB candidates available",
                 )
-            elif config.discovery.api.has_token and config.discovery.scheduler.enabled:
+            elif config.discovery.api.has_token and startup_policy.discovery_loop_enabled(config):
                 ctx.ok(
                     "leaders",
                     "no active roster entry yet; startup discovery is configured",
@@ -727,7 +739,8 @@ async def run_doctor_checks(
                 ctx.blocked(
                     "leaders",
                     "no manual leaders, no active roster entry, or discovery credentials are missing",
-                    "set leader.wallets or discovery.api.token in secrets.env and enable the discovery scheduler",
+                    "set copy_trading.wallets or discovery.api.token in secrets.env and enable "
+                    "the discovery scheduler",
                 )
 
     return ctx.to_dict()

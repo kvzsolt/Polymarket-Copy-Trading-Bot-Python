@@ -1,3 +1,7 @@
 # Example environment override: explicit leader roster for this environment.
 # Per-leader tunable overrides belong in config/leaders/<wallet>.yml.
+# Add one mapping per leader; set enabled: false to pause it without deletion.
+# wallets:
+#   - wallet: "0x0000000000000000000000000000000000000000"
+#     enabled: true
 wallets: []

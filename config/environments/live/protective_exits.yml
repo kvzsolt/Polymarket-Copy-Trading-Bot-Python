@@ -1,0 +1,8 @@
+# Live profile: only the two salvage exits run. Staged TP, trailing stop,
+# profit lock, and leader-divergence exit stay off until each is re-tuned.
+enable_stop_loss: true
+enable_near_max_exit: true
+enable_staged_tp: false
+enable_trailing_stop: false
+enable_profit_lock: false
+enable_leader_divergence_exit: false

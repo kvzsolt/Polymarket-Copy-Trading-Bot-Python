@@ -185,7 +185,12 @@ async def test_limit_order_carries_exact_metadata_and_quantized_price() -> None:
 
 @pytest.mark.asyncio
 async def test_order_submission_preserves_decimal_values_at_ccxt_boundary() -> None:
-    """Keep exact money values out of binary floating-point conversion."""
+    """Keep exact money values out of binary floating-point conversion.
+
+    Size and cost cross the boundary as exact decimal *strings* rather than
+    ``Decimal`` objects, because CCXT's ``safe_string`` ignores ``Decimal``.
+    The string is still lossless: no float ever touches the value.
+    """
 
     exchange = FakeExchange()
     gateway = CcxtPredictionGateway(exchange)
@@ -202,9 +207,11 @@ async def test_order_submission_preserves_decimal_values_at_ccxt_boundary() -> N
     )
 
     _, _, _, amount, price, params = exchange.created[0]
-    assert amount == Decimal("5.12")
+    assert amount == "5.12"
+    assert Decimal(amount) == Decimal("5.12")
     assert price == Decimal("0.4100")
-    assert params["cost"] == Decimal("5.12")
+    assert params["cost"] == "5.12"
+    assert Decimal(params["cost"]) == Decimal("5.12")
 
 
 @pytest.mark.asyncio
@@ -284,6 +291,107 @@ async def test_market_sell_uses_shares_and_fak() -> None:
     assert "cost" not in params
     assert params["orderType"] == "FAK"
     assert params["timeInForce"] == "IOC"
+
+
+def _tick_of(exchange: FakeExchange, tick: str) -> None:
+    """Pin the fake outcome's tick so real-CCXT precision config is unambiguous."""
+    exchange.outcome_value["precision"] = {"amount": tick, "price": tick}
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = tick
+
+
+@pytest.fixture(scope="module")
+def real_exchange():
+    """Yield a credential-less real CCXT exchange, then unload CCXT.
+
+    The fake exchange proves what the gateway *sends*; only the vendor itself
+    proves how those values are *read*. Constructing the exchange performs no
+    network I/O.
+
+    ``tests/test_service_config_loader.py`` asserts no venue client is present
+    in ``sys.modules`` — a session-global check — so the CCXT modules this
+    import introduces are removed again on teardown.
+    """
+    import sys
+
+    before = set(sys.modules)
+    from ccxt.prediction import polymarket
+
+    try:
+        yield polymarket()
+    finally:
+        for name in set(sys.modules) - before:
+            if name == "ccxt" or name.startswith("ccxt."):
+                del sys.modules[name]
+
+
+@pytest.mark.asyncio
+async def test_market_buy_cost_survives_the_real_ccxt_amount_builder(real_exchange) -> None:
+    """The BUY ``cost`` must reach CCXT as a type ``safe_number`` accepts.
+
+    ``Exchange.safe_string`` deliberately ignores ``Decimal`` (see the
+    ``# or t is Decimal`` comment in the installed
+    ``ccxt/base/exchange.py``), so a ``Decimal`` cost makes
+    ``safe_number(params, 'cost')`` return ``None``. ``build_clob_order_body``
+    then calls ``polymarket_order_raw_amounts`` with ``cost=None``, which
+    takes the plain BUY branch and treats the USDC spend as SHARES — the live
+    CLOB rejection this test locks out.
+    """
+    exchange = FakeExchange()
+    _tick_of(exchange, "0.01")
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("2.9945"),
+            price_limit=Decimal("0.45"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    cost = real_exchange.safe_number(params, "cost")
+    assert cost is not None, "CCXT dropped the cost: the BUY would be sized in shares"
+
+    amounts = real_exchange.polymarket_order_raw_amounts(
+        "BUY", amount, price, params["tickSize"], cost
+    )
+
+    # 2.9945 USDC truncated to the tick's 2dp size precision = 2.99 spent;
+    # shares = truncate(2.99 / 0.45, 4) = 6.6444. Both scaled by 1e6.
+    assert amounts == {"makerAmount": "2990000", "takerAmount": "6644400"}
+
+
+@pytest.mark.asyncio
+async def test_market_sell_amount_survives_the_real_ccxt_amount_builder(real_exchange) -> None:
+    """A SELL still sizes by shares: maker pays shares, no ``cost`` is sent."""
+    exchange = FakeExchange()
+    _tick_of(exchange, "0.01")
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="SELL",
+            size=Decimal("7.5"),
+            price_limit=Decimal("0.45"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    assert real_exchange.safe_number(params, "cost") is None
+    assert real_exchange.number_to_string(amount) == "7.5"
+
+    amounts = real_exchange.polymarket_order_raw_amounts(
+        "SELL", amount, price, params["tickSize"], None
+    )
+
+    # SELL maker leg is the 7.5 shares given up; taker leg is 7.5 * 0.45 USDC.
+    assert amounts == {"makerAmount": "7500000", "takerAmount": "3375000"}
 
 
 @pytest.mark.asyncio

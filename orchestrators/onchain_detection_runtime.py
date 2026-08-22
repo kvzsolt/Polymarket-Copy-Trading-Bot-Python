@@ -18,9 +18,11 @@ Safety invariants:
     pending flag is on, and they are superseded by the mined signal that
     shares their ``tx_hash`` (no double dispatch).
   * **Per-fill idempotency at the dispatcher** (Greptile P1 #2 re-review):
-    mined signals are keyed by ``(tx_hash, log_index)`` so a single
-    settlement tx that emits multiple ``OrderFilled`` logs produces one
-    dispatch *per fill*, not one per tx. Pending signals (which have no
+    counterparty-order events that identify a watched wallet only as taker
+    are ignored because the exchange also emits the watched wallet's
+    canonical taker-summary event for the same economics. Remaining mined
+    signals are keyed by ``(tx_hash, log_index)``, preserving every distinct
+    watched-maker fill. Pending signals (which have no
     ``log_index``) are keyed by ``tx_hash`` alone. Cross-suppression: if a
     mined fill for a ``tx_hash`` has already been dispatched, any later
     pending signal for that same ``tx_hash`` is dropped (the authoritative
@@ -46,6 +48,7 @@ from typing import Any, Callable, Coroutine
 from clients.onchain_ws import OnchainWebSocket
 from services.onchain_detection.mined_fill_deduplicator import MinedFillDeduplicator
 from services.onchain_detection.order_filled_detector import (
+    DecodedOrderFilledLog,
     decode_order_filled_log,
     build_signal_from_log,
     log_subscription_params,
@@ -180,9 +183,36 @@ class OnchainDetectionRuntime:
             )
             return ""
 
+    def _is_counterparty_perspective_event(self, decoded: DecodedOrderFilledLog) -> bool:
+        """Return whether ``decoded`` mirrors a later canonical taker summary.
+
+        The exchange emits one event for every matched maker order and one
+        aggregate event for the taker order. A watched taker therefore appears
+        in each counterparty maker event before appearing as the maker of its
+        own aggregate summary. Dispatching both perspectives doubles the same
+        shares and notional. Events whose maker is watched remain canonical,
+        preserving multiple genuinely additive maker fills in one transaction.
+
+        Args:
+            decoded: One validated Polymarket ``OrderFilled`` event.
+
+        Returns:
+            ``True`` only when a watched wallet appears as taker and the maker
+            is not also watched.
+        """
+
+        return decoded.taker.lower() in self._watched and decoded.maker.lower() not in self._watched
+
     async def _on_mined_log(self, log: dict[str, Any]) -> None:
         decoded = decode_order_filled_log(log)
         if decoded is None:
+            return
+        if self._is_counterparty_perspective_event(decoded):
+            logger.debug(
+                "onchain_mined_counterparty_perspective_dropped | tx=%s log_index=%s",
+                decoded.tx_hash,
+                decoded.log_index,
+            )
             return
         # Dedupe by (tx_hash, log_index) — the authoritative key.
         if await self._dedupe.is_duplicate_mined(decoded.tx_hash, decoded.log_index):

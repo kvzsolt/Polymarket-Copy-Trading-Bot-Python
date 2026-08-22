@@ -61,7 +61,7 @@ class DiscoveryEvidence:
     latest_wallet360_at: datetime | None = None
     last_trade_at: datetime | None = None
     recent_trade_count: int = 0
-    today_trade_count: int = 0
+    activity_window_trade_count: int = 0
     short_trade_count: int = 0
     short_trade_share: Decimal = Decimal("0")
     median_liquidity_percentile: Decimal | None = None

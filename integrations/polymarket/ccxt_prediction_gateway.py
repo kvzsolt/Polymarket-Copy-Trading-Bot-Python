@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -73,6 +74,21 @@ _INVALID_ERRORS = {
     "BadSymbol",
     "InvalidOrder",
 }
+# Venue rejection detail kept for the operator. `utils.logger` has no
+# message-level secret scrubber (``redact_error_detail`` collapses to a
+# category, ``safe_error_detail`` truncates only), so the patterns below are
+# the local guard for a venue body echoing a signed URL or key material.
+_MAX_VENUE_REASON_CHARS = 300
+_REDACTED = "***"
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+\S+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)([A-Za-z0-9_-]*(?:key|token|secret|password|passphrase|auth)[A-Za-z0-9_-]*)"
+    r"([\"']?\s*[=:]\s*[\"']?)"
+    r"([^\s&\"',}]+)"
+)
+# A 0x blob of 64+ hex digits is a private key, a signature or an order hash;
+# 40-digit wallet addresses are public identity and stay readable.
+_KEY_MATERIAL_RE = re.compile(r"0x[0-9a-fA-F]{64,}")
 
 OrderSide = Literal["BUY", "SELL"]
 
@@ -227,6 +243,35 @@ def _status_code(exc: BaseException) -> int | None:
     return None
 
 
+def _venue_reason(exc: BaseException) -> str:
+    """Return the venue's own rejection text, scrubbed and bounded.
+
+    A CCXT exception class alone is unactionable: ``InvalidOrder`` covers a bad
+    price, a bad size and an unknown token alike. The vendor message carries
+    the CLOB response body that distinguishes them, so it is kept — but a
+    venue body can echo a signed request URL or key material, and no repo-wide
+    message scrubber exists, so credentials are stripped here.
+
+    Args:
+        exc: The vendor exception raised by CCXT.
+
+    Returns:
+        A single-line, credential-free excerpt of ``str(exc)`` bounded to
+        ``_MAX_VENUE_REASON_CHARS``, or ``"no venue detail"`` when the vendor
+        supplied no message.
+    """
+    text = str(exc).strip()
+    if not text:
+        return "no venue detail"
+    text = _BEARER_TOKEN_RE.sub(f"Bearer {_REDACTED}", text)
+    text = _SECRET_ASSIGNMENT_RE.sub(rf"\1\2{_REDACTED}", text)
+    text = _KEY_MATERIAL_RE.sub(_REDACTED, text)
+    text = " ".join(text.split())
+    if len(text) > _MAX_VENUE_REASON_CHARS:
+        text = text[:_MAX_VENUE_REASON_CHARS] + "…"
+    return text
+
+
 def _raise_read_error(exc: BaseException, *, not_found: str) -> NoReturn:
     if _is_cancel(exc):
         raise exc
@@ -246,7 +291,7 @@ def _raise_read_error(exc: BaseException, *, not_found: str) -> NoReturn:
     if name in _INVALID_ERRORS:
         if not_found == "orderbook" and name == "BadSymbol":
             raise VenueOrderbookNotFoundError("orderbook_not_found") from exc
-        raise VenueInvalidOrderError(f"CCXT {name}") from exc
+        raise VenueInvalidOrderError(f"CCXT {name}: {_venue_reason(exc)}") from exc
     if name == "InsufficientFunds":
         raise VenueInsufficientBalanceError("CCXT InsufficientFunds") from exc
     raise VenueUnavailableError(f"CCXT {name}") from exc
@@ -283,7 +328,9 @@ def _submission_exception(exc: BaseException) -> VenueSubmitResult:
     if name == "InsufficientFunds":
         raise VenueInsufficientBalanceError("Polymarket balance/allowance is insufficient") from exc
     if name in _INVALID_ERRORS or (status is not None and 400 <= status < 500):
-        raise VenueInvalidOrderError(f"Polymarket CCXT order rejected ({name})") from exc
+        raise VenueInvalidOrderError(
+            f"Polymarket CCXT order rejected ({name}): {_venue_reason(exc)}"
+        ) from exc
     # Once create_order has been invoked, an unclassified exception is ambiguous:
     # the CLOB may have accepted the POST before the client failed to decode the
     # response.  Treating this as a retryable outage can duplicate a live order.
@@ -850,8 +897,15 @@ class CcxtPredictionGateway:
         # Preserve the official SDK gateway contract: BUY size is spend (USDC),
         # SELL size is shares. Passing cost together with an explicit price avoids
         # CCXT's cached-outcome-price fallback.
+        #
+        # The value must be an exact decimal *string*: ``Exchange.safe_string``
+        # accepts only str/int/float, so a ``Decimal`` makes
+        # ``safe_number(params, 'cost')`` return ``None`` and CCXT silently
+        # re-reads the BUY as a share count. ``format(x, "f")`` keeps every
+        # digit (no scientific notation, no binary-float rounding).
+        exact_size = format(size, "f")
         if side == "BUY":
-            params["cost"] = size
+            params["cost"] = exact_size
 
         try:
             value = await _await_call(
@@ -859,7 +913,7 @@ class CcxtPredictionGateway:
                 request.token_id,
                 "market",
                 side.lower(),
-                size,
+                exact_size,
                 quantized,
                 params,
             )

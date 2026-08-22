@@ -40,7 +40,7 @@ def _candidate_row(rank: int, candidate: RankedTrader) -> dict[str, Any]:
             evidence.last_trade_at.isoformat() if evidence.last_trade_at is not None else None
         ),
         "recent_trade_count": evidence.recent_trade_count,
-        "today_trade_count": evidence.today_trade_count,
+        "activity_window_trade_count": evidence.activity_window_trade_count,
         "short_trade_share": _decimal_text(evidence.short_trade_share),
         "median_liquidity_percentile": _decimal_text(evidence.median_liquidity_percentile),
         "toxic_market_share": _decimal_text(evidence.toxic_market_share),

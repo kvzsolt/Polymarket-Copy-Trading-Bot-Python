@@ -9,6 +9,7 @@ contract (``run() -> list[Candidate]``, ``rescore() -> list[Candidate]``,
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +22,7 @@ from services.discovery.discovery_models import (
     RejectedTrader,
 )
 from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryUnavailable,
     FalconDiscoveryService,
 )
 from services.discovery.models import Candidate
@@ -28,6 +30,7 @@ from services.discovery.models import Candidate
 
 GOOD = "0x" + "1" * 40
 WHALE = "0x" + "2" * 40
+SYBIL = "0x" + "3" * 40
 
 
 def _config() -> Any:
@@ -222,6 +225,27 @@ async def test_run_fails_closed_when_funds_zero_or_negative() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_fails_closed_with_specific_error_when_provider_is_disabled() -> None:
+    """Missing provider composition must not surface as an AttributeError."""
+    repo = FakeRepo()
+
+    async def get_funds() -> Decimal | None:
+        return Decimal("500")
+
+    adapter = FalconDiscoveryService(
+        service=None,
+        repository=repo,
+        config=_config(),
+        get_funds=get_funds,
+    )
+
+    with pytest.raises(FalconDiscoveryUnavailable, match="not enabled"):
+        await adapter.run()
+    assert adapter.last_cycle_degraded is True
+    assert repo.completed and repo.completed[0][1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_run_marks_cycle_degraded_on_transport_outage() -> None:
     class TransportDown:
         async def discover(self, funds: Decimal) -> DiscoveryResult:
@@ -277,3 +301,169 @@ def test_config_hash_exposed_for_roster_scoping() -> None:
         get_funds=lambda: None,  # type: ignore[arg-type]
     )
     assert isinstance(adapter.config_hash, str) and adapter.config_hash
+
+
+@pytest.mark.asyncio
+async def test_run_exposes_last_cycle_summary_with_rejection_histogram(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    result = DiscoveryResult(
+        ranked=(_ranked(GOOD, Decimal("0.82")),),
+        rejected=(
+            RejectedTrader(
+                wallet=WHALE,
+                reasons=("bankroll_incompatible", "hyperactive_trader"),
+                source="falcon",
+            ),
+            RejectedTrader(wallet=SYBIL, reasons=("hyperactive_trader",), source="falcon"),
+        ),
+        source="falcon",
+    )
+    repo = FakeRepo()
+
+    async def get_funds() -> Decimal | None:
+        return Decimal("500")
+
+    adapter = FalconDiscoveryService(
+        service=FakeService(result),  # type: ignore[arg-type]
+        repository=repo,
+        config=_config(),
+        get_funds=get_funds,
+        logger_instance=logging.getLogger("test.FalconDiscoveryService"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="test.FalconDiscoveryService"):
+        await adapter.run()
+
+    summary = adapter.last_cycle_summary
+    assert summary is not None
+    assert summary.accepted == 1
+    assert summary.rejected == 2
+    assert dict(summary.rejection_reasons) == {
+        "bankroll_incompatible": 1,
+        "hyperactive_trader": 2,
+    }
+    records = [item for item in caplog.records if item.message == "discovery_cycle_summary"]
+    assert records and records[0].accepted_count == 1
+    assert records[0].rejected_count == 2
+
+
+@pytest.mark.asyncio
+async def test_last_cycle_summary_is_reset_before_each_cycle() -> None:
+    repo = FakeRepo()
+
+    async def no_funds() -> Decimal | None:
+        return None
+
+    adapter = FalconDiscoveryService(
+        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon")),  # type: ignore[arg-type]
+        repository=repo,
+        config=_config(),
+        get_funds=no_funds,
+    )
+
+    await adapter.run()
+
+    assert adapter.last_cycle_summary is None
+
+
+class TargetedFakeService:
+    """Candidate-service stand-in that records the targeted wallet rows."""
+
+    def __init__(self, result: DiscoveryResult) -> None:
+        self._result = result
+        self.calls: list[tuple[Decimal, Any]] = []
+
+    async def discover(self, funds: Decimal, *, wallets: Any = None) -> DiscoveryResult:
+        self.calls.append((Decimal(str(funds)), wallets))
+        return self._result
+
+
+def _stored(wallet: str, h_score: str, score: float) -> Candidate:
+    return Candidate(
+        wallet=wallet,
+        hscore={"h_score": h_score, "source": "falcon"},
+        base_score=score,
+        score=score,
+    )
+
+
+@pytest.mark.asyncio
+async def test_persisted_wallets_reads_the_stored_accepted_roster() -> None:
+    repo = FakeRepo()
+    repo.stored = [_stored(GOOD, "82", 0.9), _stored(WHALE, "88", 0.7)]
+
+    async def funds() -> Decimal:
+        return Decimal("500")
+
+    adapter = FalconDiscoveryService(
+        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon")),  # type: ignore[arg-type]
+        repository=repo,
+        config=_config(),
+        get_funds=funds,
+    )
+
+    assert await adapter.persisted_wallets() == [GOOD, WHALE]
+
+
+@pytest.mark.asyncio
+async def test_targeted_run_passes_stored_h_scores_and_persists_a_normal_cycle(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repo = FakeRepo()
+    repo.stored = [_stored(GOOD, "82", 0.9), _stored(WHALE, "88", 0.7)]
+    service = TargetedFakeService(
+        DiscoveryResult(ranked=(_ranked(GOOD, Decimal("0.9")),), rejected=(), source="falcon")
+    )
+
+    async def funds() -> Decimal:
+        return Decimal("500")
+
+    adapter = FalconDiscoveryService(
+        service=service,  # type: ignore[arg-type]
+        repository=repo,
+        config=_config(),
+        get_funds=funds,
+        logger_instance=logging.getLogger("test.FalconDiscoveryService"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="test.FalconDiscoveryService"):
+        accepted = await adapter.run(wallets=[GOOD])
+
+    assert [item.wallet for item in accepted] == [GOOD]
+    assert len(service.calls) == 1
+    funds_used, rows = service.calls[0]
+    assert funds_used == Decimal("500")
+    assert [dict(row) for row in rows] == [{"wallet": GOOD, "h_score": "82"}]
+    assert repo.cycles == [adapter.config_hash]
+    assert repo.persisted and repo.persisted[0][0] == "cycle-1"
+    assert repo.completed[0][1]["status"] == "completed"
+    records = [item for item in caplog.records if item.message == "discovery_cycle_summary"]
+    assert records and records[0].discovery_cycle_mode == "targeted"
+
+
+@pytest.mark.asyncio
+async def test_sweep_run_reports_the_sweep_cycle_mode(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repo = FakeRepo()
+    service = FakeService(
+        DiscoveryResult(ranked=(_ranked(GOOD, Decimal("0.9")),), rejected=(), source="falcon")
+    )
+
+    async def funds() -> Decimal:
+        return Decimal("500")
+
+    adapter = FalconDiscoveryService(
+        service=service,  # type: ignore[arg-type]
+        repository=repo,
+        config=_config(),
+        get_funds=funds,
+        logger_instance=logging.getLogger("test.FalconDiscoveryService"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="test.FalconDiscoveryService"):
+        await adapter.run()
+
+    records = [item for item in caplog.records if item.message == "discovery_cycle_summary"]
+    assert records and records[0].discovery_cycle_mode == "sweep"

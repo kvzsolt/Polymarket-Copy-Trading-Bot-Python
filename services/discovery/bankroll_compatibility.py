@@ -40,8 +40,8 @@ class BankrollCompatibilityPolicy:
     min_order_usdc: Decimal = Decimal("1")
     min_practical_copy_ratio: Decimal = Decimal("0.001")
     max_copy_ratio: Decimal = Decimal("1")
-    min_copyable_trade_share: Decimal = Decimal("0.55")
-    min_fit_score: Decimal = Decimal("0.55")
+    min_copyable_trade_share: Decimal = Decimal("0.35")
+    min_fit_score: Decimal = Decimal("0.45")
     visible_capacity_utilization: Decimal = Decimal("1")
 
     def __post_init__(self) -> None:

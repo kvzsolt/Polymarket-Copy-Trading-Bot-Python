@@ -29,9 +29,9 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
     runtime_ccxt = [
         dependency for dependency in runtime_requirements if dependency.startswith("ccxt")
     ]
-    assert project_ccxt == ["ccxt==4.5.73"]
-    assert exported_ccxt == ["ccxt==4.5.73"]
-    assert runtime_ccxt == ["ccxt==4.5.73"]
+    assert project_ccxt == ["ccxt==4.5.75"]
+    assert exported_ccxt == ["ccxt==4.5.75"]
+    assert runtime_ccxt == ["ccxt==4.5.75"]
 
     # The official SDK must not reappear in any dependency surface.
     for banned in ("polymarket-client", "py-clob-client"):

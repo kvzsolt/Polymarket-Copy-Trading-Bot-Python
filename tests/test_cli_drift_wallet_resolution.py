@@ -23,7 +23,7 @@ def _config(*, paper: bool) -> SimpleNamespace:
 
     return SimpleNamespace(
         execution=SimpleNamespace(paper_trade_only=paper),
-        copy_trading=SimpleNamespace(wallets=[_LEADER]),
+        copy_trading=SimpleNamespace(enabled_wallets=lambda: (_LEADER,)),
         database=SimpleNamespace(dsn="postgresql://test:test@localhost/test"),
     )
 

@@ -225,7 +225,7 @@ def test_legacy_process_env_aliases_keep_working(
 
     config = load_config(_overrides(), config_dir=config_dir)
 
-    assert config.copy_trading.wallets == (wallet,)
+    assert config.copy_trading.enabled_wallets() == (wallet,)
 
 
 def test_unknown_keys_in_canonical_service_file_fail_closed(
@@ -343,7 +343,7 @@ def test_legacy_runtime_local_shim_is_translated_and_below_environment(
 
     # Legacy sections were translated to their new owners.
     assert config.execution.trading_mode == "live"
-    assert config.copy_trading.wallets == (LEADER_A,)
+    assert config.copy_trading.enabled_wallets() == (LEADER_A,)
     assert config.app.enable_metrics_server is True
     assert config.app.metrics_port == 9102
 

@@ -40,6 +40,45 @@ The plain `POSTGRES_PASSWORD` name is retained only because the official
 PostgreSQL image consumes it. The application itself accepts nested
 `PMCOPY__...` keys only.
 
+## Manual leader wallets
+
+Configure manual leaders in the selected environment's `copy_trading.yml`.
+Each entry has an explicit toggle, so a wallet can be paused without deleting
+its address:
+
+```yaml
+wallets:
+  - wallet: "0x1111111111111111111111111111111111111111"
+    enabled: true
+  - wallet: "0x2222222222222222222222222222222222222222"
+    enabled: false
+```
+
+Disabled entries are still address-validated but are not passed to startup.
+Legacy string entries remain readable and default to `enabled: true`.
+Per-leader files under `config/leaders/` override copy thresholds only; they do
+not add wallets to the manual roster.
+
+To ignore every configured leader for one process and force provider discovery,
+run:
+
+```bash
+pmcopy run --auto-trader
+```
+
+The flag does not rewrite configuration. It requires
+`discovery.api.token` and `discovery.scheduler.start_from_roster: true`, forces
+Falcon on for that process, and keeps forced discovery active in the background
+even if `discovery.scheduler.enabled` is `false`. Startup has no rediscovery
+sleep: viable watchlist candidates run only the remaining hysteresis cycles
+back-to-back, while a provider failure or zero-safe-wallet result exits
+immediately. Provider requests still take their normal network time, and the
+flag does not weaken scoring or leader qualification.
+
+Falcon evaluates at most `discovery.falcon.candidate_concurrency` wallets in
+parallel. The shipped value is `12`; lower it if the provider starts returning
+rate-limit responses.
+
 `database.dsn` and the Polygon RPC URL are required even in paper mode because
 idempotency, reconciliation, discovery history, and the roster are
 PostgreSQL-backed.
@@ -246,6 +285,39 @@ non-loopback bind is rejected. See `docs/frontend-control-plane.md`.
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven
 sizing multipliers all live in `config/discovery.yml`.
+
+`discovery.falcon` now mirrors every field of `FalconDiscoveryPolicy`, so each
+gate is configurable and validated at startup. The keys added in this release
+are `activity_window_hours`, `min_activity_window_trades`,
+`max_recent_markets_per_wallet`, `max_depth_probes_per_wallet`,
+`max_price_jump_probes_per_wallet`, `price_jump_lookback_hours`,
+`price_jump_min_change_pct`, `max_recent_price_jumps`, `enable_price_jump_risk`,
+`toxic_market_flags`, `drawdown_gate_enabled`, `reject_perfect_timing_flag`,
+`reject_suspicious_win_rate_flag`, `max_similar_wallets`, `max_trades_per_day`,
+`min_avg_trade_size_usdc`, `excluded_categories`,
+`max_excluded_category_trade_share`, `specialist_bonus_enabled`,
+`specialist_min_dominant_share`, `specialist_min_win_rate`,
+`specialist_bonus_weight` and `leaderboard_sort_modes`. `toxic_market_flags`,
+`excluded_categories` and `leaderboard_sort_modes` accept a YAML list or a
+comma-separated string.
+
+Loosened shipped defaults: `max_last_trade_age_hours` 12 → 36,
+`max_toxic_market_share` 0.25 → 0.50, `min_short_trade_count` 10 → 0,
+`min_short_trade_share` 0.50 → 0, `min_h_score` 65 → 60,
+`leaderboard_min_trades_15d` 25 → 15, `leaderboard_max_trades_15d` 100000 →
+3000, `bankroll.min_copyable_trade_share` 0.55 → 0.35, `bankroll.min_fit_score`
+0.55 → 0.45, `hysteresis.promote_score` 0.62 → 0.55 and
+`scheduler.max_active_leaders` 2 → 3.
+
+`discovery.falcon.min_today_trades` has been **removed** and replaced by the
+rolling `activity_window_hours` / `min_activity_window_trades` pair. Because
+configuration models reject unknown keys, a stale local override or environment
+variable still setting `min_today_trades` fails startup validation instead of
+being ignored — delete it.
+
+Changing any `discovery.falcon` or `discovery.hysteresis` value changes
+`discovery_config_hash` and therefore invalidates the persisted candidate
+roster; the next start rebuilds it over `hysteresis.min_tenure_cycles` cycles.
 
 Useful checks:
 

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from orchestrators.runtime_bootstrap import TradingContext
 
 from bootstrap import build_app
-from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
+from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
 from integrations.control_plane import SystemMonotonicClock
@@ -67,7 +67,6 @@ from orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
-    configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
     hydrate_resolved_market_state,
@@ -75,8 +74,10 @@ from orchestrators.runtime_bootstrap import (
 )
 from orchestrators.runtime_discovery import (
     discovery_refresh_loop as _discovery_refresh_loop_impl,
+    startup_refresh_targets as _startup_refresh_targets,
     wait_for_active_leaders as _wait_for_active_leaders_impl,
 )
+from orchestrators.trader_startup_policy import TraderStartupPolicy
 from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
@@ -115,6 +116,7 @@ async def _wait_for_active_leaders(
     *,
     config,
     initial_state=None,
+    force_discovery: bool = False,
 ) -> list[str]:
     return await _wait_for_active_leaders_impl(
         registry,
@@ -122,6 +124,7 @@ async def _wait_for_active_leaders(
         refresh_interval,
         config=config,
         initial_state=initial_state,
+        force_discovery=force_discovery,
     )
 
 
@@ -131,6 +134,7 @@ async def _discovery_refresh_loop(
     refresh_interval: int,
     on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
+    force_discovery: bool = False,
 ) -> None:
     await _discovery_refresh_loop_impl(
         registry,
@@ -138,6 +142,7 @@ async def _discovery_refresh_loop(
         refresh_interval,
         on_new_leaders=on_new_leaders,
         already_monitored=already_monitored,
+        force_discovery=force_discovery,
     )
 
 
@@ -206,7 +211,11 @@ def _refresh_onchain_watched_wallets(
     return True
 
 
-def _should_wait_for_discovery_roster(config: object) -> bool:
+def _should_wait_for_discovery_roster(
+    config: AppConfig,
+    *,
+    force_discovery: bool = False,
+) -> bool:
     """Whether waiting for a discovery roster can actually yield leaders.
 
     Mirrors ``LeaderRegistry.refresh``, which only reads the roster when
@@ -214,14 +223,7 @@ def _should_wait_for_discovery_roster(config: object) -> bool:
     succeed, so startup fails fast on the empty-roster path instead of
     blocking for ``startup_wait_timeout_seconds``.
     """
-    discovery = getattr(config, "discovery", None)
-    scheduler = getattr(discovery, "scheduler", None)
-    api = getattr(discovery, "api", None)
-    return bool(
-        getattr(scheduler, "enabled", False)
-        and getattr(scheduler, "start_from_roster", False)
-        and getattr(api, "has_token", False)
-    )
+    return TraderStartupPolicy(auto_trader=force_discovery).should_wait_for_discovery_roster(config)
 
 
 def _detection_confidence_from_config(value: object):
@@ -1480,13 +1482,21 @@ async def _shutdown_runtime(
         )
 
 
-async def _run_application(client_registry: list[Any]) -> int:
+async def _run_application(
+    client_registry: list[Any],
+    *,
+    startup_policy: TraderStartupPolicy | None = None,
+) -> int:
+    """Run one fully composed application under a leader startup policy."""
+    startup_policy = startup_policy or TraderStartupPolicy()
     configure_logging(level="INFO")
     monotonic_clock = SystemMonotonicClock()
     process_started_monotonic = monotonic_clock.monotonic()
 
     try:
         startup_config = load_config()
+        startup_policy.validate(startup_config)
+        startup_config = startup_policy.effective_config(startup_config)
         _validate_detection_confidence_floor(startup_config)
     except EnvValidationError as exc:
         print_error(str(exc))
@@ -1505,7 +1515,11 @@ async def _run_application(client_registry: list[Any]) -> int:
     mode = "paper" if startup_config.execution.paper_trade_only else "live"
 
     if mode == "live":
-        doctor_result = await run_doctor_checks("live", config=startup_config)
+        doctor_result = await run_doctor_checks(
+            "live",
+            config=startup_config,
+            auto_trader=startup_policy.auto_trader,
+        )
         if doctor_result.get("status") == "blocked":
             print_error("Live mode doctor check failed. Refusing to start.")
             blocked = [
@@ -1573,7 +1587,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         )
         client_registry.append(metrics_runner)
 
-    configured = configured_leaders(application.config)
+    configured = startup_policy.configured_leaders(application.config)
     invalid = [wallet for wallet in configured if not is_valid_eth_address(wallet)]
 
     if invalid:
@@ -1583,7 +1597,14 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
         return 1
 
-    registry_state = await application.registry.refresh(configured)
+    registry_state = await application.registry.refresh(
+        configured,
+        force_discovery=startup_policy.force_discovery,
+        target_wallets=await _startup_refresh_targets(
+            application.registry,
+            force_discovery=startup_policy.force_discovery,
+        ),
+    )
     active_leaders = registry_state.active_monitored
 
     invalid_active = [wallet for wallet in active_leaders if not is_valid_eth_address(wallet)]
@@ -1594,7 +1615,9 @@ async def _run_application(client_registry: list[Any]) -> int:
                 "mode": registry_state.mode,
                 "reason": "invalid_active_leaders",
                 "invalid_wallets": invalid_active,
-                "discovery_enabled": application.config.discovery.scheduler.enabled,
+                "scheduler_enabled": application.config.discovery.scheduler.enabled,
+                "falcon_enabled": application.config.discovery.falcon.enabled,
+                "force_discovery": startup_policy.force_discovery,
                 "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
@@ -1602,9 +1625,12 @@ async def _run_application(client_registry: list[Any]) -> int:
         return 1
 
     if not active_leaders:
-        if _should_wait_for_discovery_roster(application.config):
+        if _should_wait_for_discovery_roster(
+            application.config,
+            force_discovery=startup_policy.force_discovery,
+        ):
             logger.info(
-                "startup_waiting_for_discovery_roster",
+                startup_policy.startup_roster_event,
                 extra={
                     "rediscover_seconds": application.config.discovery.scheduler.rediscover_seconds,
                     "required_cycles": application.config.discovery.hysteresis.min_tenure_cycles,
@@ -1616,6 +1642,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 application.config.discovery.scheduler.rediscover_seconds,
                 config=application.config,
                 initial_state=registry_state,
+                force_discovery=startup_policy.force_discovery,
             )
         else:
             # Fall through to the fail-closed branch below rather than waiting
@@ -1636,12 +1663,14 @@ async def _run_application(client_registry: list[Any]) -> int:
             extra={
                 "mode": registry_state.mode,
                 "reason": "manual_and_roster_empty",
-                "discovery_enabled": application.config.discovery.scheduler.enabled,
+                "scheduler_enabled": application.config.discovery.scheduler.enabled,
+                "falcon_enabled": application.config.discovery.falcon.enabled,
+                "force_discovery": startup_policy.force_discovery,
                 "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
         print_error(
-            "No active leaders available. leader.wallets is empty and "
+            "No active leaders available. copy_trading.wallets is empty or disabled and "
             "auto trader detection did not find eligible candidates."
         )
         return 1
@@ -2341,7 +2370,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
         )
 
-    if application.config.discovery.scheduler.enabled and not configured:
+    if startup_policy.discovery_loop_enabled(application.config) and not configured:
         dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
         if not dynamic_monitoring_enabled:
             logger.info(
@@ -2361,6 +2390,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     refresh_interval,
                     on_new_leaders=(_on_new_leaders if dynamic_monitoring_enabled else None),
                     already_monitored=monitored_set,
+                    force_discovery=startup_policy.force_discovery,
                 ),
             )
         )
@@ -2650,11 +2680,21 @@ async def _close_polymarket_clients(clients: list[Any]) -> None:
             )
 
 
-async def main() -> int:
-    """Run the application while owning every created Polymarket SDK client."""
+async def main(*, auto_trader: bool = False) -> int:
+    """Run the application while owning every created Polymarket client.
+
+    Args:
+        auto_trader: Ignore manual leaders and force discovery for this process.
+
+    Returns:
+        Process exit code.
+    """
     clients: list[Any] = []
     try:
-        return await _run_application(clients)
+        return await _run_application(
+            clients,
+            startup_policy=TraderStartupPolicy(auto_trader=auto_trader),
+        )
     finally:
         await _close_polymarket_clients(clients)
         # Startup can return before ``_shutdown_runtime`` exists (doctor,

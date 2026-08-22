@@ -99,6 +99,10 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "SLIPPAGE_TOLERANCE": "Max acceptable slippage % before rejecting an order.",
     "MIN_SHARE_PRICE": "Minimum acceptable BUY price (0 disables).",
     "MAX_SHARE_PRICE": "Maximum acceptable BUY price (0 disables).",
+    "MAX_ENTRY_PRICE_DRIFT_PCT": (
+        "Percent band around the leader fill price for copy entries — BUY cap / SELL floor "
+        "(0 disables the band)."
+    ),
     "FETCH_INTERVAL": "Seconds between leader trade polling cycles.",
     "RISK_CHECK_INTERVAL": "Seconds between risk monitor evaluations.",
     "RECONCILE_INTERVAL_SECONDS": "Seconds between reconciliation passes.",

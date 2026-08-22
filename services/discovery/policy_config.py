@@ -3,6 +3,10 @@
 The repository has used both mapping-backed and Pydantic/namespace-backed
 configuration objects.  This module keeps the integration independent of the
 concrete config library while still validating every money-path threshold.
+
+Tuple settings are coerced against the element type of the dataclass default,
+so integer tuples such as the Wallet360 windows and string tuples such as the
+toxic market flags both accept a YAML list or a comma-separated string.
 """
 
 from __future__ import annotations
@@ -57,6 +61,8 @@ def _coerce(value: Any, default: Any, *, name: str) -> Any:
                 parts = list(value)
             except TypeError as exc:
                 raise ValueError(f"{name} must be a sequence") from exc
+        if default and isinstance(default[0], str):
+            return tuple(str(part).strip() for part in parts if str(part).strip())
         try:
             return tuple(int(part) for part in parts)
         except (TypeError, ValueError) as exc:

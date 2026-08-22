@@ -174,3 +174,10 @@ def test_bankroll_policy_rejects_unsafe_or_non_finite_bounds(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         BankrollCompatibilityPolicy(**kwargs)
+
+
+def test_bankroll_policy_defaults_are_loosened() -> None:
+    policy = BankrollCompatibilityPolicy()
+
+    assert policy.min_copyable_trade_share == Decimal("0.35")
+    assert policy.min_fit_score == Decimal("0.45")

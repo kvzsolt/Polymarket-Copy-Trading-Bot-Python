@@ -312,8 +312,11 @@ class TestBookQualityGate:
         req = _req(
             amount="2",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # Above the 0.90 ask: these cases characterize repost / circuit /
+            # ack behavior, not the leader-price band, so the caller limit must
+            # not reject the quote before a POST happens.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
         result = asyncio.run(svc.execute(req))
@@ -349,8 +352,11 @@ class TestBookQualityGate:
         req = _req(
             amount="1",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # Above the 0.90 ask: these cases characterize repost / circuit /
+            # ack behavior, not the leader-price band, so the caller limit must
+            # not reject the quote before a POST happens.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
         result = asyncio.run(svc.execute(req))
@@ -376,8 +382,10 @@ class TestBookQualityGate:
         req = _req(
             amount="5",
             order_type="FAK",
-            price_limit=Decimal("0.85"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.85"},
+            # Above the 0.90 ask — see the note above; this case is about
+            # delayed acks, not the leader-price band.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
         result = asyncio.run(svc.execute(req))
@@ -421,8 +429,11 @@ class TestBookQualityGate:
         req = _req(
             amount="2",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # Above the 0.90 ask: these cases characterize repost / circuit /
+            # ack behavior, not the leader-price band, so the caller limit must
+            # not reject the quote before a POST happens.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
         result = asyncio.run(svc.execute(req))

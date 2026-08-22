@@ -38,6 +38,28 @@ def apply_hysteresis(
     return "watchlist"
 
 
+def _cycle_summary_extras(discovery_service: Any) -> dict[str, Any]:
+    """Return the accept/reject extras published by the discovery service.
+
+    The service is duck-typed, so a fake or legacy implementation that
+    publishes no summary contributes no extras rather than failing the log.
+
+    Args:
+        discovery_service: The injected discovery service for this refresh.
+
+    Returns:
+        Structured logging extras, empty when no summary is available.
+    """
+    summary = getattr(discovery_service, "last_cycle_summary", None)
+    if summary is None:
+        return {}
+    return {
+        "accepted_count": summary.accepted,
+        "rejected_count": summary.rejected,
+        "rejection_reasons": dict(summary.rejection_reasons),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class LeaderCandidate:
     """Describe one evaluated leader and its roster recommendation."""
@@ -77,13 +99,42 @@ class LeaderRegistry:
         self.readiness = readiness_tracker or ReadinessTracker()
         self.logger = logger_instance or logger
 
+    async def persisted_wallets(self) -> list[str]:
+        """Return the wallets accepted by the latest persisted discovery cycle.
+
+        Delegates to the duck-typed discovery service, which reads its durable
+        roster without any provider call. A service that does not implement the
+        port reports nothing rather than failing the caller.
+
+        Returns:
+            Normalized wallet addresses, or an empty list when none are stored.
+        """
+        if not callable(getattr(self.discovery_service, "persisted_wallets", None)):
+            return []
+        wallets = await self.discovery_service.persisted_wallets()
+        return [str(wallet) for wallet in wallets]
+
     async def refresh(
         self,
         configured: list[str] | None = None,
         *,
         force_discovery: bool = False,
+        target_wallets: list[str] | None = None,
     ) -> LeaderRegistryState:
-        """Refresh discovery and return the effective monitored leader set."""
+        """Refresh discovery and return the effective monitored leader set.
+
+        Args:
+            configured: Manual roster for this process, if any.
+            force_discovery: Run provider discovery even when its scheduler
+                is off.
+            target_wallets: Optional wallets to re-check instead of sweeping
+                the provider shortlist. An empty or absent list runs the normal
+                full sweep. Cycle persistence, tenure and hysteresis are
+                identical in both modes.
+
+        Returns:
+            The sanitized registry state for this refresh.
+        """
         configured_clean = _configured_wallets(configured or [])
         discovery = self.config.discovery
         candidates: list[Candidate] = []
@@ -95,7 +146,11 @@ class LeaderRegistry:
             self.logger.info("discovery_refresh_started")
             metrics.inc("discovery_refresh_started_total")
             try:
-                candidates = await self.discovery_service.run()
+                candidates = (
+                    await self.discovery_service.run(wallets=list(target_wallets))
+                    if target_wallets
+                    else await self.discovery_service.run()
+                )
                 await self._reconcile_roster(
                     candidates,
                     # ``discovery_service`` is duck-typed, so read the flag
@@ -114,7 +169,10 @@ class LeaderRegistry:
             else:
                 self.logger.info(
                     "discovery_refresh_succeeded",
-                    extra={"candidate_count": len(candidates)},
+                    extra={
+                        "candidate_count": len(candidates),
+                        **_cycle_summary_extras(self.discovery_service),
+                    },
                 )
                 metrics.inc("discovery_refresh_succeeded_total")
                 metrics.set_gauge("discovery_candidates", float(len(candidates)))

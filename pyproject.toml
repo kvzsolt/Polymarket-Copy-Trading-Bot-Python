@@ -18,7 +18,7 @@ dependencies = [
   # CCXT prediction namespace is the only Polymarket venue transport.
   # Range pin so patch releases are picked up but a breaking major (5.x) is
   # not installed without review.
-  "ccxt==4.5.73",
+  "ccxt==4.5.75",
   "rich==14.3.3",
   "websockets>=13.0",
   "asyncpg>=0.30.0",

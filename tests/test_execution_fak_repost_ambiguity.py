@@ -266,8 +266,11 @@ async def test_partial_fak_keeps_original_price_protection_without_repost(
 @pytest.mark.parametrize(
     ("side", "quote", "price_limit", "expected"),
     [
-        ("BUY", _make_bundle(ask="0.60"), "0.555", "0.55"),
-        ("SELL", _make_bundle(bid="0.40"), "0.455", "0.46"),
+        # Quotes sit inside the caller band (0.55 <= 0.555, 0.46 >= 0.455) so
+        # the leader-price gate lets them through; the slippage-widened price
+        # is what would cross the non-tick-aligned cap or floor.
+        ("BUY", _make_bundle(ask="0.55"), "0.555", "0.55"),
+        ("SELL", _make_bundle(bid="0.46"), "0.455", "0.46"),
     ],
 )
 async def test_initial_fak_price_limit_rounds_toward_protection(

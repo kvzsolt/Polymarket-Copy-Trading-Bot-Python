@@ -51,14 +51,17 @@ def _build_log(
     maker: str = _WATCHED,
     taker: str = _OTHER,
     maker_side: int = 0,
+    maker_amount_filled: int = 2_000_000,
+    taker_amount_filled: int = 1_000_000,
+    order_hash: str = "aa",
     log_index: int = 0,
     tx_hash: str = _TX,
 ) -> dict:
     data = (
         _word(maker_side)
         + _word(12345)
-        + _word(2_000_000)  # makerAmountFilled
-        + _word(1_000_000)  # takerAmountFilled
+        + _word(maker_amount_filled)  # makerAmountFilled
+        + _word(taker_amount_filled)  # takerAmountFilled
         + _word(0)  # fee
         + _word(0)  # builder
         + _word(0)  # metadata
@@ -67,7 +70,7 @@ def _build_log(
         "address": POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
         "topics": [
             "0x" + ORDER_FILLED_TOPIC0.hex(),
-            _pad32("aa"),
+            _pad32(order_hash),
             _pad32(maker),
             _pad32(taker),
         ],
@@ -213,6 +216,42 @@ async def test_same_tx_multiple_logs_each_dispatched() -> None:
         assert log_indices == {0, 1}
     finally:
         await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_mirrored_order_events_enqueue_one_canonical_economic_fill() -> None:
+    """Counterparty and taker-summary events for one trade must not double-copy."""
+
+    dispatched: list[OnchainTradeSignal] = []
+    runtime = _make_runtime(dispatched)
+    maker_order_fill = _build_log(
+        maker=_OTHER,
+        taker=_WATCHED,
+        maker_side=1,
+        maker_amount_filled=8_000_000,
+        taker_amount_filled=7_200_000,
+        order_hash="11",
+        log_index=0x820,
+    )
+    taker_order_summary = _build_log(
+        maker=_WATCHED,
+        taker=POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        maker_side=0,
+        maker_amount_filled=7_200_000,
+        taker_amount_filled=8_000_000,
+        order_hash="22",
+        log_index=0x822,
+    )
+
+    await runtime._on_mined_log(maker_order_fill)
+    await runtime._on_mined_log(taker_order_summary)
+
+    assert runtime._queue.qsize() == 1
+    signal = runtime._queue.get_nowait()
+    assert signal.watched_role == "maker"
+    assert signal.side == "BUY"
+    assert signal.size == Decimal("8")
+    assert signal.usdc_size == Decimal("7.2")
 
 
 @pytest.mark.asyncio

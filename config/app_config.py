@@ -70,6 +70,7 @@ __all__ = [
     "ExecutionConfig",
     "LeaderCopySettings",
     "LeaderOverrideConfig",
+    "LeaderWalletConfig",
     "LoggingConfig",
     "MarketDataConfig",
     "OnchainDetectionConfig",
@@ -348,6 +349,12 @@ class ExecutionConfig:
     slippage_tolerance: float = 2.0
     min_share_price: float = 0.03
     max_share_price: float = 0.95
+    # Copy-entry band around the leader's own fill price, in percent. BUY caps
+    # the FAK limit at ``leader * (1 + pct/100)``; SELL floors it at
+    # ``leader * (1 - pct/100)``. A quote outside the band is rejected before
+    # submission instead of being sent as a non-marketable order. ``0``
+    # disables the band, leaving pure ``quote * (1 +/- slippage)`` pricing.
+    max_entry_price_drift_pct: float = 5.0
     non_terminal_failure_max_attempts: int = 3
     trading_mode: Literal["paper", "live"] = "paper"
     enable_copy_decision_gate: bool = False
@@ -425,12 +432,33 @@ class LeaderOverrideConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     wallet: str = ""
-    enabled: bool = True
     copy_decision_min_score: float | None = None
     copy_max_price_drift_pct: float | None = None
     copy_max_edge_decay_pct: float | None = None
     copy_max_signal_age_seconds: float | None = None
     copy_liquidity_target_usdc: float | None = None
+
+
+class LeaderWalletConfig(BaseModel):
+    """Configure one operator-supplied leader wallet and its startup state.
+
+    Legacy string entries remain readable and are interpreted as enabled. New
+    YAML should use the explicit ``wallet``/``enabled`` mapping so operators
+    can pause one leader without deleting its address.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    wallet: str
+    enabled: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_string(cls, value: Any) -> Any:
+        """Convert one legacy wallet string into the explicit entry shape."""
+        if isinstance(value, str):
+            return {"wallet": value, "enabled": True}
+        return value
 
 
 @dataclass(frozen=True)
@@ -449,7 +477,7 @@ class CopyTradingConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    wallets: tuple[str, ...] = ()
+    wallets: tuple[LeaderWalletConfig, ...] = ()
     copy_decision_min_score: float = 0.15
     copy_max_price_drift_pct: float = 15.0
     copy_max_edge_decay_pct: float = 90.0
@@ -463,6 +491,16 @@ class CopyTradingConfig(BaseModel):
     copy_tasks: CopyTasksRuntimeConfig = CopyTasksRuntimeConfig()
     # Per-leader overrides sourced from ``config/leaders/<wallet>.yml``.
     leaders: tuple[LeaderOverrideConfig, ...] = ()
+
+    def enabled_wallets(self) -> tuple[str, ...]:
+        """Return trimmed wallet addresses enabled for manual startup.
+
+        Returns:
+            Enabled manual leader wallet addresses in configuration order.
+        """
+        return tuple(
+            entry.wallet.strip() for entry in self.wallets if entry.enabled and entry.wallet.strip()
+        )
 
     def leader_override(self, wallet: str) -> LeaderOverrideConfig | None:
         """Return the override entry for ``wallet`` (case-insensitive)."""
@@ -866,7 +904,7 @@ class LongitudinalConfig(_FrozenSettingsModel):
 class HysteresisConfig(_FrozenSettingsModel):
     """Validate roster promotion and demotion thresholds."""
 
-    promote_score: float = Field(0.62, ge=0, le=1)
+    promote_score: float = Field(0.55, ge=0, le=1)
     demote_score: float = Field(0.50, ge=0, le=1)
     min_tenure_cycles: int = Field(3, ge=1)
     min_dwell_seconds: int = Field(10800, ge=0)
@@ -886,7 +924,7 @@ class DiscoverySchedulerConfig(_FrozenSettingsModel):
     rescore_seconds: int = Field(900, ge=30)
     evaluation_concurrency: int = Field(2, ge=1)
     max_evaluation_error_ratio: float = Field(0.25, ge=0, le=1)
-    max_active_leaders: int = Field(2, ge=1)
+    max_active_leaders: int = Field(3, ge=1)
     start_from_roster: bool = True
     startup_wait_timeout_seconds: int = Field(3900, ge=1)
 
@@ -906,8 +944,8 @@ class FalconBankrollConfig(_FrozenSettingsModel):
     min_order_usdc: Decimal = Decimal("1")
     min_practical_copy_ratio: Decimal = Decimal("0.001")
     max_copy_ratio: Decimal = Decimal("1")
-    min_copyable_trade_share: Decimal = Decimal("0.55")
-    min_fit_score: Decimal = Decimal("0.55")
+    min_copyable_trade_share: Decimal = Decimal("0.35")
+    min_fit_score: Decimal = Decimal("0.45")
     visible_capacity_utilization: Decimal = Decimal("1")
 
 
@@ -920,32 +958,61 @@ class FalconDiscoveryConfig(_FrozenSettingsModel):
     """
 
     enabled: bool = False
-    candidate_limit: int = Field(50, ge=1)
-    candidate_concurrency: int = Field(6, ge=1)
+    candidate_limit: int = Field(500, ge=1)
+    candidate_concurrency: int = Field(12, ge=1)
     wallet360_windows: tuple[int, ...] = (1, 3, 7, 15)
     required_wallet360_windows: int = Field(3, ge=1)
     max_wallet360_snapshot_age_hours: int = Field(72, ge=1)
     recent_trade_lookback_hours: int = Field(48, ge=1)
-    max_last_trade_age_hours: int = Field(12, ge=1)
-    min_today_trades: int = Field(1, ge=0)
+    max_last_trade_age_hours: int = Field(36, ge=1)
+    activity_window_hours: int = Field(24, ge=1)
+    min_activity_window_trades: int = Field(1, ge=0)
     min_recent_trades: int = Field(10, ge=0)
     max_recent_trades: int = Field(500, ge=1)
-    min_h_score: Decimal = Decimal("65")
+    max_recent_markets_per_wallet: int = Field(30, ge=1)
+    max_depth_probes_per_wallet: int = Field(8, ge=0)
+    max_price_jump_probes_per_wallet: int = Field(3, ge=0)
+    price_jump_lookback_hours: int = Field(24, ge=1)
+    price_jump_min_change_pct: Decimal = Decimal("10")
+    max_recent_price_jumps: int = Field(8, ge=0)
+    enable_price_jump_risk: bool = True
+    short_market_max_days: int = Field(30, ge=1)
+    min_short_trade_count: int = Field(0, ge=0)
+    min_short_trade_share: Decimal = Decimal("0")
+    min_h_score: Decimal = Decimal("60")
     min_liquidity_percentile: Decimal = Decimal("50")
-    max_toxic_market_share: Decimal = Decimal("0.25")
+    toxic_market_flags: tuple[str, ...] = ("liquidity_risk", "volume_collapse", "whale_control")
+    max_toxic_market_share: Decimal = Decimal("0.50")
     max_market_concentration: Decimal = Decimal("0.65")
     max_missing_field_ratio: Decimal = Decimal("0.25")
+    drawdown_gate_enabled: bool = False
     max_drawdown: Decimal = Decimal("0.35")
     max_sybil_score: Decimal = Decimal("20")
-    short_market_max_days: int = Field(30, ge=1)
-    min_short_trade_count: int = Field(10, ge=0)
-    min_short_trade_share: Decimal = Decimal("0.50")
+    reject_perfect_timing_flag: bool = True
+    reject_suspicious_win_rate_flag: bool = True
+    max_similar_wallets: int = Field(2, ge=0)
+    max_trades_per_day: Decimal = Decimal("300")
+    min_avg_trade_size_usdc: Decimal = Decimal("5")
+    excluded_categories: tuple[str, ...] = ("Crypto",)
+    max_excluded_category_trade_share: Decimal = Decimal("0.50")
+    specialist_bonus_enabled: bool = True
+    specialist_min_dominant_share: Decimal = Decimal("0.80")
+    specialist_min_win_rate: Decimal = Decimal("0.57")
+    specialist_bonus_weight: Decimal = Decimal("0.10")
     leaderboard_min_win_rate_15d: Decimal = Decimal("0.45")
     leaderboard_max_win_rate_15d: Decimal = Decimal("0.95")
     leaderboard_min_roi_15d: Decimal = Decimal("0")
-    leaderboard_min_trades_15d: int = Field(25, ge=0)
-    leaderboard_max_trades_15d: int = Field(100_000, ge=1)
+    leaderboard_min_trades_15d: int = Field(15, ge=0)
+    leaderboard_max_trades_15d: int = Field(3_000, ge=1)
     leaderboard_min_pnl_15d: Decimal = Decimal("0")
+    leaderboard_sort_modes: tuple[str, ...] = (
+        "h_score",
+        "roi",
+        "win_rate",
+        "pnl",
+        "sharpe",
+        "trades",
+    )
     bankroll: FalconBankrollConfig = FalconBankrollConfig.model_validate({})
 
 
@@ -976,6 +1043,13 @@ class MarketDataConfig:
     """
 
     primary_source: str = "rest_snapshot"
+    # Master switch for the pipeline's blocking REST-snapshot pre-gate. When
+    # False (default) a copy entry never waits on a pipeline-level `/book`
+    # fetch: the snapshot only warms the price cache, and the executor's
+    # cache-first ``require_fresh_data`` remains the single fetch before
+    # signing. When True the legacy pre-gate runs and its rejections become
+    # per-signal skips (``book_spread_wide``, ``market_data_stale``, ...).
+    copy_entry_requires_rest_snapshot: bool = False
     rest_snapshot_max_age_ms: int = 500
     rest_snapshot_request_timeout_ms: int = 750
     rest_snapshot_total_budget_ms: int = 1000
@@ -1151,7 +1225,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RPC_URL is required.")
     if not cfg.polymarket.rpc_url:
         errors.append("polymarket.rpc_url is required.")
-    for wallet in cfg.copy_trading.wallets:
+    for entry in cfg.copy_trading.wallets:
+        wallet = entry.wallet
         if not _ETH_ADDR_RE.match(wallet):
             errors.append(f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).')
 
@@ -1196,6 +1271,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
     if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
         errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
+    if e.max_entry_price_drift_pct < 0:
+        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be non-negative (0 disables the band).")
+    if e.max_entry_price_drift_pct > 100:
+        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be <= 100.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
     if e.reservation_ttl_seconds <= 0:

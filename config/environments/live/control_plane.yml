@@ -1,4 +1,4 @@
 # Operator API on 127.0.0.1:9103. The bearer credential is supplied via
 # secrets.env (see docs/live_runbook.md); transport policy stays in
 # config/control_plane.yml.
-enabled: true
+enabled: false

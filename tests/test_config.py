@@ -451,7 +451,7 @@ def test_nested_process_json_decodes_wallet_tuple(
     monkeypatch.setenv("PMCOPY__LEADER__WALLETS", f'["{wallet}"]')
     config = load_config(_overrides())
     # Legacy env alias routes to the copy_trading owner at the loader boundary.
-    assert config.copy_trading.wallets == (wallet,)
+    assert config.copy_trading.enabled_wallets() == (wallet,)
 
 
 def test_runtime_polymarket_rpc_url_is_required() -> None:
@@ -932,3 +932,74 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
     overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
     with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
         load_config(overrides, environment="live")
+
+
+def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None:
+    """The leader-price band is on by default at +/-5 % of the leader fill."""
+
+    from config.app_config import ExecutionConfig
+
+    assert ExecutionConfig().max_entry_price_drift_pct == 5.0
+    assert load_config(_overrides()).execution.max_entry_price_drift_pct == 5.0
+
+
+def test_execution_max_entry_price_drift_pct_zero_disables_the_band() -> None:
+    """0 is a valid, meaningful value: no band, pure slippage pricing."""
+
+    overrides = _overrides()
+    overrides["execution"] = {"max_entry_price_drift_pct": 0}
+
+    assert load_config(overrides).execution.max_entry_price_drift_pct == 0.0
+
+
+@pytest.mark.parametrize("value", [-0.1, -5, 100.1, 250])
+def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) -> None:
+    """Negative inverts the band; >100 makes a BUY cap exceed certainty."""
+
+    overrides = _overrides()
+    overrides["execution"] = {"max_entry_price_drift_pct": value}
+
+    with pytest.raises(EnvValidationError, match="MAX_ENTRY_PRICE_DRIFT_PCT"):
+        load_config(overrides)
+
+
+def test_copy_entry_requires_rest_snapshot_defaults_to_false() -> None:
+    """The REST snapshot feeds the price cache; it must not pre-gate a FAK copy.
+
+    The blocking pipeline pre-gate is opt-in: the executor's own cache-first
+    ``require_fresh_data`` is the single fetch on the copy entry path.
+    """
+
+    from config.app_config import MarketDataConfig
+
+    assert MarketDataConfig().copy_entry_requires_rest_snapshot is False
+    assert load_config(_overrides()).market_data.copy_entry_requires_rest_snapshot is False
+
+
+def test_copy_entry_requires_rest_snapshot_is_operator_switchable() -> None:
+    """Setting the switch to true restores the blocking pre-gate."""
+
+    overrides = _overrides()
+    overrides["market_data"] = {"copy_entry_requires_rest_snapshot": True}
+
+    assert load_config(overrides).market_data.copy_entry_requires_rest_snapshot is True
+
+
+def test_packaged_market_data_yaml_pins_the_relaxed_rest_snapshot_budgets() -> None:
+    """The shipped REST fallback must be able to deliver its own round trip.
+
+    A ~520-570 ms live REST round trip was rejected by the 500 ms age budget,
+    and the spread cap is retired in favour of the leader-price band.
+    """
+
+    payload = yaml.safe_load((ROOT / "config" / "market_data.yml").read_text(encoding="utf-8"))
+
+    assert payload["copy_entry_requires_rest_snapshot"] is False
+    assert payload["rest_snapshot_max_age_ms"] == 1500
+    assert payload["rest_snapshot_request_timeout_ms"] == 1250
+    assert payload["rest_snapshot_total_budget_ms"] == 2000
+    assert payload["rest_snapshot_max_spread_bps"] == 0
+    # The bootstrap knobs are a separate gate and must stay untouched.
+    assert payload["rest_bootstrap_max_age_ms"] == 500
+    assert payload["rest_bootstrap_total_budget_ms"] == 1000
+    assert payload["rest_bootstrap_max_spread_bps"] == 300

@@ -22,6 +22,7 @@ from storage.postgres.connection import init_pool
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.leaders_repo import LeadersRepo
 from storage.postgres.migrations import apply_migrations
+from utils.getMyBalance import configure_from_appconfig as configure_balance_from_appconfig
 from utils.getMyBalance import get_my_balance
 from utils.logger import get_logger
 
@@ -67,6 +68,7 @@ async def build_app(
         raise ValueError("provide either config or overrides, not both")
     if config is None:
         config = load_config(overrides)
+    configure_balance_from_appconfig(config)
     pool = await init_pool(
         config.database.dsn,
         min_size=config.database.pool_min_size,
@@ -84,6 +86,7 @@ async def build_app(
     falcon_cfg = config.discovery.falcon
     token = config.discovery.api.token.get_secret_value() if falcon_cfg.enabled else ""
     falcon_client: FalconClient | None = None
+    candidate_service: FalconCandidateService | None
     discovery_service: FalconDiscoveryService
     if falcon_cfg.enabled and token:
         falcon_client = FalconClient(
@@ -103,7 +106,7 @@ async def build_app(
         # service that returns no candidates rather than silently substituting
         # a weaker source. The funds callable is read-only and harmless when
         # uncalled.
-        candidate_service = None  # type: ignore[assignment]
+        candidate_service = None
 
     funder_address = str(getattr(config.wallet, "funder_address", "") or "").strip().lower()
     get_funds = build_discovery_funds_callable(
@@ -111,7 +114,7 @@ async def build_app(
         get_balance=get_my_balance,
     )
     discovery_service = FalconDiscoveryService(
-        service=candidate_service,  # type: ignore[arg-type]
+        service=candidate_service,
         repository=discovery_repo,
         config=config,
         get_funds=get_funds,

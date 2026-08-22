@@ -261,9 +261,8 @@ def print_startup_summary(
     )
     console.print()
 
-    copied_wallets_set = {
-        w.lower() for w in (config.copy_trading.wallets or []) if isinstance(w, str) and w.strip()
-    }
+    copied_wallets = config.copy_trading.enabled_wallets()
+    copied_wallets_set = {wallet.lower() for wallet in copied_wallets}
     active_leaders_set = {
         leader.lower()
         for leader in (active_leaders or [])
@@ -276,7 +275,6 @@ def print_startup_summary(
             f"🪪 wallets: {_render_value('leader', 'active_leaders', active_leaders) if active_leaders else 'none'}",
         ]
     else:
-        copied_wallets = config.copy_trading.wallets
         copied_rendered = (
             _render_value("copy_trading", "copied_wallets", copied_wallets)
             if copied_wallets
@@ -322,7 +320,10 @@ def print_startup_summary(
                 "detection_mode": config.detection.mode,
                 "fetch_interval": config.detection.fetch_interval,
                 "aggregate_signal_window_seconds": config.detection.aggregate_signal_window_seconds,
-                "configured_wallets": config.copy_trading.wallets,
+                "configured_wallets": copied_wallets,
+                "disabled_wallet_count": sum(
+                    not entry.enabled for entry in config.copy_trading.wallets
+                ),
                 "discovery_enabled": config.discovery.scheduler.enabled,
                 "discovery_interval_seconds": config.discovery.scheduler.rediscover_seconds,
                 "rescore_interval_seconds": config.discovery.scheduler.rescore_seconds,

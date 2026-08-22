@@ -23,6 +23,7 @@ LIVE_DIR = ROOT / "config" / "environments" / "live"
 LEADER_WALLETS = (
     "0xc4ac7dee4d55d1698e88a8160d5c61ede96b9722",
     "0x31864feb9d25dee93728c6225ba891530967e9ca",
+    "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
 )
 
 
@@ -133,6 +134,7 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "copy_entry_requires_rest_snapshot",
         "rest_snapshot_max_spread_bps",
         "rest_snapshot_max_age_ms",
+        "rest_snapshot_request_timeout_ms",
         "rest_snapshot_total_budget_ms",
     }
 
@@ -190,6 +192,7 @@ LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
     ("market_data.copy_entry_requires_rest_snapshot", False),
     ("market_data.rest_snapshot_max_spread_bps", 0),
     ("market_data.rest_snapshot_max_age_ms", 1500),
+    ("market_data.rest_snapshot_request_timeout_ms", 1250),
     ("market_data.rest_snapshot_total_budget_ms", 2000),
 )
 

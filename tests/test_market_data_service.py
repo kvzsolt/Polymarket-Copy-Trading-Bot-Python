@@ -972,6 +972,104 @@ class TestRequireExecutionSnapshot:
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
 
 
+class TestRestSnapshotBudgetsMatchTheRoundTrip:
+    """The freshness budget must be able to contain the fetch it measures.
+
+    ``fetched_at`` anchors on ``fetch_start``, so the REST round trip itself
+    counts against ``rest_snapshot_max_age_ms``. Live round trips measured
+    515-571 ms, which the shipped 500 ms cap rejected outright — the fallback
+    refused every snapshot it was meant to provide.
+    """
+
+    @staticmethod
+    def _clock_and_gateway(elapsed_seconds: float, book) -> tuple[list[float], MagicMock]:
+        """Return a monotonic-clock holder and a gateway that advances it.
+
+        The clock is injected in place of the module's ``time`` reference so
+        the test is deterministic and never sleeps.
+        """
+        now = [1000.0]
+
+        async def _get(_token):
+            now[0] += elapsed_seconds
+            return book
+
+        async def _info(_token):
+            return {"tick_size": "0.01", "min_order_size": "5", "neg_risk": False}
+
+        gw = MagicMock()
+        gw.get_orderbook = _get
+        gw.get_market_info = _info
+        return now, gw
+
+    @pytest.mark.asyncio
+    async def test_seven_hundred_ms_round_trip_is_accepted_under_the_new_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import services.market_data_service as mds_mod
+
+        store = MarketStateStore()
+        now, gw = self._clock_and_gateway(
+            0.7,
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")}),
+        )
+        monkeypatch.setattr(mds_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        svc = MarketDataService(
+            store,
+            gw,
+            policy=_rest_policy(
+                rest_snapshot_max_age_ms=1500,
+                rest_snapshot_total_budget_ms=2000,
+            ),
+        )
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+    @pytest.mark.asyncio
+    async def test_seven_hundred_ms_round_trip_was_rejected_by_the_old_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Characterizes the live failure the new budget fixes."""
+        import services.market_data_service as mds_mod
+
+        store = MarketStateStore()
+        now, gw = self._clock_and_gateway(
+            0.7,
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")}),
+        )
+        monkeypatch.setattr(mds_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        svc = MarketDataService(
+            store,
+            gw,
+            policy=_rest_policy(rest_snapshot_max_age_ms=500),
+        )
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_stale"
+
+    @pytest.mark.asyncio
+    async def test_zero_spread_cap_never_rejects_a_wide_book(self) -> None:
+        """0 disables the spread gate; the leader-price band owns price quality."""
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book(
+                {Decimal("0.50"): Decimal("100")},
+                {Decimal("1.00"): Decimal("100")},
+            )
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0))
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        assert bundle.quote.best_ask == Decimal("1.00")
+
+
 # ---------------------------------------------------------------------------
 # REST_SNAPSHOT path in _bundle_from_cache (Fix 4)
 # ---------------------------------------------------------------------------

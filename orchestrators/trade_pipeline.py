@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
-from config.app_config import AppConfig
+from config.app_config import AppConfig, ExecutionConfig
 from application.copy_trade_service import CopyTradeIdentityBuilder
-from domain.execution import ExecutionOrderType
+from domain.execution import ExecutionOrderType, LeaderPriceBand
 from domain.models import TradeSignal
 from domain.units import BASIS_POINTS_PER_UNIT, UNIX_MILLISECONDS_THRESHOLD
 from application.trading_context import TradingContext
@@ -63,6 +63,50 @@ _DISABLED_TELEMETRY = TelemetryEmitters.disabled()
 # them, so a projected event carries the same correlation token the detection
 # emitters published for that signal.
 _TX_HASH_KEYS = ("transactionHash", "txHash", "transaction_hash", "tx_hash")
+
+
+def _copy_entry_price_plan(
+    context: TradingContext,
+    signal: Any,
+    side: str,
+) -> tuple[Decimal, dict[str, str]]:
+    """Build the FAK price limit and recovery metadata for one copy entry.
+
+    The limit is a band around the leader's own fill price rather than the
+    leader price itself: a BUY may pay up to ``leader * (1 + drift)`` and a
+    SELL may accept down to ``leader * (1 - drift)``. Submitting at the bare
+    leader price produced FAK orders that could not cross a book which had
+    already moved. ``execution.max_entry_price_drift_pct`` sizes the band;
+    ``0`` disables it and passes the leader price straight through, which the
+    executor then treats as "no band".
+
+    Args:
+        context: Trading context carrying the typed application config.
+        signal: Normalized leader signal; only ``price`` is read.
+        side: ``"BUY"`` or ``"SELL"``.
+
+    Returns:
+        A ``(price_limit, recovery_metadata)`` pair. The metadata records the
+        derived limit, the leader reference price, and the configured drift so
+        a submission can be audited after the fact.
+    """
+    drift_pct = getattr(
+        getattr(getattr(context, "config", None), "execution", None),
+        "max_entry_price_drift_pct",
+        ExecutionConfig.max_entry_price_drift_pct,
+    )
+    drift_pct = float(drift_pct)
+    leader_price = Decimal(str(signal.price or 0))
+    band = LeaderPriceBand(leader_price=leader_price, drift_pct=Decimal(str(drift_pct)))
+    price_limit = band.limit_for(side)
+    metadata = {
+        "source": "copy_trade",
+        "order_type": "FAK",
+        "price_limit": str(price_limit),
+        "leader_price": str(leader_price),
+        "price_drift_pct": str(drift_pct),
+    }
+    return price_limit, metadata
 
 
 def _observe_copy_latency(
@@ -246,17 +290,45 @@ async def _submit_copy_through_coordinator(
         price = Decimal(str(signal.price or 0))
     except Exception:
         price = Decimal("0")
-    try:
-        notional = Decimal(str(signal.usdc_size or 0))
-    except Exception:
-        notional = exec_req.amount * price if price > 0 else Decimal("0")
+
+    # ``exec_req.amount`` is the risk-sized follower quantity produced by the
+    # sizing + decision + regime gates: pUSD spend for BUY, outcome shares for
+    # SELL. ExecutionCoordinator re-derives the BUY ExecutionRequest.amount
+    # from ``notional_usdc`` and reserves ``size * price``, so both fields must
+    # be projections of that same follower amount. The leader's own notional
+    # (``signal.usdc_size``) is reference data and must never size a submit.
+    amount = Decimal(str(exec_req.amount))
+    if side == "BUY":
+        notional = amount
+        size = amount / price if price > 0 else Decimal("0")
+    else:
+        size = amount
+        notional = size * price
+
+    logger.info(
+        "coordinator_intent_built | side=%s size=%s notional_usdc=%s price=%s",
+        side,
+        size,
+        notional,
+        price,
+        extra={
+            "type": "coordinator_intent_built",
+            "user_id": context.user_id,
+            "leader_id": leader_id,
+            "condition_id": exec_req.condition_id or signal.condition_id,
+            "side": side,
+            "size": str(size),
+            "notional_usdc": str(notional),
+            "price": str(price),
+        },
+    )
 
     intent = ExecutionIntent(
         user_id=context.user_id,
         condition_id=exec_req.condition_id or signal.condition_id,
         token_id=exec_req.token_id,
         side=side,
-        size=Decimal(str(exec_req.amount)),
+        size=size,
         price=price,
         notional_usdc=notional,
         idempotency_key=signal.tx_hash,
@@ -317,6 +389,63 @@ def _market_data_primary_source(context: TradingContext) -> str:
     cfg = getattr(context, "config", None)
     md_cfg = getattr(cfg, "market_data", None) if cfg is not None else None
     return str(getattr(md_cfg, "primary_source", "rest_snapshot")).lower()
+
+
+def _copy_entry_requires_rest_snapshot(context: TradingContext) -> bool:
+    """Return whether a copy entry must clear the blocking REST pre-gate.
+
+    Args:
+        context: Trading context carrying the typed application config.
+
+    Returns:
+        ``True`` when ``market_data.copy_entry_requires_rest_snapshot`` is set.
+        Defaults to ``False`` so an unconfigured/legacy context never
+        reintroduces the blocking pre-gate.
+    """
+    cfg = getattr(context, "config", None)
+    md_cfg = getattr(cfg, "market_data", None) if cfg is not None else None
+    return bool(getattr(md_cfg, "copy_entry_requires_rest_snapshot", False))
+
+
+#: Strong references to in-flight market-data warm-up tasks. A bare
+#: ``asyncio.create_task`` result is only weakly held by the event loop, so a
+#: warm-up could be garbage-collected mid-flight; the set is drained by the
+#: task's own done-callback, so it stays bounded by the number of unique
+#: tokens currently warming.
+_market_data_warmup_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_market_data_warmup(context: TradingContext, token_ids: set[str]) -> None:
+    """Warm the market-data cache for ``token_ids`` without blocking the copy.
+
+    The REST snapshot is a cache-feeding fallback, not an entry gate: the copy
+    path must reach the executor immediately while the token's WSS
+    subscription is established in the background. Failures are logged once
+    and swallowed — sizing/execution still fail closed on their own read.
+
+    Args:
+        context: Trading context carrying the market-data runtime.
+        token_ids: Tokens to subscribe to the market WSS.
+    """
+    if not token_ids or getattr(context, "market_data_runtime", None) is None:
+        return
+
+    async def _warm() -> None:
+        for token_id in sorted(token_ids):
+            await _ensure_token_subscribed(context, token_id)
+
+    task = asyncio.create_task(_warm(), name="market_data_warmup")
+    _market_data_warmup_tasks.add(task)
+
+    def _on_done(finished: asyncio.Task) -> None:
+        _market_data_warmup_tasks.discard(finished)
+        if finished.cancelled():
+            return
+        error = finished.exception()
+        if error is not None:  # pragma: no cover - _warm swallows its own errors
+            logger.warning("trade_pipeline_market_data_warmup_failed | error=%r", error)
+
+    task.add_done_callback(_on_done)
 
 
 async def _ensure_token_subscribed(context: TradingContext, token_id: str) -> None:
@@ -442,11 +571,32 @@ async def _prefetch_market_data_rest_snapshot(
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
     """REST-primary path. One fresh `/book` per unique (token_id, side).
 
-    This path intentionally does not wait for WSS readiness before sizing, but
-    it still subscribes the token after the REST snapshot write. That preserves
-    the intended handoff: REST seeds ``MarketStateStore`` immediately; WSS then
-    owns ongoing quote/book updates in the same token-keyed store.
+    Gated by ``market_data.copy_entry_requires_rest_snapshot``. When that
+    switch is off (the default) this pre-gate returns immediately with no
+    bundles and no skips: the copy goes straight to the executor, whose
+    cache-first ``require_fresh_data`` is the single fetch before signing, and
+    the tokens are subscribed to the market WSS in the background so the cache
+    warms without the entry waiting on it.
+
+    When the switch is on, one fresh `/book` per unique ``(token_id, side)``
+    is fetched before sizing and every rejection becomes a per-signal skip.
+    This path still does not wait for WSS readiness, but it subscribes the
+    token after the REST snapshot write, preserving the intended handoff: REST
+    seeds ``MarketStateStore`` immediately; WSS then owns ongoing quote/book
+    updates in the same token-keyed store.
     """
+    if not _copy_entry_requires_rest_snapshot(context):
+        context.extra["_md_bundles_by_pair"] = {}
+        warm_tokens = {
+            token_id for signal, _ in normalized if (token_id := getattr(signal, "token_id", None))
+        }
+        logger.info(
+            "trade_pipeline_market_data_pregate_disabled | tokens=%d",
+            len(warm_tokens),
+        )
+        _spawn_market_data_warmup(context, warm_tokens)
+        return {}, set(), {}
+
     mds = getattr(context, "market_data_service", None)
     if mds is None:
         # No MDS → fail closed: every signal will skip with market_data_stale.
@@ -2683,6 +2833,9 @@ async def _execute_trades_impl(
                         },
                     )
 
+                buy_price_limit, buy_recovery_metadata = _copy_entry_price_plan(
+                    context, signal, "BUY"
+                )
                 exec_req = ExecutionRequest(
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -2693,13 +2846,9 @@ async def _execute_trades_impl(
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
-                    recovery_metadata={
-                        "source": "copy_trade",
-                        "order_type": "FAK",
-                        "price_limit": str(signal.price),
-                    },
+                    recovery_metadata=buy_recovery_metadata,
                     order_type=ExecutionOrderType.FAK,
-                    price_limit=Decimal(str(signal.price)),
+                    price_limit=buy_price_limit,
                 )
             else:
                 pos = await context.positions_repo.get_position(
@@ -3010,6 +3159,9 @@ async def _execute_trades_impl(
                     },
                 )
 
+                sell_price_limit, sell_recovery_metadata = _copy_entry_price_plan(
+                    context, signal, "SELL"
+                )
                 exec_req = ExecutionRequest(
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -3020,13 +3172,9 @@ async def _execute_trades_impl(
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
-                    recovery_metadata={
-                        "source": "copy_trade",
-                        "order_type": "FAK",
-                        "price_limit": str(signal.price),
-                    },
+                    recovery_metadata=sell_recovery_metadata,
                     order_type=ExecutionOrderType.FAK,
-                    price_limit=Decimal(str(signal.price)),
+                    price_limit=sell_price_limit,
                 )
 
             print_executing_strategy(signal.side)

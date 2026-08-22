@@ -43,6 +43,9 @@ _PERSISTED_RESPONSE_FIELDS = (
     "avg_price",
     "avg_fill_price",
     "error",
+    # The venue's own (already scrubbed and bounded) rejection text, kept
+    # beside ``error`` so it survives the ``insufficient_balance |`` prefixing.
+    "venue_reason",
     "pending_since",
     "pending_ttl_seconds",
     "pending_expires_at",

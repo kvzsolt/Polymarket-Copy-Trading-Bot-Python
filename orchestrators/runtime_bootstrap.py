@@ -192,7 +192,7 @@ class UserRuntimeState:
 
 def configured_leaders(config: AppConfig) -> list[str]:
     """Return the configured leader wallet set."""
-    leaders = [str(wallet).strip() for wallet in config.copy_trading.wallets if str(wallet).strip()]
+    leaders = list(config.copy_trading.enabled_wallets())
     if not leaders:
         if config.discovery.scheduler.start_from_roster:
             logger.info(
@@ -206,7 +206,8 @@ def configured_leaders(config: AppConfig) -> list[str]:
             )
         else:
             logger.warning(
-                "No leader wallets configured. Both leader.wallets and the per-user follow list "
+                "No leader wallets configured. Both copy_trading.wallets and the per-user "
+                "follow list "
                 "are empty. Add manual leader wallets or run "
                 "python bot.py rotate-traders after discovery has candidates."
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from integrations.falcon.models import (
@@ -128,3 +129,103 @@ def test_wallet360_roi_percentage_is_normalized_to_fraction() -> None:
     )
 
     assert snapshot.roi == Decimal("0.038743")
+
+
+def test_wallet360_parses_bot_signal_fields() -> None:
+    snapshot = Wallet360Snapshot.from_mapping(
+        {
+            "proxy_wallet": "0xabc",
+            "calculation_window_days": 15,
+            "date_range_end": "2026-07-30T00:00:00Z",
+            "perfect_timing_flag": True,
+            "similar_wallets_count": "3",
+            "days_active": "15",
+            "num_markets_traded": "7285",
+            "win_rate_last_30day": "0.61",
+            "avg_trade_size": "12.50",
+            "avg_position_size": "99",
+        }
+    )
+
+    assert snapshot.perfect_timing_flag is True
+    assert snapshot.similar_wallets_count == 3
+    assert snapshot.days_active == 15
+    assert snapshot.markets_traded == 7285
+    assert snapshot.win_rate_last_30d == Decimal("0.61")
+    assert snapshot.avg_trade_size == Decimal("12.50")
+
+
+def test_wallet360_bot_signal_fields_default_when_absent() -> None:
+    snapshot = Wallet360Snapshot.from_mapping(
+        {
+            "proxy_wallet": "0xabc",
+            "calculation_window_days": 15,
+            "date_range_end": "2026-07-30T00:00:00Z",
+            "markets_traded": "9",
+            "win_rate_last_30d": "57",
+            "avg_position_size": "42",
+        }
+    )
+
+    assert snapshot.perfect_timing_flag is False
+    assert snapshot.similar_wallets_count is None
+    assert snapshot.days_active is None
+    assert snapshot.markets_traded == 9
+    assert snapshot.win_rate_last_30d == Decimal("0.57")
+    assert snapshot.avg_trade_size == Decimal("42")
+
+
+def test_market360_toxic_flags_names_set_flags_and_inactive_closed() -> None:
+    clean = Market360Snapshot.from_mapping(
+        {
+            "condition_id": "c1",
+            "market_active": True,
+            "market_closed": False,
+        }
+    )
+    toxic = Market360Snapshot.from_mapping(
+        {
+            "condition_id": "c2",
+            "market_active": False,
+            "market_closed": True,
+            "liquidity_risk_flag": True,
+            "volume_collapse_risk_flag": True,
+            "whale_control_flag": True,
+            "trade_concentration_flag": True,
+            "squeeze_risk_flag": True,
+        }
+    )
+
+    assert clean.toxic_flags() == frozenset()
+    assert toxic.toxic_flags() == frozenset(
+        {
+            "liquidity_risk",
+            "volume_collapse",
+            "whale_control",
+            "trade_concentration",
+            "squeeze",
+            "not_active",
+            "closed",
+        }
+    )
+
+
+def test_market_is_short_horizon_uses_end_date_for_closed_markets() -> None:
+    at = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+    closed_soon = MarketSnapshot.from_mapping(
+        {
+            "condition_id": "c1",
+            "closed": True,
+            "end_date": "2026-08-02T00:00:00Z",
+        }
+    )
+    closed_long_ago = MarketSnapshot.from_mapping(
+        {
+            "condition_id": "c2",
+            "closed": True,
+            "end_date": "2026-07-01T00:00:00Z",
+        }
+    )
+
+    assert closed_soon.is_short_horizon(at, 30) is True
+    assert closed_long_ago.is_short_horizon(at, 30) is False

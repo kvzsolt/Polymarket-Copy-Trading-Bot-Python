@@ -40,7 +40,10 @@ def test_startup_reuses_one_config_snapshot_for_doctor_and_bootstrap():
 
     source = inspect.getsource(app._run_application)
     assert source.count("startup_config = load_config()") == 1
-    assert 'run_doctor_checks("live", config=startup_config)' in source
+    assert "run_doctor_checks(" in source
+    assert '"live",' in source
+    assert "config=startup_config" in source
+    assert "auto_trader=startup_policy.auto_trader" in source
     assert "build_app(config=startup_config)" in source
 
 

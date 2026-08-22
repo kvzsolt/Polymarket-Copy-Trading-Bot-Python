@@ -2,3 +2,13 @@
 # Migrated from the operator's untracked config/runtime.local.yml.
 # trading_mode remains the single authoritative live/paper selector.
 trading_mode: live
+# Live profile: reservations on (double-spend protection); every discretionary
+# entry gate off. The book spread/depth gates are retired in favour of the
+# leader-price band, which is the single price-quality gate for a copy entry.
+reservations_enabled: true
+enable_copy_decision_gate: false
+enable_near_resolution_gate: false
+max_book_spread_bps: 0
+min_book_depth_usdc: 0
+max_entry_price_drift_pct: 5.0
+kill_switch: false

@@ -137,15 +137,19 @@ loser is logged as `detection_signal_deduped` / counted in
 `detection_signals_deduped_total` (on-chain loser) or
 `duplicate_order_prevented_total` (polling loser).
 
-Multi-fill transactions (measured on Polygon: ~3.4 % of `(tx, maker, token,
-side)` groups hold ≥2 `OrderFilled` fills, ~5.3 % of all fills): every fill of
-one settlement transaction is a distinct on-chain signal and each is copied at
-its own size — the tx-level claim is held by the on-chain path itself, so a
-sibling fill loses that claim to *us*, not to polling, and is dispatched
-(`cross_source_sibling_fill`); the pipeline's per-fill `…|log:N` claim keeps
-idempotency. Polling's aggregated row for that tx (which sums the sizes) is
-refused, so the follower ends at the leader's full size exactly once. Sibling
-detection uses bounded in-process memory plus the row status
+One settlement transaction can emit multiple `OrderFilled` events: one event
+per matched maker order plus an aggregate taker-order summary. The logs-only
+runtime ignores a counterparty-order event when the watched wallet appears
+only as its taker, because the later taker summary carries the same shares and
+notional with the watched wallet as maker. This prevents the two event
+perspectives from copying one economic fill twice. Distinct watched-maker
+events remain additive and each is copied at its own size — the tx-level claim
+is held by the on-chain path itself, so a genuine sibling fill loses that claim
+to *us*, not to polling, and is dispatched (`cross_source_sibling_fill`); the
+pipeline's per-fill `…|log:N` claim keeps idempotency. Polling's aggregated row
+for that tx (which sums the sizes) is refused, so the follower ends at the
+leader's full size exactly once. Sibling detection uses bounded in-process
+memory plus the row status
 (`cross_source_claimed`) after a restart; a lost claim whose holder cannot be
 determined (probe error, no row) is skipped with `winner=unknown` and is never
 attributed to polling.

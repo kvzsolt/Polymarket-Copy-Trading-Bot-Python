@@ -1,0 +1,3 @@
+# Live profile: trust-score size multipliers stay off — the copy size comes
+# from the sizing mode and the account caps alone, with no scoring feedback.
+enable_trust_size_multipliers: false

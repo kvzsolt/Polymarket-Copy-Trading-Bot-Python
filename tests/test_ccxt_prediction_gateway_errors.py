@@ -202,6 +202,109 @@ async def test_limit_missing_condition_never_submits() -> None:
     assert result.non_retryable is True
 
 
+@pytest.fixture(scope="module")
+def ccxt_errors():
+    """Yield the real CCXT error classes, then unload CCXT.
+
+    The gateway classifies by exception *class name*, so the real vendor
+    classes — not local stand-ins — are what prove the reason survives.
+
+    ``tests/test_service_config_loader.py`` asserts no venue client is present
+    in ``sys.modules`` — a session-global check — so the CCXT modules this
+    import introduces are removed again on teardown.
+    """
+    import sys
+
+    before = set(sys.modules)
+    from ccxt.base import errors
+
+    try:
+        yield errors
+    finally:
+        for name in set(sys.modules) - before:
+            if name == "ccxt" or name.startswith("ccxt."):
+                del sys.modules[name]
+
+
+@pytest.mark.asyncio
+async def test_rejection_carries_the_venue_reason_not_just_the_class_name(ccxt_errors) -> None:
+    """The CLOB's own rejection body must reach the operator.
+
+    ``InvalidOrder`` alone is unactionable: the same class covers a bad price,
+    a bad size and a bad token. The CCXT message carries the CLOB body
+    (``{"error":"invalid amount"}``) that says which.
+    """
+    exchange = Exchange()
+    exchange.create_error = ccxt_errors.InvalidOrder('polymarket {"error":"invalid amount"}')
+
+    with pytest.raises(VenueInvalidOrderError) as excinfo:
+        await market_request(CcxtPredictionGateway(exchange))
+
+    message = str(excinfo.value)
+    assert "InvalidOrder" in message
+    assert "invalid amount" in message
+
+
+@pytest.mark.asyncio
+async def test_read_rejection_carries_the_venue_reason(ccxt_errors) -> None:
+    """The read path surfaces the same reason instead of erasing it."""
+    exchange = Exchange()
+    exchange.read_error = ccxt_errors.InvalidOrder('polymarket {"error":"invalid token id"}')
+
+    with pytest.raises(VenueInvalidOrderError) as excinfo:
+        await CcxtPredictionGateway(exchange).get_order("order")
+
+    assert "invalid token id" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("secret", "body"),
+    [
+        ("abc123secret", "GET https://clob.example/order?api_key=abc123secret failed"),
+        (
+            "0x" + "ab" * 32,
+            "rejected signature 0x" + "ab" * 32 + ' for {"error":"invalid amount"}',
+        ),
+    ],
+)
+async def test_venue_reason_is_scrubbed_of_credentials(ccxt_errors, secret: str, body: str) -> None:
+    """A venue message may echo a signed URL or key material; never log it."""
+    exchange = Exchange()
+    exchange.create_error = ccxt_errors.InvalidOrder(body)
+
+    with pytest.raises(VenueInvalidOrderError) as excinfo:
+        await market_request(CcxtPredictionGateway(exchange))
+
+    assert secret not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_venue_reason_is_bounded(ccxt_errors) -> None:
+    """An unbounded venue body must not flood the log or the order record."""
+    exchange = Exchange()
+    exchange.create_error = ccxt_errors.InvalidOrder("x" * 5000)
+
+    with pytest.raises(VenueInvalidOrderError) as excinfo:
+        await market_request(CcxtPredictionGateway(exchange))
+
+    assert len(str(excinfo.value)) < 400
+
+
+@pytest.mark.asyncio
+async def test_auth_rejection_stays_opaque(ccxt_errors) -> None:
+    """Auth failures keep their fixed message: the body can carry credentials."""
+    exchange = Exchange()
+    exchange.create_error = ccxt_errors.AuthenticationError(
+        "POLY_API_KEY deadbeef is not authorized"
+    )
+
+    with pytest.raises(VenueAuthError) as excinfo:
+        await market_request(CcxtPredictionGateway(exchange))
+
+    assert str(excinfo.value) == "Polymarket CCXT authentication rejected"
+
+
 @pytest.mark.asyncio
 async def test_unclassified_exception_after_post_is_ambiguous_not_retryable_outage() -> None:
     exchange = Exchange()

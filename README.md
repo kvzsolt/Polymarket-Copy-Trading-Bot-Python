@@ -119,6 +119,23 @@ explicitly with `PMCOPY_ENVIRONMENT=<name>` (default: `paper`; see
 `config/environments/example/execution.yml` for a template). Per-leader
 overrides live in `config/leaders/<wallet>.yml`.
 
+Manual leaders use explicit toggleable entries in the selected environment's
+`copy_trading.yml`:
+
+```yaml
+wallets:
+  - wallet: "0x1111111111111111111111111111111111111111"
+    enabled: true
+```
+
+Set `enabled: false` to pause one configured leader without deleting it. To
+ignore the manual roster for one run and force automatic discovery, use
+`pmcopy run --auto-trader`; this requires the discovery token and
+`discovery.scheduler.start_from_roster: true`. Auto startup enables Falcon for
+that process and runs the required qualification cycles back-to-back, without
+the normal rediscovery sleep. Candidate analysis is bounded by
+`discovery.falcon.candidate_concurrency` (default `12`).
+
 ```bash
 cp secrets.env.example secrets.env
 chmod 600 secrets.env

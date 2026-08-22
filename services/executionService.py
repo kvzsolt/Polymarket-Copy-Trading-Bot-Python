@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
-from config.app_config import AppConfig
+from config.app_config import AppConfig, ExecutionConfig
 from domain.units import BASIS_POINTS_PER_UNIT
 
 if TYPE_CHECKING:
@@ -37,7 +37,13 @@ from services.trading_permission import (
     TradingPausedError,
     TradingPermissionService,
 )
-from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
+from utils.logger import (
+    get_logger,
+    log_api_error,
+    log_api_response,
+    redact_error_detail,
+    safe_error_detail,
+)
 from services.market_data_quality import is_thin_or_empty_book as _is_thin_or_empty_book
 
 # Re-exported from submodules for backward compatibility
@@ -90,6 +96,28 @@ def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
         return Decimal(str(raw))
     except Exception:
         return default
+
+
+# Mirrors ``ExecutionConfig.max_entry_price_drift_pct`` so a partially built
+# config object (older test doubles) still enforces the shipped band.
+_DEFAULT_ENTRY_PRICE_DRIFT_PCT = ExecutionConfig.max_entry_price_drift_pct
+
+
+def _quote_outside_band(quote_price: Decimal, band_limit: Decimal, side: str) -> bool:
+    """Return True when a quote sits beyond the caller's leader-price band.
+
+    Args:
+        quote_price: Best ask for a BUY, best bid for a SELL.
+        band_limit: The caller-supplied BUY cap / SELL floor.
+        side: Normalized ``"BUY"`` or ``"SELL"``.
+
+    Returns:
+        True when crossing would breach the band, meaning the order must be
+        refused rather than submitted at a non-marketable limit.
+    """
+    if side == "BUY":
+        return quote_price > band_limit
+    return quote_price < band_limit
 
 
 def _normalize_side(side: str) -> str:
@@ -964,13 +992,62 @@ class ExecutionService:
                 error=f"price above max_share_price ({quote_price} > {max_share_price})",
             )
 
+        # Leader-price band. For a copy FAK, ``caller_price_limit`` is the band
+        # edge the pipeline derived from the leader's own fill price. When the
+        # executable side of the book has already moved past that edge,
+        # clamping the marketable price down to it only produces a FAK that
+        # cannot cross and must expire, so the copy is refused before the POST.
+        # ``max_entry_price_drift_pct = 0`` disables the band, and with it the
+        # caller-limit clamp: pricing falls back to quote * (1 +/- slippage).
+        band_drift_pct = _parse_decimal_or_default(
+            getattr(ec, "max_entry_price_drift_pct", _DEFAULT_ENTRY_PRICE_DRIFT_PCT) if ec else 0,
+            Decimal("0"),
+        )
+        band_enforced = instant_fak and band_drift_pct > 0
+        if band_enforced and _quote_outside_band(quote_price, caller_price_limit, side):
+            leader_price = metadata.get("leader_price") or caller_price_limit
+            logger.info(
+                "copy_price_band_rejected | token=%s side=%s quote=%s cap=%s "
+                "leader=%s drift_pct=%s",
+                req.token_id,
+                side,
+                quote_price,
+                caller_price_limit,
+                leader_price,
+                band_drift_pct,
+                extra={
+                    "type": "copy_price_band_rejected",
+                    "token_id": req.token_id,
+                    "side": side,
+                    "quote_price": str(quote_price),
+                    "band_limit": str(caller_price_limit),
+                    "leader_price": str(leader_price),
+                    "drift_pct": str(band_drift_pct),
+                },
+            )
+            quote_label = "best ask" if side == "BUY" else "best bid"
+            relation = "exceeds leader band cap" if side == "BUY" else "is below leader band floor"
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="price_drift_exceeded",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    f"{quote_label} {quote_price} {relation} {caller_price_limit} "
+                    f"(leader {leader_price}, drift {band_drift_pct}%)"
+                ),
+            )
+
         slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
         if side == "BUY":
             worst_price = quote_price * (Decimal("1") + slippage)
         else:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, tick_size, side)
-        if instant_fak and req.price_limit is not None:
+        if band_enforced:
             worst_price = self._apply_marketable_price_protection(
                 calculated_price=worst_price,
                 caller_limit=caller_price_limit,
@@ -1338,17 +1415,29 @@ class ExecutionService:
                     last_error = redact_error_detail(exc)
                     logger.warning("clob rate limited (attempt %s): %s", attempt, last_error)
                 except (VenueAuthError, VenueInvalidOrderError) as exc:
-                    last_error = redact_error_detail(exc)
+                    # A terminal rejection has to say *why*. ``redact_error_detail``
+                    # collapses to the class name, which erased the CLOB body the
+                    # gateway had just preserved (``... (InvalidOrder): invalid
+                    # amount``) and left the operator with an unactionable
+                    # ``VenueInvalidOrderError``. The gateway already scrubbed and
+                    # bounded that text. Auth errors keep the category-only
+                    # redaction: their bodies can echo credentials.
+                    venue_reason = (
+                        safe_error_detail(exc)
+                        if isinstance(exc, VenueInvalidOrderError)
+                        else redact_error_detail(exc)
+                    )
+                    last_error = venue_reason
                     if isinstance(exc, VenueInsufficientBalanceError):
-                        # Redaction strips the venue's balance text; restore the
-                        # canonical marker so the risk monitor's drift detector
-                        # (``_is_drift_error``) fires on this rejection shape,
-                        # mirroring the SDK-wrapper dict path.
+                        # Prepend the canonical marker so the risk monitor's drift
+                        # detector (``_is_drift_error``) fires on this rejection
+                        # shape, mirroring the SDK-wrapper dict path.
                         last_error = f"insufficient_balance | {last_error}"
                     response = {
                         "success": False,
                         "status": "rejected",
                         "error": last_error,
+                        "venue_reason": venue_reason,
                         "non_retryable": True,
                     }
                     await self._save_submission(
@@ -1600,6 +1689,30 @@ class ExecutionService:
                                 next_quote_price,
                             )
                             break
+                        if band_enforced and _quote_outside_band(
+                            next_quote_price, caller_price_limit, side
+                        ):
+                            logger.info(
+                                "copy_price_band_rejected | token=%s side=%s quote=%s cap=%s "
+                                "leader=%s drift_pct=%s attempt=%d",
+                                req.token_id,
+                                side,
+                                next_quote_price,
+                                caller_price_limit,
+                                metadata.get("leader_price") or caller_price_limit,
+                                band_drift_pct,
+                                fak_attempt,
+                                extra={
+                                    "type": "copy_price_band_rejected",
+                                    "token_id": req.token_id,
+                                    "side": side,
+                                    "quote_price": str(next_quote_price),
+                                    "band_limit": str(caller_price_limit),
+                                    "drift_pct": str(band_drift_pct),
+                                    "fak_attempt": fak_attempt,
+                                },
+                            )
+                            break
                         next_order_amount = min(remaining_amount, next_top_level_amount)
                         next_tick_size = next_bundle.tick.tick_size
                         next_worst_price = (
@@ -1612,7 +1725,7 @@ class ExecutionService:
                             next_tick_size,
                             side,
                         )
-                        if instant_fak:
+                        if band_enforced:
                             next_worst_price = self._apply_marketable_price_protection(
                                 calculated_price=next_worst_price,
                                 caller_limit=caller_price_limit,
