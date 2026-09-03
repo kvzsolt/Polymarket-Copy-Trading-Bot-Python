@@ -61,6 +61,15 @@ class MockReservationService:
         self.released.append((reservation_id, reason))
 
 
+class MockLeaderSellTargetService:
+    def __init__(self):
+        self.releases = []
+
+    async def redrive_after_terminal_no_fill(self, record, *, reason: str) -> bool:
+        self.releases.append((record, reason))
+        return True
+
+
 class MockReservationsRepo:
     def __init__(self, by_order_id=None):
         self.by_order_id = by_order_id or {}
@@ -162,6 +171,74 @@ async def test_release_reservation_falls_back_to_order_request_metadata():
     assert reservation_service.released == [
         ("reservation-from-order-row", "confirmed"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_terminal_no_fill_release_notifies_leader_sell_target_service_once():
+    reservation_service = MockReservationService()
+    target_service = MockLeaderSellTargetService()
+    svc = ReconciliationService(
+        orders_repo=MockOrdersRepo(order=None),
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        reservation_service=reservation_service,
+        leader_sell_target_service=target_service,
+    )
+    record = {
+        "order_id": "venue-sell-1",
+        "request": {
+            "side": "SELL",
+            "recovery_metadata": {"reservation_id": "reservation-sell-1"},
+        },
+    }
+
+    await svc._release_reservation_if_present(record, reason="cancelled")
+
+    assert reservation_service.released == [("reservation-sell-1", "cancelled")]
+    assert target_service.releases == [(record, "cancelled")]
+
+
+@pytest.mark.asyncio
+async def test_target_redrive_failure_does_not_misreport_successful_reservation_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery-hook failure is distinct from the completed reservation release."""
+
+    class _FailingTargetService:
+        async def redrive_after_terminal_no_fill(self, record, *, reason: str) -> bool:
+            del record, reason
+            raise RuntimeError("target repository unavailable")
+
+    reservation_service = MockReservationService()
+    svc = ReconciliationService(
+        orders_repo=MockOrdersRepo(order=None),
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        reservation_service=reservation_service,
+        leader_sell_target_service=_FailingTargetService(),
+    )
+    record = {
+        "order_id": "venue-sell-2",
+        "request": {
+            "side": "SELL",
+            "recovery_metadata": {"reservation_id": "reservation-sell-2"},
+        },
+    }
+    warnings: list[str] = []
+
+    def _capture_warning(message: str, *args: object) -> None:
+        warnings.append(message % args)
+
+    monkeypatch.setattr(
+        "services.execution.reconciliation_service._log.warning",
+        _capture_warning,
+    )
+
+    await svc._release_reservation_if_present(record, reason="cancelled")
+
+    assert reservation_service.released == [("reservation-sell-2", "cancelled")]
+    assert any("leader_sell_target_redrive_failed" in message for message in warnings)
+    assert not any("reconciliation_reservation_release_failed" in message for message in warnings)
 
 
 @pytest.mark.asyncio

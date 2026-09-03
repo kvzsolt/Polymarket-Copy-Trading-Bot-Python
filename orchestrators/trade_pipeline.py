@@ -72,31 +72,34 @@ def _copy_entry_price_plan(
     context: TradingContext,
     signal: Any,
     side: str,
+    *,
+    leader_id: str = "",
 ) -> tuple[Decimal, dict[str, str]]:
     """Build one tolerance-bounded FAK limit from the leader fill price.
 
     The configured tolerance is applied once to the copied price without a
     book read, reprice, or retry. The global BUY ceiling remains authoritative.
 
+    The tolerance is resolved per leader: a leader who sweeps the top of the
+    book leaves the next resting ask well above their own fill, so the band
+    that keeps a copied FAK marketable is a property of the leader rather than
+    one global constant.
+
     Args:
         context: Trading context containing execution tolerance and price caps.
         signal: Normalized leader signal containing the copied fill price.
         side: ``"BUY"`` or ``"SELL"``.
+        leader_id: Wallet whose per-leader band applies. An empty value, or a
+            config that predates per-leader bands, falls back to the execution
+            layer.
 
     Returns:
         A ``(price_limit, recovery_metadata)`` pair for one FAK submission.
     """
     leader_price = Decimal(str(signal.price or 0))
-    execution_config = getattr(getattr(context, "config", None), "execution", None)
-    drift_pct = Decimal(
-        str(
-            getattr(
-                execution_config,
-                "max_entry_price_drift_pct",
-                ExecutionConfig.max_entry_price_drift_pct,
-            )
-        )
-    )
+    app_config = getattr(context, "config", None)
+    execution_config = getattr(app_config, "execution", None)
+    drift_pct = Decimal(str(_resolve_entry_drift_pct(app_config, leader_id)))
     band = LeaderPriceBand(leader_price=leader_price, drift_pct=drift_pct)
     unclamped_price_limit = band.limit_for(side)
     price_limit = unclamped_price_limit
@@ -121,7 +124,32 @@ def _copy_entry_price_plan(
             price_limit = min(price_limit, max_share_price)
         metadata["max_share_price"] = str(max_share_price)
     metadata["price_limit"] = str(price_limit)
+    metadata["leader_id"] = str(leader_id)
     return price_limit, metadata
+
+
+def _resolve_entry_drift_pct(app_config: Any, leader_id: str) -> float:
+    """Resolve the copy-entry FAK band percentage for one leader.
+
+    Args:
+        app_config: The loaded application configuration, or any fake exposing
+            an ``execution`` section.
+        leader_id: Wallet whose band applies; may be empty.
+
+    Returns:
+        The per-leader band when the configuration can resolve one, otherwise
+        the execution-layer value, otherwise the typed default.
+    """
+    resolver = getattr(app_config, "entry_price_drift_pct_for_leader", None)
+    if callable(resolver) and leader_id:
+        return float(resolver(leader_id))
+    return float(
+        getattr(
+            getattr(app_config, "execution", None),
+            "max_entry_price_drift_pct",
+            ExecutionConfig.max_entry_price_drift_pct,
+        )
+    )
 
 
 def _observe_copy_latency(
@@ -222,12 +250,16 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             ),
             task_budget_settlement=task_budget_settlement,
             telemetry=_execution_telemetry(context),
+            leader_sell_target_service=context.extra.get("leader_sell_target_service"),
         )
         context.extra["_reconciliation_service"] = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
         svc.reservation_service = reservation_service
     if task_budget_settlement is not None:
         svc.task_budget_settlement = task_budget_settlement
+    target_service = context.extra.get("leader_sell_target_service")
+    if target_service is not None:
+        svc.leader_sell_target_service = target_service
     return svc
 
 
@@ -320,12 +352,15 @@ async def _submit_copy_through_coordinator(
         size = amount
         notional = size * price
 
+    protected_limit = Decimal(str(getattr(exec_req, "price_limit", None) or price))
     logger.info(
-        "coordinator_intent_built | side=%s size=%s notional_usdc=%s price=%s",
+        "coordinator_intent_built | side=%s size=%s notional_usdc=%s "
+        "leader_price=%s protected_limit=%s",
         side,
         size,
         notional,
         price,
+        protected_limit,
         extra={
             "type": "coordinator_intent_built",
             "user_id": context.user_id,
@@ -334,7 +369,9 @@ async def _submit_copy_through_coordinator(
             "side": side,
             "size": str(size),
             "notional_usdc": str(notional),
-            "price": str(price),
+            "price": str(protected_limit),
+            "leader_price": str(price),
+            "protected_limit": str(protected_limit),
         },
     )
 
@@ -358,7 +395,23 @@ async def _submit_copy_through_coordinator(
         tick_size=getattr(exec_req, "tick_size", None),
         min_order_size=getattr(exec_req, "min_order_size", None),
         neg_risk=getattr(exec_req, "neg_risk", None),
+        leader_sell_fraction=getattr(exec_req, "leader_sell_fraction", None),
+        live_position_size=getattr(exec_req, "live_position_size", None),
+        sub_min_sell_policy=getattr(exec_req, "sub_min_sell_policy", None),
     )
+    if side == "SELL":
+        target_service = getattr(context, "extra", {}).get("leader_sell_target_service")
+        if target_service is not None:
+            try:
+                intent = await target_service.record_fresh_target(intent)
+            except Exception as exc:
+                logger.error(
+                    "leader_sell_target_record_failed | user=%s leader=%s token=%s error_type=%s",
+                    context.user_id,
+                    leader_id,
+                    exec_req.token_id,
+                    type(exc).__name__,
+                )
     coord_result = await coordinator.submit_copy_trade(intent)
     raw = coord_result.raw_result
     if raw is not None:
@@ -575,6 +628,7 @@ async def _prefetch_copy_execution_metadata(
     warm_tokens = {
         token_id for signal, _ in normalized if (token_id := getattr(signal, "token_id", None))
     }
+    prefetch_started = time.monotonic()
     logger.info(
         "trade_pipeline_copy_metadata_prefetch | tokens=%d",
         len(warm_tokens),
@@ -583,7 +637,7 @@ async def _prefetch_copy_execution_metadata(
 
     mds = getattr(context, "market_data_service", None)
     if mds is None:
-        stale_codes = {
+        unavailable_codes = {
             (
                 str(getattr(signal, "token_id", "") or ""),
                 str(getattr(signal, "side", "") or "").upper(),
@@ -591,7 +645,11 @@ async def _prefetch_copy_execution_metadata(
             for signal, _ in normalized
             if getattr(signal, "token_id", None)
         }
-        return {}, {token_id for token_id, _side in stale_codes}, stale_codes
+        return (
+            {},
+            {token_id for token_id, _side in unavailable_codes},
+            unavailable_codes,
+        )
 
     unique_tokens: dict[str, str | None] = {}
     sides_by_token: dict[str, set[str]] = {}
@@ -643,6 +701,28 @@ async def _prefetch_copy_execution_metadata(
         for side in sides_by_token.get(token_id, {""}):
             stale_codes[(token_id, side)] = skip_code or "market_metadata_unavailable"
     context.extra["_copy_execution_metadata_by_token"] = metadata_by_token
+    # This prefetch is the largest single block of the detection-to-submit
+    # budget (two CLOB round trips per token), and the copy race it feeds is
+    # decided in 1-2 seconds. Report it so the cost is visible next to the
+    # token count rather than inferred from log timestamps, and so the effect
+    # of ``execution.venue_metadata_ttl_seconds`` is measurable.
+    prefetch_ms = (time.monotonic() - prefetch_started) * 1000.0
+    logger.info(
+        "trade_pipeline_copy_metadata_prefetch_done | tokens=%d resolved=%d "
+        "stale=%d elapsed_ms=%.0f",
+        len(warm_tokens),
+        len(metadata_by_token),
+        len(stale_tokens),
+        prefetch_ms,
+        extra={
+            "type": "copy_metadata_prefetch",
+            "tokens": len(warm_tokens),
+            "resolved": len(metadata_by_token),
+            "stale": len(stale_tokens),
+            "copy_latency_stage_ms": round(prefetch_ms, 1),
+            "stage": "metadata_prefetch",
+        },
+    )
     return {}, stale_tokens, stale_codes
 
 
@@ -2033,6 +2113,66 @@ async def _execute_trades_impl(
                         exc_info=True,
                     )
 
+        if str(signal.side or "").upper() == "BUY":
+            _sell_scope_guard = context.extra.get("leader_sell_scope_guard")
+            if _sell_scope_guard is not None:
+                try:
+                    _sell_scope_paused = await _sell_scope_guard.is_buy_paused(
+                        leader_id,
+                        signal.token_id,
+                    )
+                except Exception as exc:
+                    _sell_scope_paused = True
+                    logger.error(
+                        "leader_sell_scope_guard_unavailable | leader=%s token=%s error_type=%s",
+                        leader_id,
+                        signal.token_id,
+                        type(exc).__name__,
+                    )
+                if _sell_scope_paused:
+                    skip_code = "leader_sell_fraction_scope_degraded"
+                    print_skip_reason(
+                        "Leader SELL sizing degraded",
+                        "BUY blocked for this leader/outcome until an authoritative "
+                        "leader-position source recovers",
+                    )
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(signal.size) if signal.size else None,
+                        price=float(signal.price) if signal.price else None,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=skip_code,
+                        reason="emergency leader SELL fraction is still active",
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    metrics.inc(
+                        "trades_skipped_total",
+                        labels={**labels, "reason": skip_code},
+                    )
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=f"skipped_{skip_code}",
+                    )
+                    results.append(
+                        TradePipelineResult(
+                            trade_key=trade_key,
+                            status="skipped",
+                            reason=skip_code,
+                            order_id=None,
+                        )
+                    )
+                    continue
+
         # ------------------------------------------------------------------
         # Market-data freshness gate — fail closed when WSS is not ready
         # ------------------------------------------------------------------
@@ -2734,7 +2874,7 @@ async def _execute_trades_impl(
                     )
 
                 buy_price_limit, buy_recovery_metadata = _copy_entry_price_plan(
-                    context, signal, "BUY"
+                    context, signal, "BUY", leader_id=leader_id
                 )
                 exec_req = ExecutionRequest(
                     user_id=context.user_id,
@@ -2905,7 +3045,7 @@ async def _execute_trades_impl(
                     )
                     if venue_sell_cap <= Decimal("0") and live_sellable_tokens > Decimal("0"):
                         venue_sell_cap = live_sellable_tokens
-                    if venue_sell_cap < max_sell_tokens:
+                    if venue_sell_cap < requested_sell_tokens:
                         logger.info(
                             "sell_size_clamped_to_live_balance | cond=%s leader=%s "
                             "requested=%.4f live_balance=%.4f clamped=%.4f",
@@ -2992,14 +3132,15 @@ async def _execute_trades_impl(
                     continue
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
+                sub_min_sell_policy = str(
+                    getattr(_trade_config(context).execution, "sub_min_sell_policy", "round_up")
+                )
                 sell_tokens = _resolve_leader_sell_tokens(
                     requested_sell_tokens=requested_sell_tokens,
                     max_sell_tokens=max_sell_tokens,
                     market_min_size=market_min_size_decimal,
                     live_price=Decimal(str(signal.price or 0)),
-                    sub_min_sell_policy=str(
-                        getattr(_trade_config(context).execution, "sub_min_sell_policy", "round_up")
-                    ),
+                    sub_min_sell_policy=sub_min_sell_policy,
                 )
 
                 if sell_tokens <= Decimal("0"):
@@ -3064,7 +3205,16 @@ async def _execute_trades_impl(
                 )
 
                 sell_price_limit, sell_recovery_metadata = _copy_entry_price_plan(
-                    context, signal, "SELL"
+                    context, signal, "SELL", leader_id=leader_id
+                )
+                sell_recovery_metadata.update(
+                    {
+                        "leader_sell_fraction": str(leader_sell_fraction),
+                        "leader_sell_fraction_resolution": str(
+                            raw.get("_leader_sell_fraction_resolution") or "polling_snapshot"
+                        ),
+                        "live_position_size": str(live_sellable_tokens),
+                    }
                 )
                 exec_req = ExecutionRequest(
                     user_id=context.user_id,
@@ -3082,6 +3232,9 @@ async def _execute_trades_impl(
                     tick_size=market_tick_size_decimal,
                     min_order_size=market_min_size_decimal,
                     neg_risk=neg_risk_by_token.get(signal.token_id),
+                    leader_sell_fraction=leader_sell_fraction,
+                    live_position_size=live_sellable_tokens,
+                    sub_min_sell_policy=sub_min_sell_policy,
                 )
 
             print_executing_strategy(signal.side)
@@ -3159,19 +3312,24 @@ async def _execute_trades_impl(
                 # and the reconciler owns final accounting. This is NOT a "price
                 # moved past limit" kill (a genuine kill returns accepted=False);
                 # the order may well have filled. Report it as pending, not dead.
-                print_skip_reason(
-                    "Order submitted — awaiting fill confirmation",
-                    f"{signal.side} FAK accepted at limit {signal.price}; fill "
-                    f"not yet confirmed by the venue — reconciliation will settle it",
-                )
                 # Copy-scoped display values. ``exec_req`` carries the COPY size,
                 # not the leader's ``signal.size``: for a BUY the request amount
                 # is USDC notional (tokens ≈ notional / limit price); for a SELL
                 # it is shares directly.
-                _copy_amount = _decimal_or_zero(getattr(exec_req, "amount", 0))
-                _limit_px = _decimal_or_zero(
-                    getattr(exec_req, "price_limit", None) or signal.price or 0
+                _submitted_amount = getattr(exec_result, "requested_amount", None)
+                _copy_amount = _decimal_or_zero(
+                    _submitted_amount
+                    if _submitted_amount is not None
+                    else getattr(exec_req, "amount", 0)
                 )
+                _limit_px = _decimal_or_zero(
+                    getattr(exec_result, "effective_price", None)
+                    or getattr(exec_req, "price_limit", None)
+                    or signal.price
+                    or 0
+                )
+                _copy_tokens: Decimal | None
+                _copy_usdc: Decimal | None
                 if exec_req.side == "BUY":
                     _copy_usdc = _copy_amount
                     _copy_tokens = (_copy_amount / _limit_px) if _limit_px > 0 else None

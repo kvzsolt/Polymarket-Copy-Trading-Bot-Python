@@ -373,6 +373,31 @@ async def test_market_risk_quarantine_skips_buy_copy_trades(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_degraded_leader_sell_scope_blocks_legacy_polling_buy(tmp_path):
+    """Legacy polling cannot BUY while emergency SELL sizing is degraded."""
+
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        guard = AsyncMock()
+        guard.is_buy_paused.return_value = True
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+        ctx.extra["leader_sell_scope_guard"] = guard
+
+        results = await execute_trades(
+            ctx,
+            "leader1",
+            [_signal(side="BUY", tx_hash="0xdegraded-buy")],
+            time.time(),
+        )
+
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "leader_sell_fraction_scope_degraded"
+        guard.is_buy_paused.assert_awaited_once_with("leader1", FAKE_TOKEN_ID)
+        exec_svc.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_sell_not_blocked_when_risk_block_active(tmp_path):
     """A risk block must NOT block SELL paths — exits must always be allowed."""
     async with _pg_pool() as pool:
@@ -1319,6 +1344,53 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
         req = exec_svc.execute.await_args.args[0]
         assert req.side == "SELL"
         assert req.amount == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sell_does_not_log_clamp_when_fraction_is_below_live_balance(tmp_path):
+    """Fractional SELL below live shares must not claim it was balance-clamped."""
+
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True,
+            filled=Decimal("54.1778"),
+            status="filled",
+            order_id="ord-sell-no-false-clamp",
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        from storage.postgres.positions_repo import PositionRecord
+
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("62.2902"),
+                avg_entry_price=Decimal("0.40"),
+            )
+        )
+        signal = _signal(side="SELL", price=0.2284, size=815.76)
+        signal["_leader_sell_fraction"] = Decimal("0.869765")
+
+        with (
+            patch(
+                "orchestrators.trade_pipeline._fetch_live_position_size",
+                new_callable=AsyncMock,
+                return_value=Decimal("62.2902"),
+            ),
+            patch("orchestrators.trade_pipeline.logger.info") as info_log,
+        ):
+            await execute_trades(ctx, "leader1", [signal], time.time())
+
+        clamp_calls = [
+            call
+            for call in info_log.call_args_list
+            if call.args and "sell_size_clamped_to_live_balance" in str(call.args[0])
+        ]
+        assert clamp_calls == []
 
 
 @pytest.mark.asyncio

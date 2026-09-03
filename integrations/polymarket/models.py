@@ -46,6 +46,11 @@ class VenueSubmitResult:
     error: str | None = None
     ambiguous_post_failure: bool = False
     non_retryable: bool = False
+    effective_price: Decimal | None = None
+    # The venue's own rejection text, scrubbed and bounded. ``error`` stays a
+    # stable classification token that callers match on by equality, so the
+    # detail that distinguishes two rejections sharing a token lives here.
+    venue_reason: str | None = None
 
 
 @dataclass(frozen=True)

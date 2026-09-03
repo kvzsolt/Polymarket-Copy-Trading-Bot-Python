@@ -30,10 +30,20 @@ _REDACTED = "***REDACTED***"
 
 
 def _redact_value(key: str, value: object) -> object:
-    """Redact secret values for safe display."""
+    """Redact secret values for safe display.
+
+    Matching is exact or on secret-name boundaries (``*_token``), so
+    plural/non-secret fields such as a copy-task ``tokens`` market filter are
+    not mistaken for credentials.
+    """
     key_lower = key.lower()
     for secret in _SECRET_KEYS:
-        if secret.lower() in key_lower:
+        secret_lower = secret.lower()
+        if (
+            key_lower == secret_lower
+            or key_lower.endswith(f"_{secret_lower}")
+            or key_lower.startswith(f"{secret_lower}_")
+        ):
             return _REDACTED
     return value
 
@@ -81,7 +91,14 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
 
 _CONFIG_EXPLANATIONS: dict[str, str] = {
     "EXECUTION.TRADING_MODE": "Immutable startup selector: paper or live.",
-    "LEADER.WALLETS": "Configured Ethereum leader addresses; discovery roster leaders are added automatically.",
+    "LEADER.WALLETS": (
+        "Legacy projection of the followed-leader addresses from "
+        "config/traders/<name>.yml; discovery roster leaders are added automatically."
+    ),
+    "COPY_TRADING.TRADERS": (
+        "Canonical followed-leader files (config/traders/<name>.yml); each file contains "
+        "the wallet, enabled toggle, per-leader copy gates, and the full copy-task strategy."
+    ),
     "WALLET.FUNDER_ADDRESS": "Your Polymarket proxy-wallet address.",
     "CHAIN_ID": "Polygon chain ID: 137 (mainnet) or 80002 (testnet).",
     "SIZING_MODE": "Trade sizing strategy: 'proportional' (copy % of leader), 'fixed' (fixed USDC), or 'adaptive'.",
@@ -100,8 +117,9 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "MIN_SHARE_PRICE": "Minimum acceptable BUY price (0 disables).",
     "MAX_SHARE_PRICE": "Maximum acceptable BUY price (0 disables).",
     "MAX_ENTRY_PRICE_DRIFT_PCT": (
-        "Tolerance around the leader fill for one-shot copy FAKs — BUY cap / SELL floor; "
-        "supported range 5-10%."
+        "Tolerance around the leader fill for one-shot copy FAKs — BUY cap / SELL floor. "
+        "Tunable per leader in config/traders/<name>.yml; a leader who sweeps the book "
+        "needs a wider band than one who posts passively."
     ),
     "FETCH_INTERVAL": "Seconds between leader trade polling cycles.",
     "RISK_CHECK_INTERVAL": "Seconds between risk monitor evaluations.",

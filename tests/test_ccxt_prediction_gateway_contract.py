@@ -285,7 +285,8 @@ async def test_order_submission_preserves_decimal_values_at_ccxt_boundary() -> N
     _, _, _, amount, price, params = exchange.created[0]
     assert amount == "5.12"
     assert Decimal(amount) == Decimal("5.12")
-    assert price == Decimal("0.4100")
+    # Marketable BUY: 0.411 snaps up to tick 165 of 0.0025, toward the book.
+    assert price == Decimal("0.4125")
     assert params["cost"] == "5.12"
     assert Decimal(params["cost"]) == Decimal("5.12")
 
@@ -339,7 +340,7 @@ async def test_market_buy_uses_cost_and_explicit_price_not_cached_outcome_price(
     _, kind, side, amount, price, params = exchange.created[0]
     assert (kind, side) == ("market", "buy")
     assert Decimal(str(amount)) == Decimal("5.12")
-    assert Decimal(str(price)) == Decimal("0.4100")
+    assert Decimal(str(price)) == Decimal("0.4125")
     assert Decimal(str(params["cost"])) == Decimal("5.12")
     assert params["orderType"] == "FOK"
 
@@ -349,7 +350,7 @@ async def test_market_sell_uses_shares_and_fak() -> None:
     exchange = FakeExchange()
     gateway = CcxtPredictionGateway(exchange)
 
-    await gateway.submit_marketable_order(
+    result = await gateway.submit_marketable_order(
         MarketableOrderRequest(
             token_id=TOKEN,
             side="SELL",
@@ -363,10 +364,12 @@ async def test_market_sell_uses_shares_and_fak() -> None:
     _, kind, side, amount, price, params = exchange.created[0]
     assert (kind, side) == ("market", "sell")
     assert Decimal(str(amount)) == Decimal("7")
-    assert Decimal(str(price)) == Decimal("0.4125")
+    # Marketable SELL: the floor snaps down to tick 164, toward the bid.
+    assert Decimal(str(price)) == Decimal("0.4100")
     assert "cost" not in params
     assert params["orderType"] == "FAK"
     assert params["timeInForce"] == "IOC"
+    assert result.effective_price == Decimal("0.4100")
 
 
 def _tick_of(exchange: FakeExchange, tick: str) -> None:
@@ -598,7 +601,7 @@ async def test_resolved_arbitrary_tick_is_passed_to_ccxt() -> None:
 
     assert result.success is True
     _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
-    assert price == Decimal("0.4100")
+    assert price == Decimal("0.4125")
     assert params["tickSize"] == "0.0025"
     assert await resolver.resolve(TOKEN) == Decimal("0.0025")
 
@@ -620,7 +623,7 @@ async def test_resolved_arbitrary_tick_is_passed_to_ccxt_for_sells() -> None:
 
     assert result.success is True
     _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
-    assert price == Decimal("0.4125")
+    assert price == Decimal("0.4100")
     assert params["tickSize"] == "0.0025"
     assert "cost" not in params
 
@@ -822,3 +825,62 @@ async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_
     report = await CcxtPredictionGateway(exchange).check_compatibility()
     assert report["available"] is False
     assert report["error"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "price_limit", "expected"),
+    [
+        # 0.6846 / 0.0025 = 273.84 ticks -> a marketable BUY takes tick 274.
+        ("BUY", "0.6846", "0.6850"),
+        # 0.5225 / 0.0025 = 209.0 ticks -> already on the grid, unchanged.
+        ("SELL", "0.5225", "0.5225"),
+        # A marketable SELL floor rounds down toward crossing.
+        ("SELL", "0.5230", "0.5225"),
+    ],
+)
+async def test_marketable_order_quantizes_toward_crossing(
+    side: str, price_limit: str, expected: str
+) -> None:
+    """A FAK price must round toward the book, never away from it.
+
+    Rounding a BUY down to the tick shaves the band that makes the order
+    marketable; the venue answers an uncrossable FAK with
+    ``no orders found to match with FAK order`` rather than resting it.
+    """
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side=side,
+            size=Decimal("30.00"),
+            price_limit=Decimal(price_limit),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert result.effective_price == Decimal(expected)
+    signed_price = exchange.created[0][4]
+    assert Decimal(str(signed_price)) == Decimal(expected)
+
+
+@pytest.mark.asyncio
+async def test_limit_order_still_quantizes_conservatively() -> None:
+    """A resting GTC limit keeps cap-preserving rounding."""
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("30.00"),
+            price=Decimal("0.6846"),
+            condition_id="condition",
+        )
+    )
+
+    assert Decimal(str(exchange.created[0][4])) == Decimal("0.6825")

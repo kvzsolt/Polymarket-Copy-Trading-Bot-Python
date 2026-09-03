@@ -345,17 +345,20 @@ async def test_terminal_copy_failure_has_one_panel_and_follower_amounts(tmp_path
 
 @pytest.mark.asyncio
 async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
+    """A submitted FAK is logged as pending without a contradictory skip panel."""
+
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = ExecutionResult(
             accepted=True,
             order_id="ord-vis",
             status="delayed",
-            requested_amount=Decimal("5"),
+            requested_amount=Decimal("4.25"),
             filled_amount=Decimal("0"),
             avg_price=Decimal("0"),
             fees_paid=Decimal("0"),
             error=None,
+            effective_price=Decimal("0.52"),
         )
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
@@ -372,23 +375,14 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
         ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "submitted_unconfirmed"
-        p.assert_called()
-        header = " ".join(str(c.args[0]) for c in p.call_args_list).lower()
-        detail = " ".join(str(c.args[1]) for c in p.call_args_list if len(c.args) > 1).lower()
-        # Panel still surfaces fill status...
-        assert "fill" in detail or "fill" in header
-        # ...but with accurate, non-misleading framing (sym 2): the old
-        # "killed unfilled / price moved past limit" text claimed a kill on what
-        # is actually a deferred, possibly-filled order.
-        assert "killed" not in detail
-        assert "price moved past limit" not in detail
-        assert "awaiting" in detail or "reconcil" in detail
+        p.assert_not_called()
         # Copy-scoped size is logged (limit price + internally consistent
         # tokens*price ≈ usdc), not the leader's raw signal.size.
         log_sub.assert_called()
         sub_kwargs = log_sub.call_args.kwargs
         assert sub_kwargs["meta"]["submissionState"] == "submitted_unconfirmed"
-        assert sub_kwargs["price"] == pytest.approx(0.525)
+        assert sub_kwargs["price"] == pytest.approx(0.52)
+        assert sub_kwargs["usdc_value"] == pytest.approx(4.25)
         if sub_kwargs["size"] is not None and sub_kwargs["usdc_value"] is not None:
             assert sub_kwargs["size"] * sub_kwargs["price"] == pytest.approx(
                 sub_kwargs["usdc_value"], rel=1e-6

@@ -1,3 +1,0 @@
-# Per-leader override file. Values set here beat the layered copy_trading
-# values for this leader only; unset keys inherit. This file never adds the
-# wallet to the roster (rosters stay in copy_trading.wallets / discovery).

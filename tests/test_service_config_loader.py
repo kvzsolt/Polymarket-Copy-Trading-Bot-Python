@@ -2,10 +2,11 @@
 
 Layer precedence, lowest to highest:
 typed defaults -> config/<service>.yml -> legacy runtime.local.yml shim ->
-config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml -> config/leaders/*.yml
-(per-leader overrides) -> nested test/composition overrides -> secrets.env
-(mode 0600) -> process PMCOPY__* environment. The environment is selected
-explicitly (default "paper"), never inferred from credential presence.
+config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml -> config/traders/*.yml
+(canonical followed-leader definitions) -> legacy config/leaders/*.yml
+fallback -> nested test/composition overrides -> secrets.env (mode 0600) ->
+process PMCOPY__* environment. The environment is selected explicitly
+(default "paper"), never inferred from credential presence.
 """
 
 from __future__ import annotations
@@ -456,3 +457,88 @@ def test_process_env_environment_beats_secrets_env_selector(
     config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
 
     assert config.sizing.percentage == 4.0
+
+
+def test_entry_price_drift_resolves_leader_then_copy_trading_then_execution(
+    tmp_path: Path,
+) -> None:
+    """The FAK entry band resolves through all three configuration layers.
+
+    Precedence, highest first: ``config/traders/<name>.yml`` (or the legacy
+    ``config/leaders/<wallet>.yml`` fallback) -> ``config/copy_trading.yml``
+    -> ``config/execution.yml``. An unset leader key inherits the layer below
+    it rather than the typed default.
+    """
+    config_dir = _tree(
+        tmp_path,
+        {
+            "execution.yml": {"max_entry_price_drift_pct": 6.0},
+            "environments/live/execution.yml": {"max_entry_price_drift_pct": 8.0},
+            "copy_trading.yml": {"max_entry_price_drift_pct": 9.0},
+            f"leaders/{LEADER_A}.yml": {"max_entry_price_drift_pct": 12.0},
+            f"leaders/{LEADER_B}.yml": {},
+        },
+    )
+
+    config = load_config(_overrides(), config_dir=config_dir, environment="live")
+
+    assert config.entry_price_drift_pct_for_leader(LEADER_A) == 12.0
+    assert config.entry_price_drift_pct_for_leader(LEADER_B) == 9.0
+    assert config.entry_price_drift_pct_for_leader("0x" + "c" * 40) == 9.0
+
+
+def test_entry_price_drift_falls_back_to_execution_when_copy_trading_unset(
+    tmp_path: Path,
+) -> None:
+    """With no ``copy_trading`` value the execution layer supplies the band."""
+    config_dir = _tree(
+        tmp_path,
+        {
+            "execution.yml": {"max_entry_price_drift_pct": 6.0},
+            f"leaders/{LEADER_A}.yml": {},
+        },
+    )
+
+    config = load_config(_overrides(), config_dir=config_dir)
+
+    assert config.entry_price_drift_pct_for_leader(LEADER_A) == 6.0
+    assert config.entry_price_drift_pct_for_leader("0x" + "c" * 40) == 6.0
+
+
+@pytest.mark.parametrize("drift", [0.5, 2.0, 12.0, 25.0])
+def test_entry_price_drift_accepts_values_outside_the_legacy_window(
+    tmp_path: Path, drift: float
+) -> None:
+    """The band is operator-tunable; the old hard 5-10 clamp is gone.
+
+    The clamp made the knob unadjustable, which is what forced every copied
+    FAK to carry the same 5% band regardless of how aggressively a given
+    leader sweeps the book.
+    """
+    config_dir = _tree(tmp_path, {"execution.yml": {"max_entry_price_drift_pct": drift}})
+
+    config = load_config(_overrides(), config_dir=config_dir)
+
+    assert config.execution.max_entry_price_drift_pct == drift
+
+
+@pytest.mark.parametrize("drift", [0.0, -1.0, 101.0])
+def test_entry_price_drift_still_rejects_nonsense_values(
+    tmp_path: Path, drift: float
+) -> None:
+    """Tunable is not unbounded: a non-positive or absurd band fails closed."""
+    config_dir = _tree(tmp_path, {"execution.yml": {"max_entry_price_drift_pct": drift}})
+
+    with pytest.raises(EnvValidationError):
+        load_config(_overrides(), config_dir=config_dir)
+
+
+def test_per_leader_entry_price_drift_is_validated(tmp_path: Path) -> None:
+    """A per-leader band is validated on the same path as the global one."""
+    config_dir = _tree(
+        tmp_path,
+        {f"leaders/{LEADER_A}.yml": {"max_entry_price_drift_pct": -3.0}},
+    )
+
+    with pytest.raises(EnvValidationError):
+        load_config(_overrides(), config_dir=config_dir)

@@ -21,6 +21,11 @@ from config.app_config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
+PACKAGED_TRADER_WALLETS = (
+    "0xc4ac7dee4d55d1698e88a8160d5c61ede96b9722",
+    "0x31864feb9d25dee93728c6225ba891530967e9ca",
+    "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
+)
 
 
 def _overrides() -> dict:
@@ -69,9 +74,9 @@ def test_null_local_override_does_not_erase_packaged_value(
 
     config = load_config(_overrides())
 
-    # The packaged default is [] -> the null override must not erase it to
-    # None (which would fail Pydantic tuple validation).
-    assert config.copy_trading.wallets == ()
+    # The packaged trader files supply the roster; the null override must not
+    # erase it to None (which would fail Pydantic tuple validation).
+    assert config.copy_trading.enabled_wallets() == PACKAGED_TRADER_WALLETS
 
 
 def test_load_config_logs_which_layers_were_found(
@@ -119,7 +124,7 @@ def test_deployment_root_resolved_from_foreign_cwd_via_env_var(
 
     # Legacy secret alias PMCOPY__NETWORK__RPC_URL routes to polymarket.
     assert config.polymarket.rpc_url == "https://from-secrets.invalid"
-    assert config.copy_trading.wallets == ()
+    assert config.copy_trading.enabled_wallets() == PACKAGED_TRADER_WALLETS
 
 
 def test_deployment_root_marker_walk_up_from_inside_the_deployment(

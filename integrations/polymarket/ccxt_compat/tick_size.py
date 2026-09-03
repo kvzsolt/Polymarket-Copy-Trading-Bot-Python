@@ -14,9 +14,32 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+from enum import Enum
 from typing import Literal, Protocol
 
 OrderSide = Literal["BUY", "SELL"]
+
+
+class TickRounding(Enum):
+    """Which way a price moves when it is snapped onto the tick grid.
+
+    A limit price and a marketable price want opposite rounding, and the venue
+    only accepts exact tick multiples, so the direction has to be an explicit
+    decision rather than one hard-coded convention.
+
+    Attributes:
+        CONSERVATIVE: Round away from crossing — a BUY rounds down, a SELL
+            rounds up — so the signed order never breaches the caller's cap or
+            floor. Correct for a resting limit.
+        MARKETABLE: Round toward crossing — a BUY rounds up, a SELL rounds down
+            — so quantization never costs the order its marketability. Correct
+            for FAK/FOK, whose only outcome otherwise is a kill. The caller
+            re-asserts any absolute ceiling afterwards, since this may overshoot
+            the requested price by up to one tick.
+    """
+
+    CONSERVATIVE = "conservative"
+    MARKETABLE = "marketable"
 
 _DEFAULT_TTL_SECONDS = 300.0
 
@@ -55,13 +78,29 @@ def quantize_price_to_tick(
     price: Decimal,
     tick_size: Decimal,
     side: OrderSide,
+    rounding: TickRounding = TickRounding.CONSERVATIVE,
 ) -> Decimal:
-    """Return an exact, side-conservative integer multiple of ``tick_size``.
+    """Return an exact integer multiple of ``tick_size`` for ``side``.
 
-    BUY limits round down so the signed order never pays above the caller's
-    cap; SELL limits round up so the signed order never receives below the
-    caller's floor.  Rounding happens in tick units because tick sizes such as
-    ``0.0025`` are not representable by a fixed number of decimal places.
+    Rounding happens in tick units because tick sizes such as ``0.0025`` are
+    not representable by a fixed number of decimal places.
+
+    Args:
+        price: The unquantized price.
+        tick_size: The venue tick for this token; must be finite and positive.
+        side: ``"BUY"`` or ``"SELL"``.
+        rounding: Direction to snap in. Defaults to
+            :attr:`TickRounding.CONSERVATIVE`, which preserves the caller's cap
+            or floor; pass :attr:`TickRounding.MARKETABLE` for an order that
+            must cross.
+
+    Returns:
+        The quantized price, an exact multiple of ``tick_size``.
+
+    Raises:
+        InvalidTickSize: If the tick is unusable or the result leaves the
+            tradable ``(0, 1)`` range.
+        ValueError: If the price is not finite or the side is unsupported.
     """
 
     tick = _coerce_decimal(tick_size, field="tick_size", error=InvalidTickSize)
@@ -75,10 +114,10 @@ def quantize_price_to_tick(
         raise ValueError(f"unsupported order side: {side!r}")
 
     tick_units = raw_price / tick
-    if normalized_side == "BUY":
-        rounded_units = tick_units.to_integral_value(rounding=ROUND_FLOOR)
-    else:
-        rounded_units = tick_units.to_integral_value(rounding=ROUND_CEILING)
+    rounds_up = (normalized_side == "BUY") == (rounding is TickRounding.MARKETABLE)
+    rounded_units = tick_units.to_integral_value(
+        rounding=ROUND_CEILING if rounds_up else ROUND_FLOOR
+    )
     quantized = rounded_units * tick
     if quantized <= 0 or quantized >= 1:
         raise InvalidTickSize("tick-quantized price is outside the tradable range")
@@ -236,5 +275,6 @@ __all__ = [
     "TickSize",
     "TickSizeResolver",
     "TickSizeUnavailable",
+    "TickRounding",
     "quantize_price_to_tick",
 ]

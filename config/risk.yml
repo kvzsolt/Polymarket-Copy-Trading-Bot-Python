@@ -11,7 +11,7 @@ max_category_exposure_usdc: 210.0
 max_leader_exposure_usdc: 140.0
 # floor(210 / 17.5) = 12 concurrent copies; matches the tiered value
 # below so the cap is the same whichever branch reads it.
-max_open_positions: 12
+max_open_positions: 25
 # 10 % of day-start equity = a 35 pUSD daily-loss BUY stop.
 max_daily_drawdown_pct: 10.0
 kill_switch: false
@@ -19,7 +19,7 @@ kill_switch: false
 # max_*_exposure_usdc / max_open_positions / max_daily_drawdown_pct /
 # balance_policy_* knobs. Adds no venue or DB IO to the BUY hot path
 # (it reuses the balance snapshot the pipeline already fetched).
-enable_balance_tiered_policy: true
+enable_balance_tiered_policy: false
 # reserve = max(35, equity * 0.40) -> 140 held back at 350 pUSD, so
 # tradable cash starts at 210 (the 60 % exposure ceiling).
 balance_policy_reserve_pct: 0.40

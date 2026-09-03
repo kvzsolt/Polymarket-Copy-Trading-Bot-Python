@@ -8,7 +8,7 @@ Precedence, highest first:
 1. Process variables named `PMCOPY__SECTION__FIELD`
 2. Mode-`0600` `secrets.env`
 3. Programmatic overrides (tests/composition roots)
-4. Per-leader overrides `config/leaders/<wallet>.yml`
+4. Followed-trader definitions `config/traders/<fantasy-name>.yml`
 5. Environment overrides `config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml`
    (the environment is selected explicitly; default `paper`, never inferred
    from credential presence)
@@ -22,9 +22,10 @@ Legacy `PMCOPY__NETWORK__*` / `PMCOPY__LEADER__*` / `PMCOPY__POLLING__*` /
 translation table. `secrets.env` is resolved from the deployment root
 (`PMCOPY_DEPLOYMENT_ROOT` or marker walk-up). See
 `config/environments/example/execution.yml` for an environment template.
-Public wallet addresses, manual leaders, limits, and the paper/live selector
-belong in environment files. Credentials and private RPC URLs belong in
-`secrets.env`:
+Followed-leader definitions (wallet address and copy-task strategy) belong in
+`config/traders/<fantasy-name>.yml`. Global limits and the paper/live
+selector belong in the service-owned YAML files. Credentials and private RPC
+URLs belong in `secrets.env`:
 
 ```dotenv
 POSTGRES_PASSWORD=change-me
@@ -40,24 +41,92 @@ The plain `POSTGRES_PASSWORD` name is retained only because the official
 PostgreSQL image consumes it. The application itself accepts nested
 `PMCOPY__...` keys only.
 
-## Manual leader wallets
+## Followed traders
 
-Configure manual leaders in the selected environment's `copy_trading.yml`.
-Each entry has an explicit toggle, so a wallet can be paused without deleting
-its address:
+Each followed leader is configured in exactly one file:
 
 ```yaml
-wallets:
-  - wallet: "0x1111111111111111111111111111111111111111"
+# config/traders/<fantasy-name>.yml
+name: my-trader
+wallet: "0x1111111111111111111111111111111111111111"
+enabled: true
+
+# Optional per-leader copy gates (inherit copy_trading.yml when omitted).
+# max_entry_price_drift_pct: 5.0
+
+# Complete v1 copy-task strategy for following this leader.
+task:
+  monitoring_mode: normal
+  sizing_mode: proportional
+  notifications_muted: false
+  trigger: { enabled: true, min_notional: 0, max_notional: 0 }
+  spend:
     enabled: true
-  - wallet: "0x2222222222222222222222222222222222222222"
+    max_total: 0
+    max_daily: 0
+    max_per_market: 0
+    one_entry_per_market: false
+    global_one_entry_per_market: false
+    one_entry_per_sports_type: false
+  price:
+    enabled: true
+    min_price: 0.20
+    max_price: 0.80
+    offset_mode: disabled
+    offset_direction: above
+    offset: 0
+    max_slippage_percent: 5
+  reaction:
+    enabled: true
+    follow_buys: true
+    copy_sells: true
+    buy_on_sells: false
+    counter_trade: false
+    copy_side: both
+    copy_merges: false
+    copy_splits: false
+    copy_conversions: false
+  market_filter:
+    enabled: true
+    include_keywords: []
+    exclude_keywords: []
+    categories: []
+    tokens: []
+    timeframes: []
+    min_liquidity_usdc: 0
+    min_volume_24h_usdc: 0
+    max_days_until_close: 0
+    allow_expired_unresolved: false
+  schedule:
     enabled: false
+    timezone_name: UTC
+    start: "00:00"
+    end: "00:00"
+  sizing:
+    enabled: true
+    mode: proportional
+    percentage: 4
+    fixed_amount: 3
+    trade_multiplier: 1
+    weighted_multiplier: 1
+    buy_min_amount: 5
+    buy_max_amount: 8
+    copyable_balance_percent: 75
+    proportional_balance_cap_enabled: true
+    require_leader_balance: true
+    strict_fixed_amount: true
+    strict_exact_mirror: true
 ```
 
-Disabled entries are still address-validated but are not passed to startup.
-Legacy string entries remain readable and default to `enabled: true`.
-Per-leader files under `config/leaders/` override copy thresholds only; they do
-not add wallets to the manual roster.
+The file name is the trader fantasy name and the default v1 task id. Set
+`enabled: false` to pause that leader without deleting its file. The loader
+projects these files into the legacy `copy_trading.wallets` and
+`copy_trading.leaders` shapes, so existing runtime code still reads the same
+effective values.
+
+The loader still accepts the old `config/leaders/<wallet>.yml` directory as
+a backward-compatibility fallback for unmigrated deployments, but the
+checked-in configuration no longer uses it.
 
 To ignore every configured leader for one process and force provider discovery,
 run:

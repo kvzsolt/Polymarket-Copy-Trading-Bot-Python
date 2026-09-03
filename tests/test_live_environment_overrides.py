@@ -2,10 +2,10 @@
 untracked ``config/runtime.local.yml``).
 
 The live environment must carry exactly the operator's real non-secret live
-values — ``trading_mode: live``, the two leader wallets, and the metrics
-endpoint — scoped to their owning service files, and must never contain a
-secret. Selecting ``PMCOPY_ENVIRONMENT=live`` reproduces the legacy local
-overrides without the deprecation shim.
+values — ``trading_mode: live`` and the metrics endpoint — scoped to their
+owning service files, and must never contain a secret. Followed leaders come
+from ``config/traders/<name>.yml``. Selecting ``PMCOPY_ENVIRONMENT=live``
+reproduces the legacy local overrides without the deprecation shim.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "max_entry_price_drift_pct",
         "kill_switch",
     }
-    assert set(copy_trading) == {"wallets", "copy_tasks"}
+    assert set(copy_trading) == {"copy_tasks"}
     assert set(detection) == {"mode", "onchain"}
     assert detection["mode"] == "on_chain_confirmed"
     assert detection["onchain"]["confirmed_source"] == "logs_only"
@@ -238,11 +238,11 @@ def test_live_environment_contains_no_secret_material() -> None:
         assert "token" not in text.lower(), path.name
 
 
-def test_leader_override_files_exist_for_the_live_roster() -> None:
-    for wallet in LEADER_WALLETS:
-        path = ROOT / "config" / "leaders" / f"{wallet}.yml"
-        assert path.is_file(), f"missing leader override file for {wallet}"
+def test_trader_files_exist_for_the_live_roster() -> None:
+    trader_files = sorted((ROOT / "config" / "traders").glob("*.yml"))
+    assert len(trader_files) == len(LEADER_WALLETS)
 
     config = load_config(_overrides(), environment="live")
     for wallet in LEADER_WALLETS:
+        assert config.copy_trading.trader_for_wallet(wallet) is not None
         assert config.copy_trading.leader_override(wallet) is not None

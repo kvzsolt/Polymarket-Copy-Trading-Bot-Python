@@ -943,11 +943,17 @@ def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None
     assert load_config(_overrides()).execution.max_entry_price_drift_pct == 5.0
 
 
-@pytest.mark.parametrize("value", [5, 7.5, 10])
+@pytest.mark.parametrize("value", [0.5, 2, 5, 7.5, 10, 12, 25, 100])
 def test_execution_max_entry_price_drift_pct_accepts_supported_tolerance(
     value: float,
 ) -> None:
-    """Accept operator-selected copy tolerances in the inclusive safe range."""
+    """The copy-entry band is operator-tunable across a wide range.
+
+    How far past a leader's fill price a copy must reach to stay marketable is
+    a property of that leader's behaviour, not a constant: one who sweeps the
+    book leaves the next ask far above their own fill. The former hard 5-10
+    window made the knob unadjustable, so every copy carried the same band.
+    """
 
     overrides = _overrides()
     overrides["execution"] = {"max_entry_price_drift_pct": value}
@@ -955,9 +961,9 @@ def test_execution_max_entry_price_drift_pct_accepts_supported_tolerance(
     assert load_config(overrides).execution.max_entry_price_drift_pct == value
 
 
-@pytest.mark.parametrize("value", [-0.1, 0, 4.999, 10.001, 100, 250])
+@pytest.mark.parametrize("value", [-0.1, 0, 100.001, 250])
 def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) -> None:
-    """Reject tolerances outside the operator-approved five-to-ten range."""
+    """Reject a band that could never cross, or is far beyond any real book."""
 
     overrides = _overrides()
     overrides["execution"] = {"max_entry_price_drift_pct": value}
@@ -966,13 +972,19 @@ def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) 
         load_config(overrides)
 
 
-def test_cli_explains_copy_entry_tolerance_range() -> None:
-    """Keep operator guidance aligned with the validated five-to-ten range."""
+def test_cli_explains_copy_entry_tolerance_is_per_leader() -> None:
+    """Operator guidance must point at the per-leader knob, not a fixed range.
+
+    The help text previously advertised a hard 5-10% window; quoting a range
+    that validation no longer enforces would send an operator looking for a
+    limit that is not there.
+    """
     from bot_cli.commands.config import _CONFIG_EXPLANATIONS
 
     explanation = _CONFIG_EXPLANATIONS["MAX_ENTRY_PRICE_DRIFT_PCT"]
 
-    assert "5-10%" in explanation
+    assert "config/traders/" in explanation
+    assert "5-10%" not in explanation
     assert "0 disables" not in explanation
 
 

@@ -175,6 +175,7 @@ def test_build_signal_watched_maker_buy() -> None:
     assert signal.side == "BUY"
     assert signal.confidence == DetectionConfidence.MINED_AUTHORITATIVE
     assert signal.log_index == 7
+    assert signal.block_number == 123
     assert signal.provisional is False
     assert signal.condition_id == "cond-x"
     assert signal.tx_hash == _TX

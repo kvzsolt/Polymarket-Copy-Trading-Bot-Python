@@ -35,11 +35,15 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from domain.order_lifecycle import OrderLifecycleStatus
 from services.telemetry import ExecutionTelemetryEmitter
+from services.execution.user_order_evidence import (
+    UserOrderEvidence,
+    UserOrderEvidenceParser,
+)
 from utils.logger import get_logger, redact_error_detail
 from storage.postgres.fills_repo import FillRecord
 
@@ -129,8 +133,23 @@ class PositionsRepo(Protocol):
 class ReservationService(Protocol):
     """Define the terminal reservation-release port."""
 
-    def release_terminal(self, reservation_id: str, reason: str) -> None:
+    async def release_terminal(self, reservation_id: str, reason: str) -> None:
         """Release a reservation only after terminal evidence."""
+
+        ...
+
+
+class LeaderSellTargetRedriver(Protocol):
+    """Re-drive a newer SELL target after terminal no-fill proof."""
+
+    async def redrive_after_terminal_no_fill(
+        self,
+        record: dict[str, Any],
+        *,
+        reason: str,
+    ) -> bool:
+        """Attempt one durably claimed target re-drive."""
+
         ...
 
 
@@ -389,6 +408,8 @@ class ReconciliationService:
         order_confirmation_cfg: Any | None = None,
         task_budget_settlement: Any | None = None,
         telemetry: ExecutionTelemetryEmitter | None = None,
+        user_order_evidence_parser: UserOrderEvidenceParser | None = None,
+        leader_sell_target_service: LeaderSellTargetRedriver | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -405,6 +426,12 @@ class ReconciliationService:
         # and ambiguous-release resolutions. ``None`` disables all three; the
         # emitter itself is synchronous and never raises.
         self._telemetry = telemetry
+        self._user_order_evidence_parser = (
+            user_order_evidence_parser
+            if user_order_evidence_parser is not None
+            else UserOrderEvidenceParser()
+        )
+        self.leader_sell_target_service = leader_sell_target_service
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
@@ -425,6 +452,83 @@ class ReconciliationService:
         self._auto_release_abort_counts: dict[str, int] = {}
         # Per-order monotonic timestamp of the last "stalled" audit emission.
         self._ambiguous_stalled_last_audit: dict[str, float] = {}
+
+    async def record_user_order_evidence(self, event: dict[str, Any]) -> bool:
+        """Persist one authenticated user-channel order fact durably.
+
+        The existing submission status is retained so an unresolved order stays
+        visible to startup and periodic reconciliation. Terminal settlement and
+        reservation release remain owned by the normal reconcile methods.
+
+        Args:
+            event: Raw authenticated user-channel order or trade event.
+
+        Returns:
+            ``True`` when newer evidence was persisted; ``False`` when the event
+            was malformed, unknown, stale, or not linked to a local order.
+        """
+
+        evidence = self._user_order_evidence_parser.parse(event)
+        if evidence is None:
+            return False
+        row = await self._hydrate_order_record(evidence.order_id)
+        if not row:
+            return False
+        response_value = row.get("response")
+        response = response_value if isinstance(response_value, dict) else {}
+        key = (
+            "user_wss_order_evidence"
+            if str(event.get("event_type") or "").lower() == "order"
+            else "user_wss_trade_evidence"
+        )
+        prior_value = response.get(key)
+        if isinstance(prior_value, dict):
+            prior = UserOrderEvidence.from_payload(prior_value)
+            if prior is not None and not self._is_newer_user_evidence(evidence, prior):
+                return False
+        current_status = str(row.get("status") or "submitted_unconfirmed")
+        await self.orders_repo.update_submission_status(
+            order_id=evidence.order_id,
+            status=current_status,
+            response_patch={key: evidence.as_payload()},
+        )
+        return True
+
+    @staticmethod
+    def _is_newer_user_evidence(
+        candidate: UserOrderEvidence,
+        prior: UserOrderEvidence,
+    ) -> bool:
+        """Return whether ``candidate`` may safely supersede ``prior``."""
+
+        if prior.is_terminal and not candidate.is_terminal:
+            return False
+        if candidate.is_terminal and not prior.is_terminal:
+            return True
+        if candidate.timestamp is None:
+            return prior.timestamp is None and candidate != prior
+        if prior.timestamp is None:
+            return True
+        return candidate.timestamp > prior.timestamp
+
+    @staticmethod
+    def _terminal_user_order_evidence(record: dict[str, Any]) -> dict[str, Any] | None:
+        """Return a normalized terminal result from persisted WSS evidence."""
+
+        response_value = record.get("response")
+        if not isinstance(response_value, dict):
+            return None
+        payload = response_value.get("user_wss_order_evidence")
+        if not isinstance(payload, dict):
+            return None
+        evidence = UserOrderEvidence.from_payload(payload)
+        if evidence is None or not evidence.is_terminal:
+            return None
+        return {
+            "status": "cancelled",
+            "size_matched": str(evidence.size_matched),
+            "confirmation_source": "user_wss_order",
+        }
 
     # ------------------------------------------------------------------
     # Fill confirmation (venue poll)
@@ -651,6 +755,9 @@ class ReconciliationService:
             return {"status": "unknown", "size_matched": "0"}
 
         record = await self._hydrate_order_record(order_id)
+        terminal_user_evidence = self._terminal_user_order_evidence(record)
+        if terminal_user_evidence is not None:
+            return terminal_user_evidence
         cfg = self.order_confirmation_cfg
         response_value = record.get("response")
         response: dict[str, Any] = response_value if isinstance(response_value, dict) else {}
@@ -1061,10 +1168,27 @@ class ReconciliationService:
             await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
         except Exception as exc:
             _log.warning(
-                "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
+                "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%s",
                 reservation_id,
                 reason,
-                exc,
+                redact_error_detail(exc),
+            )
+            return
+        if self.leader_sell_target_service is None:
+            return
+        try:
+            await self.leader_sell_target_service.redrive_after_terminal_no_fill(
+                record,
+                reason=reason,
+            )
+        except Exception as exc:
+            _log.warning(
+                "leader_sell_target_redrive_failed | reservation_id=%s order_id=%s "
+                "reason=%s error=%s",
+                reservation_id,
+                record.get("order_id"),
+                reason,
+                redact_error_detail(exc),
             )
 
     async def _lookup_active_reservation_id_for_order(self, order_id: Any) -> str | None:
@@ -1189,6 +1313,39 @@ class ReconciliationService:
         )
         return (time.time() - created_at) >= threshold
 
+    def _is_past_baseline_missing_horizon(
+        self,
+        record: dict[str, Any],
+        *,
+        order_confirmation_cfg: Any | None,
+    ) -> bool:
+        """Return whether an uncapturable baseline may stop blocking release.
+
+        Args:
+            record: The persisted submission record.
+            order_confirmation_cfg: Confirmation policy, or ``None``.
+
+        Returns:
+            True once the record is older than the configured horizon. ``0``
+            (the default) disables the escape entirely.
+        """
+        if order_confirmation_cfg is None:
+            return False
+        horizon = float(
+            getattr(
+                order_confirmation_cfg,
+                "auto_release_baseline_missing_after_seconds",
+                0.0,
+            )
+            or 0.0
+        )
+        if horizon <= 0:
+            return False
+        created_at = _record_created_at(record)
+        if created_at is None:
+            return False
+        return (time.time() - created_at) >= horizon
+
     @staticmethod
     def _classify_probe_exception(exc: Exception) -> str:
         """Classify an auto-release probe exception.
@@ -1224,6 +1381,8 @@ class ReconciliationService:
         condition_id: str,
         token_id: str,
         expected_size: Decimal,
+        side: str = "",
+        pre_submit_position_size: Decimal | None = None,
     ) -> dict[str, Any]:
         """Run every independent safety probe and classify its outcome.
 
@@ -1388,18 +1547,24 @@ class ReconciliationService:
                 result["errors"] += 1
                 result["details"]["get_fills_error"] = redact_error_detail(exc)
 
-        # Probe 5: local position delta.
         try:
             pos = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
             local_size = Decimal(str(getattr(pos, "size_tokens", 0) or 0))
-            if local_size >= expected_size > 0:
-                # Position already absorbed at least the expected size — order
-                # may have filled. Conservative: inconclusive.
+            if pre_submit_position_size is None:
                 result["inconclusive"] += 1
-                result["details"]["position_delta"] = f"local_size={local_size}"
+                result["baseline_missing"] = True
+                result["details"]["position_delta"] = "pre_submit_baseline_missing"
+            elif local_size != pre_submit_position_size:
+                result["inconclusive"] += 1
+                result["details"]["position_delta"] = (
+                    f"side={side.upper() or 'UNKNOWN'} baseline={pre_submit_position_size} "
+                    f"local_size={local_size}"
+                )
             else:
                 result["clean"] += 1
-                result["details"]["position_delta"] = f"local_size={local_size}"
+                result["details"]["position_delta"] = (
+                    f"unchanged={local_size} side={side.upper() or 'UNKNOWN'}"
+                )
         except Exception as exc:
             result["errors"] += 1
             result["details"]["position_delta_error"] = redact_error_detail(exc)
@@ -1505,6 +1670,17 @@ class ReconciliationService:
             expected_size = Decimal(str(request.get("amount") or request.get("size") or "0"))
         except Exception:
             expected_size = Decimal("0")
+        recovery_value = request.get("recovery_metadata")
+        recovery = recovery_value if isinstance(recovery_value, dict) else {}
+        pre_submit_position_size: Decimal | None = None
+        raw_pre_submit = recovery.get("pre_submit_live_position_size")
+        if raw_pre_submit is not None:
+            try:
+                candidate = Decimal(str(raw_pre_submit))
+                if candidate.is_finite() and candidate >= 0:
+                    pre_submit_position_size = candidate
+            except (InvalidOperation, TypeError, ValueError):
+                pre_submit_position_size = None
         trade_ids, _ = self._submission_sequences(record)
 
         probe = await self._run_auto_release_probes(
@@ -1516,6 +1692,8 @@ class ReconciliationService:
             condition_id=condition_id,
             token_id=token_id,
             expected_size=expected_size,
+            side=side,
+            pre_submit_position_size=pre_submit_position_size,
         )
 
         if probe.get("deferred"):
@@ -1539,14 +1717,35 @@ class ReconciliationService:
             )
             return False
         if require_clean and probe["inconclusive"] > 0:
-            self._log_throttled_auto_release_abort(
-                order_id=order_id,
-                reason="inconclusive",
-                probe=probe,
-                level=logging.INFO,
-                message="auto_release_aborted_inconclusive",
+            # A baseline the coordinator never wrote is our own bookkeeping gap,
+            # not venue doubt. Past the configured horizon, three clean venue
+            # probes (the venue would report a fill in get_fills) outweigh it —
+            # otherwise the reservation parks capital forever. Any *other*
+            # inconclusive probe still blocks, so this never forgives real doubt.
+            baseline_only = (
+                bool(probe.get("baseline_missing"))
+                and probe["inconclusive"] == 1
+                and probe["errors"] == 0
+                and self._is_past_baseline_missing_horizon(
+                    record, order_confirmation_cfg=order_confirmation_cfg
+                )
             )
-            return False
+            if not baseline_only:
+                self._log_throttled_auto_release_abort(
+                    order_id=order_id,
+                    reason="inconclusive",
+                    probe=probe,
+                    level=logging.INFO,
+                    message="auto_release_aborted_inconclusive",
+                )
+                return False
+            _log.warning(
+                "auto_release_baseline_missing_horizon_reached | order_id=%s "
+                "reservation_id=%s probe=%s",
+                order_id,
+                record.get("reservation_id"),
+                probe.get("details"),
+            )
         self._auto_release_abort_counts.pop(order_id, None)
 
         # All probes clean — release.

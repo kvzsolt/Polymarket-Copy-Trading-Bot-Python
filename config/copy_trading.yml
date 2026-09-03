@@ -1,12 +1,16 @@
-# Copy-trading roster, copy gates, and the v1 copy-task engine.
-# Each manual wallet is an explicit toggleable entry. wallets: [] means
-# discovery-driven; legacy string entries remain readable. Per-leader overrides
-# live in config/leaders/<wallet>.yml (overrides only - they never join the roster).
-# copy_tasks.enabled: false is the paper-safe default for the v1 engine.
-# wallets:
-#   - wallet: "0x0000000000000000000000000000000000000000"
-#     enabled: true
-wallets: ["0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705"]
+# Copy-trading engine configuration (global).
+#
+# This file owns only the global copy-trading settings. Followed leaders are
+# NOT configured here — each followed leader lives in exactly one file:
+#
+#     config/traders/<fantasy-name>.yml
+#
+# That trader file contains the wallet address, enabled flag, per-leader
+# copy gates, and the complete v1 copy-task strategy for following that
+# leader. The loader projects those files into the internal
+# ``copy_trading.wallets`` / ``copy_trading.leaders`` shapes at startup, so
+# existing runtime code keeps working without a second place to edit.
+
 copy_decision_min_score: 0.15
 copy_max_price_drift_pct: 15.0
 copy_max_edge_decay_pct: 90.0
@@ -14,6 +18,11 @@ copy_max_signal_age_seconds: 100.0
 copy_liquidity_target_usdc: 50.0
 enable_tier_gate_watchlist: false
 enable_tier_gate_watchlist_log: false
+
+# v1 copy-task engine settings (workers, budgets, reentry locks).
+# ``enabled`` is the master switch for the v1 engine. Keep it false when
+# running the account-level pipeline only; set it true to run file-defined
+# copy tasks from config/traders/*.yml.
 copy_tasks:
   enabled: true
   workers:

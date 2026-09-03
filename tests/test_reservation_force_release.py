@@ -1,12 +1,10 @@
-"""sym 5 — reservation force-release deadlock breaker (fast unit tests).
+"""Reservation expiry remains fail-closed without terminal venue evidence.
 
 When the reconciler can never confirm a reservation's linked order is terminal
 (stuck deferred "matched", unqueryable order id), the expiry-release path refuses
 to release and the reservation pins its (user, condition, token, side) scope
-forever — the reason RESERVATIONS_ENABLED had to be turned off. A grace-bounded
-force-release breaks the deadlock: once a reservation has been EXPIRED by a full
-grace window its FAK budget is released even without terminal confirmation
-(fill-and-kill orders cannot rest, so by then the order is definitively dead).
+forever. Elapsed time is not authoritative evidence that a delayed FAK did not
+fill, so even a configured legacy grace must keep the reservation locked.
 
 These are fast unit tests against a fake repo — no Postgres/Docker required.
 """
@@ -80,13 +78,14 @@ async def _deferred(_id):
     return False
 
 
-async def test_force_release_when_callback_deferred_past_grace():
-    # expired at t=100, now=200 → 100s past expiry ≥ grace=60 → force-release.
+async def test_deferred_callback_never_force_releases_past_grace():
+    """A deferred reconciliation result keeps an expired reservation active."""
+
     repo = _FakeReservationsRepo([_res(expires_ts=100)])
     svc = _svc(repo, now=200, grace=60, callback=_deferred)
     out = await svc.release_expired_active()
-    assert out == ["r1"]
-    assert repo.released == [("r1", "expired_terminal_forced", 200)]
+    assert out == []
+    assert repo.released == []
 
 
 async def test_no_force_release_within_grace():
@@ -107,15 +106,15 @@ async def test_no_force_release_when_grace_disabled():
     assert repo.released == []
 
 
-async def test_force_release_on_callback_error_past_grace():
+async def test_callback_error_never_force_releases_past_grace():
     async def _boom(_id):
         raise RuntimeError("venue down")
 
     repo = _FakeReservationsRepo([_res(expires_ts=100)])
     svc = _svc(repo, now=200, grace=60, callback=_boom)
     out = await svc.release_expired_active()
-    assert out == ["r1"]
-    assert repo.released[0][1] == "expired_terminal_forced"
+    assert out == []
+    assert repo.released == []
 
 
 async def test_terminal_callback_still_releases_normally():
@@ -130,14 +129,14 @@ async def test_terminal_callback_still_releases_normally():
     assert repo.released == [("r1", "expired_terminal", 200)]
 
 
-async def test_expire_with_reconciliation_force_releases_to_unblock_new_intent():
-    # The reserve path: an expired existing reservation past grace must release
-    # (return True) so a new order on the same scope is not blocked forever.
+async def test_expire_with_reconciliation_stays_blocked_past_grace():
+    """A new intent cannot consume shares held by unresolved prior submission."""
+
     repo = _FakeReservationsRepo([])
     svc = _svc(repo, now=200, grace=60, callback=_deferred)
     released = await svc._expire_with_reconciliation(_res(expires_ts=100))
-    assert released is True
-    assert repo.released == [("r1", "expired_terminal_forced", 200)]
+    assert released is False
+    assert repo.released == []
 
 
 async def test_expire_with_reconciliation_blocks_within_grace():

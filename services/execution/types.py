@@ -30,6 +30,9 @@ _PERSISTED_REQUEST_FIELDS = (
     "min_order_size",
     "neg_risk",
     "order_type",
+    "leader_sell_fraction",
+    "live_position_size",
+    "sub_min_sell_policy",
 )
 
 _PERSISTED_RESPONSE_FIELDS = (
@@ -43,6 +46,7 @@ _PERSISTED_RESPONSE_FIELDS = (
     "matched_amount",
     "avg_price",
     "avg_fill_price",
+    "effective_price",
     "error",
     # The venue's own (already scrubbed and bounded) rejection text, kept
     # beside ``error`` so it survives the ``insufficient_balance |`` prefixing.
@@ -85,6 +89,9 @@ class ExecutionRequest:
     tick_size: Decimal | None = None
     min_order_size: Decimal | None = None
     neg_risk: bool | None = None
+    leader_sell_fraction: Decimal | None = None
+    live_position_size: Decimal | None = None
+    sub_min_sell_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +150,8 @@ class ExecutionAmountProjection:
 
 @dataclass
 class ExecutionResult:
+    """Describe one execution attempt and its exact submitted-price evidence."""
+
     accepted: bool
     order_id: str | None
     status: str
@@ -151,6 +160,7 @@ class ExecutionResult:
     avg_price: Decimal | None
     fees_paid: Decimal
     error: str | None = None
+    effective_price: Decimal | None = None
 
 
 @dataclass(frozen=True)

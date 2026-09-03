@@ -206,9 +206,8 @@ def configured_leaders(config: AppConfig) -> list[str]:
             )
         else:
             logger.warning(
-                "No leader wallets configured. Both copy_trading.wallets and the per-user "
-                "follow list "
-                "are empty. Add manual leader wallets or run "
+                "No leader wallets configured. Both config/traders/*.yml and "
+                "the per-user follow list are empty. Add a trader file or run "
                 "python bot.py rotate-traders after discovery has candidates."
             )
     return leaders
@@ -590,13 +589,6 @@ def _build_execution_coordinator(
         funder_address=funder_address,
         ttl_seconds=_reservation_ttl,
         enabled=reservations_enabled,
-        # sym 5 — break the reservation-release deadlock. A reservation linked
-        # to a FAK order the reconciler can never confirm terminal would
-        # otherwise pin its scope forever (the reason RESERVATIONS_ENABLED was
-        # turned off). Force-release once it has been expired by a full extra
-        # TTL window: a fill-and-kill order cannot rest, so by then it is
-        # definitively not live and the held budget is stranded.
-        force_release_grace_seconds=float(_reservation_ttl),
     )
     if not reservations_enabled:
         logger.warning(
@@ -612,6 +604,17 @@ def _build_execution_coordinator(
         fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
+    )
+    from services.execution.leader_sell_target_service import (
+        LeaderSellTargetService,
+        PersistedFollowerPositionReader,
+    )
+    from storage.postgres.leader_sell_target_repo import LeaderSellTargetRepo
+
+    coord.leader_sell_target_service = LeaderSellTargetService(
+        repository=LeaderSellTargetRepo(pool),
+        position_reader=PersistedFollowerPositionReader(positions_repo),
+        coordinator=coord,
     )
     return coord
 
@@ -636,6 +639,9 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     context.extra["reservation_service"] = reservation_service
     if reservations_repo is not None:
         context.extra["reservations_repo"] = reservations_repo
+    target_service = getattr(coord, "leader_sell_target_service", None)
+    if target_service is not None:
+        context.extra["leader_sell_target_service"] = target_service
 
     def _reservation_attr(reservation: object, name: str) -> Any:
         return getattr(reservation, name, None)
@@ -1239,12 +1245,12 @@ async def build_context_maps(
     for runtime_user in runtime_users:
         if runtime_user.user_id in risk_contexts_by_user:
             continue
-        user_state = user_states.get(runtime_user.user_id)
-        if user_state is None:
+        risk_user_state = user_states.get(runtime_user.user_id)
+        if risk_user_state is None:
             continue
         try:
             open_positions = (
-                await user_state.positions_repo.list_open_positions(runtime_user.user_id) or []
+                await risk_user_state.positions_repo.list_open_positions(runtime_user.user_id) or []
             )
         except Exception:
             logger.warning(
@@ -1264,7 +1270,7 @@ async def build_context_maps(
             )
             continue
         context = await build_trading_context(
-            user_state,
+            risk_user_state,
             follow,
             config,
             leaders_repo=leaders_repo,

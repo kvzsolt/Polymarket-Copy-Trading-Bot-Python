@@ -4,12 +4,29 @@
 # the global master stop is app.yml kill_switch.
 kill_switch: false
 sell_fraction_missing_policy: skip
-slippage_tolerance: 2.0
+slippage_tolerance: 5.0
 min_share_price: 0.10
 max_share_price: 0.90
-# Maximum copied-price movement accepted by a one-shot FAK (percent). The
-# supported operator range is 5-10%; protective exits reuse the same band.
+# Maximum copied-price movement accepted by a one-shot FAK (percent).
+# Protective exits reuse the same band.
+#
+# This is the default floor of a three-layer chain: copy_trading.yml may
+# override it roster-wide, and config/traders/<fantasy-name>.yml per leader.
+# Set it per leader: how far past a leader's own fill a copy must reach to stay
+# marketable depends on how hard that leader sweeps the book. A leader who
+# takes 200 shares at once leaves the next resting ask well above the price
+# they paid, and a band that lands below it makes the venue kill the order with
+# "no orders found to match with FAK order".
 max_entry_price_drift_pct: 5.0
+# Seconds a venue metadata fetch (tick size, min order size, negative risk)
+# stays usable for signing. 0 refetches before every signed order.
+#
+# The copy path prefetches this metadata and then refetches it moments later to
+# sign, putting two CLOB round trips (~0.4s each) on the critical path of a race
+# whose window is 1-2 seconds. A few seconds here collapses that duplicate.
+# Left at 0 by default: Polymarket moves tick size on live markets, notably near
+# 0.96/0.04, and signing against a stale tick puts the price off the grid.
+venue_metadata_ttl_seconds: 0.0
 non_terminal_failure_max_attempts: 3
 trading_mode: paper
 enable_copy_decision_gate: false

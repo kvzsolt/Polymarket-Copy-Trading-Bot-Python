@@ -1,0 +1,89 @@
+# Followed trader: gamma-aggressive.
+#
+# Single source of truth for following this wallet. This leader takes
+# aggressively and sweeps the top of the book; the next resting ask after
+# their own fill sits well above the price they paid (measured 2026-08-27:
+# median +2.2%, p75 +7.4%, max +15.9% across 20 buys). A 5% entry band left
+# every copied FAK below the ask and the venue killed all of them with
+# "no orders found to match with FAK order", so max_entry_price_drift_pct is
+# widened to 10% for this leader only.
+
+name: gamma-aggressive
+wallet: "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705"
+enabled: true
+
+# Per-leader copy-admission gate: widen the one-shot copy-entry FAK band for
+# this leader alone. Unset values inherit from config/copy_trading.yml.
+max_entry_price_drift_pct: 10.0
+
+task:
+  monitoring_mode: normal
+  sizing_mode: proportional
+  notifications_muted: false
+
+  trigger:
+    enabled: true
+    min_notional: 0
+    max_notional: 0
+
+  spend:
+    enabled: true
+    max_total: 0
+    max_daily: 0
+    max_per_market: 0
+    one_entry_per_market: false
+    global_one_entry_per_market: false
+    one_entry_per_sports_type: false
+
+  price:
+    enabled: true
+    min_price: 0.20
+    max_price: 0.80
+    offset_mode: disabled
+    offset_direction: above
+    offset: 0
+    max_slippage_percent: 5
+
+  reaction:
+    enabled: true
+    follow_buys: true
+    copy_sells: true
+    buy_on_sells: false
+    counter_trade: false
+    copy_side: both
+    copy_merges: false
+    copy_splits: false
+    copy_conversions: false
+
+  market_filter:
+    enabled: true
+    include_keywords: []
+    exclude_keywords: []
+    categories: []
+    tokens: []
+    timeframes: []
+    min_liquidity_usdc: 0
+    min_volume_24h_usdc: 0
+    max_days_until_close: 0
+    allow_expired_unresolved: false
+
+  schedule:
+    enabled: false
+    timezone_name: UTC
+    start: "00:00"
+    end: "00:00"
+
+  sizing:
+    enabled: true
+    mode: proportional
+    percentage: 5
+    fixed_amount: 3
+    trade_multiplier: 1
+    weighted_multiplier: 1
+    buy_min_amount: 5
+    buy_max_amount: 17.5
+    copyable_balance_percent: 75
+    proportional_balance_cap_enabled: true
+    require_leader_balance: true
+    strict_fixed_amount: true
+    strict_exact_mirror: true

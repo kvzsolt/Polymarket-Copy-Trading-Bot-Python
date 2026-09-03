@@ -4,10 +4,13 @@ Source precedence, from lowest to highest: typed model defaults ->
 ``config/<service>.yml`` (canonical, one file per owning service) ->
 deployment ``config/runtime.local.yml`` (single legacy deprecation shim,
 translated) -> ``config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml``
-(explicitly selected environment, default ``paper``) -> ``config/leaders/
-<wallet>.yml`` (per-leader overrides) -> nested test/composition ``overrides``
--> deployment mode-0600 ``secrets.env`` -> process variables named
-``PMCOPY__SECTION__FIELD``.
+(explicitly selected environment, default ``paper``) -> ``config/traders/
+<fantasy-name>.yml`` (the single place where each followed leader and its
+copy-task strategy is defined; the loader projects it into
+``copy_trading.wallets``/``copy_trading.leaders``) -> legacy ``config/leaders/
+<wallet>.yml`` (overrides only, for wallets not defined under ``traders``) ->
+nested test/composition ``overrides`` -> deployment mode-0600 ``secrets.env``
+-> process variables named ``PMCOPY__SECTION__FIELD``.
 
 The environment is selected explicitly (``PMCOPY_ENVIRONMENT``); it is never
 inferred from credential presence. Legacy pre-split key names (``network.*``,
@@ -50,6 +53,18 @@ from pydantic import (
     model_validator,
 )
 from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
+from config.trader_config import (
+    TraderConfig,
+    TraderTaskConfig,
+    TraderTaskMarketFilterConfig,
+    TraderTaskPriceConfig,
+    TraderTaskReactionConfig,
+    TraderTaskScheduleConfig,
+    TraderTaskSizingConfig,
+    TraderTaskSpendConfig,
+    TraderTaskTriggerConfig,
+    validate_trader_filename_stem,
+)
 from config.v1_runtime import CopyTasksRuntimeConfig
 from domain.detection import DetectionMode
 
@@ -82,6 +97,15 @@ __all__ = [
     "RiskConfig",
     "SignatureType",
     "SizingConfig",
+    "TraderConfig",
+    "TraderTaskConfig",
+    "TraderTaskMarketFilterConfig",
+    "TraderTaskPriceConfig",
+    "TraderTaskReactionConfig",
+    "TraderTaskScheduleConfig",
+    "TraderTaskSizingConfig",
+    "TraderTaskSpendConfig",
+    "TraderTaskTriggerConfig",
     "WalletConfig",
     "POLYGON_USDCE_ADDRESS",
     "POLYMARKET_CTF_EXCHANGE_V2_ADDRESS",
@@ -349,9 +373,17 @@ class ExecutionConfig:
     slippage_tolerance: float = 2.0
     min_share_price: float = 0.03
     max_share_price: float = 0.95
-    # One-shot copy-entry tolerance and protective-exit band. Configuration
-    # validation constrains operator values to the approved 5-10% range.
+    # One-shot copy-entry tolerance and protective-exit band, in percent. This
+    # is the default floor of a three-layer chain: a leader file or the
+    # ``copy_trading`` section may override it, resolved by
+    # ``AppConfig.entry_price_drift_pct_for_leader``.
     max_entry_price_drift_pct: float = 5.0
+    # Seconds a venue metadata fetch (tick size, min order size, negative risk)
+    # stays usable for signing. ``0`` refetches before every signed order, which
+    # is the money-path default. Raising it trades a bounded staleness window
+    # for the duplicate CLOB round trip that currently sits on the copy
+    # critical path; tick size can move on a live market, so raise it knowingly.
+    venue_metadata_ttl_seconds: float = 0.0
     non_terminal_failure_max_attempts: int = 3
     trading_mode: Literal["paper", "live"] = "paper"
     enable_copy_decision_gate: bool = False
@@ -419,10 +451,12 @@ class ExecutionConfig:
 
 
 class LeaderOverrideConfig(BaseModel):
-    """Per-leader override values from one ``config/leaders/<wallet>.yml``.
+    """Per-leader override values for one followed wallet.
 
-    Leader files hold per-leader tunables only; they never join the roster —
-    the roster stays explicit in ``copy_trading.wallets`` (or discovery).
+    Canonically these come from ``config/traders/<name>.yml``; the legacy
+    ``config/leaders/<wallet>.yml`` shape remains readable for unmigrated
+    deployments. Override files hold per-leader tunables only; the roster is
+    defined by the trader files (projected into ``copy_trading.wallets``).
     ``None`` means "inherit the layered copy_trading value".
     """
 
@@ -434,6 +468,11 @@ class LeaderOverrideConfig(BaseModel):
     copy_max_edge_decay_pct: float | None = None
     copy_max_signal_age_seconds: float | None = None
     copy_liquidity_target_usdc: float | None = None
+    # One-shot copy-entry FAK band for this leader alone. ``None`` inherits the
+    # layered ``copy_trading`` value, which in turn inherits ``execution``.
+    # Distinct from ``copy_max_price_drift_pct`` above: that one gates whether a
+    # signal is admitted at all, this one widens the limit price we sign.
+    max_entry_price_drift_pct: float | None = None
 
 
 class LeaderWalletConfig(BaseModel):
@@ -470,7 +509,13 @@ class LeaderCopySettings:
 
 
 class CopyTradingConfig(BaseModel):
-    """Copy-trading roster, gates, and the v1 copy-task engine settings."""
+    """Copy-trading roster, gates, and the v1 copy-task engine settings.
+
+    The roster is normally sourced from ``config/traders/<name>.yml`` files
+    (one file per followed leader, fully describing that leader and its
+    copy strategy). The legacy ``wallets`` and ``leaders`` fields remain for
+    old deployments that have not migrated yet.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
@@ -480,14 +525,25 @@ class CopyTradingConfig(BaseModel):
     copy_max_edge_decay_pct: float = 90.0
     copy_max_signal_age_seconds: float = 100.0
     copy_liquidity_target_usdc: float = 50.0
+    # Roster-wide override for the copy-entry FAK band. ``None`` inherits
+    # ``execution.max_entry_price_drift_pct``. Not the same knob as
+    # ``copy_max_price_drift_pct`` above, which is a signal-admission gate.
+    max_entry_price_drift_pct: float | None = None
     # Tier-gate observation flags (formerly features.enable_tier_gate_*).
     enable_tier_gate_watchlist: bool = False
     enable_tier_gate_watchlist_log: bool = False
     # v1 copy-task engine (formerly config/runtime_v1.yml). Paper-safe:
     # ``copy_tasks.enabled`` defaults to False.
     copy_tasks: CopyTasksRuntimeConfig = CopyTasksRuntimeConfig()
-    # Per-leader overrides sourced from ``config/leaders/<wallet>.yml``.
+    # Per-leader overrides sourced from ``config/traders/<name>.yml``
+    # (canonical) or legacy ``config/leaders/<wallet>.yml``. Trader-file
+    # entries are placed first so they win when a wallet appears in both.
     leaders: tuple[LeaderOverrideConfig, ...] = ()
+    # Canonical followed-trader definitions from ``config/traders/*.yml``.
+    # Each entry fully describes one followed leader and its copy-task
+    # strategy. The loader also projects these into ``wallets`` and
+    # ``leaders`` so existing consumers keep working unchanged.
+    traders: tuple[TraderConfig, ...] = ()
 
     def enabled_wallets(self) -> tuple[str, ...]:
         """Return trimmed wallet addresses enabled for manual startup.
@@ -507,6 +563,21 @@ class CopyTradingConfig(BaseModel):
             if entry.wallet.strip().lower() == normalized:
                 return entry
         return None
+
+    def trader_for_wallet(self, wallet: str) -> TraderConfig | None:
+        """Return the canonical trader file entry for ``wallet``."""
+
+        normalized = str(wallet).strip().lower()
+        for trader in self.traders:
+            if trader.wallet.strip().lower() == normalized:
+                return trader
+        return None
+
+    def trader_task_for_wallet(self, wallet: str) -> TraderTaskConfig | None:
+        """Return the file-defined copy-task strategy for ``wallet``."""
+
+        trader = self.trader_for_wallet(wallet)
+        return None if trader is None else trader.task
 
     def resolved_for_leader(self, wallet: str) -> LeaderCopySettings:
         """Resolve effective copy tunables for one leader.
@@ -598,6 +669,12 @@ class OrderConfirmationConfig:
     auto_release_grace_seconds: float = 300.0
     auto_release_require_all_probes_clean: bool = True
     auto_release_max_probe_errors: int = 0
+    # Seconds after which an order whose only unclean probe is a
+    # ``pre_submit_live_position_size`` that was never captured may still be
+    # released. Every venue probe must be clean; this forgives only our own
+    # bookkeeping gap. ``0`` disables the escape and holds the reservation
+    # indefinitely, which is the historical behaviour.
+    auto_release_baseline_missing_after_seconds: float = 0.0
     # Per-order pacing for repeated auto-release attempts: the first failed
     # attempt reschedules after ``auto_release_retry_backoff_seconds`` and the
     # interval doubles per failed attempt up to the ``_max`` cap. Keeps a stuck
@@ -1132,6 +1209,30 @@ class AppConfig:
     # Derived from ``execution.trading_mode``; never set directly.
     dry_run: bool = False
 
+    def entry_price_drift_pct_for_leader(self, wallet: str) -> float:
+        """Resolve the copy-entry FAK band for one leader.
+
+        Leaders differ in how hard they sweep a book, so the band that keeps a
+        copied FAK marketable is a per-leader property rather than one global
+        constant. Precedence, highest first: ``config/traders/<name>.yml`` ->
+        ``config/copy_trading.yml`` -> ``config/execution.yml``.
+
+        Args:
+            wallet: Leader wallet address; matching is case-insensitive and an
+                unknown wallet simply resolves to the inherited value.
+
+        Returns:
+            The effective drift percentage for this leader.
+        """
+        override = self.copy_trading.leader_override(wallet)
+        leader_value = getattr(override, "max_entry_price_drift_pct", None) if override else None
+        if leader_value is not None:
+            return float(leader_value)
+        roster_value = self.copy_trading.max_entry_price_drift_pct
+        if roster_value is not None:
+            return float(roster_value)
+        return float(self.execution.max_entry_price_drift_pct)
+
 
 # Factory & validation.
 # ---------------------------------------------------------------------------
@@ -1160,6 +1261,30 @@ def _is_loopback_bind_host(host: str) -> bool:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+_MAX_ENTRY_PRICE_DRIFT_CEILING = 100.0
+
+
+def _validate_entry_price_drift(value: float, label: str, errors: list[str]) -> None:
+    """Validate one copy-entry FAK band, at any configuration layer.
+
+    The band is operator-tunable per leader, so this is deliberately a wide
+    sanity bound rather than the former hard 5-10 window: a leader that sweeps
+    the book needs a wider band than one that posts passively. It still fails
+    closed on a non-positive band (which could never cross) and on a value
+    beyond ``_MAX_ENTRY_PRICE_DRIFT_CEILING`` (almost certainly a typo, and on
+    a binary market a 100% band is already unbounded).
+
+    Args:
+        value: The configured drift percentage.
+        label: Operator-facing name of the layer being validated.
+        errors: Accumulator the caller raises from.
+    """
+    if value <= 0:
+        errors.append(f"{label} must be > 0.")
+    elif value > _MAX_ENTRY_PRICE_DRIFT_CEILING:
+        errors.append(f"{label} must be <= {_MAX_ENTRY_PRICE_DRIFT_CEILING:g}.")
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -1218,6 +1343,20 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         wallet = entry.wallet
         if not _ETH_ADDR_RE.match(wallet):
             errors.append(f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).')
+    for trader in cfg.copy_trading.traders:
+        label = f"trader {trader.name} ({trader.wallet})"
+        if trader.copy_decision_min_score is not None and not (
+            0 <= trader.copy_decision_min_score <= 1
+        ):
+            errors.append(f"{label}: copy_decision_min_score must be in [0, 1].")
+        if trader.copy_max_price_drift_pct is not None and trader.copy_max_price_drift_pct < 0:
+            errors.append(f"{label}: copy_max_price_drift_pct must be non-negative.")
+        if trader.copy_max_edge_decay_pct is not None and trader.copy_max_edge_decay_pct < 0:
+            errors.append(f"{label}: copy_max_edge_decay_pct must be non-negative.")
+        if trader.copy_max_signal_age_seconds is not None and trader.copy_max_signal_age_seconds < 0:
+            errors.append(f"{label}: copy_max_signal_age_seconds must be non-negative.")
+        if trader.copy_liquidity_target_usdc is not None and trader.copy_liquidity_target_usdc <= 0:
+            errors.append(f"{label}: copy_liquidity_target_usdc must be > 0.")
 
     # Sizing invariants
     s = cfg.sizing
@@ -1260,10 +1399,26 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
     if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
         errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
-    if e.max_entry_price_drift_pct < 5:
-        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be >= 5.")
-    if e.max_entry_price_drift_pct > 10:
-        errors.append("MAX_ENTRY_PRICE_DRIFT_PCT must be <= 10.")
+    _validate_entry_price_drift(
+        e.max_entry_price_drift_pct, "MAX_ENTRY_PRICE_DRIFT_PCT", errors
+    )
+    if cfg.copy_trading.max_entry_price_drift_pct is not None:
+        _validate_entry_price_drift(
+            cfg.copy_trading.max_entry_price_drift_pct,
+            "COPY_TRADING.MAX_ENTRY_PRICE_DRIFT_PCT",
+            errors,
+        )
+    for leader in cfg.copy_trading.leaders:
+        if leader.max_entry_price_drift_pct is not None:
+            _validate_entry_price_drift(
+                leader.max_entry_price_drift_pct,
+                f"LEADERS.{leader.wallet}.MAX_ENTRY_PRICE_DRIFT_PCT",
+                errors,
+            )
+    if cfg.reconciliation.order_confirmation.auto_release_baseline_missing_after_seconds < 0:
+        errors.append("AUTO_RELEASE_BASELINE_MISSING_AFTER_SECONDS must be >= 0.")
+    if e.venue_metadata_ttl_seconds < 0:
+        errors.append("VENUE_METADATA_TTL_SECONDS must be >= 0.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
     if e.reservation_ttl_seconds <= 0:
@@ -1756,6 +1911,7 @@ class _LayeredModel(BaseModel):
             return values
         structured_paths = (
             ("copy_trading", "wallets"),
+            ("copy_trading", "traders"),
             ("reconciliation", "order_confirmation", "token_delay_overrides"),
             ("reconciliation", "order_confirmation", "condition_delay_overrides"),
             ("discovery", "shortlist", "sort_modes"),
@@ -2027,6 +2183,68 @@ def _read_leader_overrides(directory: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _read_trader_configs(directory: Path) -> list[TraderConfig]:
+    """Read canonical followed-trader files ``config/traders/<name>.yml``.
+
+    Each file fully describes one followed leader: wallet identity, enabled
+    state, per-leader copy gates, and the copy-task strategy. The file stem
+    is the trader fantasy name and supplies ``name`` (and the default task id
+    used by the v1 bootstrap) when the YAML omits it.
+    """
+    if not directory.is_dir():
+        return []
+    entries: list[TraderConfig] = []
+    seen_wallets: dict[str, str] = {}
+    seen_names: dict[str, str] = {}
+    for file in sorted(directory.glob("*.yml")):
+        stem = validate_trader_filename_stem(file.stem)
+        data = _read_yaml(file, required=False)
+        declared = str(data.get("name") or "").strip()
+        data["name"] = declared or stem
+        wallet = str(
+            data.get("wallet") or data.get("wallet_id") or data.get("leader_wallet") or ""
+        ).strip()
+        # A trader file is normally named by fantasy name and declares its
+        # wallet explicitly. A legacy address-named file may omit the wallet
+        # field; the file stem is then the wallet address.
+        if not wallet and _ETH_ADDR_RE.match(stem):
+            wallet = stem
+        data["wallet"] = wallet
+        data.pop("wallet_id", None)
+        data.pop("leader_wallet", None)
+        if not _ETH_ADDR_RE.match(wallet):
+            raise EnvValidationError(
+                f"Trader file must declare a valid wallet address: {file}"
+            )
+        try:
+            trader = TraderConfig.model_validate(data)
+        except ValidationError as exc:
+            messages = _validation_messages(exc)
+            raise EnvValidationError(
+                f"Invalid trader configuration {file}:\n- " + "\n- ".join(messages)
+            ) from exc
+
+        name_key = trader.name.casefold()
+        previous_name = seen_names.get(name_key)
+        if previous_name is not None:
+            raise EnvValidationError(
+                f"Trader name {trader.name!r} is used by both "
+                f"{previous_name!r} and {file.name!r}; trader names must be "
+                "unique because they are the default copy-task ids."
+            )
+        seen_names[name_key] = file.name
+        previous = seen_wallets.get(trader.wallet.lower())
+        if previous is not None:
+            raise EnvValidationError(
+                f"Trader wallet {trader.wallet} is defined in both "
+                f"{previous!r} and {file.name!r}; a followed leader may only "
+                "be defined once."
+            )
+        seen_wallets[trader.wallet.lower()] = file.name
+        entries.append(trader)
+    return entries
+
+
 def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
     if not path.exists():
         if required:
@@ -2200,8 +2418,10 @@ def load_config(
     Layer precedence, lowest to highest: typed defaults ->
     ``<config_dir>/<service>.yml`` -> legacy ``runtime.local.yml`` shim
     (translated, deprecated) -> ``<config_dir>/environments/<environment>/
-    <service>.yml`` -> ``<config_dir>/leaders/<wallet>.yml`` -> ``overrides``
-    -> ``secrets.env`` -> process ``PMCOPY__*`` variables.
+    <service>.yml`` -> ``<config_dir>/traders/<name>.yml`` (canonical
+    followed-leader definitions) -> legacy ``<config_dir>/leaders/
+    <wallet>.yml`` -> ``overrides`` -> ``secrets.env`` -> process
+    ``PMCOPY__*`` variables.
 
     Args:
         overrides: Nested mapping for tests/composition roots. Flat legacy
@@ -2261,8 +2481,56 @@ def load_config(
             f"{environments_dir} does not exist."
         )
 
+    traders = _read_trader_configs(config_root / "traders")
     leader_entries = _read_leader_overrides(config_root / "leaders")
-    if leader_entries:
+    if traders:
+        # Canonical config/traders/<name>.yml is the single source of truth
+        # for followed leaders. Project its entries into the legacy
+        # ``wallets`` and ``leaders`` shapes so existing consumers keep
+        # working unchanged. Legacy leader files are kept only for wallets
+        # that have not been migrated.
+        trader_wallets = {trader.wallet.strip().lower() for trader in traders}
+        legacy_leaders = [
+            entry
+            for entry in leader_entries
+            if str(entry.get("wallet", "")).strip().lower() not in trader_wallets
+        ]
+        trader_leader_entries: list[dict[str, Any]] = []
+        for trader in traders:
+            trader_leader_entries.append(
+                {
+                    key: getattr(trader, key)
+                    for key in (
+                        "wallet",
+                        "copy_decision_min_score",
+                        "copy_max_price_drift_pct",
+                        "copy_max_edge_decay_pct",
+                        "copy_max_signal_age_seconds",
+                        "copy_liquidity_target_usdc",
+                        "max_entry_price_drift_pct",
+                    )
+                    if getattr(trader, key) is not None
+                }
+            )
+        payload = _deep_merge(
+            payload,
+            {
+                "copy_trading": {
+                    "wallets": [
+                        {"wallet": trader.wallet, "enabled": trader.enabled}
+                        for trader in traders
+                    ],
+                    "leaders": trader_leader_entries + legacy_leaders,
+                    "traders": [trader.model_dump(mode="python") for trader in traders],
+                }
+            },
+        )
+        logger.info(
+            "config_traders_loaded | traders=%d legacy_leader_files=%d",
+            len(traders),
+            len(legacy_leaders),
+        )
+    elif leader_entries:
         payload = _deep_merge(payload, {"copy_trading": {"leaders": leader_entries}})
 
     if overrides:

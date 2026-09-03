@@ -51,6 +51,9 @@ class AppConfigSettingsValidator:
     _EXCLUDED_KEYS: Mapping[str, frozenset[str]] = {
         "app": frozenset({"multi_user_config_file"}),
         "control_plane": frozenset({"auth"}),
+        # Followed traders are owned by config/traders/<name>.yml files, not
+        # by frontend settings documents.
+        "copy_trading": frozenset({"traders"}),
         # The detection source is wired once at startup; a runtime edit could
         # not hot-swap it, so it is restart-only and never frontend-editable.
         "detection": frozenset({"mode"}),

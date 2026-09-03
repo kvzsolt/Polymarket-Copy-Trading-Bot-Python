@@ -42,7 +42,12 @@ build-backend = "setuptools.build_meta"
 py-modules = ["app", "bootstrap", "bot"]
 
 [tool.setuptools.package-data]
-config = ["*.yml", "*.yaml"]
+config = [
+  "*.yml",
+  "*.yaml",
+  "traders/*.yml",
+  "environments/*/*.yml",
+]
 
 [tool.setuptools.packages.find]
 include = [

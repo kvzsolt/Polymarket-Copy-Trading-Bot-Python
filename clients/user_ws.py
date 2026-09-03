@@ -31,6 +31,7 @@ from services.metrics import (
     METRIC_WSS_RECONNECT,
     metrics,
 )
+from services.execution.user_order_evidence import UserOrderEvidenceParser
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -428,7 +429,7 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
     canonical = _WSS_TRADE_STATUS_MAP.get(str(raw).strip().upper())
     if canonical is None:
         return
-    order_id = event.get("order_id") or event.get("orderID") or event.get("id")
+    order_id = UserOrderEvidenceParser().order_id_for(event)
     # WSS user 'trade' events carry a stable trade UUID in ``id`` (Context7:
     # Polymarket User Channel trade message). Surface it for correlation across
     # the MATCHED → MINED → CONFIRMED status churn emitted for a single trade.

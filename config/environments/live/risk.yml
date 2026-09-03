@@ -2,7 +2,7 @@
 # risk_mark_max_spread_bps 0 disables the bps-of-mid mark gate; the crossed-book
 # and risk_mark_max_abs_distance checks still apply (abs distance overridden below).
 enable_risk_mgmt: true
-enable_balance_tiered_policy: true
+enable_balance_tiered_policy: false
 kill_switch: false
 risk_mark_max_spread_bps: 0
 # Sports/O-U books routinely sit 3–5 cents wide; 0.05 keeps WSS marks usable

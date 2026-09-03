@@ -21,6 +21,12 @@ if TYPE_CHECKING:
         DetectionSourceRuntime,
     )
     from orchestrators.runtime_bootstrap import TradingContext
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellFractionResolver,
+    )
+    from services.onchain_detection.leader_sell_scope_guard import (
+        LeaderSellBuyScopeGuard,
+    )
 
 from bootstrap import build_app
 from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidationError, load_config
@@ -442,6 +448,53 @@ def _build_pending_copy_tracker(
         # is wired, so enabling it cannot move money (see
         # docs/known_limitations.md).
         unwind_hook=None,
+    )
+
+
+def _build_leader_sell_fraction_resolver(
+    config: object,
+    *,
+    buy_scope_guard: "LeaderSellBuyScopeGuard | None" = None,
+) -> "LeaderSellFractionResolver":
+    """Compose exact and fallback readers for authoritative leader SELLs.
+
+    Args:
+        config: Typed application configuration containing Polygon RPC URLs.
+        buy_scope_guard: Shared durable degraded-scope BUY guard.
+
+    Returns:
+        A resolver that annotates mined SELL signals before copy dispatch.
+
+    Raises:
+        ValueError: If the required primary Polygon RPC endpoint is absent.
+    """
+
+    from functools import partial
+
+    from adapters.polygon.historical_erc1155_balance import (
+        Web3HistoricalErc1155BalanceReader,
+    )
+    from integrations.polymarket.leader_sell_fraction_data_api import (
+        DataApiLeaderSellFractionReader,
+    )
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellFractionResolver,
+    )
+    from utils.fetchData import fetch_data
+
+    polymarket = getattr(config, "polymarket", None)
+    historical = Web3HistoricalErc1155BalanceReader.from_rpc_url(
+        str(getattr(polymarket, "rpc_url", "") or ""),
+        str(getattr(polymarket, "fallback_rpc_url", "") or ""),
+        request_timeout_seconds=2.5,
+    )
+    fallback = DataApiLeaderSellFractionReader(
+        fetch_json=partial(fetch_data, silent=True),
+    )
+    return LeaderSellFractionResolver(
+        historical_balances=historical,
+        fallback_fractions=fallback,
+        buy_scope_guard=buy_scope_guard,
     )
 
 
@@ -909,7 +962,10 @@ def _build_reconcile_wake_closure(context):
     cannot stack reconcile passes. The closure delegates to the canonical
     ``reconcile_submitted_unconfirmed``; it never touches positions directly.
     """
-    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+    from orchestrators.trade_pipeline import (
+        get_reconciliation_service,
+        reconcile_submitted_unconfirmed,
+    )
 
     lock = asyncio.Lock()
 
@@ -918,6 +974,8 @@ def _build_reconcile_wake_closure(context):
             return
         async with lock:
             try:
+                reconciler = get_reconciliation_service(context)
+                await reconciler.record_user_order_evidence(event)
                 reconciled = await reconcile_submitted_unconfirmed(context)
                 reservation_reaped = 0
                 extra = getattr(context, "extra", {}) or {}
@@ -1670,8 +1728,9 @@ async def _run_application(
             },
         )
         print_error(
-            "No active leaders available. copy_trading.wallets is empty or disabled and "
-            "auto trader detection did not find eligible candidates."
+            "No active leaders available. No enabled traders in "
+            "config/traders/*.yml and auto trader detection did not find "
+            "eligible candidates."
         )
         return 1
 
@@ -1703,6 +1762,12 @@ async def _run_application(
     # scoped inside the try/except, so a degraded purge would NameError on
     # the subsequent `build_user_state(..., _pool, ...)` reference.
     _pool = await get_pool()
+    from services.onchain_detection.leader_sell_scope_guard import LeaderSellScopeGuard
+    from storage.postgres.leader_sell_scope_repo import LeaderSellSafetyScopeRepo
+
+    leader_sell_scope_guard = LeaderSellScopeGuard(
+        store=LeaderSellSafetyScopeRepo(_pool),
+    )
     try:
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
     except RuntimeError:
@@ -1831,6 +1896,14 @@ async def _run_application(
         leaders_repo=leaders_repo,
         readiness=application.readiness,
     )
+    for context in {
+        id(candidate): candidate
+        for candidate in (
+            *risk_contexts_by_user.values(),
+            *(item for values in contexts_by_leader.values() for item in values),
+        )
+    }.values():
+        context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
     from orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
 
     seeded_user_ids: set[str] = set()
@@ -1878,6 +1951,7 @@ async def _run_application(
         copy_tasks_config=application.config.copy_trading.copy_tasks,
         contexts=initial_v1_contexts,
         start_workers=False,
+        buy_scope_guard=leader_sell_scope_guard,
     )
     if v1_runtime is not None:
         client_registry.append(v1_runtime)
@@ -2285,6 +2359,8 @@ async def _run_application(
             new_contexts.extend(contexts_by_leader.get(wallet, []))
         dynamic_recon_failures: list[str] = []
         if new_contexts:
+            for context in new_contexts:
+                context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
             await startup_reconcile_unconfirmed(
                 new_contexts,
                 failures_out=dynamic_recon_failures,
@@ -2492,6 +2568,10 @@ async def _run_application(
                     execute_trades=_execute_trade_pipeline,
                     pending_copy_tracker=pending_copy_tracker,
                     telemetry=telemetry_emitters.detection,
+                    sell_fraction_resolver=_build_leader_sell_fraction_resolver(
+                        application.config,
+                        buy_scope_guard=leader_sell_scope_guard,
+                    ),
                 )
                 onchain_runtime = await _build_detection_source_factory(
                     application.config,
@@ -2572,7 +2652,7 @@ async def _run_application(
 
             fail_closed = False
             for task in done:
-                spec = next((s for s in supervised if s.task is task), None)
+                completed_spec = next((s for s in supervised if s.task is task), None)
 
                 # A cancelled task is a normal lifecycle event (shutdown, or a
                 # loop that re-raises CancelledError) — never a crash. Calling
@@ -2580,16 +2660,16 @@ async def _run_application(
                 # down the supervisor, turning graceful cancellation into an
                 # exit(1). Treat it as a benign drop.
                 if task.cancelled():
-                    if spec is not None:
+                    if completed_spec is not None:
                         logger.info(
                             "supervised_task_cancelled",
-                            extra={"task": spec.name},
+                            extra={"task": completed_spec.name},
                         )
                     continue
 
-                exc = task.exception()
+                task_error = task.exception()
 
-                if spec is None:
+                if completed_spec is None:
                     # Leader monitor: log and drop; dynamic discovery
                     # re-introduces monitors as leaders change. P2-h: a crashed
                     # leader monitor used to leave ``monitored_leader_count``
@@ -2598,10 +2678,10 @@ async def _run_application(
                     # from the still-live monitor tasks (the crashed one is
                     # ``done`` here) so the gauge reflects reality and an
                     # operator can see coverage dropped.
-                    if exc:
+                    if task_error:
                         logger.error(
                             "monitor_task_crashed",
-                            extra={"error": redact_error_detail(exc)},
+                            extra={"error": redact_error_detail(task_error)},
                         )
                     crashed_wallet = monitor_wallet_by_task.pop(task, None)
                     if crashed_wallet is not None:
@@ -2612,33 +2692,36 @@ async def _run_application(
                     )
                     continue
 
-                if exc is None:
+                if task_error is None:
                     # Supervised loops run forever; a clean return means the
                     # subsystem disabled itself (e.g. config gate). Leave it
                     # dropped rather than tear the process down.
                     logger.warning(
                         "supervised_task_exited_clean",
-                        extra={"task": spec.name},
+                        extra={"task": completed_spec.name},
                     )
                     continue
 
                 metrics.inc("supervised_task_restart_total")
-                decision = _on_supervised_crash(spec, loop.time())
+                decision = _on_supervised_crash(completed_spec, loop.time())
                 logger.error(
                     "supervised_task_crashed",
                     extra={
-                        "task": spec.name,
-                        "restarts": spec.restarts,
+                        "task": completed_spec.name,
+                        "restarts": completed_spec.restarts,
                         "decision": decision,
-                        "error": redact_error_detail(exc),
+                        "error": redact_error_detail(task_error),
                     },
                 )
                 if decision == "restart":
-                    spec.spawn()
+                    completed_spec.spawn()
                 else:
                     logger.critical(
                         "supervised_task_fail_closed",
-                        extra={"task": spec.name, "restarts": spec.restarts},
+                        extra={
+                            "task": completed_spec.name,
+                            "restarts": completed_spec.restarts,
+                        },
                     )
                     application.readiness.update(supervisor_ok=False)
                     fail_closed = True

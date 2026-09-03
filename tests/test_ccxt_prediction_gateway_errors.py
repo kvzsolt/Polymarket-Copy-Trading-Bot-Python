@@ -37,6 +37,7 @@ class Exchange:
         self.create_error: BaseException | None = None
         self.read_error: BaseException | None = None
         self.cancel_error: BaseException | None = None
+        self.order_value: object = {"id": "order", "status": "open"}
 
     async def load_outcome(self, _token):
         return self.outcome_value
@@ -67,7 +68,7 @@ class Exchange:
     async def fetch_order(self, _id):
         if self.read_error:
             raise self.read_error
-        return {"id": "order", "status": "open"}
+        return self.order_value
 
     async def cancel_order(self, _id):
         if self.cancel_error:
@@ -175,6 +176,39 @@ async def test_order_not_found_is_distinct_from_venue_outage() -> None:
     exchange.read_error = error_type("OrderNotFound")("missing")
     with pytest.raises(VenueOrderNotFoundError):
         await CcxtPredictionGateway(exchange).get_order("missing")
+
+
+@pytest.mark.asyncio
+async def test_ccxt_null_order_shape_maps_to_not_found() -> None:
+    """Pinned CCXT 4.5.75 parses a CLOB JSON null into this empty order."""
+
+    exchange = Exchange()
+    exchange.order_value = {
+        "id": None,
+        "status": None,
+        "filled": 0.0,
+        "amount": None,
+        "price": None,
+        "info": "null",
+    }
+
+    with pytest.raises(VenueOrderNotFoundError):
+        await CcxtPredictionGateway(exchange).get_order("missing")
+
+
+@pytest.mark.asyncio
+async def test_missing_order_id_with_non_null_info_remains_invalid() -> None:
+    """Only CCXT's exact null sentinel is absence; malformed data still fails."""
+
+    exchange = Exchange()
+    exchange.order_value = {
+        "id": None,
+        "status": None,
+        "info": {"status": "live"},
+    }
+
+    with pytest.raises(VenueInvalidOrderError, match="omitted id"):
+        await CcxtPredictionGateway(exchange).get_order("malformed")
 
 
 @pytest.mark.asyncio
@@ -323,3 +357,56 @@ async def test_unclassified_exception_after_post_is_ambiguous_not_retryable_outa
     assert result.success is False
     assert result.ambiguous_post_failure is True
     assert result.non_retryable is False
+
+
+@pytest.mark.asyncio
+async def test_not_fillable_preserves_the_venue_reason() -> None:
+    """Keep the venue's own words so the two FAK kills stay distinguishable.
+
+    Polymarket answers an uncrossable FAK with "no orders found to match with
+    FAK order" and a partially-filled FOK with "order couldn't be fully
+    filled". Collapsing both to the bare token ``order_not_fillable`` made it
+    impossible to tell from the logs whether the book was empty at our limit or
+    merely too thin, which is the difference between mispricing and bad luck.
+    """
+    exchange = Exchange()
+    exchange.create_error = error_type("OrderNotFillable")(
+        'polymarket {"error":"no orders found to match with FAK order. FAK orders '
+        'are partially filled or killed if no match is found."}'
+    )
+
+    result = await market_request(CcxtPredictionGateway(exchange))
+
+    assert result.status == "canceled"
+    assert result.non_retryable is True
+    # ``error`` stays an exact token: telemetry and the v1 task adapter both
+    # classify on equality, so the detail belongs in its own field.
+    assert result.error == "order_not_fillable"
+    assert result.venue_reason is not None
+    assert "no orders found to match with FAK order" in result.venue_reason
+
+
+@pytest.mark.asyncio
+async def test_not_fillable_redacts_secrets_in_the_venue_reason() -> None:
+    """The preserved text goes through the same scrubber as other rejections."""
+    exchange = Exchange()
+    exchange.create_error = error_type("OrderNotFillable")(
+        "no match; Authorization: Bearer sk-live-abcdef123456"
+    )
+
+    result = await market_request(CcxtPredictionGateway(exchange))
+
+    assert result.venue_reason is not None
+    assert "sk-live-abcdef123456" not in result.venue_reason
+
+
+@pytest.mark.asyncio
+async def test_not_fillable_without_detail_stays_stable() -> None:
+    """An empty venue message must not produce a ragged error token."""
+    exchange = Exchange()
+    exchange.create_error = error_type("OrderNotFillable")("")
+
+    result = await market_request(CcxtPredictionGateway(exchange))
+
+    assert result.error == "order_not_fillable"
+    assert result.venue_reason == "no venue detail"

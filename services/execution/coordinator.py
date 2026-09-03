@@ -6,7 +6,7 @@ import logging
 from inspect import isawaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Protocol
 
 from domain.order_lifecycle import (
@@ -22,6 +22,7 @@ from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
 )
+from utils.logger import redact_error_detail
 from services.execution.reservation_service import (
     Clock,
     DefaultClock,
@@ -78,6 +79,9 @@ class ExecutionIntent:
     tick_size: Decimal | None = None
     min_order_size: Decimal | None = None
     neg_risk: bool | None = None
+    leader_sell_fraction: Decimal | None = None
+    live_position_size: Decimal | None = None
+    sub_min_sell_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,7 @@ class ExecutionCoordinator:
         live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
         execution_service: Any | None = None,
         position_coordinator: Any | None = None,
-    ):
+    ) -> None:
         self.reservation_service = reservation_service
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -259,6 +263,7 @@ class ExecutionCoordinator:
         # Production wrapper deps. ``execute_intent`` (V2) does not use these.
         self.execution_service = execution_service
         self.position_coordinator = position_coordinator
+        self.leader_sell_target_service: object | None = None
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
         # Cache the underlying reservations repo for direct order-id lookups.
@@ -715,6 +720,26 @@ class ExecutionCoordinator:
         recovery_metadata = dict(intent.recovery_metadata or {})
         recovery_metadata["reservation_id"] = reservation_id
         recovery_metadata.setdefault("source", source_override)
+        requested_sell_size = Decimal(str(intent.size))
+        reserved_sell_size = requested_sell_size
+        if intent.side.upper() == "SELL":
+            raw_reserved_size = getattr(reservation, "reserved_size", Decimal("0"))
+            try:
+                candidate_reserved_size = Decimal(str(raw_reserved_size))
+            except (InvalidOperation, TypeError, ValueError):
+                candidate_reserved_size = Decimal("0")
+            if candidate_reserved_size > 0:
+                reserved_sell_size = candidate_reserved_size
+            recovery_metadata["requested_sell_size"] = str(requested_sell_size)
+            recovery_metadata["reserved_sell_size"] = str(reserved_sell_size)
+        baseline_position_size = intent.live_position_size
+        if baseline_position_size is None:
+            baseline_position_size = await self._local_position_baseline(intent)
+        if baseline_position_size is not None:
+            recovery_metadata.setdefault(
+                "pre_submit_live_position_size",
+                str(baseline_position_size),
+            )
         price_limit = intent.price_limit
         raw_price_limit = recovery_metadata.get("price_limit")
         if price_limit is None and raw_price_limit is not None:
@@ -739,7 +764,7 @@ class ExecutionCoordinator:
             amount=(
                 Decimal(str(intent.notional_usdc))
                 if intent.side.upper() == "BUY"
-                else Decimal(str(intent.size))
+                else reserved_sell_size
             ),
             max_slippage_bps=int(intent.max_slippage_bps),
             reason=intent.reason or source_override,
@@ -751,6 +776,9 @@ class ExecutionCoordinator:
             tick_size=intent.tick_size,
             min_order_size=intent.min_order_size,
             neg_risk=intent.neg_risk,
+            leader_sell_fraction=intent.leader_sell_fraction,
+            live_position_size=intent.live_position_size,
+            sub_min_sell_policy=intent.sub_min_sell_policy,
         )
 
         # ---- Submit through ExecutionService (dup-guard layer #2) -----
@@ -931,7 +959,52 @@ class ExecutionCoordinator:
             max_slippage_bps=int(intent.max_slippage_bps),
             created_at=datetime.fromtimestamp(self.clock.utcnow_timestamp(), tz=timezone.utc),
             source_signal_id=intent.signal_id,
+            sell_fraction=intent.leader_sell_fraction,
+            live_position_size=intent.live_position_size,
+            min_order_size=intent.min_order_size,
+            round_up_to_minimum=intent.sub_min_sell_policy == "round_up",
         )
+
+    async def _local_position_baseline(self, intent: Any) -> Decimal | None:
+        """Return the locally held size for this intent's token, or ``None``.
+
+        The ambiguous-order auto-release compares the local position against a
+        baseline captured before the POST. Without a baseline that probe is
+        permanently inconclusive, and since release requires every probe clean,
+        the reservation stays parked forever — so a token we hold nothing in
+        must record an explicit zero rather than nothing at all.
+
+        Args:
+            intent: The copy intent about to be submitted.
+
+        Returns:
+            The held size, ``Decimal("0")`` when no position exists, or ``None``
+            when the lookup is unavailable. Capture is best-effort: a repository
+            failure must never block a submission.
+        """
+        repo = getattr(self, "positions_repo", None)
+        getter = getattr(repo, "get_position", None)
+        if not callable(getter):
+            return None
+        try:
+            position = await getter(
+                intent.user_id,
+                intent.condition_id,
+                token_id=intent.token_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort telemetry capture
+            logger.debug(
+                "coordinator.position_baseline_unavailable token=%s reason=%s",
+                intent.token_id,
+                redact_error_detail(exc),
+            )
+            return None
+        if position is None:
+            return Decimal("0")
+        try:
+            return Decimal(str(getattr(position, "size_tokens", 0) or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
 
     async def _release_reservation(self, reservation_id: str, *, reason: str) -> None:
         try:

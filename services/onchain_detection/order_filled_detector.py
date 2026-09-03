@@ -115,6 +115,7 @@ class DecodedOrderFilledLog:
     tx_hash: str
     log_index: int
     block_number: int | None
+    block_hash: str
     exchange: str
 
 
@@ -182,6 +183,7 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         tx_hash=tx_hash,
         log_index=log_index,
         block_number=block_number,
+        block_hash=str(log.get("blockHash") or log.get("block_hash") or "").lower(),
         exchange=address,
     )
 
@@ -263,6 +265,8 @@ def build_signal_from_log(
         provisional=False,
         exchange=log.exchange,
         order_hash=order_hash_hex,
+        block_number=log.block_number,
+        block_hash=log.block_hash,
     )
 
 

@@ -105,6 +105,8 @@ async def test_adapter_emits_only_authoritative_confirmed_signal() -> None:
     assert signal.provisional is False
     assert signal.tx_hash == _TX_HASH
     assert signal.log_index == 3
+    assert signal.block_number == 101
+    assert signal.block_hash == "0x" + "55" * 32
     assert signal.order_hash == _ORDER_HASH
     assert signal.leader_wallet == _LEADER
     assert signal.size == Decimal("4")

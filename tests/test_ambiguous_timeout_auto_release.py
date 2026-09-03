@@ -70,6 +70,9 @@ def _record(*, age_seconds: float = 100.0) -> dict[str, Any]:
             "amount": "5",
             "market": "0xmarket",
             "reservation_id": "res-amb-1",
+            "recovery_metadata": {
+                "pre_submit_live_position_size": "0",
+            },
         },
         "reservation_id": "res-amb-1",
         "created_at": time.time() - age_seconds,
@@ -251,6 +254,65 @@ async def test_auto_release_aborted_when_position_size_matches_order():
     assert reservation.releases == []
 
 
+@pytest.mark.asyncio
+async def test_sell_absence_probe_compares_position_to_pre_submit_baseline():
+    """An unchanged SELL balance is clean even when it exceeds order size."""
+
+    record = _record()
+    record["request"]["side"] = "SELL"
+    record["request"]["amount"] = "54.1778"
+    record["request"]["recovery_metadata"] = {
+        "pre_submit_live_position_size": "62.2902",
+    }
+    positions = _PositionsRepo(local_size="62.2902")
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=positions,
+        reservation_service=reservation,
+        clob_gateway=_gateway(order_status="absent", fills=[], list_orders=[]),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        record,
+        side="SELL",
+        order_confirmation_cfg=_cfg(),
+    )
+
+    assert released is True
+    assert reservation.releases == [("res-amb-1", "auto_release_after_ambiguous_timeout")]
+
+
+@pytest.mark.asyncio
+async def test_sell_absence_probe_blocks_when_balance_decreased_from_baseline():
+    """A lower post-submit SELL balance is possible fill evidence."""
+
+    record = _record()
+    record["request"]["side"] = "SELL"
+    record["request"]["amount"] = "54.1778"
+    record["request"]["recovery_metadata"] = {
+        "pre_submit_live_position_size": "62.2902",
+    }
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=_PositionsRepo(local_size="8.1124"),
+        reservation_service=reservation,
+        clob_gateway=_gateway(order_status="absent", fills=[], list_orders=[]),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        record,
+        side="SELL",
+        order_confirmation_cfg=_cfg(),
+    )
+
+    assert released is False
+    assert reservation.releases == []
+
+
 # ---------------------------------------------------------------------------
 # Issue #96 — unsupported / inconclusive probes must not auto-release.
 # The audit specifically called out get_orders_for_market being optional:
@@ -356,6 +418,8 @@ async def test_venue_unavailable_is_inconclusive_not_error():
         condition_id="cond-1",
         token_id="0xtok",
         expected_size=Decimal("5"),
+        side="BUY",
+        pre_submit_position_size=Decimal("0"),
     )
     assert probe["errors"] == 0
     assert probe["inconclusive"] == 1
@@ -392,6 +456,8 @@ async def test_probes_deferred_while_source_backed_off():
         condition_id="cond-1",
         token_id="0xtok",
         expected_size=Decimal("5"),
+        side="BUY",
+        pre_submit_position_size=Decimal("0"),
     )
     assert probe.get("deferred") is True
     gw.get_order.assert_not_awaited()
@@ -490,3 +556,123 @@ async def test_timeout_handler_clears_pacing_on_release():
     assert reservation.releases
     assert "ord-amb-1" not in svc._auto_release_next_probe_at
     assert "ord-amb-1" not in svc._auto_release_abort_counts
+
+
+# ---------------------------------------------------------------------------
+# A baseline that was never captured must not park a reservation forever.
+#
+# Live evidence (2026-08-27): order 0x6164a85e… recurred across three process
+# starts with an identical verdict — get_order/list_open_orders/get_fills all
+# "absent", position_delta "pre_submit_baseline_missing". Because release
+# requires every probe clean, that single local hold-out kept the reservation
+# active indefinitely, parking capital that copy sizing is derived from.
+# ---------------------------------------------------------------------------
+
+
+def _baseline_less_record(*, age_seconds: float) -> dict[str, Any]:
+    record = _record(age_seconds=age_seconds)
+    record["request"]["recovery_metadata"] = {}
+    return record
+
+
+@pytest.mark.asyncio
+async def test_missing_baseline_still_blocks_release_before_the_horizon():
+    """Inside the horizon the local hold-out keeps its veto."""
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=_PositionsRepo(local_size="0"),
+        reservation_service=reservation,
+        clob_gateway=_gateway(order_status="absent", fills=[], list_orders=[]),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        _baseline_less_record(age_seconds=100.0),
+        side="BUY",
+        order_confirmation_cfg=_cfg(auto_release_baseline_missing_after_seconds=3600.0),
+    )
+
+    assert released is False
+    assert reservation.releases == []
+
+
+@pytest.mark.asyncio
+async def test_missing_baseline_releases_once_past_the_horizon():
+    """Past the horizon three clean venue probes outweigh an absent baseline.
+
+    The venue is the authority on whether an order exists: a fill would appear
+    in get_fills. A baseline the coordinator never wrote is our own bookkeeping
+    gap, and it must not hold capital indefinitely.
+    """
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=_PositionsRepo(local_size="0"),
+        reservation_service=reservation,
+        clob_gateway=_gateway(order_status="absent", fills=[], list_orders=[]),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        _baseline_less_record(age_seconds=7_200.0),
+        side="BUY",
+        order_confirmation_cfg=_cfg(auto_release_baseline_missing_after_seconds=3600.0),
+    )
+
+    assert released is True
+    assert reservation.releases == [("res-amb-1", "auto_release_after_ambiguous_timeout")]
+
+
+@pytest.mark.asyncio
+async def test_horizon_does_not_excuse_an_inconclusive_venue_probe():
+    """Only the local baseline is forgiven; venue doubt still blocks release."""
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=_PositionsRepo(local_size="0"),
+        reservation_service=reservation,
+        clob_gateway=_gateway(
+            order_status="absent",
+            fills=[{"order_id": "ord-amb-1", "size": "5"}],
+            list_orders=[],
+        ),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        _baseline_less_record(age_seconds=7_200.0),
+        side="BUY",
+        order_confirmation_cfg=_cfg(auto_release_baseline_missing_after_seconds=3600.0),
+    )
+
+    assert released is False
+    assert reservation.releases == []
+
+
+@pytest.mark.asyncio
+async def test_horizon_is_disabled_by_default():
+    """The escape is opt-in: zero keeps today's indefinite-hold behaviour."""
+    reservation = _ReservationService()
+    service = ReconciliationService(
+        orders_repo=_OrdersRepo(),
+        fills_repo=None,
+        positions_repo=_PositionsRepo(local_size="0"),
+        reservation_service=reservation,
+        clob_gateway=_gateway(order_status="absent", fills=[], list_orders=[]),
+    )
+
+    released = await service._maybe_auto_release_ambiguous(
+        _baseline_less_record(age_seconds=7_200.0),
+        side="BUY",
+        order_confirmation_cfg=_cfg(auto_release_baseline_missing_after_seconds=0.0),
+    )
+
+    assert released is False
+    assert reservation.releases == []
+
+
+def test_baseline_missing_horizon_has_a_config_default():
+    from config.app_config import OrderConfirmationConfig
+
+    assert OrderConfirmationConfig().auto_release_baseline_missing_after_seconds == 0.0

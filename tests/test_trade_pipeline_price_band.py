@@ -142,3 +142,118 @@ class TestCopyEntryPricePlan:
 
         assert price_limit == Decimal("0.4725")
         assert metadata["price_drift_pct"] == "5.0"
+
+
+def _leader_aware_context(
+    drift_by_leader: dict[str, float],
+    default_drift: float,
+    *,
+    max_share_price: str = "0.90",
+) -> SimpleNamespace:
+    """Build a context whose config resolves the band per leader."""
+
+    def _resolve(wallet: str) -> float:
+        return drift_by_leader.get(str(wallet).lower(), default_drift)
+
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            execution=SimpleNamespace(
+                max_entry_price_drift_pct=default_drift,
+                max_share_price=max_share_price,
+            ),
+            entry_price_drift_pct_for_leader=_resolve,
+        )
+    )
+
+
+SWEEPING_LEADER = "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705"
+PASSIVE_LEADER = "0x" + "d" * 40
+
+
+class TestPerLeaderEntryBand:
+    """The FAK band is resolved per leader, not from one global constant."""
+
+    def test_leader_specific_band_widens_only_that_leader(self) -> None:
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        swept, swept_meta = _copy_entry_price_plan(
+            context, _signal("0.45"), "BUY", leader_id=SWEEPING_LEADER
+        )
+        passive, passive_meta = _copy_entry_price_plan(
+            context, _signal("0.45"), "BUY", leader_id=PASSIVE_LEADER
+        )
+
+        assert swept == Decimal("0.4950")
+        assert passive == Decimal("0.4725")
+        assert swept_meta["price_drift_pct"] == "10.0"
+        assert passive_meta["price_drift_pct"] == "5.0"
+
+    def test_leader_matching_is_case_insensitive(self) -> None:
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        price_limit, _ = _copy_entry_price_plan(
+            context, _signal("0.45"), "BUY", leader_id=SWEEPING_LEADER.upper()
+        )
+
+        assert price_limit == Decimal("0.4950")
+
+    def test_sell_floor_also_uses_the_leader_band(self) -> None:
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        price_limit, _ = _copy_entry_price_plan(
+            context, _signal("0.55"), "SELL", leader_id=SWEEPING_LEADER
+        )
+
+        assert price_limit == Decimal("0.4950")
+
+    def test_config_without_the_resolver_falls_back_to_execution(self) -> None:
+        """A fake or degraded config still yields the execution-layer band."""
+        price_limit, _ = _copy_entry_price_plan(
+            _context(5.0), _signal("0.45"), "BUY", leader_id=SWEEPING_LEADER
+        )
+
+        assert price_limit == Decimal("0.4725")
+
+
+class TestReplayOfLoggedRejections:
+    """Replay the 2026-08-27 live rejections against the widened band.
+
+    The asks quoted here were reconstructed from Polymarket's public trade
+    history immediately after each of this leader's own fills, which had swept
+    the top of the book.
+    """
+
+    def test_first_rejection_becomes_marketable_at_ten_percent(self) -> None:
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        price_limit, _ = _copy_entry_price_plan(
+            context,
+            _signal("0.6519110295241325993939021673"),
+            "BUY",
+            leader_id=SWEEPING_LEADER,
+        )
+
+        assert price_limit == Decimal("0.7172")
+        assert price_limit > Decimal("0.70")  # the ask that killed the 0.68 order
+
+    def test_second_rejection_becomes_marketable_at_ten_percent(self) -> None:
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        price_limit, _ = _copy_entry_price_plan(
+            context, _signal("0.72"), "BUY", leader_id=SWEEPING_LEADER
+        )
+
+        assert price_limit == Decimal("0.7920")
+        assert price_limit > Decimal("0.77")  # the ask that killed the 0.75 order
+
+    def test_third_rejection_stays_capped_by_max_share_price(self) -> None:
+        """The 0.82 -> 0.94 gap is beyond any band; the global ceiling holds."""
+        context = _leader_aware_context({SWEEPING_LEADER: 10.0}, 5.0)
+
+        price_limit, metadata = _copy_entry_price_plan(
+            context, _signal("0.82"), "BUY", leader_id=SWEEPING_LEADER
+        )
+
+        assert metadata["unclamped_price_limit"] == "0.9020"
+        assert price_limit == Decimal("0.90")
+        assert price_limit < Decimal("0.94")  # correctly refuses to chase

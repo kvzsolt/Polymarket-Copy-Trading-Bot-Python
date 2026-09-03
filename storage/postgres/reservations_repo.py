@@ -51,7 +51,7 @@ from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reserv
 # (Python ``int`` maps natively to PG ``bigint``). Same shape used in
 # positions_repo so collisions stay symmetric across both repos.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
-PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
+type PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -297,6 +297,10 @@ class ReservationsRepo:
         reserved_size: Decimal,
         expires_at: int,
         held_size: Decimal,
+        sell_fraction: Decimal | None = None,
+        live_position_size: Decimal | None = None,
+        min_order_size: Decimal | None = None,
+        round_up_to_minimum: bool = False,
     ) -> tuple["Reservation | None", "Reservation | None"]:
         """SELL parity for ``create_buy_reservation_checked_by_intent``.
 
@@ -345,14 +349,41 @@ class ReservationsRepo:
                     intent.key.token_id,
                 )
                 already_reserved = self._sum_decimal_rows(rows, "reserved_size")
-                if held_size - already_reserved < reserved_size:
+                capacity = held_size - already_reserved
+                target_size = reserved_size
+                if sell_fraction is not None:
+                    if not sell_fraction.is_finite() or not (
+                        Decimal("0") < sell_fraction <= Decimal("1")
+                    ):
+                        raise ValueError("sell_fraction must be finite and in (0, 1]")
+                    if live_position_size is None or not live_position_size.is_finite():
+                        raise ValueError(
+                            "live_position_size is required for fractional SELL reservation"
+                        )
+                    free_size = min(
+                        max(Decimal("0"), capacity),
+                        max(Decimal("0"), live_position_size),
+                    )
+                    target_size = free_size * sell_fraction
+                    if (
+                        min_order_size is not None
+                        and min_order_size > 0
+                        and target_size < min_order_size
+                    ):
+                        target_size = (
+                            min_order_size
+                            if round_up_to_minimum and free_size >= min_order_size
+                            else Decimal("0")
+                        )
+                    target_size = min(target_size, free_size)
+                if target_size <= 0 or capacity < target_size:
                     return None, None
                 await self._insert_reservation(
                     conn,
                     res_id,
                     intent,
                     Decimal("0"),
-                    reserved_size,
+                    target_size,
                     created_at,
                     expires_at,
                 )

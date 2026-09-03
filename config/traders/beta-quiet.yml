@@ -1,0 +1,80 @@
+# Followed trader: beta-quiet.
+#
+# Single source of truth for following this wallet. See alpha-steady.yml for
+# the full field-by-field explanation; the same schema applies here.
+
+name: beta-quiet
+wallet: "0x31864feb9d25dee93728c6225ba891530967e9ca"
+enabled: true
+
+task:
+  monitoring_mode: normal
+  sizing_mode: proportional
+  notifications_muted: false
+
+  trigger:
+    enabled: true
+    min_notional: 0
+    max_notional: 0
+
+  spend:
+    enabled: true
+    max_total: 0
+    max_daily: 0
+    max_per_market: 0
+    one_entry_per_market: false
+    global_one_entry_per_market: false
+    one_entry_per_sports_type: false
+
+  price:
+    enabled: true
+    min_price: 0.20
+    max_price: 0.80
+    offset_mode: disabled
+    offset_direction: above
+    offset: 0
+    max_slippage_percent: 5
+
+  reaction:
+    enabled: true
+    follow_buys: true
+    copy_sells: true
+    buy_on_sells: false
+    counter_trade: false
+    copy_side: both
+    copy_merges: false
+    copy_splits: false
+    copy_conversions: false
+
+  market_filter:
+    enabled: true
+    include_keywords: []
+    exclude_keywords: []
+    categories: []
+    tokens: []
+    timeframes: []
+    min_liquidity_usdc: 0
+    min_volume_24h_usdc: 0
+    max_days_until_close: 0
+    allow_expired_unresolved: false
+
+  schedule:
+    enabled: false
+    timezone_name: UTC
+    start: "00:00"
+    end: "00:00"
+
+  sizing:
+    enabled: true
+    mode: proportional
+    percentage: 5
+    fixed_amount: 3
+    trade_multiplier: 1
+    weighted_multiplier: 1
+    buy_min_amount: 5
+    buy_max_amount: 17.5
+    copyable_balance_percent: 75
+    proportional_balance_cap_enabled: true
+    require_leader_balance: true
+    strict_fixed_amount: true
+    strict_exact_mirror: true

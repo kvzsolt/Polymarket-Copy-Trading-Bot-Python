@@ -13,6 +13,7 @@ must remain unknown (zero), not be fabricated from the slippage ceiling.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -270,19 +271,25 @@ async def test_partial_fak_keeps_original_price_protection_without_repost(
     ("side", "quote", "price_limit", "expected"),
     [
         # Quotes sit inside the caller band (0.55 <= 0.555, 0.46 >= 0.455) so
-        # the leader-price gate lets them through; the slippage-widened price
-        # is what would cross the non-tick-aligned cap or floor.
-        ("BUY", _make_bundle(ask="0.55"), "0.555", "0.55"),
-        ("SELL", _make_bundle(bid="0.46"), "0.455", "0.46"),
+        # the leader-price gate lets them through; the non-tick-aligned cap or
+        # floor is what has to be snapped onto the grid.
+        ("BUY", _make_bundle(ask="0.55"), "0.555", "0.56"),
+        ("SELL", _make_bundle(bid="0.46"), "0.455", "0.45"),
     ],
 )
-async def test_initial_fak_price_limit_rounds_toward_protection(
+async def test_initial_fak_price_limit_rounds_toward_the_book(
     side: str,
     quote: MarketDataBundle,
     price_limit: str,
     expected: str,
 ) -> None:
-    """Quantization must not cross a non-tick-aligned cap or floor."""
+    """Quantization must not cost a one-shot FAK its cross.
+
+    A FAK is killed rather than rested, so snapping a BUY cap down (or a SELL
+    floor up) onto the tick grid can turn an executable order into a venue
+    ``order_not_fillable``. The overshoot is bounded by one tick and the
+    absolute share-price ceiling is re-asserted afterwards.
+    """
 
     mds = _mock_mds()
     mds.require_fresh_data.return_value = quote
@@ -302,3 +309,49 @@ async def test_initial_fak_price_limit_rounds_toward_protection(
 
     submitted = gateway.submit_marketable_order.await_args.args[0]
     assert submitted.price_limit == Decimal(expected)
+
+
+@pytest.mark.asyncio
+async def test_terminal_rejection_surfaces_the_venue_reason() -> None:
+    """The operator must see *why* the venue killed a FAK, not just that it did.
+
+    ``order_not_fillable`` alone cannot distinguish "nothing crossable at our
+    limit" from "the book was too thin to fill it whole", and those point at
+    different fixes.
+    """
+    gw = MagicMock(spec=ClobGateway)
+    gw.submit_marketable_order = AsyncMock(
+        return_value=VenueSubmitResult(
+            success=False,
+            status="canceled",
+            error="order_not_fillable",
+            non_retryable=True,
+            venue_reason=(
+                "polymarket no orders found to match with FAK order. FAK orders "
+                "are partially filled or killed if no match is found."
+            ),
+        )
+    )
+    gw.get_order = AsyncMock(return_value=None)
+    svc = _build_svc(gateway=gw)
+
+    # The execution logger does not propagate to the root, so attach directly.
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    from services.executionService import logger as exec_logger
+
+    handler = _Capture(level=logging.WARNING)
+    exec_logger.addHandler(handler)
+    try:
+        result = await svc.execute(_req(side="BUY", amount="10", price_limit="0.55"))
+    finally:
+        exec_logger.removeHandler(handler)
+
+    assert result.status == "canceled"
+    logged = "\n".join(record.getMessage() for record in records)
+    assert "order_not_fillable" in logged
+    assert "no orders found to match with FAK order" in logged

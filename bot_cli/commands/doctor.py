@@ -739,8 +739,8 @@ async def run_doctor_checks(
                 ctx.blocked(
                     "leaders",
                     "no manual leaders, no active roster entry, or discovery credentials are missing",
-                    "set copy_trading.wallets or discovery.api.token in secrets.env and enable "
-                    "the discovery scheduler",
+                    "define the leader in config/traders/<name>.yml, or set "
+                    "discovery.api.token in secrets.env and enable the discovery scheduler",
                 )
 
     return ctx.to_dict()

@@ -84,6 +84,20 @@ class _V1Runtime:
         self.signals.append(signal)
 
 
+class _SellFractionResolver:
+    """Return one configured signal-resolution outcome."""
+
+    def __init__(self, outcome) -> None:
+        self.outcome = outcome
+        self.signals: list[OnchainTradeSignal] = []
+
+    async def resolve(self, signal: OnchainTradeSignal):
+        """Capture ``signal`` and return the configured outcome."""
+
+        self.signals.append(signal)
+        return self.outcome
+
+
 class _FakeOrdersRepo:
     """In-memory ``processed_trades`` claim with the production conflict rules."""
 
@@ -155,6 +169,7 @@ def _adapter(
     v1_runtime=None,
     pipeline=None,
     metrics=None,
+    sell_fraction_resolver=None,
 ) -> tuple[OnchainSignalDispatchAdapter, _Pipeline, MetricsRegistry]:
     pipeline = pipeline or _Pipeline()
     metrics = metrics or MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
@@ -165,6 +180,7 @@ def _adapter(
         clock=lambda: 1234.5,
         metrics=metrics,
         logger=logging.getLogger("OnchainSignalDispatch"),
+        sell_fraction_resolver=sell_fraction_resolver,
     )
     return adapter, pipeline, metrics
 
@@ -204,6 +220,64 @@ async def test_prefers_v1_runtime_when_present() -> None:
     await adapter(signal)
 
     assert v1.signals == [signal]
+    assert pipeline.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolves_sell_fraction_before_legacy_dispatch() -> None:
+    """The legacy pipeline receives the resolver's exact Decimal annotation."""
+
+    from dataclasses import replace
+
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellResolutionOutcome,
+    )
+
+    original = replace(_signal(), side="SELL")
+    resolved = replace(
+        original,
+        leader_sell_fraction=Decimal("0.25"),
+        sell_fraction_resolution="historical_rpc",
+    )
+    resolver = _SellFractionResolver(LeaderSellResolutionOutcome(resolved, True))
+    adapter, pipeline, _ = _adapter(
+        {_LEADER: [_ctx("u1")]},
+        sell_fraction_resolver=resolver,
+    )
+
+    await adapter(original)
+
+    assert resolver.signals == [original]
+    assert pipeline.calls[0][2][0]["_leader_sell_fraction"] == "0.25"
+    assert pipeline.calls[0][2][0]["_leader_sell_fraction_resolution"] == "historical_rpc"
+
+
+@pytest.mark.asyncio
+async def test_resolver_denial_stops_buy_before_v1_or_legacy_dispatch() -> None:
+    """A degraded scope BUY is dropped before either copy runtime sees it."""
+
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellResolutionOutcome,
+    )
+
+    signal = _signal()
+    resolver = _SellFractionResolver(
+        LeaderSellResolutionOutcome(
+            signal=signal,
+            dispatch=False,
+            reason="leader_sell_fraction_scope_degraded",
+        )
+    )
+    v1 = _V1Runtime()
+    adapter, pipeline, _ = _adapter(
+        {_LEADER: [_ctx("u1")]},
+        v1_runtime=v1,
+        sell_fraction_resolver=resolver,
+    )
+
+    await adapter(signal)
+
+    assert v1.signals == []
     assert pipeline.calls == []
 
 

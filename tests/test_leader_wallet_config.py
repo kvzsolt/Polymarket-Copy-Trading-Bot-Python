@@ -51,21 +51,37 @@ def test_disabled_wallet_address_is_still_validated() -> None:
 
 
 def test_live_roster_uses_explicit_enabled_entry_style() -> None:
-    """The checked-in live roster exposes one obvious toggle per wallet."""
+    """Each checked-in trader file exposes one obvious toggle per wallet."""
     root = Path(__file__).resolve().parents[1]
-    payload = yaml.safe_load(
+
+    trader_files = sorted((root / "config/traders").glob("*.yml"))
+    assert trader_files
+
+    seen_wallets = set()
+    for path in trader_files:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert set(payload) >= {"wallet", "enabled", "task"}, path
+        assert isinstance(payload["enabled"], bool), path
+        assert payload["wallet"] not in seen_wallets, path
+        seen_wallets.add(payload["wallet"])
+
+    # The environment file must not define a second roster.
+    live_payload = yaml.safe_load(
         (root / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
     )
-
-    assert payload["wallets"]
-    assert all(set(entry) == {"wallet", "enabled"} for entry in payload["wallets"])
-    assert all(entry["enabled"] is True for entry in payload["wallets"])
+    assert "wallets" not in live_payload
 
 
-def test_per_leader_tuning_files_do_not_expose_a_second_enabled_switch() -> None:
-    """Roster activation has one unambiguous owner in copy-trading config."""
+def test_roster_activation_has_one_unambiguous_owner() -> None:
+    """Only config/traders files decide which wallets are followed."""
     root = Path(__file__).resolve().parents[1]
 
-    for path in sorted((root / "config/leaders").glob("*.yml")):
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        assert "enabled" not in payload, path
+    assert not (root / "config" / "leaders").exists()
+    live_payload = yaml.safe_load(
+        (root / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
+    )
+    assert "wallets" not in live_payload
+    base_payload = yaml.safe_load(
+        (root / "config/copy_trading.yml").read_text(encoding="utf-8")
+    )
+    assert "wallets" not in base_payload

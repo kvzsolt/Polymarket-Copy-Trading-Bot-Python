@@ -60,6 +60,9 @@ from services.metrics import (
     metrics as _metrics,
 )
 from services.onchain_detection.pending_copy_confirmation_tracker import TrackedPendingCopy
+from services.onchain_detection.leader_sell_fraction_resolver import (
+    LeaderSellFractionResolver,
+)
 from services.onchain_detection.trade_detection_models import OnchainTradeSignal
 from services.telemetry import DetectionTelemetryEmitter
 from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
@@ -551,6 +554,7 @@ class OnchainSignalDispatchAdapter:
         pending_copy_tracker: PendingCopyTracker | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         telemetry: DetectionTelemetryEmitter | None = None,
+        sell_fraction_resolver: LeaderSellFractionResolver | None = None,
     ) -> None:
         """Bind the live follower map and routing collaborators.
 
@@ -582,6 +586,8 @@ class OnchainSignalDispatchAdapter:
                 never raising. It is also shared with the default claim policy
                 so a cross-source dedup is reported from the one place that
                 knows about it.
+            sell_fraction_resolver: Optional authoritative SELL-fraction
+                resolver applied before either copy runtime sees the signal.
         """
 
         self._contexts_by_leader = contexts_by_leader
@@ -592,6 +598,7 @@ class OnchainSignalDispatchAdapter:
         self._pending_copy_tracker = pending_copy_tracker
         self._metrics = metrics
         self._telemetry = telemetry
+        self._sell_fraction_resolver = sell_fraction_resolver
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
         self._claim_policy = (
             claim_policy
@@ -625,6 +632,19 @@ class OnchainSignalDispatchAdapter:
         self._metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": source.value})
         if self._telemetry is not None:
             self._telemetry.signal_received(source.value, signal.leader_wallet, signal.tx_hash)
+        resolver = self._sell_fraction_resolver
+        if resolver is not None:
+            outcome = await resolver.resolve(signal)
+            if not outcome.dispatch:
+                self._logger.warning(
+                    "onchain_signal_safety_blocked | leader=%s token=%s tx=%s reason=%s",
+                    signal.leader_wallet,
+                    signal.token_id,
+                    signal.tx_hash,
+                    outcome.reason,
+                )
+                return
+            signal = outcome.signal
         if self._v1_runtime is not None:
             await self._v1_runtime.submit_onchain(signal)
             return

@@ -112,7 +112,13 @@ async def build_polymarket_runtime(
             ccxt_client=client,
             market_metadata_client=market_metadata_client or PublicClobTickSizeSource(),
         )
-    market_gateway = CcxtPredictionGateway(client, tick_size_resolver=resolver)
+    market_gateway = CcxtPredictionGateway(
+        client,
+        tick_size_resolver=resolver,
+        metadata_ttl_seconds=float(
+            getattr(getattr(config, "execution", None), "venue_metadata_ttl_seconds", 0.0) or 0.0
+        ),
+    )
 
     try:
         compatibility = await market_gateway.check_compatibility()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 # CLOB venue access flows through the gateway; SDK-shaped types
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
 # imported here. See ``interfaces/clob_gateway.py`` and issue #66.
+from integrations.polymarket.ccxt_compat.tick_size import (
+    TickRounding,
+    quantize_price_to_tick,
+)
 from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInsufficientBalanceError,
@@ -158,14 +163,68 @@ def _is_forced_sell_exit_request(req: ExecutionRequest, side: str) -> bool:
 
 
 def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
+    """Snap a marketable quote onto the tick grid, toward the book.
+
+    Args:
+        price: The unquantized worst-acceptable price.
+        tick_size: Venue tick; a non-positive tick leaves the price untouched
+            so callers without metadata fail later at validation rather than
+            silently trading on an invented grid.
+        side: ``"BUY"`` or ``"SELL"``.
+
+    Returns:
+        The tick-aligned price.
+    """
     if tick_size <= 0:
         return price
-    units = price / tick_size
-    if side == "BUY":
-        rounded_units = units.to_integral_value(rounding=ROUND_CEILING)
-    else:
-        rounded_units = units.to_integral_value(rounding=ROUND_FLOOR)
-    return rounded_units * tick_size
+    return quantize_price_to_tick(
+        price=price,
+        tick_size=tick_size,
+        side=side,
+        rounding=TickRounding.MARKETABLE,
+    )
+
+
+def _copy_fak_limit_on_tick(
+    *,
+    price_limit: Decimal,
+    tick_size: Decimal,
+    side: str,
+    max_share_price: Decimal,
+) -> Decimal:
+    """Snap a copied FAK limit onto the tick grid without losing its cross.
+
+    A copied FAK has exactly one chance to match, so the snap moves toward the
+    book: a BUY cap rounds up, a SELL floor rounds down. Because that can
+    overshoot the requested price by up to one tick, the absolute share-price
+    ceiling is re-asserted *after* the snap — it is a hard risk limit, unlike
+    the leader band, which is a budget.
+
+    Args:
+        price_limit: The band-derived cap (BUY) or floor (SELL).
+        tick_size: Venue tick; a non-positive tick leaves the price untouched.
+        side: ``"BUY"`` or ``"SELL"``.
+        max_share_price: Absolute BUY ceiling; ``0`` disables it.
+
+    Returns:
+        A tick-aligned limit that still crosses wherever the ceiling allows.
+    """
+    if tick_size <= 0:
+        return price_limit
+    snapped = quantize_price_to_tick(
+        price=price_limit,
+        tick_size=tick_size,
+        side=side,
+        rounding=TickRounding.MARKETABLE,
+    )
+    if side != "BUY" or max_share_price <= 0 or snapped <= max_share_price:
+        return snapped
+    return quantize_price_to_tick(
+        price=max_share_price,
+        tick_size=tick_size,
+        side="BUY",
+        rounding=TickRounding.CONSERVATIVE,
+    )
 
 
 def _submit_result_to_response(submit_result) -> dict[str, Any]:
@@ -205,6 +264,11 @@ def _submit_result_to_response(submit_result) -> dict[str, Any]:
         "error": submit_result.error,
         "ambiguous_post_failure": submit_result.ambiguous_post_failure,
         "non_retryable": submit_result.non_retryable,
+        "effective_price": (
+            str(submit_result.effective_price)
+            if submit_result.effective_price is not None
+            else None
+        ),
         "raw": submit_result.raw,
     }
 
@@ -300,10 +364,11 @@ def _is_fak_repostable_no_fill(response: dict[str, Any]) -> bool:
 def _level_size_at_price(levels: Any, price: Decimal | None) -> Decimal:
     if price is None:
         return Decimal("0")
+    iterable: Iterable[tuple[object, object]]
     if isinstance(levels, dict):
         iterable = levels.items()
     else:
-        iterable = []
+        iterable = ()
         if levels:
             iterable = (
                 (
@@ -1144,11 +1209,11 @@ class ExecutionService:
 
         if instant_fak:
             copied_price_limit = Decimal(str(req.price_limit))
-            worst_price = self._apply_marketable_price_protection(
-                calculated_price=copied_price_limit,
-                caller_limit=copied_price_limit,
+            worst_price = _copy_fak_limit_on_tick(
+                price_limit=copied_price_limit,
                 tick_size=tick_size,
                 side=side,
+                max_share_price=max_share_price,
             )
         else:
             slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
@@ -1496,10 +1561,17 @@ class ExecutionService:
                     last_error = submit_result.error or "unknown order submission error"
                     if submit_result.non_retryable:
                         terminal_status = submit_result.status or "rejected"
+                        # ``error`` stays the classification token telemetry and
+                        # the task adapter match on; the venue's own wording is
+                        # what tells an operator which rejection this actually
+                        # was, so log and persist it alongside rather than
+                        # folding it into the token.
+                        venue_reason = submit_result.venue_reason
                         response = {
                             "success": False,
                             "status": terminal_status,
                             "error": last_error,
+                            "venue_reason": venue_reason,
                             "non_retryable": True,
                         }
                         await self._save_submission(
@@ -1508,8 +1580,9 @@ class ExecutionService:
                             response=response,
                         )
                         logger.warning(
-                            "non-retryable CLOB rejection, skipping retries: %s",
+                            "non-retryable CLOB rejection, skipping retries: %s%s",
                             last_error,
+                            f" | venue_reason={venue_reason}" if venue_reason else "",
                         )
                         break
                 except VenueRateLimitError as exc:
@@ -1631,13 +1704,15 @@ class ExecutionService:
                     max_retries=submission_attempts,
                 )
 
+            effective_price = _response_decimal(response, "effective_price")
+            submitted_price = effective_price if effective_price > 0 else worst_price
             if requested_order_type is ExecutionOrderType.FAK and _is_deferred_order_ack(response):
                 venue_status = str(response.get("status") or "submitted_unconfirmed")
                 self._emit_post_lifecycle(
                     req=req,
                     side=side,
                     order_id=_response_order_id(response),
-                    worst_price=worst_price,
+                    worst_price=submitted_price,
                     venue_status=venue_status,
                     lifecycle_status=venue_status,
                 )
@@ -1650,6 +1725,7 @@ class ExecutionService:
                     avg_price=None,
                     fees_paid=Decimal("0"),
                     error=None,
+                    effective_price=submitted_price,
                 )
 
             if not response.get("success"):
@@ -1658,7 +1734,7 @@ class ExecutionService:
                         req=req,
                         side=side,
                         order_id=_response_order_id(response),
-                        worst_price=worst_price,
+                        worst_price=submitted_price,
                         venue_status=str(response.get("status") or "submitted_unconfirmed"),
                         lifecycle_status="submitted_unconfirmed",
                     )
@@ -1671,6 +1747,7 @@ class ExecutionService:
                         avg_price=None,
                         fees_paid=Decimal("0"),
                         error=last_error,
+                        effective_price=submitted_price,
                     )
                 if not (
                     requested_order_type is ExecutionOrderType.FAK
@@ -1680,7 +1757,7 @@ class ExecutionService:
                         req=req,
                         side=side,
                         order_id=None,
-                        worst_price=worst_price,
+                        worst_price=submitted_price,
                         venue_status=str(response.get("status") or "failed"),
                         lifecycle_status=str(response.get("status") or "failed"),
                     )
@@ -1694,6 +1771,7 @@ class ExecutionService:
                         avg_price=None,
                         fees_paid=Decimal("0"),
                         error=last_error or "order submission failed",
+                        effective_price=submitted_price,
                     )
                 logger.info(
                     "copy_fak_initial_zero_fill_retry | token=%s side=%s status=%s error=%s",
@@ -1944,7 +2022,7 @@ class ExecutionService:
                         req=req,
                         side=side,
                         order_id=",".join(order_ids) if order_ids else order_id,
-                        worst_price=worst_price,
+                        worst_price=submitted_price,
                         venue_status=fill_status,
                         lifecycle_status=fill_status,
                     )
@@ -1957,6 +2035,7 @@ class ExecutionService:
                         avg_price=avg_fill_price,
                         fees_paid=Decimal("0"),
                         error=None,
+                        effective_price=submitted_price,
                     )
 
                 venue_no_fill = str(response.get("status") or "cancelled").lower()
@@ -1964,7 +2043,7 @@ class ExecutionService:
                     req=req,
                     side=side,
                     order_id=order_id,
-                    worst_price=worst_price,
+                    worst_price=submitted_price,
                     venue_status=venue_no_fill,
                     lifecycle_status=venue_no_fill,
                 )
@@ -1977,6 +2056,7 @@ class ExecutionService:
                     avg_price=None,
                     fees_paid=Decimal("0"),
                     error=str(last_no_fill_error or "FAK order did not fill"),
+                    effective_price=submitted_price,
                 )
             # Settlement is owned by the canonical reconciler.
             # Execution never self-confirms fills — it returns
@@ -1998,7 +2078,7 @@ class ExecutionService:
                 req=req,
                 side=side,
                 order_id=order_id,
-                worst_price=worst_price,
+                worst_price=submitted_price,
                 venue_status=venue_raw,
                 lifecycle_status=lifecycle_status,
             )
@@ -2011,6 +2091,7 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=None,
+                effective_price=submitted_price,
             )
 
     @staticmethod

@@ -16,7 +16,7 @@ stop_loss_threshold: 0.08
 # Longer grace than the 180 s default: a fresh copy must not be stopped
 # out by the entry-time quote noise of a thin book.
 stop_loss_grace_period_seconds: 300.0
-enable_profit_lock: false
+enable_profit_lock: true
 enable_near_max_exit: true
 enable_trailing_stop: false
 enable_staged_tp: false

@@ -1,12 +1,9 @@
-# Live leader roster migrated from the operator-owned runtime override.
-# Per-leader tunables: config/leaders/<wallet>.yml.
-wallets:
-  - wallet: "0xc4ac7dee4d55d1698e88a8160d5c61ede96b9722"
-    enabled: true
-  - wallet: "0x31864feb9d25dee93728c6225ba891530967e9ca"
-    enabled: true
-  - wallet: "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705"
-    enabled: true
+# Live profile for the global copy-trading engine.
+#
+# Followed leaders are NOT listed here. The live roster is the same single
+# source as every other environment: config/traders/<fantasy-name>.yml.
+# This file only pins engine settings that differ from config/copy_trading.yml.
+#
 # Live profile: the v1 copy-task engine stays off; copies run through the
 # account-level pipeline only.
 copy_tasks:

@@ -70,6 +70,8 @@ class ConfirmedSignalExecutionAdapter:
             provisional=False,
             exchange=fill.exchange_address,
             order_hash=fill.order_hash,
+            block_number=fill.block_number,
+            block_hash=fill.block_hash,
         )
         await self._sink.submit(signal)
 

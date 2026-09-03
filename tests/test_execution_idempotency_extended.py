@@ -631,9 +631,15 @@ class TestSanitization:
         assert "secret" not in result
 
     def test_sanitize_response_success(self):
-        response = {"success": True, "orderID": "ord-1", "status": "submitted"}
+        response = {
+            "success": True,
+            "orderID": "ord-1",
+            "status": "submitted",
+            "effective_price": Decimal("0.4125"),
+        }
         result = _sanitize_submission_response(response)
         assert result["success"] is True
+        assert result["effective_price"] == "0.4125"
 
     def test_sanitize_response_non_dict(self):
         result = _sanitize_submission_response("error string")

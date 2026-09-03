@@ -18,6 +18,7 @@ from integrations.polymarket.ccxt_compat.tick_size import (
     PolymarketTickSizeResolver,
     PublicClobTickSizeSource,
     TickSize,
+    TickRounding,
     TickSizeResolver,
     TickSizeUnavailable,
     quantize_price_to_tick,
@@ -286,3 +287,83 @@ def test_public_clob_source_swallows_transport_errors_and_returns_none() -> None
     source = PublicClobTickSizeSource(fetch_json=fetch_json)
 
     assert asyncio.run(source.get_tick_size("token-a")) is None
+
+
+class TestMarketableTickRounding:
+    """A marketable limit must round toward crossing, not away from it.
+
+    The default ``CONSERVATIVE`` mode protects a caller's cap, which is right
+    for a resting limit but wrong for an order whose whole purpose is to cross:
+    flooring a 0.6846 BUY to 0.68 shaved the band and left the order below a
+    0.70 ask, which the venue killed as unfillable.
+    """
+
+    def test_marketable_buy_rounds_up_to_the_tick(self) -> None:
+        result = quantize_price_to_tick(
+            price=Decimal("0.6846"),
+            tick_size=Decimal("0.01"),
+            side="BUY",
+            rounding=TickRounding.MARKETABLE,
+        )
+        assert result == Decimal("0.69")
+
+    def test_marketable_sell_rounds_down_to_the_tick(self) -> None:
+        result = quantize_price_to_tick(
+            price=Decimal("0.5225"),
+            tick_size=Decimal("0.01"),
+            side="SELL",
+            rounding=TickRounding.MARKETABLE,
+        )
+        assert result == Decimal("0.52")
+
+    def test_conservative_remains_the_default(self) -> None:
+        """Existing callers keep cap-preserving behaviour without opting in."""
+        assert quantize_price_to_tick(
+            price=Decimal("0.6846"), tick_size=Decimal("0.01"), side="BUY"
+        ) == Decimal("0.68")
+        assert quantize_price_to_tick(
+            price=Decimal("0.5225"), tick_size=Decimal("0.01"), side="SELL"
+        ) == Decimal("0.53")
+
+    @pytest.mark.parametrize("tick", ["0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"])
+    def test_marketable_buy_never_falls_below_the_requested_price(self, tick: str) -> None:
+        price = Decimal("0.7319")
+        result = quantize_price_to_tick(
+            price=price,
+            tick_size=Decimal(tick),
+            side="BUY",
+            rounding=TickRounding.MARKETABLE,
+        )
+        assert result >= price
+
+    @pytest.mark.parametrize("tick", ["0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"])
+    def test_marketable_sell_never_rises_above_the_requested_price(self, tick: str) -> None:
+        price = Decimal("0.7319")
+        result = quantize_price_to_tick(
+            price=price,
+            tick_size=Decimal(tick),
+            side="SELL",
+            rounding=TickRounding.MARKETABLE,
+        )
+        assert result <= price
+
+    def test_marketable_rounding_stays_on_exact_tick_multiples(self) -> None:
+        tick = Decimal("0.0025")
+        result = quantize_price_to_tick(
+            price=Decimal("0.411"),
+            tick_size=tick,
+            side="BUY",
+            rounding=TickRounding.MARKETABLE,
+        )
+        assert result == Decimal("0.4125")
+        assert (result / tick) == (result / tick).to_integral_value()
+
+    def test_an_already_on_tick_price_is_unchanged_in_either_mode(self) -> None:
+        """Idempotence matters: the gateway re-quantizes what it was handed."""
+        for mode in (TickRounding.CONSERVATIVE, TickRounding.MARKETABLE):
+            assert quantize_price_to_tick(
+                price=Decimal("0.69"),
+                tick_size=Decimal("0.01"),
+                side="BUY",
+                rounding=mode,
+            ) == Decimal("0.69")

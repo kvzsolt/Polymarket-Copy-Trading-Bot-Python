@@ -70,6 +70,10 @@ class OnchainTradeSignal:
     provisional: bool
     exchange: str
     order_hash: str | None
+    block_number: int | None = None
+    block_hash: str = ""
+    leader_sell_fraction: Decimal | None = None
+    sell_fraction_resolution: str = ""
 
     def as_raw_signal_dict(self) -> dict[str, object]:
         """Render as a raw signal dict shaped for the copy pipeline.
@@ -82,7 +86,7 @@ class OnchainTradeSignal:
         an inert-by-default feature; the runtime enriches condition_id where
         it can (pending: from calldata; mined: via Gamma lookup).
         """
-        return {
+        raw: dict[str, object] = {
             "leader_id": self.leader_wallet,
             "leader_wallet": self.leader_wallet,
             "condition_id": self.condition_id,
@@ -103,7 +107,13 @@ class OnchainTradeSignal:
             "exchange": self.exchange,
             "watched_role": self.watched_role,
             "order_hash": self.order_hash,
+            "block_number": self.block_number,
+            "block_hash": self.block_hash,
         }
+        if self.leader_sell_fraction is not None:
+            raw["_leader_sell_fraction"] = str(self.leader_sell_fraction)
+            raw["_leader_sell_fraction_resolution"] = self.sell_fraction_resolution
+        return raw
 
 
 def watched_side_from_maker_side(maker_side: int, watched_role: str) -> str:

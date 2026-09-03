@@ -171,13 +171,19 @@ class TestOrderResultProjection:
         emitters, service = recording_emitters()
         gw = _success_gateway()
         gw.submit_marketable_order = AsyncMock(
-            return_value=VenueSubmitResult(success=True, order_id="ord-live", status="submitted")
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-live",
+                status="submitted",
+                effective_price=Decimal("0.49"),
+            )
         )
         svc = _service(gw, emitters.execution)
 
         result = await svc.execute(_req("BUY"))
 
         assert result.accepted is True
+        assert result.effective_price == Decimal("0.49")
         assert len(service.calls) == 1
         assert service.calls[0].producer is TelemetryProducer.EXECUTION
 

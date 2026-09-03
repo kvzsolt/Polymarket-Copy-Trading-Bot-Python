@@ -128,6 +128,33 @@ class ProcessorRecorder:
         self.events.append((leader, event))
 
 
+class BuyScopeGuard:
+    """Return deterministic leader/token BUY-pause decisions."""
+
+    def __init__(self, *, paused: bool) -> None:
+        self._paused = paused
+        self.calls: list[tuple[str, str]] = []
+
+    async def is_buy_paused(self, leader_wallet: str, token_id: str) -> bool:
+        """Record and return the configured pause state."""
+
+        self.calls.append((leader_wallet, token_id))
+        return self._paused
+
+
+class SellTargetRecorder:
+    """Capture fresh v1 SELL targets before coordinator submission."""
+
+    def __init__(self) -> None:
+        self.intents: list[object] = []
+
+    async def record_fresh_target(self, intent: object) -> object:
+        """Record and return one target unchanged."""
+
+        self.intents.append(intent)
+        return intent
+
+
 def context(
     result: ExecutionCoordinatorResult | None = None,
     *,
@@ -266,6 +293,36 @@ async def test_ingress_normalizes_polling_batch_and_onchain_signal_once() -> Non
 
 
 @pytest.mark.asyncio
+async def test_ingress_blocks_polling_buy_while_sell_fraction_scope_is_degraded() -> None:
+    """The v1 polling path must honor a durable emergency SELL safety pause."""
+
+    workers = WorkerRecorder()
+    guard = BuyScopeGuard(paused=True)
+    ingress = CopyTaskRuntimeIngress(
+        workers=workers,
+        normalizer=LeaderEventNormalizer(clock=FixedClock()),
+        buy_scope_guard=guard,
+    )
+    polling = event().trade
+    raw = {
+        "conditionId": polling.condition_id,
+        "asset": polling.token_id,
+        "side": "BUY",
+        "size": str(polling.shares),
+        "price": str(polling.price),
+        "usdcSize": str(polling.notional),
+        "timestamp": 1786459200000,
+        "transactionHash": "0xpaused",
+    }
+
+    accepted = await ingress.submit_raw_batch(_LEADER, [raw])
+
+    assert accepted == 0
+    assert workers.events == []
+    assert guard.calls == [(_LEADER, "token-yes")]
+
+
+@pytest.mark.asyncio
 async def test_deferred_handler_must_be_bound_before_workers_start() -> None:
     """Fail composition loudly instead of dropping early leader events."""
 
@@ -344,6 +401,8 @@ async def test_execution_adapter_routes_sell_shares_and_classifies_pre_post_reje
             skip_code="reservation_insufficient",
         )
     )
+    target_recorder = SellTargetRecorder()
+    follower.extra["leader_sell_target_service"] = target_recorder
     adapter = TradingContextTaskExecutionAdapter(contexts=[follower])
 
     outcome = await adapter.submit(command(side="SELL", amount="4"))
@@ -351,7 +410,29 @@ async def test_execution_adapter_routes_sell_shares_and_classifies_pre_post_reje
     intent = follower.execution_coordinator.intents[0]
     assert intent.size == Decimal("4")
     assert intent.notional_usdc == Decimal("1.6")
+    assert intent.leader_sell_fraction == Decimal("0.25")
+    assert intent.live_position_size == Decimal("16")
+    assert target_recorder.intents == [intent]
     assert outcome.disposition is TaskExecutionDisposition.PRE_POST_REJECTED
+
+
+@pytest.mark.asyncio
+async def test_execution_adapter_never_blocks_sell_when_target_persistence_fails() -> None:
+    """Optional target bookkeeping cannot prevent the canonical SELL submission."""
+
+    class _FailingTargetRecorder:
+        async def record_fresh_target(self, intent: object) -> object:
+            del intent
+            raise RuntimeError("target store unavailable")
+
+    follower = context()
+    follower.extra["leader_sell_target_service"] = _FailingTargetRecorder()
+    adapter = TradingContextTaskExecutionAdapter(contexts=[follower])
+
+    outcome = await adapter.submit(command(side="SELL", amount="4"))
+
+    assert len(follower.execution_coordinator.intents) == 1
+    assert outcome.disposition is TaskExecutionDisposition.SUBMITTED_UNCONFIRMED
 
 
 @pytest.mark.asyncio

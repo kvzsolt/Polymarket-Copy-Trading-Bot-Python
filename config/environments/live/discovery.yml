@@ -1,4 +1,4 @@
-# Live profile: the leader roster is the explicit copy_trading.wallets list.
+# Live profile: the leader roster comes from config/traders/<fantasy-name>.yml.
 # Automatic discovery (scheduler) and the Falcon provider both stay off.
 scheduler:
   enabled: false

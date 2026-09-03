@@ -17,6 +17,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import time
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from http import HTTPStatus
@@ -28,6 +31,7 @@ from integrations.polymarket.ccxt_compat.capabilities import build_ccxt_health_p
 from integrations.polymarket.ccxt_compat.precision import CcxtPrecisionError
 from integrations.polymarket.ccxt_compat.tick_size import (
     InvalidTickSize,
+    TickRounding,
     TickSizeResolver,
     quantize_price_to_tick,
 )
@@ -293,11 +297,16 @@ def _submission_exception(exc: BaseException) -> VenueSubmitResult:
     name = _exception_name(exc)
     status = _status_code(exc)
     if name == "OrderNotFillable":
+        # A killed FAK/FOK is a normal outcome, not an outage. Carry the venue's
+        # wording: "no orders found to match" (nothing crossable at our limit)
+        # and "could not be fully filled" (thin book, FOK) are different
+        # diagnoses that this single token cannot tell apart.
         return VenueSubmitResult(
             success=False,
             status="canceled",
             error="order_not_fillable",
             non_retryable=True,
+            venue_reason=_venue_reason(exc),
         )
     if name in _NETWORK_ERRORS or (status is None and name in {"TimeoutError", "ConnectionError"}):
         return VenueSubmitResult(
@@ -336,6 +345,23 @@ async def _await_call(method: Any, *args: Any, **kwargs: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
+# How long a metadata fetch stays usable for signing.
+#
+# Default 0 = refetch before every signed order, which is the money-path rule in
+# CLAUDE.md ("refresh and validate tick size, minimum order size, and
+# negative-risk metadata before signing"). Polymarket moves tick size while a
+# market is live, notably near 0.96/0.04, and a stale tick signs a price off the
+# grid, so this is deliberately opt-in rather than on by default.
+#
+# The cost of that safety is a duplicate CLOB round trip (~0.4s each for the
+# market and neg-risk calls) on the critical path of a copy race whose window is
+# 1-2 seconds, immediately after the pipeline already prefetched the same data.
+# An operator who accepts a bounded staleness window can set
+# ``execution.venue_metadata_ttl_seconds`` to reclaim it; a few seconds is
+# enough to collapse the prefetch/submit pair.
+_DEFAULT_METADATA_TTL_SECONDS = 0.0
+
+
 class CcxtPredictionGateway:
     """Application gateway backed by ``ccxt.prediction.polymarket``."""
 
@@ -344,11 +370,42 @@ class CcxtPredictionGateway:
         client: CcxtPredictionClient | Any,
         *,
         tick_size_resolver: TickSizeResolver | None = None,
+        metadata_ttl_seconds: float = _DEFAULT_METADATA_TTL_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Wrap one CCXT prediction client behind the venue gateway contract.
+
+        Args:
+            client: The CCXT prediction client or a bare exchange.
+            tick_size_resolver: Authoritative per-token tick resolver.
+            metadata_ttl_seconds: How long a metadata fetch stays usable for
+                signing. ``0`` restores a fetch before every signed order.
+            monotonic: Monotonic clock source, injected so the TTL is testable
+                without wall-clock sleeps.
+        """
         self._client = client
         self._exchange = client.exchange if isinstance(client, CcxtPredictionClient) else client
         self._metadata: dict[str, ExecutionMetadata] = {}
+        self._metadata_fetched_at: dict[str, float] = {}
+        self._metadata_ttl_seconds = max(0.0, float(metadata_ttl_seconds))
+        self._monotonic = monotonic
         self._tick_size_resolver = tick_size_resolver
+
+    def _metadata_is_fresh(self, token: str) -> bool:
+        """Return whether cached metadata is recent enough to sign against.
+
+        Args:
+            token: Outcome token id.
+
+        Returns:
+            True when a cached entry exists and was fetched within the TTL.
+        """
+        if self._metadata_ttl_seconds <= 0:
+            return False
+        fetched_at = self._metadata_fetched_at.get(token)
+        if fetched_at is None:
+            return False
+        return (self._monotonic() - fetched_at) < self._metadata_ttl_seconds
 
     @property
     def client(self) -> CcxtPredictionClient | Any:
@@ -597,6 +654,7 @@ class CcxtPredictionGateway:
                 "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
             )
         self._metadata[str(token_id)] = metadata
+        self._metadata_fetched_at[str(token_id)] = self._monotonic()
         return metadata
 
     async def _load_outcome(self, token_id: str) -> dict[str, Any]:
@@ -691,7 +749,13 @@ class CcxtPredictionGateway:
                     "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
                 )
             self._metadata[token] = metadata
+            self._metadata_fetched_at[token] = self._monotonic()
             return metadata
+
+        if refresh and self._metadata_is_fresh(token):
+            cached = self._metadata.get(token)
+            if cached is not None:
+                return cached
 
         if not refresh:
             cached = self._metadata.get(token)
@@ -723,6 +787,7 @@ class CcxtPredictionGateway:
                 "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
             )
         self._metadata[token] = metadata
+        self._metadata_fetched_at[token] = self._monotonic()
         return metadata
 
     async def get_orderbook(self, token_id: str) -> OrderBook:
@@ -952,8 +1017,8 @@ class CcxtPredictionGateway:
                 params,
             )
         except BaseException as exc:
-            return _submission_exception(exc)
-        return self._submission_from_order(value)
+            return replace(_submission_exception(exc), effective_price=quantized)
+        return replace(self._submission_from_order(value), effective_price=quantized)
 
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
         """Submit a price-protected FAK order through CCXT Prediction."""
@@ -976,10 +1041,14 @@ class CcxtPredictionGateway:
         size = _decimal(request.size, field="size")
         price_limit = _decimal(request.price_limit, field="price_limit")
         try:
+            # A FAK/FOK order either crosses now or is killed, so the tick
+            # snap must move toward the book. Rounding away from it shaves the
+            # caller's band and turns an executable order into a venue kill.
             quantized = quantize_price_to_tick(
                 price=price_limit,
                 tick_size=tick_size,
                 side=side,
+                rounding=TickRounding.MARKETABLE,
             )
         except (CcxtPrecisionError, InvalidTickSize, ValueError) as exc:
             raise VenueInvalidOrderError(str(exc)) from exc
@@ -1017,8 +1086,8 @@ class CcxtPredictionGateway:
                 params,
             )
         except BaseException as exc:
-            return _submission_exception(exc)
-        return self._submission_from_order(value)
+            return replace(_submission_exception(exc), effective_price=quantized)
+        return replace(self._submission_from_order(value), effective_price=quantized)
 
     @staticmethod
     def _order_state(value: Any) -> VenueOrderState:
@@ -1028,6 +1097,8 @@ class CcxtPredictionGateway:
             _first(raw, "id", "orderID", "order_id") or _first(info, "id", "orderID") or ""
         )
         if not order_id:
+            if raw.get("info") == "null" and raw.get("status") is None:
+                raise VenueOrderNotFoundError("CCXT returned a null order")
             raise VenueInvalidOrderError("CCXT order response omitted id")
         filled = _decimal(
             _first(raw, "filled", "size_matched") or _first(info, "size_matched"),

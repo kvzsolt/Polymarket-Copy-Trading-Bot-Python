@@ -112,6 +112,19 @@ class _BalanceReader:
         return Decimal("100")
 
 
+class _PausedBuyScopeGuard:
+    """Pause every BUY while recording the ingress scope."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def is_buy_paused(self, leader_wallet: str, token_id: str) -> bool:
+        """Record one query and return a paused decision."""
+
+        self.calls.append((leader_wallet, token_id))
+        return True
+
+
 def _app_config():
     return load_config(_overrides())
 
@@ -188,6 +201,45 @@ async def test_enabled_config_restores_durable_state_and_starts_workers() -> Non
     await handle.close()
     assert handle.worker_count == 0
     assert handle.queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_enabled_runtime_threads_buy_scope_guard_into_polling_ingress() -> None:
+    """The production runtime cannot bypass an emergency SELL scope pause."""
+
+    pool = _FakePool()
+    guard = _PausedBuyScopeGuard()
+    handle = await start_v1_copy_task_runtime(
+        pool=pool,
+        config=_app_config(),
+        copy_tasks_config=_copy_tasks_config(enabled=True),
+        contexts=[],
+        balance_reader=_BalanceReader(),
+        clock=lambda: datetime(2026, 8, 11, tzinfo=timezone.utc),
+        buy_scope_guard=guard,
+    )
+    assert handle is not None
+
+    accepted = await handle.submit_raw_batch(
+        _ADDRESS,
+        [
+            {
+                "conditionId": "condition-a",
+                "asset": "token-a",
+                "side": "BUY",
+                "size": "10",
+                "price": "0.4",
+                "usdcSize": "4",
+                "transactionHash": "0xpaused",
+                "timestamp": 1786459200,
+            }
+        ],
+    )
+
+    assert accepted == 0
+    assert guard.calls == [(_ADDRESS, "token-a")]
+    assert handle.worker_count == 0
+    await handle.close()
 
 
 @pytest.mark.asyncio

@@ -37,8 +37,11 @@ from services.copy_tasks.domain import CopyTask
 from services.copy_tasks.event_routing import CopyTaskEventProcessor
 from services.copy_tasks.price_cache import MarketPriceCacheSink
 from services.copy_tasks.reconciliation import TaskBudgetReconciliationService
+from services.copy_tasks.service import CopyTaskConflict
 from services.copy_tasks.sizing import CopyTaskSizingService
+from services.onchain_detection.leader_sell_scope_guard import LeaderSellBuyScopeGuard
 from storage.postgres.copy_task_repository import (
+    CopyTaskCodec,
     DatabasePool as CopyTaskDatabasePool,
     PostgresCopyTaskRepository,
 )
@@ -84,6 +87,135 @@ class RuntimeFollowerBalanceReader:
         """Return available follower collateral without coercing failures."""
 
         return await self._reader(wallet)
+
+
+def _json_safe(value: object) -> object:
+    """Convert a trader-file task model into codec-compatible JSON values."""
+
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _trader_task_rows(
+    trader: object,
+    *,
+    contexts: Iterable[object],
+    default_follower_account: str,
+) -> list[dict[str, object]]:
+    """Build one durable task row per follower binding for a trader file.
+
+    File-defined tasks use the trader's fantasy name as the task id when the
+    CLI has a single follower account. With multiple accounts the account is
+    appended so every binding gets its own durable task row.
+    """
+
+    task = getattr(trader, "task", None)
+    if task is None:
+        return []
+    wallet = str(getattr(trader, "wallet", "") or "").strip().lower()
+    accounts: list[str] = []
+    for context in contexts:
+        extra = getattr(context, "extra", None)
+        if isinstance(extra, Mapping):
+            leader = str(extra.get("leader_wallet") or "").strip().lower()
+        else:
+            leader = ""
+        if leader == wallet:
+            account = str(
+                getattr(context, "user_id", "")
+                or getattr(context, "wallet_address", "")
+                or ""
+            ).strip()
+            if account and account.casefold() not in {item.casefold() for item in accounts}:
+                accounts.append(account)
+    if not accounts:
+        default = str(default_follower_account or "").strip()
+        if default:
+            accounts.append(default)
+    if not accounts:
+        accounts.append("default")
+
+    task_dump = task.model_dump(mode="python")
+    configuration = _json_safe(
+        {
+            key: task_dump[key]
+            for key in ("trigger", "spend", "price", "reaction", "market_filter", "schedule", "sizing")
+        }
+    )
+    rows: list[dict[str, object]] = []
+    for account in accounts:
+        task_id = str(getattr(trader, "name", "") or "").strip()
+        if len(accounts) > 1:
+            task_id = f"{task_id}-{account.casefold()}"
+        rows.append(
+            {
+                "task_id": task_id,
+                "name": str(getattr(trader, "name", "") or "").strip() or task_id,
+                "leader_wallet": str(getattr(trader, "wallet", "") or "").strip(),
+                "follower_account": account,
+                "status": "active" if bool(getattr(trader, "enabled", True)) else "paused",
+                "monitoring_mode": task.monitoring_mode,
+                "sizing_mode": task.sizing_mode,
+                "notifications_muted": task.notifications_muted,
+                "version": 1,
+                "configuration": configuration,
+            }
+        )
+    return rows
+
+
+async def _seed_tasks_from_trader_configs(
+    *,
+    config: AppConfig,
+    task_repository: PostgresCopyTaskRepository,
+    contexts: Iterable[object],
+) -> int:
+    """Seed file-defined copy tasks from ``config/traders/*.yml``.
+
+    Existing task ids are never overwritten: file-defined tasks are a startup
+    seed, and a task already created through the control plane keeps its
+    current configuration. Returns the number of tasks created.
+    """
+
+    codec = CopyTaskCodec()
+    created = 0
+    default_account = config.wallet.funder_address or "default"
+    for trader in config.copy_trading.traders:
+        rows = _trader_task_rows(
+            trader,
+            contexts=contexts,
+            default_follower_account=default_account,
+        )
+        for row in rows:
+            task = codec.decode_row(row)
+            task_id = str(task.task_id)
+            if await task_repository.get(task_id) is not None:
+                logger.info(
+                    "v1_copy_task_seed | task_id=%s status=already_exists",
+                    task_id,
+                )
+                continue
+            try:
+                await task_repository.create(task)
+            except CopyTaskConflict:
+                logger.info(
+                    "v1_copy_task_seed | task_id=%s status=conflict_skipped",
+                    task_id,
+                )
+                continue
+            created += 1
+            logger.info(
+                "v1_copy_task_seed | task_id=%s leader=%s follower=%s",
+                task_id,
+                task.leader_wallet,
+                task.follower_account,
+            )
+    return created
 
 
 class CopyTaskV1RuntimeHandle:
@@ -195,6 +327,7 @@ async def start_v1_copy_task_runtime(
     balance_reader: FollowerBalanceReader | None = None,
     clock: Clock | None = None,
     start_workers: bool = True,
+    buy_scope_guard: LeaderSellBuyScopeGuard | None = None,
 ) -> CopyTaskV1RuntimeHandle | None:
     """Construct, restore, and start the v1 copy-task runtime when enabled.
 
@@ -204,6 +337,8 @@ async def start_v1_copy_task_runtime(
         copy_tasks_config: The validated copy-task engine configuration
             (``config.copy_trading.copy_tasks``).
         clock: Injectable UTC clock for the startup budget sweep (tests).
+        start_workers: Whether bounded workers accept events immediately.
+        buy_scope_guard: Shared durable emergency SELL scope guard.
 
     Returns:
         A started runtime handle, or ``None`` when ``copy_tasks.enabled`` is
@@ -236,6 +371,11 @@ async def start_v1_copy_task_runtime(
     )
     bundle = builder.build(tasks_config)
     context_values = tuple(contexts)
+    await _seed_tasks_from_trader_configs(
+        config=config,
+        task_repository=task_repository,
+        contexts=context_values,
+    )
     from storage.postgres.orders_repo import OrdersRepo
 
     fallback_order_reader = OrdersRepo(pool)
@@ -273,6 +413,7 @@ async def start_v1_copy_task_runtime(
         CopyTaskRuntimeIngress(
             workers=bundle.workers,
             normalizer=LeaderEventNormalizer(clock=_CallableClock(active_clock)),
+            buy_scope_guard=buy_scope_guard,
         )
         if bundle.workers is not None
         else None

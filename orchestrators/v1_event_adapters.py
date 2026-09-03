@@ -33,6 +33,7 @@ from services.execution.coordinator import (
     ExecutionCoordinatorResult,
     ExecutionIntent,
 )
+from services.onchain_detection.leader_sell_scope_guard import LeaderSellBuyScopeGuard
 
 _ZERO = Decimal("0")
 _MILLISECONDS_THRESHOLD = Decimal("100000000000")
@@ -422,9 +423,19 @@ class CopyTaskRuntimeIngress:
         *,
         workers: CopyTaskWorkerPort,
         normalizer: LeaderEventNormalizer,
+        buy_scope_guard: LeaderSellBuyScopeGuard | None = None,
     ) -> None:
+        """Bind workers, normalization, and the shared BUY-safety guard.
+
+        Args:
+            workers: Bounded per-leader worker authority.
+            normalizer: Detection-source event normalizer.
+            buy_scope_guard: Durable emergency SELL scope guard.
+        """
+
         self._workers = workers
         self._normalizer = normalizer
+        self._buy_scope_guard = buy_scope_guard
 
     async def submit_raw_batch(
         self,
@@ -451,6 +462,8 @@ class CopyTaskRuntimeIngress:
                     extra={"error_type": type(exc).__name__, "source": "polling"},
                 )
                 continue
+            if await self._buy_is_paused(event):
+                continue
             normalized.append(event)
         if normalized:
             await self._workers.submit_batch(leader, normalized)
@@ -469,7 +482,38 @@ class CopyTaskRuntimeIngress:
             signal.as_raw_signal_dict(),
             mode=mode,
         )
+        if await self._buy_is_paused(event):
+            return
         await self._workers.submit_batch(signal.leader_wallet, (event,))
+
+    async def _buy_is_paused(self, event: CopyTaskSourceEvent) -> bool:
+        if event.trade.side is not TradeSide.BUY or self._buy_scope_guard is None:
+            return False
+        try:
+            paused = await self._buy_scope_guard.is_buy_paused(
+                event.trade.leader_wallet,
+                event.trade.token_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "leader_sell_scope_guard_unavailable",
+                extra={
+                    "leader": event.trade.leader_wallet,
+                    "token_id": event.trade.token_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return True
+        if paused:
+            logger.warning(
+                "copy_task_buy_scope_paused",
+                extra={
+                    "leader": event.trade.leader_wallet,
+                    "token_id": event.trade.token_id,
+                    "reason": "leader_sell_fraction_scope_degraded",
+                },
+            )
+        return paused
 
 
 class TradingContextTaskSnapshotProvider:
@@ -619,25 +663,52 @@ class TradingContextTaskExecutionAdapter:
         }
         if command.task_budget_reservation_id is not None:
             recovery_metadata["task_budget_reservation_id"] = command.task_budget_reservation_id
-        result = await coordinator.submit_copy_trade(
-            ExecutionIntent(
-                user_id=str(getattr(context, "user_id", "")),
-                condition_id=command.condition_id,
-                token_id=command.token_id,
-                side=command.side,
-                size=command.amount,
-                price=command.price_limit,
-                notional_usdc=command.notional_usdc,
-                idempotency_key=command.signal_id,
-                source="copy_trade",
-                signal_id=command.signal_id,
-                leader_wallet=command.source_event.trade.leader_wallet,
-                max_slippage_bps=int(command.task.price.max_slippage_percent * Decimal("100")),
-                reason="copy_task",
-                recovery_metadata=recovery_metadata,
-                metadata={"task_id": command.task.task_id},
-            )
+        leader_sell_fraction = command.source_event.leader_sell_fraction
+        live_position_size = None
+        if (
+            command.side == "SELL"
+            and leader_sell_fraction is not None
+            and leader_sell_fraction > _ZERO
+        ):
+            live_position_size = command.amount / leader_sell_fraction
+        intent = ExecutionIntent(
+            user_id=str(getattr(context, "user_id", "")),
+            condition_id=command.condition_id,
+            token_id=command.token_id,
+            side=command.side,
+            size=command.amount,
+            price=command.price_limit,
+            notional_usdc=command.notional_usdc,
+            idempotency_key=command.signal_id,
+            source="copy_trade",
+            signal_id=command.signal_id,
+            leader_wallet=command.source_event.trade.leader_wallet,
+            max_slippage_bps=int(command.task.price.max_slippage_percent * Decimal("100")),
+            reason="copy_task",
+            recovery_metadata=recovery_metadata,
+            metadata={"task_id": command.task.task_id},
+            leader_sell_fraction=(leader_sell_fraction if command.side == "SELL" else None),
+            live_position_size=live_position_size,
         )
+        if command.side == "SELL":
+            extra = getattr(context, "extra", {}) or {}
+            target_service = (
+                extra.get("leader_sell_target_service") if isinstance(extra, Mapping) else None
+            )
+            if target_service is not None:
+                try:
+                    intent = await target_service.record_fresh_target(intent)
+                except Exception as exc:
+                    logger.error(
+                        "leader_sell_target_record_failed",
+                        extra={
+                            "user_id": str(getattr(context, "user_id", "")),
+                            "leader": command.source_event.trade.leader_wallet,
+                            "token_id": command.token_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+        result = await coordinator.submit_copy_trade(intent)
         if not isinstance(result, ExecutionCoordinatorResult):
             raise TaskExecutionUnavailable("execution coordinator returned an invalid result")
         return self._outcome(result)

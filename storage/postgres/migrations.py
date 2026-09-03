@@ -184,6 +184,43 @@ _CORE_DDL = [
         processed_at  double precision NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_safety_scopes (
+        leader_wallet text NOT NULL,
+        token_id      text NOT NULL,
+        reason        text NOT NULL,
+        updated_at    timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (leader_wallet, token_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_targets (
+        user_id          text NOT NULL,
+        leader_wallet    text NOT NULL,
+        condition_id     text NOT NULL,
+        token_id         text NOT NULL,
+        generation       bigint NOT NULL,
+        source_signal_id text NOT NULL,
+        intent_json      jsonb NOT NULL,
+        updated_at       timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, leader_wallet, condition_id, token_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_target_redrives (
+        user_id                 text NOT NULL,
+        leader_wallet           text NOT NULL,
+        condition_id            text NOT NULL,
+        token_id                text NOT NULL,
+        generation              bigint NOT NULL,
+        released_reservation_id text NOT NULL,
+        claimed_at              timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (
+            user_id, leader_wallet, condition_id, token_id,
+            generation, released_reservation_id
+        )
+    )
+    """,
     # ----- leader_cursors -------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS leader_cursors (
