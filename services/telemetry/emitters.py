@@ -22,10 +22,12 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from services.metrics import METRIC_TELEMETRY_EMIT_FAILURE, MetricsRegistry
+from services.telemetry.latency import PipelineLatency
 from services.telemetry.contracts import (
     AmbiguousEvent,
     AmbiguousOperation,
@@ -46,6 +48,7 @@ from services.telemetry.contracts import (
     RosterOutcome,
     SkipEvent,
     SkipReason,
+    TaskDecisionDetails,
     TelemetryPayload,
     TelemetryProducer,
     TelemetrySeverity,
@@ -61,6 +64,8 @@ from services.telemetry.contracts import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from services.telemetry.service import TelemetryService
+    from services.copy_tasks.domain import CopyTask
+    from services.copy_tasks.event_routing import CopyTaskSourceEvent, TaskRouteResult
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -727,6 +732,46 @@ class TradeTelemetryEmitter(TelemetryEmitter):
     ) -> None:
         super().__init__(service, TelemetryProducer.WORKER, loop)
 
+    def task_decision(
+        self,
+        task: "CopyTask",
+        event: "CopyTaskSourceEvent",
+        result: "TaskRouteResult",
+        evaluated_at: datetime,
+        max_signal_age_seconds: float,
+    ) -> bool:
+        """Publish actual task admission evidence without counting another venue outcome."""
+
+        def payload() -> TelemetryPayload:
+            runtime = result.runtime_decision
+            envelope = None if runtime is None else runtime.envelope
+            details = TaskDecisionDetails(
+                account_ref=safe_ref(task.follower_account),
+                task_version=str(task.version),
+                reason_code=result.reason,
+                source_price=event.trade.price,
+                source_shares=event.trade.shares,
+                source_timestamp=event.trade.venue_timestamp,
+                evaluated_at=evaluated_at,
+                max_signal_age_seconds=max_signal_age_seconds,
+                price_limit=None if envelope is None else envelope.entry_price_decision.price_limit,
+            )
+            if not result.allowed:
+                return SkipEvent(
+                    reason=skip_reason_for_code(result.reason),
+                    task_ref=safe_ref(task.task_id),
+                    decision=details,
+                )
+            return TradeEvent(
+                outcome=TradeOutcome.CANDIDATE_EVALUATED,
+                task_ref=safe_ref(task.task_id),
+                side=TradeSide(event.trade.side.value),
+                order_outcome=None,
+                decision=details,
+            )
+
+        return self._publish(payload, severity=TelemetrySeverity.INFO)
+
     def pipeline_results(
         self,
         user_id: str,
@@ -850,14 +895,17 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         loop: Optional owning event loop override.
     """
 
-    __slots__ = ()
+    __slots__ = ("_latency",)
 
     def __init__(
         self,
         service: "TelemetryService | None",
         loop: asyncio.AbstractEventLoop | None = None,
+        *,
+        latency: PipelineLatency | None = None,
     ) -> None:
         super().__init__(service, TelemetryProducer.EXECUTION, loop)
+        self._latency = latency
 
     def order_result(self, request: OrderRequestLike, result: OrderResultLike) -> bool:
         """Publish exactly one bounded event for one execution attempt.
@@ -952,6 +1000,8 @@ class ExecutionTelemetryEmitter(TelemetryEmitter):
         Returns:
             Whether the event was accepted or scheduled for delivery.
         """
+        if self._latency is not None:
+            self._latency.first_fill(order_id)
         return self._guarded(lambda: self._fill_observed(order_id, matched_total))
 
     def _fill_observed(self, order_id: str, matched_total: object) -> bool:
@@ -1244,6 +1294,7 @@ class TelemetryEmitters:
     execution: ExecutionTelemetryEmitter
     risk: RiskTelemetryEmitter
     wss: WssTelemetryEmitter
+    latency: PipelineLatency | None = None
 
     @property
     def enabled(self) -> bool:
@@ -1256,6 +1307,7 @@ class TelemetryEmitters:
         service: "TelemetryService | None",
         *,
         loop: asyncio.AbstractEventLoop | None = None,
+        latency: PipelineLatency | None = None,
     ) -> "TelemetryEmitters":
         """Build one bundle sharing a single telemetry service.
 
@@ -1269,9 +1321,10 @@ class TelemetryEmitters:
         return cls(
             detection=DetectionTelemetryEmitter(service, loop=loop),
             trade=TradeTelemetryEmitter(service, loop),
-            execution=ExecutionTelemetryEmitter(service, loop),
+            execution=ExecutionTelemetryEmitter(service, loop, latency=latency),
             risk=RiskTelemetryEmitter(service, loop),
             wss=WssTelemetryEmitter(service, loop),
+            latency=latency,
         )
 
     @classmethod

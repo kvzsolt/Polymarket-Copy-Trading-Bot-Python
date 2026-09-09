@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from config.v1_runtime import V1RuntimeConfig
+from tests.config_helpers import load_test_config
 
 
 def test_v1_runtime_defaults_are_bounded_and_safety_features_enabled() -> None:
@@ -45,7 +46,11 @@ def test_packaged_copy_trading_yaml_copy_tasks_is_paper_safe() -> None:
     )
     config = V1RuntimeConfig.model_validate({"copy_tasks": payload["copy_tasks"]})
 
-    assert config.copy_tasks.enabled is False
+    assert config.copy_tasks.enabled is True
     assert config.copy_tasks.workers.global_concurrency == 4
     assert config.copy_tasks.task_budget.reservation_ttl_seconds == 120
     assert config.copy_tasks.reentry_lock.enabled is True
+
+    application = load_test_config()
+    assert application.execution.trading_mode == "paper"
+    assert application.execution.paper_trade_only is True

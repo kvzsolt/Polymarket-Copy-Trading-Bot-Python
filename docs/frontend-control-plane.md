@@ -151,13 +151,60 @@ Follower-scoped collections require `follower_account`. Position and order
 detail lookups remain follower-scoped. Portfolio reads use a background cache;
 they never trigger venue calls. Until a first refresh succeeds, or once a
 snapshot is stale, the endpoint returns a stable service error rather than
-inventing balances, marks, or PnL. `valuation_basis: "cost_basis"` means no
-market mark was available and `unrealized_pnl_usdc` remains `null`.
+inventing balances, marks, or PnL. `valuation_basis: "market_mark"` uses fresh
+cached bid/ask midpoints at the reported observation time. `positions_value_usdc`
+is marked inventory and `equity_usdc` is cash plus that value; either is `null`
+when a required mark is missing or stale (`valuation_basis: "unavailable"`).
+`positions_cost_usdc` reports known entry cost separately. Unknown entry cost
+withholds cost and unrealized PnL, even when current inventory can be marked.
+These point-in-time estimates are not a transfer-adjusted historical equity curve.
 
 `GET /fills` pages newest-first on the durable fill identity with the same
 opaque `cursor` contract as other collections. `GET /metrics/snapshot` returns
 `generated_at`, `counters`, `gauges`, and `histograms` — the same numbers as
 `/telemetry/snapshot` without the bounded event history.
+
+The task runtime measures `source_detection_to_normalized` where a transport
+receipt is available, `normalized_to_worker_start` (including queue wait),
+`copy_decision` (through task policy/budget admission, ending before downstream
+execution), `reservation` at the canonical account reservation boundary,
+`venue_submission`, `submission_to_first_ack`, and
+`submission_to_first_fill_evidence`. Durations use the same process boot's
+monotonic clock. Histograms expose counts and bounded-window p50/p95/p99 with
+their sample count; a single sample is not a latency benchmark. Missing receipt
+time, clock discontinuity, and first-fill trace eviction do not create invented
+durations. `pipeline_latency_gap_total` records unavailable clock evidence or
+trace-capacity loss. At most 4,096 acknowledged orders retain first-fill timing;
+these measurements reset with the process and cannot reconstruct restart gaps.
+`database_acquisition` measures task-budget repository pool acquisition attempts,
+including timeout/cancellation; it excludes statements and release time and is
+not a claim that every database operation is instrumented. `metadata_cache_miss`
+counts and times cold/expired execution-metadata fetch attempts; cache hits do not
+add samples. `market_reconnect_recovery` ends only when all subscribed instruments
+have usable fresh WSS quotes/books and required metadata after reconnection.
+It is not socket-handshake timing. Other declared phase names are not evidence
+that those phases are instrumented.
+
+Leader observation and account processing use separate bounded queue stages.
+Each account processes its accepted source events serially; a slow account does
+not hold up other accounts' later signals. The existing `leader_workers` queue,
+concurrency and maximum-worker settings apply independently to both stages.
+`worker_count` and `queue_depth` include both stages. Shutdown has one total
+configured drain deadline; queue overflow and discarded work have explicit reasons.
+
+Market and authenticated-user health aggregate all configured accounts. One
+healthy account cannot overwrite another account's disconnected or unbound state.
+Market subscription counts are sums of account subscriptions, including a token
+subscribed on two different accounts. Runtime failure details contain a sanitized
+error type, not arbitrary provider exception text.
+
+Market WebSocket receive buffering uses the installed websockets client's
+16-frame high-water mark and 1 MiB maximum message size. State callbacks are
+bounded at 128 pending tasks; dropped callbacks and callback failures have
+separate counters. Disconnects and invalid critical books invalidate shared
+quotes, and shutdown cancels and awaits owned callbacks. The resulting
+backpressure or reconnect can delay processing; no lossless or speed guarantee
+is made.
 
 `GET /detection` reports local counters per detection source plus the WSS
 health this process can actually observe. `leader_ws_connected` is `null` when
@@ -168,7 +215,14 @@ provisional-copy confirmation tracker.
 
 `GET /pnl` is deliberately conservative. `realized` comes from the in-process
 session ledger, so it covers this process run only and resets on restart;
-`session_started_at` is the instant that ledger began recording. A position is marked only from
+`session_started_at` is the instant that ledger began recording. `realized_basis`
+is `gross_before_fees`; `realized_pnl_usdc` is `null` when any session exit has
+unknown cost basis. `net_realized_pnl_usdc` is `null`: the session accumulator does
+not contain a complete attributable fee ledger. Verified fee amounts remain available
+on durable `/fills`; a fee rate without an amount yields a `null` fill fee.
+`max_drawdown_usdc` is `null` without explicit transfer-adjusted marked-equity
+observations. Neither realized-only PnL nor invested cash is a full equity curve.
+A position is marked only from
 a cached WSS quote that is two-sided and fresher than
 `market_data.executable_quote_max_age_seconds`; otherwise `mark_price`,
 `market_value_usdc`, and `unrealized_pnl_usdc` are `null`. The account-level
@@ -188,9 +242,12 @@ non-stale cached portfolio snapshot exists, and it applies only the account
 cap, reserve, and daily-drawdown gates — per-market, per-category, and
 per-leader exposure are unknown to a cached snapshot, so the published cap is
 an upper bound on what the trade pipeline computes immediately before a real
-submission. `day_start_equity_usdc` reflects the same day-start baseline the
-risk engine uses and is `null` until one is recorded; reading it never records
-one.
+submission. `day_start_equity_usdc` comes from an explicit configured baseline
+or an injected reader receiving the follower account. The process-global legacy
+JSON baseline is not attributed to an account by the API. Without a baseline,
+`daily_loss_usdc` is `null`; when the balance-tiered drawdown gate is configured,
+headroom is also `null`. Reads never create a baseline. The estimate is not a
+transfer-adjusted historical return series.
 
 `GET /leaders` merges configured wallets, the discovery roster, the currently
 monitored set, and local detection counters under one lower-cased wallet
@@ -261,8 +318,8 @@ read or rotated over the API.
 
 ## Live stream and resynchronization
 
-Connect an authenticated WebSocket to `GET /api/v1/stream` after reading the
-REST snapshots, carrying the credential in the `Authorization` header or in the
+Connect an authenticated WebSocket to `GET /api/v1/stream`, then read the
+REST snapshots after `stream_ready`, carrying the credential in the `Authorization` header or in the
 `["bearer", credential]` subprotocol a browser needs (see above). It needs
 `telemetry.stream`, which the viewer credential holds.
 The stream carries immutable safe telemetry events and state changes. It is
@@ -276,6 +333,20 @@ may send `{"type": "ping"}` or `{"type": "resync"}` as text; binary frames close
 the socket, and client messages are rate limited per principal. The
 `rate_limited` error frame also carries `retry_after_seconds` and is followed
 immediately by a close.
+
+`stream_ready` includes `stream_boot_id`, `ordering: "session_per_producer"`,
+`durable_replay: false`, and `resync_required: true`. Every successful connection
+requires fresh authoritative REST reads. Event frames carry the same boot ID;
+compare event sequences only within that boot and producer. A changed boot ID
+invalidates prior sequence watermarks. These fields do not promise replay.
+
+`telemetry_snapshot` carries `authoritative_financial_state: false` and the boot
+ID. It replaces the bounded activity feed, not positions, orders, fills, or task
+state. Buffer notifications during REST reads and invalidate affected reads if
+an update overlaps them; there is no atomic financial snapshot/stream cursor.
+Overflow requires another authoritative refresh. Socket writes have a bounded
+transport wait (five seconds by default), after which the adapter disconnects
+the stalled subscriber and cleans up its tasks.
 
 Every subscriber owns a bounded queue. Producers never await a browser. When a
 slow subscriber overflows, old incremental state is not reconstructed; the
@@ -294,3 +365,21 @@ future frontend or unavailable venue feature. The extended reads advertise
 `account_read`, `detection_read`, `fill_read`, `leader_read`,
 `metrics_snapshot`, `pnl_read`, and `risk_read`, and each appears only when
 this process composed the local state that backs it.
+
+Copy-task decision events use the existing `trade_skip` or `candidate_evaluated`
+envelopes. Their optional `decision` object includes the bounded reason code,
+task version, account reference, source price/shares/time, evaluated-at time,
+configured age limit and evaluated price bound. It reports policy evidence;
+`candidate_evaluated` does not count as venue acceptance or a fill. Unknown source
+age rejects entries, future source time is explicit, and reductions bypass entry
+freshness. On-chain block time and transport receipt time remain separate.
+
+Activating a task with configured protective rules requires the existing risk
+management loop to be enabled; otherwise REST returns `task_protection_unavailable`.
+The same rule is checked at entry submission for restored tasks. Existing positions
+retain management contexts after follow removal, independently of source monitoring.
+
+Counter-trade task activation returns HTTP 503 with `task_counter_outcome_unavailable`:
+this runtime has no authoritative opposite-outcome binding. Restored tasks receive
+the same refusal at entry permission. A task may be stored paused with that option;
+it cannot be reported active by the control-plane activation service.

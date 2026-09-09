@@ -273,23 +273,17 @@ async def test_partial_fak_keeps_original_price_protection_without_repost(
         # Quotes sit inside the caller band (0.55 <= 0.555, 0.46 >= 0.455) so
         # the leader-price gate lets them through; the non-tick-aligned cap or
         # floor is what has to be snapped onto the grid.
-        ("BUY", _make_bundle(ask="0.55"), "0.555", "0.56"),
-        ("SELL", _make_bundle(bid="0.46"), "0.455", "0.45"),
+        ("BUY", _make_bundle(ask="0.55"), "0.555", "0.55"),
+        ("SELL", _make_bundle(bid="0.46"), "0.455", "0.46"),
     ],
 )
-async def test_initial_fak_price_limit_rounds_toward_the_book(
+async def test_initial_fak_price_limit_preserves_the_caller_bound(
     side: str,
     quote: MarketDataBundle,
     price_limit: str,
     expected: str,
 ) -> None:
-    """Quantization must not cost a one-shot FAK its cross.
-
-    A FAK is killed rather than rested, so snapping a BUY cap down (or a SELL
-    floor up) onto the tick grid can turn an executable order into a venue
-    ``order_not_fillable``. The overshoot is bounded by one tick and the
-    absolute share-price ceiling is re-asserted afterwards.
-    """
+    """Tick alignment cannot authorize a worse price than the caller permits."""
 
     mds = _mock_mds()
     mds.require_fresh_data.return_value = quote

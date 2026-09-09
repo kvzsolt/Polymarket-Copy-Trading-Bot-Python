@@ -500,10 +500,13 @@ decimal — see non-negotiable 1.
 - `OrderView.price_limit` may be `null`; `matched_total` is always present.
   An unknown average fill price is reported as unknown — the backend
   deliberately never substitutes the limit price, so neither may you.
-- `PortfolioView.valuation_basis` is `cost_basis` or `market_mark`; it is
-  validated server-side but has no named vocabulary in the contract.
-  `cost_basis` means no market mark was available and `unrealized_pnl_usdc` is
-  `null`.
+- `PortfolioView.valuation_basis` is `market_mark` for fresh cached midpoint
+  marks at `observed_at`, or `unavailable` when any required mark is unavailable.
+  The legacy `cost_basis` value remains accepted by the DTO for compatibility.
+  `positions_value_usdc` and `equity_usdc` are nullable marked estimates;
+  `positions_cost_usdc` is separate and nullable for unknown entry cost.
+  Never substitute entry cost for missing market value, or label these
+  point-in-time estimates as a transfer-adjusted historical equity curve.
 - `DetectionStatusView.pending_confirmations` is `null` unless the selected
   detection mode composed a provisional-copy confirmation tracker; that is a
   configuration fact, not an outage.
@@ -511,9 +514,11 @@ decimal — see non-negotiable 1.
   reserve, and daily-drawdown gates; per-market, per-category and per-leader
   exposure are unknown to the cached snapshot the projection reads. Label it as
   an estimate, never as "you may spend exactly this".
-- `RiskStateView.headroom` is `null` when no fresh cached portfolio snapshot
-  exists; `day_start_equity_usdc` is `null` until a baseline is recorded, and
-  reading it never records one.
+- `RiskStateView.headroom` is `null` when marked portfolio evidence is missing
+  or stale, or when a configured balance-tiered drawdown gate lacks a baseline.
+  Baseline readers are account-scoped; the legacy process-global JSON value
+  is not used by the API. Missing `daily_loss_usdc` is `null`, not zero.
+  Reading risk state never creates a baseline or historical return series.
 - `LeaderView.wallet` is lower-cased; `configured` means it is in the operator's
   roster, `monitored` means the running process is currently watching it. Both
   false with non-zero counters means a leader that used to be watched.
@@ -698,7 +703,7 @@ One durable fill projection using exact decimal strings.
 | `side` | `string` | yes | — | — |
 | `size` | `string` | no | **yes** | — |
 | `price` | `string` | no | **yes** | — |
-| `fee` | `string` | no | **yes** | — |
+| `fee` | `string` | yes | **yes** | — |
 | `filled_at` | `timestamp` | yes | — | — |
 | `created_at` | `timestamp` | no | — | — |
 
@@ -776,8 +781,8 @@ One open position valued only from a fresh cached WSS mid quote.
 | `token_id` | `string` | no | — | — |
 | `leader_wallet` | `string` | yes | — | — |
 | `size` | `string` | no | **yes** | — |
-| `avg_entry_price` | `string` | no | **yes** | — |
-| `cost_basis_usdc` | `string` | no | **yes** | — |
+| `avg_entry_price` | `string` | yes | **yes** | — |
+| `cost_basis_usdc` | `string` | yes | **yes** | — |
 | `mark_price` | `string` | yes | **yes** | — |
 | `market_value_usdc` | `string` | yes | **yes** | — |
 | `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
@@ -788,16 +793,18 @@ Session-scoped realized ledger metrics for one follower account.
 
 | Field | Type | Nullable | Decimal string | Vocabulary |
 | --- | --- | --- | --- | --- |
-| `realized_pnl_usdc` | `string` | no | **yes** | — |
+| `realized_pnl_usdc` | `string` | yes | **yes** | — |
 | `total_invested_usdc` | `string` | no | **yes** | — |
 | `total_returned_usdc` | `string` | no | **yes** | — |
-| `max_drawdown_usdc` | `string` | no | **yes** | — |
+| `max_drawdown_usdc` | `string` | yes | **yes** | — |
 | `trade_count` | `integer` | no | — | — |
 | `buy_count` | `integer` | no | — | — |
 | `sell_count` | `integer` | no | — | — |
 | `win_count` | `integer` | no | — | — |
 | `loss_count` | `integer` | no | — | — |
 | `session_started_at` | `timestamp` | no | — | — |
+| `realized_basis` | `string` | no | — | — |
+| `net_realized_pnl_usdc` | `string` | yes | **yes** | — |
 
 #### `PnlView`
 
@@ -810,9 +817,9 @@ Realized session PnL paired with honestly marked open positions.
 | `positions` | `array<PnlPositionView>` | no | — | — |
 | `position_count` | `integer` | no | — | — |
 | `truncated` | `boolean` | no | — | — |
-| `cost_basis_usdc` | `string` | no | **yes** | — |
+| `cost_basis_usdc` | `string` | yes | **yes** | — |
 | `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
-| `unrealized_basis` | `string` | no | — | `wss_mid`, `partial_wss_mid`, `truncated`, `unavailable` |
+| `unrealized_basis` | `string` | no | — | `wss_mid`, `partial_wss_mid`, `truncated`, `unavailable`, `unknown_cost_basis` |
 | `marked_position_count` | `integer` | no | — | — |
 | `observed_at` | `timestamp` | no | — | — |
 
@@ -825,14 +832,15 @@ Cached portfolio snapshot using exact decimal strings.
 | `follower_account` | `string` | no | — | — |
 | `cash_usdc` | `string` | no | **yes** | — |
 | `reserved_usdc` | `string` | no | **yes** | — |
-| `positions_value_usdc` | `string` | no | **yes** | — |
-| `equity_usdc` | `string` | no | **yes** | — |
+| `positions_value_usdc` | `string` | yes | **yes** | — |
+| `equity_usdc` | `string` | yes | **yes** | — |
 | `observed_at` | `timestamp` | no | — | — |
 | `stale` | `boolean` | no | — | — |
 | `copyable_balance_usdc` | `string` | no | **yes** | — |
 | `position_count` | `integer` | no | — | — |
 | `valuation_basis` | `string` | no | — | — |
 | `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
+| `positions_cost_usdc` | `string` | yes | **yes** | — |
 
 #### `PositionView`
 
@@ -933,7 +941,7 @@ Account-level BUY headroom recomputed from one cached snapshot.
 | `cap_notional_usdc` | `string` | no | **yes** | — |
 | `equity_usdc` | `string` | no | **yes** | — |
 | `free_cash_usdc` | `string` | no | **yes** | — |
-| `daily_loss_usdc` | `string` | no | **yes** | — |
+| `daily_loss_usdc` | `string` | yes | **yes** | — |
 | `open_position_count` | `integer` | no | — | — |
 
 #### `RiskPolicyView`
@@ -1297,9 +1305,9 @@ size a receive buffer, a validator, or a "message too large" check on 4096.
 
 | `type` | Payload | Do |
 | --- | --- | --- |
-| `stream_ready` | — | connection accepted; refresh REST snapshots |
-| `telemetry_event` | `data`: a `TelemetryEvent` (§13) | append to the feed, mark affected screens stale |
-| `telemetry_snapshot` | `data`: a telemetry snapshot object, or `null` | replace the feed contents |
+| `stream_ready` | `stream_boot_id`, `ordering: "session_per_producer"`, `durable_replay: false`, `resync_required: true` | connection accepted; refresh REST snapshots |
+| `telemetry_event` | `stream_boot_id`, `data`: a `TelemetryEvent` (§13) | append to the feed, mark affected screens stale |
+| `telemetry_snapshot` | `stream_boot_id`, `authoritative_financial_state: false`, `data`: a telemetry snapshot object, or `null` | replace the feed contents; financial screens still require REST reads |
 | `resync_required` | `dropped_count`: integer | **you missed events** — a `telemetry_snapshot` follows; also re-read every REST screen you are showing |
 | `pong` | — | answer to your `ping` |
 | `error` | `code`: `invalid_stream_message` \| `unsupported_stream_message` \| `rate_limited`; the `rate_limited` variant also carries `retry_after_seconds` (integer) | the first two are recoverable and the socket stays open; `rate_limited` is immediately followed by a close, so wait `retry_after_seconds` before reconnecting |

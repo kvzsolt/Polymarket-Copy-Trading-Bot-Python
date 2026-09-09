@@ -36,6 +36,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+
+from services.execution.fill_accounting import AccountedOrderFill, AccountedFillReader
+from domain.cost_basis import PositionCostBasis
+from domain.performance import PerformanceUnits
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from domain.order_lifecycle import OrderLifecycleStatus
@@ -294,7 +298,8 @@ _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
 
 
 def _normalize_venue_status(raw: Any) -> str:
-    return str(raw or "").strip().lower()
+    status = str(raw or "").strip().lower()
+    return {"open": "live", "closed": "matched"}.get(status, status)
 
 
 def _normalize_trade_status(raw: Any) -> str:
@@ -410,6 +415,7 @@ class ReconciliationService:
         telemetry: ExecutionTelemetryEmitter | None = None,
         user_order_evidence_parser: UserOrderEvidenceParser | None = None,
         leader_sell_target_service: LeaderSellTargetRedriver | None = None,
+        accounted_fill_reader: AccountedFillReader | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -432,6 +438,7 @@ class ReconciliationService:
             else UserOrderEvidenceParser()
         )
         self.leader_sell_target_service = leader_sell_target_service
+        self._accounted_fill_reader = accounted_fill_reader
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
@@ -622,6 +629,8 @@ class ReconciliationService:
     ) -> dict[str, Any]:
         total = Decimal("0")
         notional = Decimal("0")
+        fees = Decimal("0")
+        fees_known = True
         tx_hashes: list[str] = []
         fill_ids: list[str] = []
         for fill in fills:
@@ -631,6 +640,13 @@ class ReconciliationService:
                 continue
             total += size
             notional += size * price
+            fee = PerformanceUnits.finite(cls._fill_value(fill, "fee"))
+            if fee is None:
+                fees_known = False
+            elif fee < 0:
+                raise ValueError("Fill fee amount cannot be negative")
+            else:
+                fees += fee
             tx_hash = str(cls._fill_value(fill, "transaction_hash", "") or "")
             fill_id = str(cls._fill_value(fill, "fill_id", "") or "")
             if tx_hash and tx_hash not in tx_hashes:
@@ -642,6 +658,7 @@ class ReconciliationService:
             "status": status,
             "size_matched": str(total),
             "avg_price": str(avg_price),
+            "fee_amount": str(fees) if fees_known else None,
             "transaction_hashes": tx_hashes,
             "trade_ids": fill_ids,
             "confirmation_source": source,
@@ -776,18 +793,7 @@ class ReconciliationService:
                 return {"status": "poll_deferred", "size_matched": "0"}
             self._last_order_poll_at[order_id] = now
 
-        trade_ids, transaction_hashes = self._submission_sequences(record)
-        legacy_matched = _matched_amount_from_response(response)
-        if transaction_hashes and not trade_ids and legacy_matched > 0:
-            legacy = dict(response)
-            legacy.update(
-                {
-                    "status": "confirmed",
-                    "size_matched": str(legacy_matched),
-                    "confirmation_source": "submission_transaction_hash",
-                }
-            )
-            return legacy
+        trade_ids, _ = self._submission_sequences(record)
 
         request_value = record.get("request")
         request: dict[str, Any] = request_value if isinstance(request_value, dict) else {}
@@ -880,21 +886,6 @@ class ReconciliationService:
                     )
                     trade_states.append(pending)
 
-            if len(trade_states) == len(trade_ids) and all(
-                state in {"confirmed", "failed"} for state in trade_states
-            ):
-                if confirmed_trade_fills:
-                    return self._aggregate_fills(
-                        confirmed_trade_fills,
-                        status="confirmed",
-                        source="trade_ids",
-                    )
-                return {
-                    "status": "failed",
-                    "size_matched": "0",
-                    "confirmation_source": "trade_ids",
-                }
-
         async def _list_open_orders() -> list[Any]:
             try:
                 return await gateway.list_open_orders(
@@ -915,7 +906,15 @@ class ReconciliationService:
         if open_probe != "ok":
             unavailable.append(("open_orders", reason))
             open_orders = []
-        is_open = bool(open_orders)
+        directly_open = direct is not None and _normalize_venue_status(direct.get("status")) in {
+            "live",
+            "unmatched",
+            "partially_filled",
+            "order_live",
+            "order_status_live",
+        }
+        is_open = bool(open_orders) or directly_open
+        order_closed = open_probe == "ok" and not is_open
 
         async def _get_order_fills() -> list[Any]:
             try:
@@ -950,6 +949,25 @@ class ReconciliationService:
             for fill in related_fills
             if _normalize_trade_status(self._fill_value(fill, "status", "")) == "confirmed"
         ]
+        if confirmed:
+            aggregate = self._aggregate_fills(
+                confirmed,
+                status="confirmed" if order_closed and not pending_statuses else "live",
+                source="account_trades",
+            )
+            direct_matched = _matched_amount_from_response(direct or {})
+            known_matched = (
+                _matched_amount_from_response(
+                    self._aggregate_fills(confirmed_trade_fills, status="live", source="trade_ids")
+                )
+                if confirmed_trade_fills
+                else Decimal("0")
+            )
+            if _matched_amount_from_response(aggregate) < max(direct_matched, known_matched):
+                aggregate["status"] = "live"
+            return aggregate
+        if confirmed_trade_fills:
+            return self._aggregate_fills(confirmed_trade_fills, status="live", source="trade_ids")
         if pending_statuses:
             pending = next(
                 (s for s in ("retrying", "mined", "matched") if s in pending_statuses),
@@ -960,19 +978,13 @@ class ReconciliationService:
                 "size_matched": "0",
                 "confirmation_source": "account_trades",
             }
-        if confirmed:
-            return self._aggregate_fills(
-                confirmed,
-                status="live" if is_open else "confirmed",
-                source="account_trades",
-            )
         if (
             related_fills
             and all(
                 _normalize_trade_status(self._fill_value(fill, "status", "")) == "failed"
                 for fill in related_fills
             )
-            and not is_open
+            and order_closed
         ):
             return {
                 "status": "failed",
@@ -980,7 +992,11 @@ class ReconciliationService:
                 "confirmation_source": "account_trades",
             }
         if is_open:
-            state = self._venue_state_dict(open_orders[0], order_id)
+            state = (
+                self._venue_state_dict(open_orders[0], order_id)
+                if open_orders
+                else dict(direct or {})
+            )
             state.update(
                 {
                     "status": _normalize_venue_status(state.get("status")) or "live",
@@ -2199,7 +2215,14 @@ class ReconciliationService:
             if timed_out:
                 return False
 
-        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
+        accounted_fill = None
+        if self._accounted_fill_reader is not None:
+            accounted_fill = await self._accounted_fill_reader.accounted_order_fill(
+                record["user_id"], order_id
+            )
+            previous_matched = accounted_fill.shares
+        else:
+            previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
 
         if current_matched < previous_matched:
@@ -2406,12 +2429,22 @@ class ReconciliationService:
             return False
 
         avg_price = self._avg_price_from_fill(fill_info)
-        if avg_price <= 0:
+        if not avg_price.is_finite() or not Decimal(0) < avg_price < Decimal(1):
+            return False
+        fee_basis = accounted_fill or AccountedOrderFill(
+            fees=Decimal("0") if previous_matched == 0 else None,
+        )
+        try:
+            fee_amount = fee_basis.incremental_fee(fill_info.get("fee_amount"))
+            if accounted_fill is not None:
+                avg_price = accounted_fill.incremental_price(current_matched, avg_price)
+        except ValueError:
+            self._audit("reconciliation_invalid_notional_or_fee", {"order_id": order_id})
             return False
 
         # P0-1: read entry_price BEFORE the atomic settlement. A SELL apply does
         # not change avg_entry, but keep the ordering explicit.
-        entry_price: float | None = None
+        entry_price: Decimal | None = None
         if side == "SELL" and get_position is not None:
             pos = await get_position(
                 record["user_id"], record["condition_id"], token_id=record["asset"]
@@ -2420,7 +2453,7 @@ class ReconciliationService:
                 entry_raw = getattr(pos, "avg_entry_price", None)
                 if entry_raw is not None:
                     try:
-                        entry_price = float(entry_raw)
+                        entry_price = PositionCostBasis.from_value(entry_raw).entry_price
                     except (TypeError, ValueError):
                         entry_price = None
 
@@ -2442,9 +2475,10 @@ class ReconciliationService:
                     side=side,
                     size_tokens=delta_matched,
                     price=avg_price,
-                    fee=Decimal("0"),
+                    fee=fee_amount,
                     fill_ts=int(time.time()),
                     dedup_key=str(current_matched),
+                    accounted_shares=previous_matched if accounted_fill is not None else None,
                 ),
                 self.positions_repo,
                 raw_payload={
@@ -2495,28 +2529,17 @@ class ReconciliationService:
                     )
                 return False
         if fill_id != 0 and side == "SELL" and pnl_tracker is not None:
-            realized_source = "entry_price"
-            if entry_price is None:
-                if logger is not None:
-                    logger.warning(
-                        "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
-                        record.get("trade_key"),
-                        record.get("condition_id"),
-                        record.get("asset"),
-                    )
-                entry_price = float(avg_price)
-                realized_source = "fill_price_fallback"
-            # Compute realized PnL in Decimal to avoid IEEE-754 drift on
-            # tick-granular subtractions; cast at the tracker boundary only.
-            entry_d = Decimal(str(entry_price))
-            realized_d = (avg_price - entry_d) * delta_matched
+            realized_source = "entry_price" if entry_price is not None else "unknown_cost_basis"
+            realized_d = (
+                (avg_price - entry_price) * delta_matched if entry_price is not None else None
+            )
             pnl_tracker.record_sell(
                 condition_id=record["condition_id"],
-                price=float(avg_price),
-                size_tokens=float(delta_matched),
-                usdc_value=float(delta_matched * avg_price),
+                price=avg_price,
+                size_tokens=delta_matched,
+                usdc_value=delta_matched * avg_price,
                 entry_price=entry_price,
-                realized_pnl=float(realized_d),
+                realized_pnl=realized_d,
                 exit_reason="reconciled_sell",
                 leader_wallet=record.get("leader_id", ""),
                 event_slug="",
@@ -2707,7 +2730,14 @@ class ReconciliationService:
         # zero — re-applying the entire cumulative venue size as a
         # fresh delta and double-counting every risk SELL fill that was
         # in-flight across the restart.
-        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
+        accounted_fill = None
+        if self._accounted_fill_reader is not None:
+            accounted_fill = await self._accounted_fill_reader.accounted_order_fill(
+                user_id, order_id
+            )
+            previous_matched = accounted_fill.shares
+        else:
+            previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
         if current_matched < previous_matched:
             self._record_negative_delta_anomaly(
@@ -2826,7 +2856,17 @@ class ReconciliationService:
             return True
 
         avg_price = self._avg_price_from_fill(fill_info)
-        if avg_price <= 0:
+        if not avg_price.is_finite() or not Decimal(0) < avg_price < Decimal(1):
+            return False
+        fee_basis = accounted_fill or AccountedOrderFill(
+            fees=Decimal("0") if previous_matched == 0 else None,
+        )
+        try:
+            fee_amount = fee_basis.incremental_fee(fill_info.get("fee_amount"))
+            if accounted_fill is not None:
+                avg_price = accounted_fill.incremental_price(current_matched, avg_price)
+        except ValueError:
+            self._audit("reconciliation_invalid_notional_or_fee", {"order_id": order_id})
             return False
 
         reason = str(request.get("reason") or "risk_exit")
@@ -2837,14 +2877,9 @@ class ReconciliationService:
                 existing_pos = await get_position(user_id, condition_id, token_id=token_id)
             except Exception:
                 existing_pos = None
-        try:
-            entry_price = (
-                float(getattr(existing_pos, "avg_entry_price", avg_price))
-                if existing_pos
-                else float(avg_price)
-            )
-        except (TypeError, ValueError):
-            entry_price = float(avg_price)
+        entry_price = PositionCostBasis.from_value(
+            getattr(existing_pos, "avg_entry_price", None) if existing_pos is not None else None
+        ).entry_price
 
         try:
             # P0-1: atomic fill+position gated on insert, stable dedup_key = the
@@ -2861,9 +2896,10 @@ class ReconciliationService:
                     side="SELL",
                     size_tokens=delta_matched,
                     price=avg_price,
-                    fee=Decimal("0"),
+                    fee=fee_amount,
                     fill_ts=int(time.time()),
                     dedup_key=str(current_matched),
+                    accounted_shares=previous_matched if accounted_fill is not None else None,
                 ),
                 self.positions_repo,
                 raw_payload={
@@ -2954,17 +2990,16 @@ class ReconciliationService:
             and pnl_tracker is not None
             and hasattr(pnl_tracker, "record_sell")
         ):
-            # Realized PnL in Decimal to avoid float subtraction drift; cast
-            # at the tracker boundary only.
-            entry_d = Decimal(str(entry_price))
-            realized_d = (avg_price - entry_d) * delta_matched
+            realized_d = (
+                (avg_price - entry_price) * delta_matched if entry_price is not None else None
+            )
             pnl_tracker.record_sell(
                 condition_id=condition_id,
-                price=float(avg_price),
-                size_tokens=float(delta_matched),
-                usdc_value=float(delta_matched * avg_price),
+                price=avg_price,
+                size_tokens=delta_matched,
+                usdc_value=delta_matched * avg_price,
                 entry_price=entry_price,
-                realized_pnl=float(realized_d),
+                realized_pnl=realized_d,
                 exit_reason=reason,
                 leader_wallet=leader_id,
             )

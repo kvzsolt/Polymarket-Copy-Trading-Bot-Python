@@ -1,8 +1,8 @@
 """Async asyncpg port of storage/sqlite/orders_repo.py.
 
 Behaviour invariants preserved verbatim:
-  * ``try_acquire_submission_lock``: single round-trip
-    ``INSERT ... ON CONFLICT DO NOTHING RETURNING idempotency_key``
+  * ``try_acquire_submission_lock``: source-intent advisory locking plus
+    ``INSERT ... ON CONFLICT ... RETURNING idempotency_key``
     is atomic — caller treats a None result as "someone else holds
     the lock, do NOT submit" (Batch 3 race fix).
   * ``update_submission_status``: wraps the SELECT-merge-UPDATE in
@@ -255,53 +255,87 @@ class OrdersRepo(AbstractOrderRepository):
         """Attempt to acquire submission lock."""
         request_json = _json_str(request_payload) or "{}"
         async with self._pool.acquire() as conn:
-            # RETURNING yields the key when the INSERT happens. P1-g: the
-            # ON CONFLICT was previously DO NOTHING, so a task that died holding
-            # a ``pending_lock`` row (before it ever POSTed — hence
-            # ``order_id IS NULL``) blocked that idempotency key until the next
-            # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
-            # lock self-healing: a fresh acquirer takes it over ONLY when the
-            # existing row is a never-submitted (``order_id IS NULL``)
-            # direct-expirable lock that has been stale longer than the generous
-            # takeover TTL — exactly the ``safe_to_expire`` condition the batch
-            # reaper uses. A live (recent) or already-submitted (``order_id`` set)
-            # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
-            # and acquisition returns False as before.
-            returned = await conn.fetchval(
-                f"""
-                INSERT INTO orders (
-                    idempotency_key, user_id, leader_id, order_id, status,
-                    request_json, response_json, attempt_count, last_error,
-                    created_at, updated_at
-                ) VALUES (
-                    $1, $2, $3, NULL, 'pending_lock',
-                    $4::jsonb, NULL, 0, NULL,
-                    now(), now()
+            async with conn.transaction():
+                signal_id = request_payload.get("signal_id")
+                if isinstance(signal_id, str) and signal_id:
+                    recovery = request_payload.get("recovery_metadata")
+                    recovery = recovery if isinstance(recovery, dict) else {}
+                    promotion_id = recovery.get("source_promotion_id")
+                    if not isinstance(promotion_id, str) or not promotion_id:
+                        promotion_id = signal_id
+                    provisional = recovery.get("source_is_provisional") is True
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        json.dumps([user_id, promotion_id], separators=(",", ":")),
+                    )
+                    existing_intent = await conn.fetchval(
+                        "SELECT 1 FROM orders WHERE user_id = $1 "
+                        "AND (request_json->>'signal_id' = $2 "
+                        "OR request_json->>'signal_id' = $7 "
+                        "OR ($8::boolean AND "
+                        "request_json->'recovery_metadata'->>'source_promotion_id' = $7)) "
+                        "AND request_json->>'token_id' IS NOT DISTINCT FROM $3::text "
+                        "AND request_json->>'condition_id' IS NOT DISTINCT FROM $4::text "
+                        "AND upper(request_json->>'side') = $5 "
+                        "AND idempotency_key <> $6 LIMIT 1",
+                        user_id,
+                        signal_id,
+                        request_payload.get("token_id"),
+                        request_payload.get("condition_id"),
+                        str(request_payload.get("side", "")).upper(),
+                        key,
+                        promotion_id,
+                        provisional,
+                    )
+                    if existing_intent:
+                        return False
+                # RETURNING yields the key when the INSERT happens. P1-g: the
+                # ON CONFLICT was previously DO NOTHING, so a task that died holding
+                # a ``pending_lock`` row (before it ever POSTed — hence
+                # ``order_id IS NULL``) blocked that idempotency key until the next
+                # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
+                # lock self-healing: a fresh acquirer takes it over ONLY when the
+                # existing row is a never-submitted (``order_id IS NULL``)
+                # direct-expirable lock that has been stale longer than the generous
+                # takeover TTL — exactly the ``safe_to_expire`` condition the batch
+                # reaper uses. A live (recent) or already-submitted (``order_id`` set)
+                # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
+                # and acquisition returns False as before.
+                returned = await conn.fetchval(
+                    f"""
+                    INSERT INTO orders (
+                        idempotency_key, user_id, leader_id, order_id, status,
+                        request_json, response_json, attempt_count, last_error,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, NULL, 'pending_lock',
+                        $4::jsonb, NULL, 0, NULL,
+                        now(), now()
+                    )
+                    ON CONFLICT(idempotency_key) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        leader_id = excluded.leader_id,
+                        request_json = excluded.request_json,
+                        response_json = NULL,
+                        status = 'pending_lock',
+                        attempt_count = 0,
+                        last_error = 'stale_lock_taken_over',
+                        created_at = now(),
+                        updated_at = now()
+                    WHERE orders.order_id IS NULL
+                      AND orders.status = ANY($5::text[])
+                      AND (
+                          EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
+                      ) > $6
+                    RETURNING idempotency_key
+                    """,
+                    key,
+                    user_id,
+                    leader_id,
+                    request_json,
+                    list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
+                    int(stale_takeover_seconds),
                 )
-                ON CONFLICT(idempotency_key) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    leader_id = excluded.leader_id,
-                    request_json = excluded.request_json,
-                    response_json = NULL,
-                    status = 'pending_lock',
-                    attempt_count = 0,
-                    last_error = 'stale_lock_taken_over',
-                    created_at = now(),
-                    updated_at = now()
-                WHERE orders.order_id IS NULL
-                  AND orders.status = ANY($5::text[])
-                  AND (
-                      EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
-                  ) > $6
-                RETURNING idempotency_key
-                """,
-                key,
-                user_id,
-                leader_id,
-                request_json,
-                list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
-                int(stale_takeover_seconds),
-            )
         return returned is not None
 
     async def is_submission_locked(self, key: str) -> bool:

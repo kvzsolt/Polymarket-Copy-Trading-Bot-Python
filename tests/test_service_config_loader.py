@@ -11,6 +11,8 @@ process PMCOPY__* environment. The environment is selected explicitly
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -271,10 +273,30 @@ def test_yaml_round_trip_is_lossless_without_secrets(tmp_path: Path) -> None:
 def test_config_loads_without_runtime_clients(tmp_path: Path) -> None:
     """The config layer must be importable/loadable with no venue clients."""
     config_dir = _tree(tmp_path, {"sizing.yml": {"percentage": 4.0}})
+    probe = """
+import json
+from pathlib import Path
+import sys
 
-    load_config(_overrides(), config_dir=config_dir)
+def reject_runtime_import(event, arguments):
+    if event == 'import' and (arguments[0] == 'ccxt' or arguments[0].startswith('ccxt.')):
+        raise RuntimeError('Configuration imported the venue runtime')
 
-    assert "ccxt" not in sys.modules
+sys.addaudithook(reject_runtime_import)
+from config.app_config import load_config
+directory = Path(sys.argv[1])
+load_config(json.loads(sys.argv[2]), config_dir=directory, secrets_path=directory / 'absent.env')
+assert 'ccxt' not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(config_dir), json.dumps(_overrides())],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_leader_override_beats_environment_and_canonical(tmp_path: Path) -> None:
@@ -523,9 +545,7 @@ def test_entry_price_drift_accepts_values_outside_the_legacy_window(
 
 
 @pytest.mark.parametrize("drift", [0.0, -1.0, 101.0])
-def test_entry_price_drift_still_rejects_nonsense_values(
-    tmp_path: Path, drift: float
-) -> None:
+def test_entry_price_drift_still_rejects_nonsense_values(tmp_path: Path, drift: float) -> None:
     """Tunable is not unbounded: a non-positive or absurd band fails closed."""
     config_dir = _tree(tmp_path, {"execution.yml": {"max_entry_price_drift_pct": drift}})
 

@@ -39,6 +39,9 @@ class _FakeConn:
         self.calls: list = []
         self._ret = fetchval_return
 
+    def transaction(self):
+        return _FakeAcquire(self)
+
     async def fetchval(self, sql, *args):
         self.calls.append((sql, args))
         return self._ret

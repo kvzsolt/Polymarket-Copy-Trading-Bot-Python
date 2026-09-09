@@ -7,13 +7,17 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from config.app_config import AppConfig
+from interfaces.account_inventory import PositionSizeReader
 from services.balance_regime import BalanceRegime
 from services.copyDecisionService import CopyDecisionService
 from services.copyStrategy import CopySizingResult, calculate_copy_notional
 from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
+from services.leader_performance import LeaderPerformanceReader
+from services.copy_tasks.protective_runtime import TaskProtectivePositionManager
 from services.positionCoordinator import PositionCoordinator
+from services.portfolio_valuation import MarketQuoteSource
 from services.telemetry import TelemetryEmitters
 
 if TYPE_CHECKING:
@@ -77,6 +81,10 @@ class TradingContext:
     # construction (tests, tools, paper harnesses) keeps working and no call
     # site has to branch on whether telemetry is running.
     telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
+    leader_performance: LeaderPerformanceReader | None = None
+    task_position_manager: TaskProtectivePositionManager | None = None
+    market_quotes: MarketQuoteSource | None = None
+    holdings_reader: PositionSizeReader | None = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.

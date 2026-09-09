@@ -10,6 +10,13 @@ logger = get_logger("FetchData")
 _session: aiohttp.ClientSession | None = None
 _http_client: AsyncHttpClient | None = None
 
+# aiohttp's default header-size limit is 8190 bytes. Polymarket currently
+# serves a Content-Security-Policy header of ~8.2 KB on endpoints such as
+# https://polymarket.com/api/geoblock, so the default makes aiohttp fail the
+# response as a client-side HTTP 400 before the body is ever read. Keep a
+# generous ceiling for venue responses while still bounding memory per header.
+_AIOHTTP_HEADER_SIZE_LIMIT = 64 * 1024
+
 
 # INF-04: the prior ``atexit.register(_close_session_sync)`` ran
 # ``asyncio.run()`` during interpreter shutdown. Under pytest-asyncio
@@ -29,6 +36,8 @@ def _get_session() -> aiohttp.ClientSession:
             timeout=aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=15),
             connector=aiohttp.TCPConnector(limit=100, keepalive_timeout=30),
             headers={"Accept": "application/json", "User-Agent": "polymarket-copy-bot/2.0"},
+            max_line_size=_AIOHTTP_HEADER_SIZE_LIMIT,
+            max_field_size=_AIOHTTP_HEADER_SIZE_LIMIT,
         )
     return _session
 

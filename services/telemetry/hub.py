@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
+from uuid import uuid4
 
 from services.metrics import (
     TELEMETRY_METRIC_SCHEMAS,
@@ -179,6 +180,7 @@ class TelemetryHub:
         default_subscriber_capacity: int = 256,
         max_subscribers: int = 32,
         metrics: MetricsRegistry | None = None,
+        boot_id: str | None = None,
     ) -> None:
         if ingress_capacity <= 0:
             raise ValueError("ingress_capacity must be positive")
@@ -186,6 +188,17 @@ class TelemetryHub:
             raise ValueError("default_subscriber_capacity must be positive")
         if max_subscribers <= 0:
             raise ValueError("max_subscribers must be positive")
+        identity = uuid4().hex if boot_id is None else boot_id
+        if (
+            not isinstance(identity, str)
+            or not 1 <= len(identity) <= 128
+            or any(
+                not (character.isascii() and (character.isalnum() or character in "_-"))
+                for character in identity
+            )
+        ):
+            raise ValueError("Telemetry boot identity must be a bounded safe token")
+        self._boot_id = identity
         self._ingress_capacity = ingress_capacity
         self._default_subscriber_capacity = default_subscriber_capacity
         self._max_subscribers = max_subscribers
@@ -197,6 +210,11 @@ class TelemetryHub:
         self._last_sequence: dict[TelemetryProducer, int] = {}
         self._dispatcher: asyncio.Task[None] | None = None
         self._closed = False
+
+    @property
+    def boot_id(self) -> str:
+        """Return the session identity; producer sequences are scoped to this hub."""
+        return self._boot_id
 
     @property
     def closed(self) -> bool:

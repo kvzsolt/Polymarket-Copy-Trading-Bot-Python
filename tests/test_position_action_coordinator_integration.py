@@ -240,13 +240,13 @@ async def test_execute_trades_acquires_scope_lock(tmp_path):
         ctx = _make_context(pool, execution_service=exec_svc, tmp_path=tmp_path)
 
         acquired_scopes: list[PositionScope] = []
-        original_get_lock = ctx.position_coordinator.get_lock
+        original_get_lock = ctx.position_coordinator.action_coordinator.get_lock
 
         async def _spy_get_lock(scope):
             acquired_scopes.append(scope)
             return await original_get_lock(scope)
 
-        ctx.position_coordinator.get_lock = _spy_get_lock  # type: ignore[assignment]
+        ctx.position_coordinator.action_coordinator.get_lock = _spy_get_lock  # type: ignore[assignment]
 
         await execute_trades(ctx, "leader1", [_buy_signal()], time.time())
 
@@ -286,13 +286,13 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
         ctx.position_manager.evaluate_risk_action = _force_exit
 
         acquired = []
-        original = ctx.position_coordinator.get_lock
+        original = ctx.position_coordinator.action_coordinator.get_lock
 
         async def _spy(scope):
             acquired.append(scope)
             return await original(scope)
 
-        ctx.position_coordinator.get_lock = _spy  # type: ignore[assignment]
+        ctx.position_coordinator.action_coordinator.get_lock = _spy  # type: ignore[assignment]
 
         with patch(
             "services.risk.risk_monitor._get_context_cached_price",
@@ -313,8 +313,8 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
-    """Hold the pipeline's scope lock and prove the risk monitor must wait."""
+async def test_busy_scope_defers_risk_exit_until_next_tick(tmp_path):
+    """A busy scope defers protection until a later unlocked tick without overselling."""
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
@@ -342,30 +342,22 @@ async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
             token_id=FAKE_TOKEN_ID,
         )
 
-        scope_lock = await ctx.position_coordinator.get_lock(scope)
-        await scope_lock.acquire()
-        try:
-            risk_done = asyncio.Event()
+        async with ctx.position_coordinator.acquire(scope):
+            with patch(
+                "services.risk.risk_monitor._get_context_cached_price",
+                new_callable=AsyncMock,
+                return_value=Decimal("0.40"),
+            ):
+                await run_risk_check_for_context(ctx)
+            exec_svc.execute.assert_not_awaited()
 
-            async def _run_risk() -> None:
-                with patch(
-                    "services.risk.risk_monitor._get_context_cached_price",
-                    new_callable=AsyncMock,
-                    return_value=Decimal("0.40"),
-                ):
-                    await run_risk_check_for_context(ctx)
-                risk_done.set()
-
-            risk_task = asyncio.create_task(_run_risk())
-
-            await asyncio.sleep(0.05)
-            assert not risk_done.is_set(), "risk monitor must block on scope lock"
-            exec_svc.execute.assert_not_called()
-        finally:
-            scope_lock.release()
-
-        await asyncio.wait_for(risk_task, timeout=2.0)
-        exec_svc.execute.assert_awaited()
+        with patch(
+            "services.risk.risk_monitor._get_context_cached_price",
+            new_callable=AsyncMock,
+            return_value=Decimal("0.40"),
+        ):
+            await run_risk_check_for_context(ctx)
+        exec_svc.execute.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +395,7 @@ async def test_different_scopes_stay_concurrent(tmp_path):
             condition_id="cond-a",
             token_id=FAKE_TOKEN_ID,
         )
-        lock_a = await ctx.position_coordinator.get_lock(scope_a)
+        lock_a = await ctx.position_coordinator.action_coordinator.get_lock(scope_a)
         await lock_a.acquire()
         try:
             with patch(

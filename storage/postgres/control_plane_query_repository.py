@@ -568,7 +568,9 @@ class PostgresControlPlaneQueryRepository:
         rows = await self._fetch(
             """
             SELECT id, user_id, leader_id, order_id, condition_id, token_id,
-                   side, size_tokens, price, fee, fill_ts, created_at
+                   side, size_tokens, price,
+                   CASE WHEN fee_evidence_known THEN fee ELSE NULL END AS fee,
+                   fill_ts, created_at
             FROM fills
             WHERE user_id = $1
               AND ($2::bigint IS NULL OR id < $2::bigint)
@@ -886,7 +888,7 @@ class PostgresControlPlaneQueryRepository:
             side=self._present_text(row, "side"),
             size=self._decimal_text(row, "size_tokens"),
             price=self._decimal_text(row, "price"),
-            fee=self._decimal_text(row, "fee"),
+            fee=None if row.get("fee") is None else self._decimal_text(row, "fee"),
             filled_at=self._optional_epoch_datetime(row.get("fill_ts")),
             created_at=self._datetime(row, "created_at"),
         )

@@ -1,8 +1,17 @@
+# Configuration guide — live discovery overrides.
+# Purpose: use the explicit trader-file roster by default while retaining a
+# bounded one-process --auto-trader sweep configuration.
+# Options: scheduler.enabled/falcon.enabled are true | false; candidate_limit is
+# a positive wallet count.
+# Trade-offs: disabled is deterministic and free of provider dependency; enabled
+# adapts the roster but adds API cost, latency, and scoring/model risk.
 # Live profile: the leader roster comes from config/traders/<fantasy-name>.yml.
 # Automatic discovery (scheduler) and the Falcon provider both stay off.
 scheduler:
+  # No recurring live rediscovery; --auto-trader can still force it for one run.
   enabled: false
 falcon:
+  # No normal Falcon evaluation without explicit process override.
   enabled: false
   # One `--auto-trader` sweep costs several provider calls per shortlisted
   # wallet, so the sweep is bounded at 50. The startup burst re-checks the

@@ -122,10 +122,8 @@ class PositionDriftService:
             venue_positions = await self._live_positions_fetcher(wallet)
         except Exception as exc:
             _log.warning(
-                "drift_scan_fetch_failed | user=%s wallet=%s error=%r",
-                user_id,
-                wallet,
-                exc,
+                "drift_scan_fetch_failed | error_type=%s",
+                type(exc).__name__,
             )
             # Treat fetch failure as unresolved — fail closed.
             record = PositionDriftRecord(
@@ -137,7 +135,7 @@ class PositionDriftService:
                 drift_size=Decimal("0"),
                 status=PositionDriftStatus.UNRESOLVED,
                 action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
-                reason=f"venue snapshot fetch failed: {exc!r}",
+                reason=f"venue snapshot fetch failed: {type(exc).__name__}",
             )
             self._pause(user_id, record.scope_key)
             self._latest[record.scope_key] = record
@@ -149,6 +147,34 @@ class PositionDriftService:
                 paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
             )
 
+        try:
+            return await self._scan_snapshot(user_id=user_id, venue_positions=venue_positions)
+        except Exception as exc:
+            _log.warning("drift_scan_state_unavailable error_type=%s", type(exc).__name__)
+            record = PositionDriftRecord(
+                user_id=user_id,
+                condition_id="",
+                token_id="",
+                local_size=Decimal("0"),
+                venue_size=Decimal("0"),
+                drift_size=Decimal("0"),
+                status=PositionDriftStatus.UNRESOLVED,
+                action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
+                reason=f"inventory reconciliation unavailable: {type(exc).__name__}",
+            )
+            self._pause(user_id, record.scope_key)
+            self._latest[record.scope_key] = record
+            return DriftReport(
+                user_id=user_id,
+                clean=False,
+                records=(record,),
+                generated_at=int(time.time()),
+                paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
+            )
+
+    async def _scan_snapshot(
+        self, *, user_id: str, venue_positions: list[dict[str, Any]]
+    ) -> DriftReport:
         local_positions = list(await self._positions_repo.list_open_positions(user_id) or [])
         records: list[PositionDriftRecord] = []
         seen_scopes: set[str] = set()
@@ -187,6 +213,9 @@ class PositionDriftService:
             records.append(record)
             self._latest[scope_key] = record
 
+        snapshot_scope = f"{user_id}||"
+        self._paused_scopes.get(user_id, set()).discard(snapshot_scope)
+        self._latest.pop(snapshot_scope, None)
         clean = all(r.is_clean for r in records)
         return DriftReport(
             user_id=user_id,
@@ -201,7 +230,8 @@ class PositionDriftService:
 
     def is_scope_paused(self, *, user_id: str, condition_id: str, token_id: str) -> bool:
         scope_key = f"{user_id}|{condition_id}|{token_id}"
-        return scope_key in self._paused_scopes.get(user_id, set())
+        paused = self._paused_scopes.get(user_id, set())
+        return f"{user_id}||" in paused or scope_key in paused
 
     def mark_resolved(
         self, *, user_id: str, condition_id: str, token_id: str, reason: str = "operator_resolved"
@@ -403,7 +433,7 @@ class PositionDriftService:
             )
             return list(result or [])
         except Exception:
-            return []
+            raise RuntimeError("Reservation ownership is unavailable") from None
 
     def _record(
         self,

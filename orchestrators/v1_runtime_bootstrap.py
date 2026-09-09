@@ -13,12 +13,15 @@ background tasks, and zero pool access.
 
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import cast
 
 import asyncpg
+from orchestrators.task_protection import TaskProtectiveRuntimeBindings
 
 from config.app_config import AppConfig
 from config.v1_runtime import CopyTasksRuntimeConfig
@@ -34,7 +37,9 @@ from orchestrators.v1_runtime import CopyTaskV1RuntimeBuilder, CopyTaskV1Runtime
 from services.copy_sizing_v5.policy import copy_sizing_policy_from_config
 from services.copy_tasks.budget import TaskBudgetReservationService
 from services.copy_tasks.domain import CopyTask
-from services.copy_tasks.event_routing import CopyTaskEventProcessor
+from services.copy_tasks.account_dispatch import AccountTaskDispatcher
+from services.copy_tasks.event_routing import CopyTaskEventProcessor, TaskDecisionObserver
+from services.telemetry.latency import PipelineLatency
 from services.copy_tasks.price_cache import MarketPriceCacheSink
 from services.copy_tasks.reconciliation import TaskBudgetReconciliationService
 from services.copy_tasks.service import CopyTaskConflict
@@ -127,9 +132,7 @@ def _trader_task_rows(
             leader = ""
         if leader == wallet:
             account = str(
-                getattr(context, "user_id", "")
-                or getattr(context, "wallet_address", "")
-                or ""
+                getattr(context, "user_id", "") or getattr(context, "wallet_address", "") or ""
             ).strip()
             if account and account.casefold() not in {item.casefold() for item in accounts}:
                 accounts.append(account)
@@ -144,7 +147,15 @@ def _trader_task_rows(
     configuration = _json_safe(
         {
             key: task_dump[key]
-            for key in ("trigger", "spend", "price", "reaction", "market_filter", "schedule", "sizing")
+            for key in (
+                "trigger",
+                "spend",
+                "price",
+                "reaction",
+                "market_filter",
+                "schedule",
+                "sizing",
+            )
         }
     )
     rows: list[dict[str, object]] = []
@@ -241,6 +252,9 @@ class CopyTaskV1RuntimeHandle:
         snapshot_provider: TradingContextTaskSnapshotProvider,
         execution_adapter: TradingContextTaskExecutionAdapter,
         quote_sink: MarketPriceCacheSink | None,
+        protective_bindings: TaskProtectiveRuntimeBindings | None = None,
+        account_dispatcher: AccountTaskDispatcher | None = None,
+        shutdown_timeout_seconds: float = 30.0,
     ) -> None:
         self.bundle = bundle
         self.restored_task_count = int(restored_task_count)
@@ -250,22 +264,33 @@ class CopyTaskV1RuntimeHandle:
         self._snapshot_provider = snapshot_provider
         self._execution_adapter = execution_adapter
         self.quote_sink = quote_sink
+        self._protective_bindings = protective_bindings
+        self._account_dispatcher = account_dispatcher
+        self._shutdown_timeout_seconds = shutdown_timeout_seconds
         self._started = False
         self._closed = False
 
     @property
     def worker_count(self) -> int:
-        """Return the current low-cardinality leader-worker count."""
+        """Return the allocated leader and account consumer count."""
 
         workers = self.bundle.workers
-        return 0 if workers is None else workers.worker_count
+        leader_count = 0 if workers is None else workers.worker_count
+        account_count = (
+            0 if self._account_dispatcher is None else self._account_dispatcher.worker_count
+        )
+        return leader_count + account_count
 
     @property
     def queue_depth(self) -> int:
         """Return the aggregate queued copy-event count."""
 
         workers = self.bundle.workers
-        return 0 if workers is None else workers.queue_depth
+        leader_depth = 0 if workers is None else workers.queue_depth
+        account_depth = (
+            0 if self._account_dispatcher is None else self._account_dispatcher.queue_depth
+        )
+        return leader_depth + account_depth
 
     async def start(self) -> None:
         """Mark the worker supervisor ready to accept leader events."""
@@ -273,6 +298,8 @@ class CopyTaskV1RuntimeHandle:
         if self._started:
             return
         self._started = True
+        if self._account_dispatcher is not None:
+            await self._account_dispatcher.start()
         if self.bundle.workers is not None:
             await self.bundle.workers.start()
 
@@ -282,8 +309,19 @@ class CopyTaskV1RuntimeHandle:
         if self._closed:
             return
         self._closed = True
-        if self.bundle.workers is not None:
-            await self.bundle.workers.close()
+        try:
+            async with asyncio.timeout(self._shutdown_timeout_seconds):
+                if self.bundle.workers is not None:
+                    await self.bundle.workers.close()
+                if self._account_dispatcher is not None:
+                    await self._account_dispatcher.close()
+        except TimeoutError:
+            logger.warning("copy_task_runtime_drain_timeout")
+        finally:
+            if self.bundle.workers is not None:
+                await self.bundle.workers.abort()
+            if self._account_dispatcher is not None:
+                await self._account_dispatcher.abort()
 
     async def submit_raw_batch(
         self,
@@ -309,6 +347,8 @@ class CopyTaskV1RuntimeHandle:
         values = tuple(contexts)
         self._snapshot_provider.add_contexts(values)
         self._execution_adapter.add_contexts(values)
+        if self._protective_bindings is not None:
+            self._protective_bindings.bind(values)
 
     def has_task_binding(self, task: CopyTask) -> bool:
         """Return whether a task has both evidence and execution bindings."""
@@ -328,6 +368,8 @@ async def start_v1_copy_task_runtime(
     clock: Clock | None = None,
     start_workers: bool = True,
     buy_scope_guard: LeaderSellBuyScopeGuard | None = None,
+    decision_observer: TaskDecisionObserver | None = None,
+    latency: PipelineLatency | None = None,
 ) -> CopyTaskV1RuntimeHandle | None:
     """Construct, restore, and start the v1 copy-task runtime when enabled.
 
@@ -339,6 +381,7 @@ async def start_v1_copy_task_runtime(
         clock: Injectable UTC clock for the startup budget sweep (tests).
         start_workers: Whether bounded workers accept events immediately.
         buy_scope_guard: Shared durable emergency SELL scope guard.
+        decision_observer: Existing non-blocking telemetry owner for task decisions.
 
     Returns:
         A started runtime handle, or ``None`` when ``copy_tasks.enabled`` is
@@ -354,7 +397,9 @@ async def start_v1_copy_task_runtime(
     active_clock = clock or (lambda: datetime.now(timezone.utc))
     now = active_clock()
     task_repository = PostgresCopyTaskRepository(cast(CopyTaskDatabasePool, pool))
-    budget_repository = PostgresTaskBudgetRepository(cast(TaskBudgetDatabasePool, pool))
+    budget_repository = PostgresTaskBudgetRepository(
+        cast(TaskBudgetDatabasePool, pool), latency=latency
+    )
     lock_repository = PostgresMarketReentryLockRepository(cast(ReentryLockDatabasePool, pool))
     risk_lot_repository = PostgresRiskLotRepository(cast(RiskLotDatabasePool, pool))
     sizing = CopyTaskSizingService(
@@ -399,7 +444,12 @@ async def start_v1_copy_task_runtime(
     snapshot_provider = TradingContextTaskSnapshotProvider(
         contexts=context_values,
         balance_reader=balance_reader,
+        risk_lots=bundle.risk_lots,
     )
+    protective_bindings = TaskProtectiveRuntimeBindings(
+        bundle.risk_lots, slippage_bps=int(config.execution.slippage_tolerance * 100)
+    )
+    protective_bindings.bind(context_values)
     execution_adapter = TradingContextTaskExecutionAdapter(contexts=context_values)
     processor = CopyTaskEventProcessor(
         task_reader=task_repository,
@@ -407,12 +457,28 @@ async def start_v1_copy_task_runtime(
         coordinator=bundle.coordinator,
         snapshot_provider=snapshot_provider,
         execution=execution_adapter,
+        clock=_CallableClock(active_clock),
+        max_signal_age_seconds=config.copy_trading.copy_max_signal_age_seconds,
+        decision_observer=decision_observer,
+        latency=latency,
     )
-    deferred_handler.bind(processor)
+    account_dispatcher = (
+        AccountTaskDispatcher(
+            processor=processor,
+            account_key=execution_adapter.account_key,
+            queue_size=tasks_config.workers.queue_size,
+            max_concurrent_accounts=tasks_config.workers.global_concurrency,
+            max_accounts=tasks_config.workers.max_leader_workers,
+            shutdown_timeout_seconds=tasks_config.workers.shutdown_timeout_seconds,
+        )
+        if bundle.workers is not None
+        else None
+    )
+    deferred_handler.bind(account_dispatcher if account_dispatcher is not None else processor)
     ingress = (
         CopyTaskRuntimeIngress(
             workers=bundle.workers,
-            normalizer=LeaderEventNormalizer(clock=_CallableClock(active_clock)),
+            normalizer=LeaderEventNormalizer(clock=_CallableClock(active_clock), latency=latency),
             buy_scope_guard=buy_scope_guard,
         )
         if bundle.workers is not None
@@ -433,6 +499,9 @@ async def start_v1_copy_task_runtime(
         ingress=ingress,
         snapshot_provider=snapshot_provider,
         execution_adapter=execution_adapter,
+        protective_bindings=protective_bindings,
+        account_dispatcher=account_dispatcher,
+        shutdown_timeout_seconds=tasks_config.workers.shutdown_timeout_seconds,
         quote_sink=(
             MarketPriceCacheSink(
                 cache=bundle.price_cache,

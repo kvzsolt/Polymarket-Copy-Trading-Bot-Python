@@ -1,4 +1,11 @@
-# Wallet identity. private_key comes from secrets.env
-# (PMCOPY__WALLET__PRIVATE_KEY); never put a real key in YAML.
+# Configuration guide — follower wallet identity.
+# Purpose: select the signing account secret and Polygon chain.
+# Options: private_key is an empty placeholder here (supply a 0x + 64-hex key
+# through secrets.env); chain_id accepts 137 (Polygon) or 80002 (Amoy test ID).
+# Trade-offs: mainnet can move real funds; a test-chain ID reduces capital risk
+# but does not imply every Polymarket/CCXT operation supports that network.
+# Never put a real key in YAML. Live requires PMCOPY__WALLET__PRIVATE_KEY;
+# paper intentionally does not construct an authenticated CCXT client.
 private_key: ''
+# Must match the RPC/network and the effective venue. Use 137 for production.
 chain_id: 137

@@ -686,7 +686,7 @@ async def test_confirm_fill_not_found_counter_resets_on_success():
 
 
 @pytest.mark.asyncio
-async def test_confirm_fill_uses_confirmed_trade_id_when_order_endpoint_is_down():
+async def test_confirmed_trade_remains_partial_without_complete_account_history():
     from decimal import Decimal
 
     from integrations.polymarket.errors import VenueUnavailableError
@@ -725,7 +725,7 @@ async def test_confirm_fill_uses_confirmed_trade_id_when_order_endpoint_is_down(
 
     result = await svc.confirm_fill("vFallback")
 
-    assert result["status"] == "confirmed"
+    assert result["status"] == "live"
     assert result["size_matched"] == "5"
     assert result["avg_price"] == "0.42"
     assert result["confirmation_source"] == "trade_ids"
@@ -785,16 +785,16 @@ async def test_confirm_fill_mixed_confirmed_and_failed_trades_uses_successful_si
             return []
 
         async def get_fills(self, market=None, *, trade_id=None, order_id=None):
-            status = "CONFIRMED" if trade_id == "trade-ok" else "FAILED"
-            size = Decimal("3") if trade_id == "trade-ok" else Decimal("2")
+            identities = ("trade-ok", "trade-failed") if trade_id is None else (trade_id,)
             return [
                 VenueFill(
-                    fill_id=trade_id,
+                    fill_id=identity,
                     order_id=order_id,
-                    size=size,
+                    size=Decimal("3") if identity == "trade-ok" else Decimal("2"),
                     price=Decimal("0.40"),
-                    status=status,
+                    status="CONFIRMED" if identity == "trade-ok" else "FAILED",
                 )
+                for identity in identities
             ]
 
     svc = make_service(

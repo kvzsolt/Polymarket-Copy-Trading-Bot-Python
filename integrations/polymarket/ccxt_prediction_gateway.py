@@ -18,7 +18,9 @@ import asyncio
 import inspect
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -56,10 +58,13 @@ from integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
+from services.metrics import LatencyPhase
+from services.telemetry.latency import PipelineLatency
 from utils.logger import redact_error_detail
 
 _READ_TIMEOUT_SECONDS = 10.0
 _MAX_PRIVATE_HISTORY_PAGES = 1000
+_DEFAULT_METADATA_CACHE_SIZE = 4096
 _PRIVATE_CURSOR_TERMINALS = {"", "LTE=", "END"}
 _EXPECTED_CHAIN_ID = 137
 _SUPPORTED_MARKET_ORDER_TYPES = {"FAK", "FOK"}
@@ -372,6 +377,8 @@ class CcxtPredictionGateway:
         tick_size_resolver: TickSizeResolver | None = None,
         metadata_ttl_seconds: float = _DEFAULT_METADATA_TTL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
+        latency: PipelineLatency | None = None,
+        metadata_cache_size: int = _DEFAULT_METADATA_CACHE_SIZE,
     ) -> None:
         """Wrap one CCXT prediction client behind the venue gateway contract.
 
@@ -382,14 +389,37 @@ class CcxtPredictionGateway:
                 signing. ``0`` restores a fetch before every signed order.
             monotonic: Monotonic clock source, injected so the TTL is testable
                 without wall-clock sleeps.
+            latency: Optional bounded recorder for actual metadata fetch duration.
+            metadata_cache_size: Maximum number of outcome metadata entries;
+                least recently used entries are evicted with their fetch timestamps.
+
+        Raises:
+            ValueError: If the metadata cache bound is not a positive integer.
         """
         self._client = client
         self._exchange = client.exchange if isinstance(client, CcxtPredictionClient) else client
-        self._metadata: dict[str, ExecutionMetadata] = {}
+        if (
+            isinstance(metadata_cache_size, bool)
+            or not isinstance(metadata_cache_size, int)
+            or metadata_cache_size <= 0
+        ):
+            raise ValueError("metadata_cache_size must be a positive integer")
+        self._metadata_cache_size = metadata_cache_size
+        self._metadata: OrderedDict[str, ExecutionMetadata] = OrderedDict()
         self._metadata_fetched_at: dict[str, float] = {}
         self._metadata_ttl_seconds = max(0.0, float(metadata_ttl_seconds))
         self._monotonic = monotonic
+        self._latency = latency
         self._tick_size_resolver = tick_size_resolver
+
+    def _cache_metadata(self, metadata: ExecutionMetadata) -> None:
+        token = metadata.token_id
+        self._metadata[token] = metadata
+        self._metadata.move_to_end(token)
+        self._metadata_fetched_at[token] = self._monotonic()
+        while len(self._metadata) > self._metadata_cache_size:
+            evicted, _metadata = self._metadata.popitem(last=False)
+            self._metadata_fetched_at.pop(evicted, None)
 
     def _metadata_is_fresh(self, token: str) -> bool:
         """Return whether cached metadata is recent enough to sign against.
@@ -653,8 +683,7 @@ class CcxtPredictionGateway:
             raise VenueInvalidOrderError(
                 "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
             )
-        self._metadata[str(token_id)] = metadata
-        self._metadata_fetched_at[str(token_id)] = self._monotonic()
+        self._cache_metadata(metadata)
         return metadata
 
     async def _load_outcome(self, token_id: str) -> dict[str, Any]:
@@ -748,47 +777,53 @@ class CcxtPredictionGateway:
                 raise VenueInvalidOrderError(
                     "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
                 )
-            self._metadata[token] = metadata
-            self._metadata_fetched_at[token] = self._monotonic()
+            self._cache_metadata(metadata)
             return metadata
 
         if refresh and self._metadata_is_fresh(token):
             cached = self._metadata.get(token)
             if cached is not None:
+                self._metadata.move_to_end(token)
                 return cached
 
         if not refresh:
             cached = self._metadata.get(token)
             if cached is not None:
+                self._metadata.move_to_end(token)
                 return cached
 
-        if refresh:
-            if condition_id:
-                return await self._fetch_execution_metadata_without_book(
-                    token,
-                    condition_id,
-                )
-            # A fresh order-book snapshot is the execution authority. This is
-            # intentionally done immediately before every signed order, using
-            # the raw CLOB book because the parsed book drops the metadata.
-            book = await self._fetch_metadata_book(token)
-            return await self._execution_metadata(token, book)
+        measurement = (
+            self._latency.span(LatencyPhase.METADATA_CACHE_MISS)
+            if self._latency is not None
+            else nullcontext()
+        )
+        with measurement:
+            if refresh:
+                if condition_id:
+                    return await self._fetch_execution_metadata_without_book(
+                        token,
+                        condition_id,
+                    )
+                # A fresh order-book snapshot is the execution authority. This is
+                # intentionally done immediately before every signed order, using
+                # the raw CLOB book because the parsed book drops the metadata.
+                book = await self._fetch_metadata_book(token)
+                return await self._execution_metadata(token, book)
 
-        outcome = await self._load_outcome(token)
-        metadata = self._metadata_from_sources(token, outcome)
-        if metadata is None:
-            # The CCXT outcome cache does not consistently include
-            # min_order_size. Fall back to a fresh book and cache only after all
-            # three execution-critical fields validate.
-            book = await self._fetch_metadata_book(token)
-            metadata = self._metadata_from_sources(token, book, outcome)
-        if metadata is None:
-            raise VenueInvalidOrderError(
-                "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
-            )
-        self._metadata[token] = metadata
-        self._metadata_fetched_at[token] = self._monotonic()
-        return metadata
+            outcome = await self._load_outcome(token)
+            metadata = self._metadata_from_sources(token, outcome)
+            if metadata is None:
+                # The CCXT outcome cache does not consistently include
+                # min_order_size. Fall back to a fresh book and cache only after all
+                # three execution-critical fields validate.
+                book = await self._fetch_metadata_book(token)
+                metadata = self._metadata_from_sources(token, book, outcome)
+            if metadata is None:
+                raise VenueInvalidOrderError(
+                    "CCXT omitted tick_size, min_order_size, or neg_risk; refusing execution"
+                )
+            self._cache_metadata(metadata)
+            return metadata
 
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Return a normalized order book for a raw outcome token."""
@@ -1178,7 +1213,7 @@ class CcxtPredictionGateway:
         return result
 
     @staticmethod
-    def _fee(value: dict[str, Any]) -> Decimal:
+    def _fee(value: dict[str, Any]) -> Decimal | None:
         fee = value.get("fee")
         if isinstance(fee, dict):
             raw = _first(fee, "cost", "amount")
@@ -1188,7 +1223,7 @@ class CcxtPredictionGateway:
         raw = _first(info, "fee", "fee_amount", "feeAmount")
         if raw is not None and not isinstance(raw, dict):
             return _decimal(raw, field="fee", default=Decimal("0"))
-        return Decimal("0")
+        return None
 
     @staticmethod
     def _trade_legs(value: dict[str, Any]) -> Iterable[dict[str, Any]]:
@@ -1201,6 +1236,9 @@ class CcxtPredictionGateway:
             for maker in makers:
                 if not isinstance(maker, dict):
                     continue
+                maker_fee = CcxtPredictionGateway._fee(maker)
+                if maker_fee is None and len(makers) == 1:
+                    maker_fee = CcxtPredictionGateway._fee(value)
                 yield {
                     "order_id": _first(maker, "order_id", "orderId", "id"),
                     "token_id": _first(maker, "token_id", "tokenId", "asset_id"),
@@ -1208,6 +1246,7 @@ class CcxtPredictionGateway:
                     "size": _first(maker, "matched_amount", "matchedAmount", "size"),
                     "price": _first(maker, "price"),
                     "role": role,
+                    "fee": maker_fee,
                 }
             return
         yield {
@@ -1218,6 +1257,7 @@ class CcxtPredictionGateway:
             "size": _first(value, "amount", "size") or _first(info, "size"),
             "price": _first(value, "price") or _first(info, "price"),
             "role": role,
+            "fee": CcxtPredictionGateway._fee(value),
         }
 
     async def get_fills(
@@ -1265,7 +1305,6 @@ class CcxtPredictionGateway:
                 str(_first(info, "transaction_hash", "transactionHash") or "") or None
             )
             status = str(_first(info, "status") or _first(value, "status") or "") or None
-            fee = self._fee(value)
             for leg in self._trade_legs(value):
                 leg_order_id = str(leg.get("order_id") or "")
                 if order_id and leg_order_id != order_id:
@@ -1285,7 +1324,7 @@ class CcxtPredictionGateway:
                         side=str(leg.get("side") or "").upper(),
                         size=size,
                         price=price,
-                        fee=fee,
+                        fee=leg["fee"],
                         timestamp=timestamp,
                         status=status,
                         transaction_hash=transaction_hash,

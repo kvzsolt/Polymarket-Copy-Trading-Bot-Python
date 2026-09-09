@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import services.manual_sync_service as manual_sync_module
 from services.manual_sync_service import ManualSyncService
 from storage.postgres.positions_repo import PositionRecord
 
@@ -77,7 +78,14 @@ def _make_service(
     positions_repo.delete_position = AsyncMock()
     market_store = market_store or MagicMock()
     market_store.evict = MagicMock()
+
+    async def positions_fetcher(wallet):
+        return await manual_sync_module.fetch_data(
+            f"https://example.invalid/positions?user={wallet}", silent=True
+        )
+
     svc = ManualSyncService(
+        positions_fetcher=positions_fetcher,
         funder_address=FUNDER,
         user_id=FUNDER,
         positions_repo=positions_repo,
@@ -497,8 +505,8 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
 
 
 @pytest.mark.asyncio
-async def test_zero_value_position_deletes_existing_local_position():
-    """Data API stale zero-value rows are treated as absent for local state."""
+async def test_zero_value_position_preserves_existing_local_position():
+    """A zero mark does not establish sale or redemption of held shares."""
     svc, positions_repo, _ = _make_service()
     positions_repo.list_open_positions = AsyncMock(
         return_value=[
@@ -535,21 +543,13 @@ async def test_zero_value_position_deletes_existing_local_position():
     ):
         await svc.sync_now(reason="startup")
 
-    positions_repo.set_position_size.assert_not_called()
-    positions_repo.delete_position.assert_awaited_once_with(
-        FUNDER,
-        "0xcond1",
-        token_id="0xasset1",
-    )
+    positions_repo.set_position_size.assert_awaited_once()
+    positions_repo.delete_position.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_zero_value_position_is_not_seeded_from_stale_data_api():
-    """Data API can echo non-zero size for retired tokens with value=0.
-
-    Startup health/drift exclude those rows; manual sync must not resurrect
-    them into canonical positions.
-    """
+async def test_zero_value_position_is_seeded_as_held_inventory():
+    """Positive shares remain inventory even if the reported mark is zero."""
     svc, positions_repo, _ = _make_service()
     positions_repo.list_open_positions = AsyncMock(return_value=[])
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
@@ -573,9 +573,9 @@ async def test_zero_value_position_is_not_seeded_from_stale_data_api():
         await svc.sync_now(reason="startup")
 
     user_pos_model.delete_many.assert_called_once()
-    user_pos_model.insert_many.assert_not_called()
-    mock_log.assert_not_called()
-    positions_repo.set_position_size.assert_not_called()
+    user_pos_model.insert_many.assert_awaited_once()
+    mock_log.assert_called_once()
+    positions_repo.set_position_size.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -633,8 +633,9 @@ async def test_initial_sync_runs_silent_full_sweep():
     svc, _, _ = _make_service()
     calls = []
 
-    async def _capture_sync(*, reason: str, silent_trades: bool = False) -> None:
+    async def _capture_sync(*, reason: str, silent_trades: bool = False) -> bool:
         calls.append((reason, silent_trades))
+        return True
 
     with patch.object(svc, "sync_now", side_effect=_capture_sync):
         await svc.initial_sync()
@@ -1081,11 +1082,10 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
 
     positions_repo.set_position_size.assert_not_called()
     mock_disc.assert_not_called()
-    # Seed hold-off probes the BUY side (the row-creating side that races the
-    # reconciler's first incremental write) within the short hold-off window.
+    # Both sides retain reconciliation ownership until their order is terminal.
     probe_kwargs = orders_repo.has_unconfirmed_processed_trade.call_args.kwargs
     assert probe_kwargs["asset"] == "0xasset1"
-    assert probe_kwargs["side"] == "BUY"
+    assert probe_kwargs["side"] is None
 
 
 @pytest.mark.asyncio
@@ -1121,3 +1121,148 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
         await svc.sync_now(reason="wss_fill")
 
     positions_repo.set_position_size.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_marked_zero_still_represents_held_inventory() -> None:
+    """A zero mark cannot prove sale, redemption, or zero shares."""
+    svc, repo, _ = _make_service()
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(return_value=[_live_position(size=12.1851, avg=0.34, current_value=0.0)]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        await svc._sync_positions_and_tracking()
+    repo.set_position_size.assert_awaited_once()
+    repo.delete_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_initial_inventory_failure_is_not_reported_as_applied() -> None:
+    svc, _, _ = _make_service()
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(return_value=None)),
+        pytest.raises(RuntimeError, match="Initial inventory synchronization is incomplete"),
+    ):
+        await svc.initial_sync()
+
+
+@pytest.mark.asyncio
+async def test_required_position_read_failure_prevents_writes_and_reports_failure() -> None:
+    svc, repo, _ = _make_service()
+    repo.list_open_positions.side_effect = ValueError("SYNTHETIC_POSITION_SECRET")
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[[], [_live_position()]]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+    ):
+        result = await svc.sync_now(reason="test")
+    repo.set_position_size.assert_not_awaited()
+    assert result is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["set_position_size", "delete_position"])
+async def test_required_position_write_failure_is_reported(failure) -> None:
+    svc, repo, _ = _make_service()
+    getattr(repo, failure).side_effect = ValueError("SYNTHETIC_POSITION_SECRET")
+    if failure == "delete_position":
+        repo.list_open_positions.return_value = [
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="condition-old",
+                token_id="token-old",
+                leader_id=None,
+                size_tokens=Decimal(1),
+                avg_entry_price=Decimal("0.5"),
+            )
+        ]
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[[], [_live_position()]]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        result = await svc.sync_now(reason="test")
+    assert result is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+@pytest.mark.parametrize("venue_size", ["0", "4", "12"])
+async def test_pending_fill_keeps_existing_position_under_reconciler_ownership(
+    side: str, venue_size: str
+) -> None:
+    orders = _orders_repo()
+    orders.has_unconfirmed_processed_trade.side_effect = lambda **scope: (
+        scope["side"] in (None, side)
+    )
+    svc, repo, store = _make_service(orders_repo=orders)
+    repo.list_open_positions.return_value = [
+        PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader", Decimal(10), Decimal("0.5"))
+    ]
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[[], [_live_position(size=venue_size)]]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        assert await svc.sync_now(reason="pending_fill") is True
+    repo.set_position_size.assert_not_awaited()
+    repo.delete_position.assert_not_awaited()
+    store.evict.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition", [None, "", True])
+async def test_missing_held_position_identity_cannot_be_treated_as_disposal(condition) -> None:
+    svc, repo, _ = _make_service()
+    repo.list_open_positions.return_value = [
+        PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader", Decimal(10), Decimal("0.5"))
+    ]
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[[], [_live_position(cond=condition)]]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        assert await svc.sync_now(reason="invalid_identity") is False
+    repo.set_position_size.assert_not_awaited()
+    repo.delete_position.assert_not_awaited()
+    history.delete_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("size", "owner"), [("12", None), ("8", "leader-a")])
+async def test_manual_increment_does_not_inherit_a_copied_position_owner(size, owner) -> None:
+    svc, repo, _ = _make_service()
+    repo.list_open_positions.return_value = [
+        PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader-a", Decimal(10), Decimal(".5"))
+    ]
+    history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+    with (
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[[], [_live_position(size=size)]]),
+        ),
+        patch("services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        assert await svc.sync_now(reason="manual_inventory") is True
+    assert repo.set_position_size.await_args.kwargs["leader_id"] == owner

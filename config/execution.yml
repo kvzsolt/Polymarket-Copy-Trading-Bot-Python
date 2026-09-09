@@ -1,11 +1,29 @@
-# Execution service settings. trading_mode is the single authoritative
+# Configuration guide — venue-independent order execution policy.
+# Purpose: select paper/live mode, price and book guards, reservations,
+# concurrency, bounded recovery, and execution-level safety switches.
+# Options: trading_mode is paper | live; spread mode is absolute_bps |
+# relative_bps | ticks; sell_fraction_missing_policy is skip | full_close;
+# booleans toggle gates and 0 disables only where explicitly documented.
+# Trade-offs: tighter price/book limits reduce adverse fills but increase FAK
+# cancellations; higher concurrency/recovery ceilings improve throughput but
+# increase venue/account pressure. Ambiguous POSTs are reconciled, never retried.
+# trading_mode is the single authoritative
 # live/paper selector. CCXT is the only Polymarket venue transport.
 # kill_switch here refuses BUY entries but still allows protective exits;
 # the global master stop is app.yml kill_switch.
+# false permits entries; true refuses BUYs while retaining protective SELLs.
 kill_switch: false
+# Missing leader SELL fraction: skip fails closed and defers the exit;
+# full_close liquidates the entire follower position and may exceed intent.
 sell_fraction_missing_policy: skip
-slippage_tolerance: 5.0
+# Percent slippage bound (converted to basis points). Lower protects price but
+# rejects more fills; higher fills more readily at greater adverse-price risk.
+slippage_tolerance: 8.0
+# Absolute binary-token entry floor [0,1]. Lower permits lottery-like outcomes;
+# higher avoids very low-probability shares but reduces market coverage.
 min_share_price: 0.10
+# Absolute binary-token entry ceiling [0,1], with 0 disabling the upper gate.
+# Lower avoids near-resolution chasing; higher follows more expensive outcomes.
 max_share_price: 0.90
 # Maximum copied-price movement accepted by a one-shot FAK (percent).
 # Protective exits reuse the same band.
@@ -27,18 +45,46 @@ max_entry_price_drift_pct: 5.0
 # Left at 0 by default: Polymarket moves tick size on live markets, notably near
 # 0.96/0.04, and signing against a stale tick puts the price off the grid.
 venue_metadata_ttl_seconds: 0.0
+# Attempts allowed for classified non-terminal failures. Higher tolerates
+# transient faults but delays terminal handling; it never authorizes blindly
+# resubmitting an ambiguous POST.
 non_terminal_failure_max_attempts: 3
+# paper = live public reads plus local simulated writes; live = authenticated
+# CCXT writes. Credentials never select this mode implicitly.
 trading_mode: paper
+# Composite leader/trade scoring gate. true applies copy_trading thresholds;
+# false avoids its latency/rejections while core risk/price gates stay active.
 enable_copy_decision_gate: false
+# Freshness gate for entries near resolution. true reduces last-second risk;
+# false permits them subject to normal price/risk limits.
 enable_near_resolution_gate: false
+# Price at/above which the near-resolution rule applies; 0 disables its
+# comparison. Lower covers more markets; higher targets only extreme odds.
 near_resolution_gate_price: 0.95
+# Maximum signal age above the near-resolution price. Shorter is safer but
+# rejects more polling-delayed trades.
 near_resolution_max_age_seconds: 15.0
+# Reconciliation TTL for a submission still pending. Longer avoids premature
+# expiry; shorter surfaces stuck intents sooner.
 pending_submission_ttl_seconds: 120
+# Pre-submit funds/shares reservation TTL. Too short risks reuse; too long parks
+# capacity while an order is being reconciled.
 reservation_ttl_seconds: 120
+# true reserves BUY quote/SELL shares before submission (stronger double-spend
+# protection); false avoids known over-blocking but relies on the other locks.
 reservations_enabled: false
+# Spread metric: absolute_bps uses raw price-point gap * 10k; relative_bps
+# divides by bid; ticks divides by tick size. Absolute is stable near zero,
+# relative is scale-aware, and ticks follows market precision.
 book_spread_mode: absolute_bps
+# Maximum spread for bps modes; 0 disables. Lower demands tighter books and
+# skips thin markets; higher permits costlier execution.
 max_book_spread_bps: 2500
+# Maximum spread for ticks mode; must be positive when that mode is selected.
+# This 0 value is inert under the configured absolute_bps mode.
 max_book_spread_ticks: 0
+# Consecutive failures before the circuit opens. Lower stops outages sooner but
+# trips on brief noise; higher tolerates noise but continues failing longer.
 circuit_failure_threshold: 15
 # In-memory belt behind the account-cap policy (350 pUSD moderate
 # profile). 20.0 is the 17.5 per-copy cap plus rounding slack; 140.0 is
@@ -46,12 +92,30 @@ circuit_failure_threshold: 15
 # (disabled): it measures gross submitted spend, so any non-zero value
 # would starve re-entries after a normal day of round trips.
 max_position_size_usdc: 20.0
+# Gross submitted BUY spend ceiling per day; 0 disables. A non-zero value does
+# not net SELL proceeds, so it can starve normal re-entry.
 max_daily_spend_usdc: 0.0
-min_balance_headroom_usdc: 140.0
+# Free-cash floor kept after a BUY; 0 disables. Higher preserves reserve but
+# rejects more entries.
+min_balance_headroom_usdc: 0.0
+# Required same-side notional inside book_depth_band_pct; 0 disables. Higher
+# assures more capacity but excludes thin books.
 min_book_depth_usdc: 0.0
+# Half-band around mid used for depth aggregation, in (0,100]. Wider counts more
+# remote liquidity; narrower better reflects immediate execution.
 book_depth_band_pct: 5.0
+# Concurrent CCXT submissions. Higher reduces queueing but increases account and
+# venue pressure; one-shot/idempotency rules still apply.
 execution_submit_concurrency: 4
+# Concurrent per-batch signal analysis. Higher lowers CPU queue time but can fan
+# out more market/account reads.
 trade_analysis_concurrency: 6
+# Concurrent reconciliation work. Higher clears backlog faster but increases
+# venue/database query load.
 reconcile_concurrency: 4
+# Compatibility ceiling for copied-entry FAK reposts. Ordinary copied FAKs are
+# currently one-shot, so changing this does not increase their POST count.
 copy_fak_max_attempts: 8
+# Maximum book-level attempts for forced protective FAK exits. Higher improves
+# liquidation chance but may sweep farther inside the explicit price band.
 exit_fak_max_attempts: 8

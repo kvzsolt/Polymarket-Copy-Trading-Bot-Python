@@ -1,8 +1,25 @@
-# Application-wide operational settings.
-# kill_switch is the C1 global master stop: true = observe only, submit nothing.
+# Configuration guide — application-wide operational settings.
+# Purpose: control the global safety stop, data retention, metrics listener,
+# and optional multi-user roster file.
+# Options: booleans are true/false; durations are seconds; metrics_port is
+# 1..65535; bind_host is an IP/host; an empty multi-user path disables it.
+# Trade-offs: safer/shorter settings reduce exposure and stored history;
+# metrics and multi-user operation add listeners/state that must be secured.
+# Global master stop. false permits execution subject to all other gates;
+# true keeps detection running but blocks every submission, including exits.
 kill_switch: false
+# Maximum age of processed-trade rows. Lower saves storage/privacy; higher
+# preserves more audit/dedup history at greater database cost.
 retention_max_age_seconds: 2592000.0
+# false opens no Prometheus listener; true improves observability but exposes
+# an HTTP endpoint on metrics_bind_host:metrics_port.
 enable_metrics_server: false
+# Listener port. A dedicated port avoids clashes; it must be firewalled when
+# metrics_bind_host is changed away from loopback.
 metrics_port: 9102
+# 127.0.0.1 is local-only (safer); a non-loopback host permits remote scraping
+# but expands the network attack surface.
 metrics_bind_host: 127.0.0.1
+# Empty = normal single-user startup. A path enables legacy multi-user wallet
+# configuration; this adds operational complexity and must reference a secured file.
 multi_user_config_file: ''

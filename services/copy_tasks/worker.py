@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from math import isfinite
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Generic, TypeVar
 
@@ -87,13 +88,27 @@ class _LeaderWorker(Generic[T]):
         if self._closed:
             return
         self._closed = True
-        await self._queue.join()
+        try:
+            await self._queue.join()
+        finally:
+            await self.abort()
+
+    async def abort(self) -> None:
+        """Cancel in-flight work and release queued references after interrupted drain."""
+        self._closed = True
         if self._task is not None:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        discarded = 0
+        while not self._queue.empty():
+            self._queue.get_nowait()
+            self._queue.task_done()
+            discarded += 1
+        if discarded:
+            logger.warning("leader_worker_shutdown_discarded", extra={"count": discarded})
 
     async def _run(self) -> None:
         while True:
@@ -117,7 +132,6 @@ class _LeaderWorker(Generic[T]):
                         "leader_id": self.leader,
                         "error_type": type(exc).__name__,
                     },
-                    exc_info=True,
                 )
             finally:
                 self._queue.task_done()
@@ -133,9 +147,16 @@ class LeaderWorkerSupervisor(Generic[T]):
         queue_size: int = 64,
         max_concurrent_leaders: int = 4,
         max_leaders: int = 1000,
+        shutdown_timeout_seconds: float = 30.0,
     ) -> None:
         if queue_size < 1 or max_concurrent_leaders < 1 or max_leaders < 1:
             raise ValueError("worker limits must be positive")
+        if (
+            isinstance(shutdown_timeout_seconds, bool)
+            or not isfinite(shutdown_timeout_seconds)
+            or shutdown_timeout_seconds <= 0
+        ):
+            raise ValueError("shutdown_timeout_seconds must be finite and positive")
         self._handler = handler
         self._queue_size = queue_size
         self._max_leaders = max_leaders
@@ -144,6 +165,7 @@ class LeaderWorkerSupervisor(Generic[T]):
         self._started = False
         self._closed = False
         self._mutation_lock = asyncio.Lock()
+        self._shutdown_timeout_seconds = shutdown_timeout_seconds
 
     @property
     def worker_count(self) -> int:
@@ -243,7 +265,20 @@ class LeaderWorkerSupervisor(Generic[T]):
         if self._closed:
             return
         self._closed = True
-        await asyncio.gather(*(worker.close() for worker in self._workers.values()))
+        workers = tuple(self._workers.values())
+        try:
+            async with asyncio.timeout(self._shutdown_timeout_seconds):
+                await asyncio.gather(*(worker.close() for worker in workers))
+        except TimeoutError:
+            logger.warning("leader_worker_drain_timeout")
+        finally:
+            await self.abort()
+
+    async def abort(self) -> None:
+        """Cancel owned consumers immediately and release every queued reference."""
+        self._closed = True
+        workers = tuple(self._workers.values())
+        await asyncio.gather(*(worker.abort() for worker in workers))
         self._workers.clear()
 
 

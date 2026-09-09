@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from web3 import Web3
+from web3.contract import Contract
 
 from clients.network.rpc_fallback import FallbackWeb3Provider
 from config.addresses import POLYMARKET_CONDITIONAL_TOKENS_ADDRESS
@@ -36,6 +37,8 @@ class _HistoricalContractCall(Protocol):
     def call(self, *, block_identifier: int) -> int:
         """Return a raw ERC-1155 balance at one block."""
 
+        ...
+
 
 class _HistoricalContractFunctions(Protocol):
     """Minimal generated contract-functions surface."""
@@ -43,17 +46,23 @@ class _HistoricalContractFunctions(Protocol):
     def balanceOf(self, wallet: str, token_id: int) -> _HistoricalContractCall:  # noqa: N802
         """Build one historical ``balanceOf`` call."""
 
+        ...
+
 
 class HistoricalErc1155Contract(Protocol):
     """Minimal ERC-1155 contract surface required by the reader."""
 
-    functions: _HistoricalContractFunctions
+    @property
+    def functions(self) -> _HistoricalContractFunctions:
+        """Return the read-only contract function surface."""
+
+        ...
 
 
 class Web3HistoricalErc1155BalanceReader:
     """Read exact six-decimal outcome-token balances at historical blocks."""
 
-    def __init__(self, *, contract: HistoricalErc1155Contract) -> None:
+    def __init__(self, *, contract: HistoricalErc1155Contract | Contract) -> None:
         """Bind a read-only ERC-1155 contract instance.
 
         Args:

@@ -47,8 +47,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Sized
+from collections.abc import Awaitable, Callable, Sized
 from decimal import Decimal, InvalidOperation
+from domain.position_ownership import PositionOwnership
 from typing import TYPE_CHECKING, Any
 
 from models.userHistory import (
@@ -73,7 +74,6 @@ if TYPE_CHECKING:
 logger = get_logger("ManualSync")
 
 _ACTIVITY_URL = "https://data-api.polymarket.com/activity?user={wallet}&type=TRADE&limit=20"
-_POSITIONS_URL = "https://data-api.polymarket.com/positions?user={wallet}"
 
 # Size-comparison epsilon. Matches the TS ZERO_THRESHOLD constant.
 _SIZE_EPSILON = Decimal("0.001")
@@ -111,10 +111,12 @@ class ManualSyncService:
         own_fill_seed_holdoff_seconds: float = _DEFAULT_OWN_FILL_SEED_HOLDOFF_SECONDS,
         position_drift_service: Any | None = None,
         reservation_service: Any | None = None,
+        positions_fetcher: Callable[[str], Awaitable[list[dict[str, object]] | None]] | None = None,
     ) -> None:
         if not funder_address:
             raise ValueError("ManualSyncService requires a non-empty funder_address")
         self._funder = funder_address.lower()
+        self._positions_fetcher = positions_fetcher
         # user_id is the positions_repo key — must match the casing used by
         # the rest of the runtime (RuntimeUser.user_id = checksum funder).
         # Lowercasing here would create rows the drift check / coordinator
@@ -204,7 +206,7 @@ class ManualSyncService:
             return
         await self.sync_now(reason=reason)
 
-    async def sync_now(self, *, reason: str, silent_trades: bool = False) -> None:
+    async def sync_now(self, *, reason: str, silent_trades: bool = False) -> bool:
         """Un-debounced sync. Serialized via ``self._lock``.
 
         ``silent_trades`` suppresses the per-trade Rich panel — used by
@@ -213,7 +215,7 @@ class ManualSyncService:
         trades are still inserted; only the panel is suppressed.
         """
         if self._stopped:
-            return
+            return False
         async with self._lock:
             logger.info("manual_sync_run | reason=%s funder=%s", reason, self._funder)
             try:
@@ -228,8 +230,10 @@ class ManualSyncService:
             except Exception as exc:
                 logger.warning(
                     "manual_sync_positions_failed | error=%s",
-                    redact_error_detail(exc),
+                    type(exc).__name__,
                 )
+                return False
+            return True
 
     async def initial_sync(self) -> None:
         """Run one full sweep at startup. Seeds positions table from venue.
@@ -240,7 +244,8 @@ class ManualSyncService:
         syncs log normally so genuinely new manual trades are surfaced.
         """
         logger.info("manual_sync_startup_begin | funder=%s", self._funder)
-        await self.sync_now(reason="startup", silent_trades=True)
+        if not await self.sync_now(reason="startup", silent_trades=True):
+            raise RuntimeError("Initial inventory synchronization is incomplete")
         logger.info("manual_sync_startup_complete | funder=%s", self._funder)
 
     # ------------------------------------------------------------------
@@ -508,13 +513,33 @@ class ManualSyncService:
     # ------------------------------------------------------------------
     # Position + tracking sync
     # ------------------------------------------------------------------
-    async def _sync_positions_and_tracking(self) -> None:
-        url = _POSITIONS_URL.format(wallet=self._funder)
-        positions = await fetch_data(url, silent=True)
-        if not isinstance(positions, list):
-            return
+    @staticmethod
+    def _is_held_position(position: dict[str, object]) -> bool:
+        """Count positive shares independently of an absent or zero mark."""
+        return _decimal_or_zero(position.get("size")) > 0
 
-        live = [p for p in positions if _is_live_position(p)]
+    @staticmethod
+    def _validate_held_identity(position: dict[str, object]) -> None:
+        """Reject an incomplete held identity before any snapshot mutations."""
+        for aliases in (("asset", "tokenId"), ("conditionId", "condition_id")):
+            values = [position[name] for name in aliases if name in position]
+            if (
+                not values
+                or any(not isinstance(value, str) or not value.strip() for value in values)
+                or len(set(values)) != 1
+            ):
+                raise ValueError("Held position identity is unavailable or inconsistent")
+
+    async def _sync_positions_and_tracking(self) -> None:
+        if self._positions_fetcher is None:
+            raise RuntimeError("Manual inventory snapshot reader is not bound")
+        positions = await self._positions_fetcher(self._funder)
+        if positions is None:
+            raise RuntimeError("Manual inventory snapshot is unavailable")
+
+        live = [p for p in positions if self._is_held_position(p)]
+        for position in live:
+            self._validate_held_identity(position)
 
         # 1. Refresh user_positions (delete-then-insert pattern already used in tradeMonitor).
         try:
@@ -534,10 +559,10 @@ class ManualSyncService:
             persisted = await self._positions_repo.list_open_positions(self._user_id)
         except Exception as exc:
             logger.warning(
-                "manual_sync_positions_repo_list_failed | error=%s",
-                redact_error_detail(exc),
+                "manual_sync_positions_repo_list_failed | error_type=%s",
+                type(exc).__name__,
             )
-            persisted = []
+            raise RuntimeError("Canonical positions are unavailable") from None
 
         persisted_by_token: dict[str, Any] = {str(record.token_id): record for record in persisted}
         live_tokens: set[str] = set()
@@ -546,8 +571,6 @@ class ManualSyncService:
         for pos in live:
             token_id = str(pos.get("asset") or pos.get("tokenId") or "").strip()
             condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
-            if not token_id or not condition_id:
-                continue
             live_tokens.add(token_id)
             venue_size = _decimal_or_zero(pos.get("size"))
             avg_price = _decimal_or_zero(pos.get("avgPrice"))
@@ -583,20 +606,9 @@ class ManualSyncService:
                     )
                     continue
 
-            # Reconciler-first guard: a brand-new long position row is created by
-            # a BUY fill. While the bot's own copy BUY is recently in-flight on
-            # this token, the reconciler owns the FIRST position write (an
-            # incremental delta from cumulative matched size). Seeding the
-            # absolute venue size here races that delta apply and double-counts
-            # (manual SET 2.55, then reconciler ADD 2.55 -> 5.10). Skip creating
-            # the row; reconciliation will create it with correct accounting.
-            # Scoped to BUY (the row-creating side) so a recent SELL exit does
-            # not suppress seeding a residual. Production holds this guard for
-            # the full non-terminal lifetime, including prolonged venue outages.
-            if existing is None and await self._has_pending_bot_trade(
-                token_id=token_id,
-                side="BUY",
-            ):
+            # Absolute snapshots must not front-run a pending incremental fill,
+            # including scale-ins and reductions of an already tracked position.
+            if await self._has_pending_bot_trade(token_id=token_id, side=None):
                 logger.info(
                     "manual_sync_skipped_pending_bot_fill | token=%s cond=%s venue_size=%s",
                     token_id,
@@ -627,17 +639,21 @@ class ManualSyncService:
                     token_id=token_id,
                     size_tokens=venue_size,
                     avg_entry_price=avg_price,
-                    leader_id=(existing.leader_id if existing is not None else None),
+                    leader_id=PositionOwnership.after_snapshot(
+                        existing.leader_id if existing is not None else None,
+                        local_size,
+                        venue_size,
+                    ),
                     expected_size=local_size,
                 )
                 if venue_size_increased:
                     increased_position_scopes += 1
             except Exception as exc:
                 logger.warning(
-                    "manual_sync_positions_repo_upsert_failed | token=%s error=%s",
-                    token_id,
-                    redact_error_detail(exc),
+                    "manual_sync_positions_repo_upsert_failed | error_type=%s",
+                    type(exc).__name__,
                 )
+                raise RuntimeError("Position synchronization failed") from None
 
         # Guard: skip deletion when the Data-API response cannot be trusted as a
         # complete picture of the user's holdings.  Two signals:
@@ -651,9 +667,8 @@ class ManualSyncService:
         #     token was transiently absent from this single snapshot.
         #
         # In both cases we log a warning and defer deletion to the next sync when
-        # the API hopefully returns a complete picture.  Zero-value positions
-        # returned by the API (currentValue=0) are still deleted because they
-        # appear in the raw response — only the count-based guards affect that.
+        # the API hopefully returns a complete picture. A zero market value
+        # does not establish disposal; positive holdings remain tracked.
         deleted_position_scopes = 0
         _can_delete: bool
         if not positions:
@@ -682,6 +697,9 @@ class ManualSyncService:
                 condition_id = str(getattr(record, "condition_id", "") or "").strip()
                 if not token_id or not condition_id:
                     continue
+                if await self._has_pending_bot_trade(token_id=token_id, side=None):
+                    logger.info("manual_sync_disposal_deferred_pending_fill | token=%s", token_id)
+                    continue
                 try:
                     await self._positions_repo.delete_position(
                         self._user_id,
@@ -705,10 +723,10 @@ class ManualSyncService:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "manual_sync_positions_repo_delete_failed | token=%s error=%s",
-                        token_id,
-                        redact_error_detail(exc),
+                        "manual_sync_positions_repo_delete_failed | error_type=%s",
+                        type(exc).__name__,
                     )
+                    raise RuntimeError("Position synchronization failed") from None
 
         await self._reap_expired_reservations_after_position_change(
             changed_scopes=increased_position_scopes + deleted_position_scopes,
@@ -789,23 +807,3 @@ def _decimal_or_zero(value: Any) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal("0")
-
-
-def _is_live_position(position: dict[str, Any]) -> bool:
-    """Return True for positions that should seed canonical local state.
-
-    Polymarket's Data API can keep returning non-zero ``size`` for retired
-    tokens while ``currentValue`` is already zero. Startup health/drift treat
-    those as not live; manual sync must use the same rule or it resurrects
-    rows that drift immediately prunes.
-    """
-    if _decimal_or_zero(position.get("size")) <= _SIZE_EPSILON:
-        return False
-
-    # Older fixtures/API shapes may omit currentValue. In that case keep the
-    # legacy size-based behavior rather than dropping otherwise valid data.
-    if "currentValue" not in position and "current_value" not in position:
-        return True
-
-    current_value = _decimal_or_zero(position.get("currentValue") or position.get("current_value"))
-    return current_value > _SIZE_EPSILON

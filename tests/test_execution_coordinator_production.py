@@ -233,20 +233,34 @@ async def test_terminal_failure_releases_reservation(terminal_status):
 
 
 @pytest.mark.asyncio
-async def test_execute_exception_releases_reservation_and_reraises():
+async def test_execute_exception_retains_reservation_and_reports_safe_unknown():
     reservation = _make_reservation("res-exc")
     coord, reservation_service, execution_service = _make_coordinator(
         reserve_return=reservation,
         execute_return=None,
     )
-    execution_service.execute.side_effect = RuntimeError("network down")
+    execution_service.execute.side_effect = RuntimeError("SYNTHETIC_PROVIDER_SECRET")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="requires reconciliation") as error:
         await coord.submit_copy_trade(_intent())
 
-    reservation_service.release_terminal.assert_called_once_with(
-        "res-exc", reason="execute_exception"
+    reservation_service.release_terminal.assert_not_called()
+    assert "SYNTHETIC" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["filled", "partially_filled", "", "unexpected"])
+async def test_acknowledgement_keeps_reservation_until_durable_accounting(status):
+    """Even a fill acknowledgement is not an applied durable position."""
+    coord, reservations, execution = _make_coordinator(
+        reserve_return=_make_reservation(),
+        execute_return=_make_exec_result(status=status, accepted=False),
     )
+    result = await coord.submit_copy_trade(_intent())
+    reservations.release_terminal.assert_not_called()
+    if status not in {"filled", "partially_filled"}:
+        assert result.status == "submitted_unconfirmed"
+    execution.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

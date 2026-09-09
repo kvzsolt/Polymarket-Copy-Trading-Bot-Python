@@ -504,6 +504,7 @@ class SourceTransactionRegistry:
                         consumption_key=consumption_key,
                         correlation=correlation,
                         fill=fill,
+                        source_receipt=record.reservation.transaction.source_receipt,
                     )
                 )
         return tuple(claims)

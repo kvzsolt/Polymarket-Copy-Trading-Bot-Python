@@ -1,6 +1,18 @@
-# Service-owned configuration (database). Layered under
-# config/environments/<PMCOPY_ENVIRONMENT>/database.yml, secrets.env, and PMCOPY__* env.
+# Configuration guide — PostgreSQL persistence.
+# Purpose: configure the mandatory store for idempotency, reconciliation,
+# discovery history, cursors, and durable task state.
+# Options: dsn accepts postgresql:// or postgres://; pool sizes are positive
+# connection counts; command_timeout_seconds is a positive duration.
+# Trade-offs: larger pools improve concurrent throughput but consume more DB
+# connections; longer timeouts tolerate slow queries but delay failure recovery.
+# Keep credentials out of tracked YAML: leave this empty and set
+# PMCOPY__DATABASE__DSN in mode-0600 secrets.env.
 dsn: ''
+# Connections opened at startup/kept ready. Higher reduces cold latency but
+# reserves capacity even while idle.
 pool_min_size: 2
+# Hard pool ceiling. Higher serves more concurrent work but can overload the
+# database; it must be >= pool_min_size.
 pool_max_size: 20
+# Per-command timeout. Lower fails stalled I/O sooner; higher tolerates slow DBs.
 command_timeout_seconds: 30.0

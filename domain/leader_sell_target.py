@@ -17,6 +17,7 @@ class LeaderSellTarget:
     generation: int
     source_signal_id: str
     intent_payload: Mapping[str, object]
+    task_id: str | None = None
 
 
 __all__ = ["LeaderSellTarget"]

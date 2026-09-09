@@ -68,8 +68,12 @@ class ControlPlaneJsonSerializer:
     def _convert(self, value: object, *, depth: int, budget: list[int]) -> JsonValue:
         if depth > self._max_depth:
             raise ValueError("response exceeds maximum serialization depth")
-        if value is None or isinstance(value, (bool, int)):
+        if value is None or isinstance(value, bool):
             return value
+        if isinstance(value, int):
+            if abs(value) <= (2**53 - 1):
+                return value
+            return self._convert(str(value), depth=depth, budget=budget)
         if isinstance(value, str):
             if len(value) > self._max_string_chars:
                 raise ValueError("response string exceeds maximum length")
@@ -175,6 +179,8 @@ class ControlPlaneErrorMapper:
             ControlPlaneReason.DISCOVERY_UNAVAILABLE,
             ControlPlaneReason.RUNTIME_UNAVAILABLE,
             ControlPlaneReason.TASK_RUNTIME_UNAVAILABLE,
+            ControlPlaneReason.TASK_PROTECTION_UNAVAILABLE,
+            ControlPlaneReason.TASK_COUNTER_OUTCOME_UNAVAILABLE,
             ControlPlaneReason.SETTINGS_UNAVAILABLE,
             ControlPlaneReason.AUDIT_UNAVAILABLE,
         }

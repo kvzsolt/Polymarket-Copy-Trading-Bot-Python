@@ -195,6 +195,7 @@ async def test_repository_applies_exit_fill_and_returns_updated_lot() -> None:
         price=Decimal("0.50"),
         occurred_at=datetime(2026, 8, 11, 13, tzinfo=UTC),
         level_id="tp:1",
+        level_target_shares=Decimal("2"),
     )
 
     result = await repository.record_exit_fill(fill)

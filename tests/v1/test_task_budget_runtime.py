@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from datetime import timedelta
 
 import pytest
 
@@ -91,6 +92,9 @@ async def test_runtime_reserves_final_sized_amount_before_downstream() -> None:
     observations: list[object] = []
 
     async def downstream(envelope: object) -> str:
+        # Simulate a crash/long POST: expiry cannot free admitted collateral.
+        expired = await budgets.sweep_expired(context().now + timedelta(days=1))
+        assert expired == 0
         observations.append(envelope)
         return "submitted"
 

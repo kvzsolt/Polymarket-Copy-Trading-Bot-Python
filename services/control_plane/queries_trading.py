@@ -16,6 +16,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from config.app_config import AppConfig
+from domain.cost_basis import PositionCostBasis
+from services.control_plane.valuation import CachedMarkPolicy, MarketQuoteSource, QuoteLike
 from services.control_plane.contracts import (
     ControlPlaneError,
     ControlPlaneReason,
@@ -115,36 +117,6 @@ class OpenPositionsPort(Protocol):
         ...
 
 
-class QuoteLike(Protocol):
-    """Read one cached quote snapshot."""
-
-    @property
-    def best_bid(self) -> Decimal | None:
-        """Return the cached best bid."""
-
-        ...
-
-    @property
-    def best_ask(self) -> Decimal | None:
-        """Return the cached best ask."""
-
-        ...
-
-    def is_fresh(self, max_age_seconds: float) -> bool:
-        """Return whether the snapshot is inside the executable age window."""
-
-        ...
-
-
-class MarketQuoteSource(Protocol):
-    """Read cached WSS quotes for one follower runtime."""
-
-    def get_quote(self, token_id: str) -> QuoteLike | None:
-        """Return one cached quote, or ``None`` when the token is unknown."""
-
-        ...
-
-
 class CachedPortfolioPort(Protocol):
     """Read one locally cached portfolio snapshot without I/O."""
 
@@ -233,7 +205,7 @@ class PnlQueryService:
         self._pnl_trackers = dict(pnl_trackers)
         self._positions = positions
         self._market_stores = dict(market_stores)
-        self._quote_max_age_seconds = float(quote_max_age_seconds)
+        self._marks = CachedMarkPolicy(quote_max_age_seconds)
         self._clock = clock
         self._max_positions = int(max_positions)
         self._composed_at = clock.now()
@@ -258,6 +230,7 @@ class PnlQueryService:
         records = tuple(await self._positions.list_open_positions(follower_account))
         positions: list[PnlPositionView] = []
         cost_basis = _ZERO
+        cost_complete = True
         unrealized = _ZERO
         marked = 0
         # Aggregates cover the complete book; only the rendered list is capped,
@@ -265,12 +238,15 @@ class PnlQueryService:
         # exact marked count instead of a partial sum presented as a total.
         for index, record in enumerate(records):
             size = _decimal(record.size_tokens)
-            entry = _decimal(record.avg_entry_price)
-            position_cost = size * entry
-            cost_basis += position_cost
+            entry = PositionCostBasis.from_value(record.avg_entry_price).entry_price
+            position_cost = None if entry is None else size * entry
+            if position_cost is None:
+                cost_complete = False
+            else:
+                cost_basis += position_cost
             mark = self._mark(store, record.token_id)
             value = None if mark is None else size * mark
-            position_pnl = None if value is None else value - position_cost
+            position_pnl = None if value is None or position_cost is None else value - position_cost
             if position_pnl is not None:
                 marked += 1
                 unrealized += position_pnl
@@ -282,8 +258,8 @@ class PnlQueryService:
                     token_id=str(record.token_id),
                     leader_wallet=(None if not record.leader_id else str(record.leader_id)),
                     size=_text(size),
-                    avg_entry_price=_text(entry),
-                    cost_basis_usdc=_text(position_cost),
+                    avg_entry_price=None if entry is None else _text(entry),
+                    cost_basis_usdc=None if position_cost is None else _text(position_cost),
                     mark_price=None if mark is None else _text(mark),
                     market_value_usdc=None if value is None else _text(value),
                     unrealized_pnl_usdc=(None if position_pnl is None else _text(position_pnl)),
@@ -298,9 +274,13 @@ class PnlQueryService:
             positions=tuple(positions),
             position_count=total,
             truncated=truncated,
-            cost_basis_usdc=_text(cost_basis),
+            cost_basis_usdc=_text(cost_basis) if cost_complete else None,
             unrealized_pnl_usdc=_text(unrealized) if complete else None,
-            unrealized_basis=_valuation_basis(marked=marked, total=total, truncated=truncated),
+            unrealized_basis=(
+                _valuation_basis(marked=marked, total=total, truncated=truncated)
+                if cost_complete
+                else "unknown_cost_basis"
+            ),
             marked_position_count=marked,
             observed_at=self._clock.now(),
         )
@@ -308,29 +288,25 @@ class PnlQueryService:
     def _mark(self, store: MarketQuoteSource | None, token_id: str) -> Decimal | None:
         """Return a fresh two-sided cached mid, or ``None``."""
 
-        if store is None:
-            return None
-        try:
-            quote = store.get_quote(str(token_id))
-        except Exception:
-            return None
-        if quote is None or not quote.is_fresh(self._quote_max_age_seconds):
-            return None
-        bid = quote.best_bid
-        ask = quote.best_ask
-        if bid is None or ask is None:
-            return None
-        return (_decimal(bid) + _decimal(ask)) / Decimal("2")
+        return self._marks.midpoint(store, token_id)
 
     def _summary(self, tracker: PnlTrackerPort) -> PnlSummaryView:
         """Project the session ledger into exact decimal strings."""
 
         metrics = tracker.metrics()
         return PnlSummaryView(
-            realized_pnl_usdc=_text(_decimal(metrics.get("net_pnl"))),
+            realized_pnl_usdc=(
+                None
+                if metrics.get("gross_realized_pnl") is None
+                else _text(_decimal(metrics["gross_realized_pnl"]))
+            ),
             total_invested_usdc=_text(_decimal(metrics.get("total_invested"))),
             total_returned_usdc=_text(_decimal(metrics.get("total_returned"))),
-            max_drawdown_usdc=_text(_decimal(metrics.get("max_drawdown"))),
+            max_drawdown_usdc=(
+                None
+                if metrics.get("max_drawdown") is None
+                else _text(_decimal(metrics["max_drawdown"]))
+            ),
             trade_count=_count(metrics.get("total_trades")),
             buy_count=_count(metrics.get("total_buys")),
             sell_count=_count(metrics.get("total_sells")),
@@ -363,7 +339,7 @@ class RiskQueryService:
         portfolio: CachedPortfolioPort | None,
         config: AppConfig,
         clock: Clock,
-        day_start_equity: Callable[[], Decimal | None] | None = None,
+        day_start_equity: Callable[[str], Decimal | None] | None = None,
         scope: AccountScope | None = None,
         trigger_limit: int = _MAX_RISK_TRIGGERS,
     ) -> None:
@@ -374,9 +350,9 @@ class RiskQueryService:
             portfolio: Optional cached portfolio snapshot reader.
             config: Effective immutable application configuration.
             clock: Aware UTC observation clock.
-            day_start_equity: Optional read-only day-start equity probe. It
-                is a synchronous file read, so it runs on a worker thread and
-                never blocks the event loop serving the copy path.
+            day_start_equity: Optional account-scoped read-only baseline probe.
+                The synchronous reader runs on a worker thread so local I/O
+                cannot block the trading event loop.
             scope: Optional composed-account resolver.
             trigger_limit: Hard ceiling on returned recent triggers.
 
@@ -408,7 +384,7 @@ class RiskQueryService:
             self._trigger_limit,
         )
         snapshot = await self._snapshot(follower_account)
-        day_start = await self._day_start()
+        day_start = await self._day_start(follower_account)
         return RiskStateView(
             follower_account=follower_account,
             policy=self._policy(),
@@ -429,13 +405,8 @@ class RiskQueryService:
             return None
         return snapshot
 
-    async def _day_start(self) -> Decimal | None:
-        """Return the day-start equity the risk engine itself would use.
-
-        The order mirrors ``_resolve_buy_risk_cap`` exactly: an explicitly
-        configured baseline wins, otherwise today's recorded snapshot is read
-        without creating one.
-        """
+    async def _day_start(self, follower_account: str) -> Decimal | None:
+        """Read the explicit configured baseline or this account's observation."""
 
         configured = _decimal(self._config.risk.day_start_equity_usdc)
         if configured > _ZERO:
@@ -444,7 +415,7 @@ class RiskQueryService:
         if probe is None:
             return None
         try:
-            recorded = await asyncio.to_thread(probe)
+            recorded = await asyncio.to_thread(probe, follower_account)
         except Exception:
             return None
         if recorded is None:
@@ -459,7 +430,9 @@ class RiskQueryService:
     ) -> RiskHeadroomView | None:
         """Recompute account-level BUY headroom from the cached snapshot."""
 
-        if snapshot is None:
+        if snapshot is None or snapshot.equity_usdc is None:
+            return None
+        if self._config.risk.enable_balance_tiered_policy and day_start is None:
             return None
         equity = _decimal(snapshot.equity_usdc)
         free_cash = _decimal(snapshot.cash_usdc)
@@ -479,7 +452,7 @@ class RiskQueryService:
             cap_notional_usdc=_text(headroom.cap_notional_usdc),
             equity_usdc=snapshot.equity_usdc,
             free_cash_usdc=snapshot.cash_usdc,
-            daily_loss_usdc=_text(daily_loss),
+            daily_loss_usdc=None if day_start is None else _text(daily_loss),
             open_position_count=snapshot.position_count,
         )
 
@@ -568,6 +541,7 @@ __all__ = [
     "FillQueryPort",
     "FillQueryService",
     "MarketQuoteSource",
+    "QuoteLike",
     "OpenPositionLike",
     "OpenPositionsPort",
     "PnlQueryService",

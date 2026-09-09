@@ -297,11 +297,11 @@ class TestRunWsException:
         mock_ws.connect = AsyncMock(side_effect=RuntimeError("connect boom"))
         rt._ws_client = mock_ws
 
-        with pytest.raises(RuntimeError, match="connect boom"):
+        with pytest.raises(RuntimeError, match="User websocket task failed"):
             await rt._run_ws()
 
         assert rt._status.last_error is not None
-        assert "connect boom" in rt._status.last_error
+        assert rt._status.last_error == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_run_ws_exception_clears_authenticated(self) -> None:
@@ -311,7 +311,7 @@ class TestRunWsException:
         mock_ws.connect = AsyncMock(side_effect=OSError("net fail"))
         rt._ws_client = mock_ws
 
-        with pytest.raises(OSError):
+        with pytest.raises(RuntimeError, match="User websocket task failed"):
             await rt._run_ws()
 
         assert rt._status.authenticated is False

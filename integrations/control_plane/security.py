@@ -542,9 +542,16 @@ class ControlPlaneHttpConfig:
     command_rate_window_seconds: float = 60.0
     rate_limit_max_keys: int = 1024
     shutdown_timeout_seconds: float = 5.0
+    websocket_send_timeout_seconds: float = 5.0
     cors_allowed_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        _require_number("websocket_send_timeout_seconds", self.websocket_send_timeout_seconds)
+        if (
+            not math.isfinite(self.websocket_send_timeout_seconds)
+            or self.websocket_send_timeout_seconds <= 0
+        ):
+            raise ValueError("websocket_send_timeout_seconds must be finite and positive")
         if (
             not isinstance(self.host, str)
             or not self.host.strip()

@@ -162,7 +162,7 @@ def test_wallet360_bot_signal_fields_default_when_absent() -> None:
             "calculation_window_days": 15,
             "date_range_end": "2026-07-30T00:00:00Z",
             "markets_traded": "9",
-            "win_rate_last_30d": "57",
+            "win_rate_last_30d": "0.57",
             "avg_position_size": "42",
         }
     )

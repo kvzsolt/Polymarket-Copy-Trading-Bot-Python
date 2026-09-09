@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from domain.source_time import TransportReceipt
 
 
 class DetectionConfidence(StrEnum):
@@ -64,7 +65,7 @@ class OnchainTradeSignal:
     confidence: DetectionConfidence
     maker_side: int
     watched_role: str
-    event_ts: int
+    event_ts: int | None
     log_index: int | None
     condition_id: str
     provisional: bool
@@ -74,6 +75,7 @@ class OnchainTradeSignal:
     block_hash: str = ""
     leader_sell_fraction: Decimal | None = None
     sell_fraction_resolution: str = ""
+    source_receipt: TransportReceipt | None = None
 
     def as_raw_signal_dict(self) -> dict[str, object]:
         """Render as a raw signal dict shaped for the copy pipeline.
@@ -99,8 +101,17 @@ class OnchainTradeSignal:
             "usdc_size": str(self.usdc_size),
             "notional": str(self.usdc_size),
             "tx_hash": self.tx_hash,
-            "event_ts": self.event_ts,
-            "timestamp": self.event_ts,
+            "event_ts": None if self.provisional else self.event_ts,
+            "timestamp": None if self.provisional else self.event_ts,
+            "timestamp_unit": "milliseconds",
+            "timestamp_provenance": (
+                "pending_receipt"
+                if self.provisional
+                else "block_timestamp"
+                if self.event_ts is not None
+                else "unknown"
+            ),
+            "_source_receipt": self.source_receipt,
             "detection_confidence": str(self.confidence),
             "log_index": self.log_index,
             "provisional": self.provisional,

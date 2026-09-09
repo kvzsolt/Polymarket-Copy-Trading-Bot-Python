@@ -141,8 +141,8 @@ async def test_buy_copy_ignores_book_quote_and_submits_copied_limit() -> None:
 
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited_once()
-    # The band limit 0.4725 snaps up onto the 0.01 grid, toward the book.
-    assert _submitted(gw).price_limit == Decimal("0.48")
+    # The BUY ceiling remains within the caller bound after tick alignment.
+    assert _submitted(gw).price_limit == Decimal("0.47")
     svc._market_data_service.require_fresh_data.assert_not_awaited()
 
 
@@ -156,8 +156,8 @@ async def test_sell_copy_ignores_book_quote_and_submits_copied_limit() -> None:
 
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited_once()
-    # The SELL floor 0.5225 snaps down onto the grid, toward the bid.
-    assert _submitted(gw).price_limit == Decimal("0.52")
+    # The SELL floor rounds up so execution cannot undercut the caller bound.
+    assert _submitted(gw).price_limit == Decimal("0.53")
     svc._market_data_service.require_fresh_data.assert_not_awaited()
 
 
@@ -172,7 +172,7 @@ async def test_buy_copy_does_not_add_local_slippage_to_the_limit() -> None:
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited()
     submitted = _submitted(gw)
-    assert submitted.price_limit == Decimal("0.48")
+    assert submitted.price_limit == Decimal("0.47")
 
 
 @pytest.mark.asyncio
@@ -185,7 +185,7 @@ async def test_executor_does_not_rederive_the_pipeline_limit() -> None:
 
     assert result.status != "price_drift_exceeded"
     gw.submit_marketable_order.assert_awaited()
-    assert _submitted(gw).price_limit == Decimal("0.48")
+    assert _submitted(gw).price_limit == Decimal("0.47")
 
 
 @pytest.mark.asyncio

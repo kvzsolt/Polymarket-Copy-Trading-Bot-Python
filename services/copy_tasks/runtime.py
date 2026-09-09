@@ -24,7 +24,7 @@ from services.copy_tasks.budget import (
 )
 from services.copy_tasks.domain import CopyTask, MonitoringMode, SourceTrade, TaskAdmissionContext
 from services.copy_tasks.entry_price import TaskEntryPriceDecision
-from services.copy_tasks.lifecycle import TaskExecutionOutcome
+from services.copy_tasks.lifecycle import TaskExecutionDisposition, TaskExecutionOutcome
 from services.copy_tasks.monitoring import MonitoringDecision
 from services.copy_tasks.reaction import CopyReactionEngine, ReactionAction, ReactionDecision
 from services.copy_tasks.reentry_lock import MarketReentryKey, MarketReentryLockService
@@ -167,6 +167,7 @@ class CopyTaskRuntimeCoordinator:
         downstream: DownstreamHandler,
         reservation_id: str | None = None,
         execution_reference_price: Decimal | None = None,
+        prior_reservation_ids: tuple[str, ...] = (),
     ) -> RuntimeDecision:
         """Process one source event through task gates and existing downstream code.
 
@@ -178,6 +179,7 @@ class CopyTaskRuntimeCoordinator:
             downstream: Callback that receives the envelope and invokes the
                 existing risk/reservation/execution path.
             reservation_id: Optional task budget reservation identity.
+            prior_reservation_ids: Provisional allocations that already own this action.
             execution_reference_price: Optional authoritative follower outcome
                 price (required for counter trades).
 
@@ -297,6 +299,7 @@ class CopyTaskRuntimeCoordinator:
                             normalized_context.now
                             + timedelta(seconds=self._task_budget_ttl_seconds)
                         ),
+                        prior_reservation_ids=prior_reservation_ids,
                     ),
                     task.spend,
                 )
@@ -312,6 +315,8 @@ class CopyTaskRuntimeCoordinator:
             sizing_decision=sizing_decision,
             task_budget_reservation_id=task_budget_reservation_id,
         )
+        if task_budget_reservation_id is not None and self._task_budgets is not None:
+            await self._task_budgets.retain(task_budget_reservation_id)
         try:
             result = downstream(envelope)
             if inspect.isawaitable(result):
@@ -333,6 +338,17 @@ class CopyTaskRuntimeCoordinator:
                 )
             else:
                 await self._task_budgets.retain(task_budget_reservation_id)
+        if isinstance(result, TaskExecutionOutcome) and result.disposition in {
+            TaskExecutionDisposition.PRE_POST_REJECTED,
+            TaskExecutionDisposition.TERMINAL_NO_FILL,
+            TaskExecutionDisposition.CONFIRMED_ABSENT,
+        }:
+            return RuntimeDecision(
+                False,
+                result.reason or result.disposition.value,
+                envelope=envelope,
+                downstream_result=result,
+            )
         return RuntimeDecision(
             True,
             "admitted",

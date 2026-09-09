@@ -119,6 +119,7 @@ class TaskExecutionOutcome:
     fill_id: str | None = None
     filled_notional: Decimal | None = None
     occurred_at: datetime | None = None
+    reason: str | None = None
 
     def __post_init__(self) -> None:
         fill_dispositions = {

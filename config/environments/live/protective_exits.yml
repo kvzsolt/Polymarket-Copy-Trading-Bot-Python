@@ -1,7 +1,16 @@
+# Configuration guide — live protective-exit feature selection.
+# Purpose: enable only stop-loss and near-max salvage using thresholds inherited
+# from config/protective_exits.yml.
+# Options: every key is true | false.
+# Trade-offs: enabled exits reduce downside/resolution exposure but may cross a
+# spread; disabled advanced exits avoid untuned churn but retain more market risk.
 # Live profile: only the two salvage exits run. Staged TP, trailing stop,
 # profit lock, and leader-divergence exit stay off until each is re-tuned.
+# Full exit below the inherited absolute floor after its grace period.
 enable_stop_loss: true
+# Partial/full trim at inherited near-max thresholds.
 enable_near_max_exit: true
+# Advanced exits remain off pending live tuning/validation.
 enable_staged_tp: false
 enable_trailing_stop: false
 enable_profit_lock: false

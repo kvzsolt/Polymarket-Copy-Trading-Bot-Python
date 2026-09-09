@@ -1,9 +1,21 @@
+# Configuration guide — live risk-engine overrides.
+# Purpose: activate continuous risk exits while using an absolute price-gap mark
+# filter suited to sports/O-U books.
+# Options: booleans toggle risk/account policy/stops; spread bps and absolute
+# price gaps are non-negative, with 0 disabling that individual mark gate.
+# Trade-offs: risk management protects positions but can realize losses on noisy
+# marks; disabling the bps gate improves wide-book availability while the 0.05
+# absolute gate still rejects extreme books.
 # Live profile: risk management is the one engine that stays ON.
 # risk_mark_max_spread_bps 0 disables the bps-of-mid mark gate; the crossed-book
 # and risk_mark_max_abs_distance checks still apply (abs distance overridden below).
 enable_risk_mgmt: true
+# Keep balance-tiered BUY headroom off; base/account/execution caps still apply
+# through their active consumers.
 enable_balance_tiered_policy: false
+# Risk-layer BUY stop remains off.
 kill_switch: false
+# Disable mid-relative bps mark rejection.
 risk_mark_max_spread_bps: 0
 # Sports/O-U books routinely sit 3–5 cents wide; 0.05 keeps WSS marks usable
 # there while still rejecting the 0.13/0.98-style empty books (strict > gap).

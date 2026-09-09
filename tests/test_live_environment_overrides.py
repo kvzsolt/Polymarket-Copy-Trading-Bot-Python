@@ -11,6 +11,7 @@ reproduces the legacy local overrides without the deprecation shim.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,7 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "min_book_depth_usdc",
         "max_entry_price_drift_pct",
         "kill_switch",
+        "min_balance_headroom_usdc",
     }
     assert set(copy_trading) == {"copy_tasks"}
     assert set(detection) == {"mode", "onchain"}
@@ -166,7 +168,7 @@ LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
     ("execution.trading_mode", "live"),
     # Risk management: on.
     ("risk.enable_risk_mgmt", True),
-    ("risk.enable_balance_tiered_policy", True),
+    ("risk.enable_balance_tiered_policy", False),
     ("risk.kill_switch", False),
     ("risk.risk_mark_max_spread_bps", 0),
     ("protective_exits.enable_stop_loss", True),
@@ -209,25 +211,29 @@ def test_live_profile_matrix(path: str, expected: object) -> None:
     assert type(value) is type(expected), path
 
 
-def test_live_environment_restates_rather_than_diverges_from_the_base_profile() -> None:
-    """The live overlay is explicit but nearly redundant.
-
-    Every live engine switch is pinned in ``config/environments/live/`` so the
-    live profile is auditable in one place, yet only the risk-mark spread gate
-    actually differs from the packaged base — a smaller live/paper delta means
-    fewer behaviours that exist only in production.
-    """
+def test_live_environment_has_only_the_explicit_operator_policy_differences() -> None:
+    """Pin the preserved paper/live policy differences without changing YAML."""
     paper = load_config(_overrides())
     live = load_config(_overrides(), environment="live")
 
     assert live.sizing == paper.sizing
-    assert live.protective_exits == paper.protective_exits
+    assert paper.protective_exits.enable_profit_lock is True
+    assert live.protective_exits == replace(paper.protective_exits, enable_profit_lock=False)
     assert live.market_data == paper.market_data
     assert live.discovery == paper.discovery
-    assert live.copy_trading.copy_tasks == paper.copy_trading.copy_tasks
-    assert live.risk != paper.risk
+    assert paper.copy_trading.copy_tasks.enabled is True
+    assert live.copy_trading.copy_tasks == paper.copy_trading.copy_tasks.model_copy(
+        update={"enabled": False}
+    )
+    assert paper.risk.enable_risk_mgmt is False
     assert paper.risk.risk_mark_max_spread_bps == 2000
-    assert live.risk.risk_mark_max_spread_bps == 0
+    assert paper.risk.risk_mark_max_abs_distance == 0.03
+    assert live.risk == replace(
+        paper.risk,
+        enable_risk_mgmt=True,
+        risk_mark_max_spread_bps=0,
+        risk_mark_max_abs_distance=0.05,
+    )
 
 
 def test_live_environment_contains_no_secret_material() -> None:

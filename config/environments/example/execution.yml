@@ -1,3 +1,8 @@
+# Configuration guide — example execution-mode override.
+# Purpose: show the explicit paper/live selector for a named environment.
+# Options: trading_mode is paper | live.
+# Trade-offs: paper uses real public reads and simulated writes; live sends
+# authenticated CCXT orders and requires full preflight/account safeguards.
 # Example environment override (copy to config/environments/<name>/ and select
 # it with PMCOPY_ENVIRONMENT=<name>; the default environment is "paper").
 # Keep trading_mode: paper until `pmcopy doctor --live` validation passes;

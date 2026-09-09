@@ -21,6 +21,8 @@ from orchestrators.trade_pipeline import (
     seed_position_pct_cap_snapshot,
 )
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from integrations.polymarket.models import VenueFill
+from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
@@ -204,7 +206,7 @@ class _PassThroughCoordinator:
             leader_id=intent.leader_wallet or "",
             token_id=intent.token_id,
             side=intent.side,
-            amount=intent.size,
+            amount=intent.notional_usdc if intent.side == "BUY" else intent.size,
             max_slippage_bps=intent.max_slippage_bps,
             reason=intent.reason or intent.source,
             signal_id=intent.signal_id,
@@ -691,6 +693,19 @@ async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp
             "size_matched": "5",
             "avg_price": "0.50",
         }
+        gateway.list_open_orders.return_value = [{"order_id": "ord-partial-buy", "status": "live"}]
+        gateway.get_fills.return_value = [
+            VenueFill(
+                fill_id="confirmed-partial-buy",
+                order_id="ord-partial-buy",
+                token_id=FAKE_TOKEN_ID,
+                side="BUY",
+                size=Decimal(5),
+                price=Decimal("0.50"),
+                fee=Decimal(0),
+                status="CONFIRMED",
+            )
+        ]
 
         ctx = _make_context(pool, tmp_path)
         ctx.extra["clob_gateway"] = gateway
@@ -846,8 +861,27 @@ async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_pat
             "avg_price": "0.30",
         }
 
+        gateway.list_open_orders.return_value = []
+        gateway.get_fills.return_value = [
+            VenueFill(
+                fill_id="confirmed-risk-sell",
+                order_id="venue-risk-1",
+                token_id=FAKE_TOKEN_ID,
+                side="SELL",
+                size=Decimal(10),
+                price=Decimal("0.30"),
+                fee=Decimal(0),
+                status="CONFIRMED",
+            )
+        ]
+
         exec_svc = _ReconcilingExecSvc()
-        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            execution_service=exec_svc,
+            config=_config(RECONCILIATION_ORDER_CONFIRMATION_INITIAL_DELAY_SECONDS="0"),
+        )
         ctx.extra["clob_gateway"] = gateway
 
         sell_signal = _signal(
@@ -995,10 +1029,6 @@ async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path):
                 new_callable=AsyncMock,
                 return_value=4.0,
             ),
-            patch(
-                "orchestrators.trade_pipeline.get_day_start_equity",
-                return_value=Decimal("4"),
-            ),
         ):
             results = await execute_trades(
                 ctx, "leader1", [_signal(tx_hash="0xbal-block")], time.time()
@@ -1136,7 +1166,7 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result(
             accepted=True,
-            filled=Decimal("10"),
+            filled=Decimal("9"),
             status="filled",
             order_id="ord-balance-cap",
         )
@@ -1146,6 +1176,8 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
             execution_service=exec_svc,
             config=_config(
                 ENABLE_BALANCE_TIERED_POLICY="true",
+                MAX_POSITION_PCT="1",
+                MAX_DAILY_DRAWDOWN_PCT="20",
                 DAY_START_EQUITY_USDC="25",
                 BALANCE_POLICY_RESERVE_PCT="0.10",
                 BALANCE_POLICY_RESERVE_FLOOR="5",
@@ -1162,10 +1194,6 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
                 "orchestrators.trade_pipeline.get_my_balance",
                 new_callable=AsyncMock,
                 return_value=25.0,
-            ),
-            patch(
-                "orchestrators.trade_pipeline.get_day_start_equity",
-                return_value=Decimal("25"),
             ),
         ):
             results = await execute_trades(
@@ -1439,7 +1467,7 @@ async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
+async def test_sell_below_exchange_minimum_keeps_inventory(tmp_path):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result(
@@ -1479,11 +1507,12 @@ async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
             results = await execute_trades(ctx, "leader1", [signal], time.time())
 
         assert len(results) == 1
-        assert results[0].status == "executed"
-
-        req = exec_svc.execute.await_args.args[0]
-        assert req.side == "SELL"
-        assert req.amount == Decimal("3")
+        assert results[0].status == "skipped"
+        assert results[0].reason == "sell_below_exchange_minimum"
+        exec_svc.execute.assert_not_awaited()
+        position = await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
+        assert position is not None
+        assert position.size_tokens == Decimal(3)
 
 
 @pytest.mark.asyncio
@@ -1557,12 +1586,16 @@ async def test_sell_clamps_to_live_holdings_before_submit(tmp_path):
         signal = _signal(side="SELL", price=0.3773, size=27.4623)
         signal["_leader_sell_fraction"] = 1.0
 
-        with patch(
-            "orchestrators.trade_pipeline.fetch_data",
-            new_callable=AsyncMock,
-            return_value=[{"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}],
-        ):
-            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        ctx.wallet_address = "0x" + "a" * 40
+        http = SimpleNamespace(
+            get_json=AsyncMock(
+                return_value=[
+                    {"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": "10.33"}
+                ]
+            )
+        )
+        ctx.holdings_reader = DataApiPositionSizeReader(lambda: http)
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
         assert len(results) == 1
         assert results[0].status == "executed"
@@ -1603,12 +1636,14 @@ async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings
         signal = _signal(side="SELL", price=0.999, size=35.0)
         signal["_leader_sell_fraction"] = 1.0
 
-        with patch(
-            "orchestrators.trade_pipeline.fetch_data",
-            new_callable=AsyncMock,
-            return_value=[{"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}],
-        ):
-            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        ctx.wallet_address = "0x" + "a" * 40
+        http = SimpleNamespace(
+            get_json=AsyncMock(
+                return_value=[{"asset": FAKE_TOKEN_ID, "size": "4.518", "currentValue": "4.51"}]
+            )
+        )
+        ctx.holdings_reader = DataApiPositionSizeReader(lambda: http)
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
         assert len(results) == 1
         assert results[0].status == "failed"
@@ -1656,12 +1691,10 @@ async def test_sell_insufficient_balance_deletes_local_position_when_live_holdin
         signal = _signal(side="SELL", price=0.981, size=5.0)
         signal["_leader_sell_fraction"] = 1.0
 
-        with patch(
-            "orchestrators.trade_pipeline.fetch_data",
-            new_callable=AsyncMock,
-            return_value=[],
-        ):
-            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        ctx.wallet_address = "0x" + "a" * 40
+        http = SimpleNamespace(get_json=AsyncMock(return_value=[]))
+        ctx.holdings_reader = DataApiPositionSizeReader(lambda: http)
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
         assert len(results) == 1
         assert results[0].status == "skipped"
@@ -1672,7 +1705,7 @@ async def test_sell_insufficient_balance_deletes_local_position_when_live_holdin
 
 
 @pytest.mark.asyncio
-async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
+async def test_sell_realized_pnl_uses_known_updated_position_cost(
     tmp_path,
 ):
     async with _pg_pool() as pool:
@@ -1710,12 +1743,12 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
         assert results[0].status == "executed"
 
         record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
-        assert record_sell_kwargs["entry_price"] == pytest.approx(0.45)
-        assert record_sell_kwargs["realized_pnl"] == pytest.approx(0.5)
+        assert record_sell_kwargs["entry_price"] == Decimal("0.45")
+        assert record_sell_kwargs["realized_pnl"] == Decimal("0.5")
 
 
 @pytest.mark.asyncio
-async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices_missing(
+async def test_sell_realized_pnl_preserves_unknown_position_cost(
     tmp_path,
 ):
     async with _pg_pool() as pool:
@@ -1737,9 +1770,7 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
         ctx.positions_repo.get_position = AsyncMock(
             return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
         )
-        # PR #108 fix: atomic append_fill + apply mock returns (fill_id,
-        # updated_position) — None updated_position triggers the signal-
-        # price fallback path under test.
+        # A source trade's price is not evidence of the follower's entry cost.
         ctx.fills_repo.append_fill_and_apply = AsyncMock(return_value=(1, None))
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
@@ -1755,8 +1786,10 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
         assert results[0].status == "executed"
 
         record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
-        assert record_sell_kwargs["entry_price"] == pytest.approx(0.60)
-        assert record_sell_kwargs["realized_pnl"] == pytest.approx(-1.0)
+        assert record_sell_kwargs["entry_price"] is None
+        assert record_sell_kwargs["realized_pnl"] is None
+        assert record_sell_kwargs["price"] == Decimal("0.50")
+        assert isinstance(record_sell_kwargs["size_tokens"], Decimal)
 
 
 # ---------------------------------------------------------------------------
@@ -1892,9 +1925,9 @@ async def test_full_flow_persisted_token_id(tmp_path):
         raw = _raw_trade(
             asset=HEX_ASSET,
             tokenID=FAKE_TOKEN_ID,
-            size=100.0,
+            size=10.0,
             price=0.50,
-            usdcSize=50.0,
+            usdcSize=5.0,
         )
         results = await execute_trades(ctx, "leader1", [raw], time.time())
 

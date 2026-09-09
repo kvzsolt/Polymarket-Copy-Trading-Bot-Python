@@ -421,11 +421,13 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
         orders_repo=object(),
         risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=object(),
+        leader_performance=None,
         risk_engine=object(),
         accounting_service=object(),
         position_manager=object(),
         execution_service=object(),
         clob_gateway=None,
+        market_store=object(),
         risk_triggers_repo=None,
     )
 
@@ -448,6 +450,8 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.extra["leader_wallet"] == "leader-1"
     assert ctx.entry_permission_service is not None
     assert ctx.entry_permission_service._repo is risk_blocks_repo
+    assert ctx.market_quotes is user_state.market_store
+    assert ctx.holdings_reader is not None
     assert ctx.config is cfg
     assert ctx.leader_scorer._config is cfg
     assert ctx.copy_decision_service._config is cfg
@@ -466,6 +470,7 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
         orders_repo=object(),
         risk_blocks_repo=object(),
         pnl_tracker=object(),
+        leader_performance=None,
         risk_engine=object(),
         accounting_service=object(),
         position_manager=object(),

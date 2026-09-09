@@ -1,4 +1,11 @@
-# Example environment override: expose the Prometheus metrics endpoint.
+# Configuration guide — example application overrides.
+# Purpose: show how one named environment can override only metrics settings.
+# Options: server true/false, bind host/IP, and TCP port 1..65535.
+# Trade-offs: enabling metrics improves observability but opens a listener;
+# loopback is local-only, while a remote bind requires firewall/access controls.
+# false keeps the example listener off.
 enable_metrics_server: false
+# Loopback prevents remote access; replace only for an intentionally secured scrape.
 metrics_bind_host: 127.0.0.1
+# Prometheus port; choose an unused value when enabling.
 metrics_port: 9102

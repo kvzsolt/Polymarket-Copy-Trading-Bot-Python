@@ -151,7 +151,8 @@ class ControlPlaneRuntimeReads:
         portfolio: Optional cached portfolio snapshot reader.
         readiness: Canonical process readiness truth.
         metrics: Process metrics registry.
-        day_start_equity: Read-only day-start equity probe.
+        day_start_equity: Optional account-scoped baseline reader. The legacy
+            process-global JSON file has no account attribution and is not used.
     """
 
     accounts: Callable[[], Sequence[AccountView]] | None = None
@@ -165,7 +166,7 @@ class ControlPlaneRuntimeReads:
     portfolio: CachedPortfolioPort | None = None
     readiness: ReadinessSource | None = None
     metrics: MetricsSource | None = None
-    day_start_equity: Callable[[], Decimal | None] = field(default_factory=DayStartEquityProbe)
+    day_start_equity: Callable[[str], Decimal | None] | None = None
 
     @property
     def detection_supported(self) -> bool:

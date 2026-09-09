@@ -44,6 +44,7 @@ class LeaderSellTargetRepository(Protocol):
         token_id: str,
         source_signal_id: str,
         intent_payload: dict[str, object],
+        task_id: str | None = None,
     ) -> LeaderSellTarget:
         """Persist a fresh target and increment its scope generation."""
 
@@ -56,6 +57,7 @@ class LeaderSellTargetRepository(Protocol):
         leader_wallet: str,
         condition_id: str,
         token_id: str,
+        task_id: str | None = None,
     ) -> LeaderSellTarget | None:
         """Return the latest target for one follower/leader/token scope."""
 
@@ -203,6 +205,7 @@ class LeaderSellTargetService:
                 token_id=str(intent.token_id),
                 source_signal_id=source_signal_id,
                 intent_payload=self._serialize(intent),
+                task_id=intent.task_id,
             )
         except Exception as exc:
             self._logger.error(
@@ -271,6 +274,7 @@ class LeaderSellTargetService:
             leader_wallet=leader_wallet,
             condition_id=condition_id,
             token_id=token_id,
+            task_id=str(recovery["task_id"]) if recovery.get("task_id") else None,
         )
         if (
             target is None
@@ -292,6 +296,8 @@ class LeaderSellTargetService:
             )
             return False
         fraction = intent.leader_sell_fraction
+        if intent.task_id != target.task_id:
+            return False
         if fraction is None or not fraction.is_finite() or not (_ZERO < fraction <= Decimal("1")):
             return False
         held = await self._position_reader.position_size(user_id, condition_id, token_id)
@@ -370,6 +376,8 @@ class LeaderSellTargetService:
             "leader_wallet": str(intent.leader_wallet or ""),
             "max_slippage_bps": int(intent.max_slippage_bps),
             "reason": str(intent.reason or ""),
+            "task_id": intent.task_id,
+            "protective_lot_id": intent.protective_lot_id,
         }
         optional_decimals = {
             "price_limit": intent.price_limit,
@@ -414,6 +422,10 @@ class LeaderSellTargetService:
             leader_wallet=str(payload.get("leader_wallet") or "") or None,
             max_slippage_bps=int(str(payload.get("max_slippage_bps") or 0)),
             reason=str(payload.get("reason") or "") or None,
+            task_id=str(payload["task_id"]) if payload.get("task_id") else None,
+            protective_lot_id=(
+                str(payload["protective_lot_id"]) if payload.get("protective_lot_id") else None
+            ),
             recovery_metadata=recovery_metadata,
             order_type=order_type,
             price_limit=cls._optional_decimal(payload.get("price_limit")),

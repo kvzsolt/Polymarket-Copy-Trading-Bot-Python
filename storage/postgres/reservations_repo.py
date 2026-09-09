@@ -40,9 +40,15 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from typing import TypeAlias
+
 import asyncpg
 
+from storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
 from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reservation
+from domain.position_ownership import PositionOwnership
+from domain.performance import PerformanceUnits
+from storage.postgres.task_lot_capacity import PostgresTaskLotCapacity
 
 
 # DL-05: Advisory lock slot is a signed bigint. Hash the key to SHA-256 in
@@ -51,7 +57,7 @@ from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reserv
 # (Python ``int`` maps natively to PG ``bigint``). Same shape used in
 # positions_repo so collisions stay symmetric across both repos.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
-type PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
+PostgresConnection: TypeAlias = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -231,6 +237,8 @@ class ReservationsRepo:
                 already_reserved = self._sum_decimal_rows(rows, "reserved_usdc")
                 if available_balance - already_reserved < reserved_usdc:
                     return None, None
+                if not await PostgresTaskBuyCapacity.permits(conn, intent, reserved_usdc):
+                    return None, None
                 await self._insert_reservation(
                     conn,
                     res_id,
@@ -268,7 +276,7 @@ class ReservationsRepo:
                 )
                 rows = await conn.fetch(
                     """
-                    SELECT reserved_size FROM order_reservations
+                    SELECT reserved_size, metadata_json FROM order_reservations
                     WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
                           AND side = 'SELL' AND status = 'active'
                     FOR SHARE
@@ -349,8 +357,33 @@ class ReservationsRepo:
                     intent.key.token_id,
                 )
                 already_reserved = self._sum_decimal_rows(rows, "reserved_size")
+                if intent.task_id is None and intent.key.reason is IntentReason.COPY_SELL:
+                    position = await conn.fetchrow(
+                        "SELECT leader_id, size_tokens FROM positions "
+                        "WHERE user_id = $1 AND condition_id = $2 AND token_id = $3",
+                        intent.key.user_id,
+                        intent.key.condition_id,
+                        intent.key.token_id,
+                    )
+                    if position is None or not PositionOwnership.matches(
+                        position["leader_id"], intent.key.leader_wallet
+                    ):
+                        return None, None
+                    position_shares = PerformanceUnits.finite(position["size_tokens"])
+                    if position_shares is None or position_shares <= 0:
+                        return None, None
+                    held_size = min(held_size, position_shares)
                 capacity = held_size - already_reserved
                 target_size = reserved_size
+                lot_capacity = await PostgresTaskLotCapacity().available(conn, intent)
+                available_lots = lot_capacity.lots
+                owned = sum((lot.shares for lot in available_lots), Decimal(0))
+                unattributed = (
+                    max(Decimal(0), held_size - lot_capacity.attributed_shares)
+                    if intent.task_id is None
+                    else Decimal(0)
+                )
+                capacity = min(capacity, owned + unattributed)
                 if sell_fraction is not None:
                     if not sell_fraction.is_finite() or not (
                         Decimal("0") < sell_fraction <= Decimal("1")
@@ -386,6 +419,11 @@ class ReservationsRepo:
                     target_size,
                     created_at,
                     expires_at,
+                    lot_allocations=(
+                        PostgresTaskLotCapacity.allocate(available_lots, min(target_size, owned))
+                        if available_lots
+                        else {}
+                    ),
                 )
         new_row = await self.get_by_id(res_id)
         return None, new_row
@@ -423,6 +461,7 @@ class ReservationsRepo:
         reserved_size: Decimal,
         created_at: int,
         expires_at: int,
+        lot_allocations: dict[str, str] | None = None,
     ) -> None:
         await conn.execute(
             """
@@ -449,7 +488,14 @@ class ReservationsRepo:
             created_at,
             created_at,
             expires_at,
-            json.dumps({"source_signal_id": intent.source_signal_id}),
+            json.dumps(
+                {
+                    "source_signal_id": intent.source_signal_id,
+                    "task_id": intent.task_id,
+                    "protective_lot_id": intent.protective_lot_id,
+                    "lot_allocations": lot_allocations,
+                }
+            ),
         )
 
     async def get_by_id(self, res_id: str) -> Reservation | None:

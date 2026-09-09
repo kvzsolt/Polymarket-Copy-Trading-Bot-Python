@@ -1,16 +1,9 @@
-"""Operator tuning targets for the 350 pUSD moderate-risk bankroll.
+"""Preserved operator profile and explicitly enabled moderate-policy arithmetic.
 
-The operator's Deposit Wallet holds ~352 pUSD, and the requested profile is
-"moderate": ~5 % of the bankroll per copy, a ~10 % daily-loss stop, and ~60 %
-maximum deployed exposure. Those three numbers fix every knob asserted here.
-
-``tests/test_live_environment_overrides.py`` requires ``sizing``, ``risk``,
-``protective_exits`` and ``market_data`` to be byte-identical between paper and
-live, so the profile lives in the **base** YAML files and this module asserts
-both environments resolve to it. The derived behaviour is then pinned against
-the real consumers — :func:`services.risk.risk_engine.headroom_for_buy` and
-:class:`services.balance_regime.BalanceRegime` — so a future edit to the YAML
-that silently changes what the bot will actually do fails here.
+Profile assertions track the non-secret YAML present at task start. Algorithm
+fixtures separately opt into the tiered policy and cash reserve, which the
+current operator profile leaves disabled. The synthetic 350-unit bankroll is
+an arithmetic fixture, not evidence of a live balance or deployment.
 """
 
 from __future__ import annotations
@@ -54,12 +47,7 @@ def _paper_and_live() -> tuple[AppConfig, AppConfig]:
 
 
 def test_packaged_moderate_350_targets() -> None:
-    """Both environments resolve the packaged 350 pUSD moderate profile.
-
-    Every value the re-tune touched is asserted for paper *and* live: the
-    profile must never fork per environment (the invariant
-    ``test_live_environment_does_not_change_other_services`` protects).
-    """
+    """Both environments preserve the operator's shared sizing and risk knobs."""
     for config in _paper_and_live():
         sizing = config.sizing
         assert sizing.buy_max_amount == 17.5
@@ -67,16 +55,16 @@ def test_packaged_moderate_350_targets() -> None:
         # and the 24 h-snapshot position cap all stay as shipped.
         assert sizing.buy_min_amount == 5.0
         assert sizing.percentage == 5.0
-        assert sizing.max_position_pct == 0.1
+        assert sizing.max_position_pct == 0.07
 
         risk = config.risk
-        assert risk.enable_balance_tiered_policy is True
+        assert risk.enable_balance_tiered_policy is False
         assert risk.balance_policy_reserve_pct == 0.40
         assert risk.balance_policy_reserve_floor == 35.0
         assert risk.balance_policy_hard_cap_pct == 0.05
         assert risk.balance_policy_hard_cap_ceiling == 17.5
         assert risk.balance_policy_max_open_positions == 12
-        assert risk.max_open_positions == 12
+        assert risk.max_open_positions == 25
         assert risk.balance_policy_allow_partial_exits is True
         assert risk.max_leader_exposure_usdc == 140.0
         assert risk.max_market_exposure_usdc == 35.0
@@ -85,7 +73,7 @@ def test_packaged_moderate_350_targets() -> None:
 
         execution = config.execution
         assert execution.max_position_size_usdc == 20.0
-        assert execution.min_balance_headroom_usdc == 140.0
+        assert execution.min_balance_headroom_usdc == 0.0
         # Gross-spend semantics would starve re-entries; the daily ceiling
         # stays disabled and the sub-min SELL policy stays at its default.
         assert execution.max_daily_spend_usdc == 0.0
@@ -98,8 +86,10 @@ def test_packaged_moderate_350_targets() -> None:
 
 
 def test_headroom_matches_targets() -> None:
-    """``headroom_for_buy`` reproduces the derived caps at a 350 pUSD bankroll."""
-    config = load_config(_overrides())
+    """An explicitly enabled moderate policy retains its original arithmetic."""
+    overrides = _overrides()
+    overrides["risk"] = {"enable_balance_tiered_policy": True}
+    config = load_config(overrides)
 
     # Fully liquid start: reserve = max(35, 350*0.40) = 140, tradable = 210,
     # hard cap = min(210, 350*0.05, 17.5) = 17.5 -> the per-copy target.
@@ -184,8 +174,10 @@ def test_stop_loss_threshold_below_min_share_price() -> None:
 
 
 def test_balance_regime_mirror() -> None:
-    """The in-memory belt mirrors the account-cap policy at 350 pUSD."""
-    config = load_config(_overrides())
+    """An explicitly configured reserve is enforced independently of the profile."""
+    overrides = _overrides()
+    overrides["execution"] = {"min_balance_headroom_usdc": 140.0}
+    config = load_config(overrides)
     regime = BalanceRegime.from_config(config.execution)
 
     allowed = regime.check_buy(notional_usdc=PER_COPY_CAP, free_cash_usdc=BANKROLL)

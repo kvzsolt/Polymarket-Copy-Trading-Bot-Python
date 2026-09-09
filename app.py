@@ -1,6 +1,10 @@
 """Compose, run, supervise, and close the Polymarket copy-trading runtime."""
 
 from __future__ import annotations
+from adapters.clock import SystemReceiptClock
+from services.telemetry.latency import PipelineLatency
+from services.market_readiness import MarketReadinessGroup
+from services.user_readiness import UserReadinessGroup
 
 import asyncio
 import functools
@@ -16,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from interfaces.source_transactions import SourceTransactionStateStore
+    from interfaces.source_time import BlockTimestampReader
     from orchestrators.detection_source_factory import (
         ConfirmedSourceBuilder,
         DetectionSourceRuntime,
@@ -29,6 +34,7 @@ if TYPE_CHECKING:
     )
 
 from bootstrap import build_app
+from orchestrators.account_inventory_startup import InitialInventorySync
 from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
@@ -469,8 +475,6 @@ def _build_leader_sell_fraction_resolver(
         ValueError: If the required primary Polygon RPC endpoint is absent.
     """
 
-    from functools import partial
-
     from adapters.polygon.historical_erc1155_balance import (
         Web3HistoricalErc1155BalanceReader,
     )
@@ -480,7 +484,8 @@ def _build_leader_sell_fraction_resolver(
     from services.onchain_detection.leader_sell_fraction_resolver import (
         LeaderSellFractionResolver,
     )
-    from utils.fetchData import fetch_data
+    from clients.network.decimal_json_reader import DecimalJsonReader
+    from utils.fetchData import _get_http_client
 
     polymarket = getattr(config, "polymarket", None)
     historical = Web3HistoricalErc1155BalanceReader.from_rpc_url(
@@ -489,7 +494,7 @@ def _build_leader_sell_fraction_resolver(
         request_timeout_seconds=2.5,
     )
     fallback = DataApiLeaderSellFractionReader(
-        fetch_json=partial(fetch_data, silent=True),
+        fetch_json=DecimalJsonReader(_get_http_client).get,
     )
     return LeaderSellFractionResolver(
         historical_balances=historical,
@@ -498,8 +503,25 @@ def _build_leader_sell_fraction_resolver(
     )
 
 
+def _copy_task_contexts(
+    contexts_by_leader: Mapping[str, list["TradingContext"]],
+    risk_contexts_by_user: Mapping[str, "TradingContext"],
+) -> tuple["TradingContext", ...]:
+    """Bind each context once, including accounts that only manage existing positions."""
+    return tuple(
+        {
+            id(context): context
+            for context in (
+                *risk_contexts_by_user.values(),
+                *(item for contexts in contexts_by_leader.values() for item in contexts),
+            )
+        }.values()
+    )
+
+
 def _confirmed_source_builder(
     state_store_provider: "Callable[[], Awaitable[SourceTransactionStateStore | None]]",
+    block_timestamp_reader_factory: Callable[[], BlockTimestampReader] | None = None,
 ) -> "ConfirmedSourceBuilder":
     """Thin glue: the receipt-confirmed builder over both CTF exchanges.
 
@@ -525,6 +547,7 @@ def _confirmed_source_builder(
             POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
         ),
         state_store_provider=state_store_provider,
+        block_timestamp_reader_factory=block_timestamp_reader_factory,
     )
 
 
@@ -602,6 +625,15 @@ def _build_detection_source_factory(
     )
 
     oc_cfg = getattr(getattr(config, "detection", None), "onchain", None)
+    from adapters.polygon.block_timestamp import RpcBlockTimestampReaderFactory
+    from utils.fetchData import _get_http_client
+
+    rpc_url = getattr(getattr(config, "polymarket", None), "rpc_url", "")
+    block_time_factory = (
+        RpcBlockTimestampReaderFactory(rpc_url=rpc_url, client_provider=_get_http_client).build
+        if rpc_url
+        else None
+    )
     return DetectionSourceFactory(
         [
             ProvisionalPendingSourceBuilder(
@@ -616,8 +648,12 @@ def _build_detection_source_factory(
                 ),
                 condition_id_resolver=_build_onchain_condition_id_resolver(),
                 websocket_factory=websocket_factory or OnchainWebSocket,
+                block_timestamp_reader_factory=block_time_factory,
             ),
-            _confirmed_source_builder(state_store_provider or _default_source_state_store_provider),
+            _confirmed_source_builder(
+                state_store_provider or _default_source_state_store_provider,
+                block_timestamp_reader_factory=block_time_factory,
+            ),
         ]
     )
 
@@ -867,6 +903,7 @@ async def _start_market_data_runtimes(
     config,
     quote_sink=None,
     telemetry: WssTelemetryEmitter | None = None,
+    latency: PipelineLatency | None = None,
 ) -> dict[str, MarketDataRuntime]:
     """Start WSS-backed market data runtimes, keyed by user_id.
 
@@ -877,6 +914,9 @@ async def _start_market_data_runtimes(
     """
     market_data_runtimes: dict[str, MarketDataRuntime] = {}
     context_tokens = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
+    market_readiness = MarketReadinessGroup(
+        readiness, tuple(user.user_id for user in runtime_users)
+    )
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
@@ -913,10 +953,11 @@ async def _start_market_data_runtimes(
         market_runtime = MarketDataRuntime(
             market_store=market_store,
             gateway=clob_gateway,
-            readiness=readiness,
+            readiness=market_readiness.scope(runtime_user.user_id),
             config=config,
             quote_sink=quote_sink,
             telemetry=telemetry,
+            latency=latency,
         )
 
         await market_runtime.start(initial_tokens)
@@ -1070,6 +1111,7 @@ async def _start_user_data_runtimes(
     ReconciliationService without waiting for the next polled cycle.
     """
     user_data_runtimes: list[UserDataRuntime] = []
+    user_readiness = UserReadinessGroup(readiness, tuple(user.user_id for user in runtime_users))
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
@@ -1112,7 +1154,7 @@ async def _start_user_data_runtimes(
 
         runtime = UserDataRuntime(
             market_store=market_store,
-            readiness=readiness,
+            readiness=user_readiness.scope(runtime_user.user_id),
             api_creds=api_creds,
             user_id=runtime_user.user_id,
             on_reconcile_signal=wake_closure,
@@ -1217,7 +1259,12 @@ def _build_telemetry_emitters(telemetry_runtime: TelemetryRuntime | None) -> Tel
 
     if telemetry_runtime is None:
         return TelemetryEmitters.disabled()
-    return TelemetryEmitters.build(telemetry_runtime.service)
+    return TelemetryEmitters.build(
+        telemetry_runtime.service,
+        latency=PipelineLatency(
+            clock=SystemReceiptClock(), metrics=telemetry_runtime.service.metrics_registry
+        ),
+    )
 
 
 def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
@@ -1791,6 +1838,7 @@ async def _run_application(
         venue_runtime = await build_polymarket_runtime(
             runtime_user=runtime_user,
             config=application.config,
+            latency=telemetry_emitters.latency if telemetry_emitters is not None else None,
         )
         # The CCXT runtime is the single venue owner; close it on shutdown.
         client_registry.append(venue_runtime)
@@ -1942,9 +1990,7 @@ async def _run_application(
     )
 
     logger.info("startup_stage | stage=v1_copy_task_restoration_started")
-    initial_v1_contexts = tuple(
-        context for leader_contexts in contexts_by_leader.values() for context in leader_contexts
-    )
+    initial_v1_contexts = _copy_task_contexts(contexts_by_leader, risk_contexts_by_user)
     v1_runtime = await start_v1_copy_task_runtime(
         pool=_pool,
         config=application.config,
@@ -1952,6 +1998,8 @@ async def _run_application(
         contexts=initial_v1_contexts,
         start_workers=False,
         buy_scope_guard=leader_sell_scope_guard,
+        decision_observer=telemetry_emitters.trade,
+        latency=telemetry_emitters.latency,
     )
     if v1_runtime is not None:
         client_registry.append(v1_runtime)
@@ -2025,41 +2073,13 @@ async def _run_application(
     else:
         application.readiness.update(reconciler_ok=True)
 
-    # Boot ordering (read carefully — the race fix lives here):
-    #
-    # 1. ``manual_sync.initial_sync`` seeds positions from the venue's
-    #    ``data-api /positions`` snapshot, excluding zero-value stale rows.
-    # 2. ``startup_drift_check`` validates canonical DB state against live
-    #    truth and timestamps every prune in ``_prune_timestamps``.
-    # 3. ``hydrate_resolved_market_state`` runs LAST: marks resolved /
-    #    archived / inactive markets in MarketStateStore so the risk
-    #    monitor short-circuits 404-prone tokens.
-    # 4. ``_start_user_data_runtimes`` finally attaches the WSS. When auth
-    #    triggers ``manual_sync.trigger_sync``, the upsert path now sees
-    #    the drift prune timestamps and honours the holdoff — so the
-    #    eventually-consistent data-api cannot resurrect what drift just
-    #    pruned, which is what produced the /price 404 + breaker loop.
+    # Seed inventory before drift checks and market/WSS startup so all loops
+    # start against reconciled holdings, including positive zero-mark shares.
+    inventory_startup = InitialInventorySync(application.readiness)
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
-        manual_sync = getattr(user_state, "manual_sync_service", None) if user_state else None
-        if manual_sync is None:
-            continue
-        try:
-            logger.info(
-                "startup_stage | stage=manual_sync_initial_started user=%s",
-                runtime_user.user_id,
-            )
-            await manual_sync.initial_sync()
-            logger.info(
-                "startup_stage | stage=manual_sync_initial_completed user=%s",
-                runtime_user.user_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "manual_sync_initial_failed | user=%s error=%r",
-                runtime_user.user_id,
-                exc,
-            )
+        manual_sync = user_state.manual_sync_service if user_state else None
+        await inventory_startup.initialize(manual_sync)
 
     # PR7 — proactive position drift sweep. Must complete before monitors
     # start AND before the user WSS attaches so its first auth-triggered
@@ -2108,6 +2128,7 @@ async def _run_application(
         RuntimeTaskActivationGuard(
             bindings=v1_runtime,
             monitoring=task_monitoring_state,
+            protective_management_enabled=application.config.risk.enable_risk_mgmt,
         )
         if v1_runtime is not None
         else None
@@ -2136,6 +2157,10 @@ async def _run_application(
                     wallet=context.wallet_address,
                     positions=context.positions_repo,
                     reservations=reservations,
+                    quotes=user_states[context.user_id].market_store,
+                    quote_max_age_seconds=(
+                        application.config.market_data.executable_quote_max_age_seconds
+                    ),
                 )
             )
         portfolio_runtime = PortfolioRuntimeFactory(
@@ -2220,6 +2245,7 @@ async def _run_application(
         config=application.config,
         quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
         telemetry=telemetry_emitters.wss,
+        latency=telemetry_emitters.latency,
     )
     logger.info(
         "startup_stage | stage=market_data_runtimes_started users=%d",

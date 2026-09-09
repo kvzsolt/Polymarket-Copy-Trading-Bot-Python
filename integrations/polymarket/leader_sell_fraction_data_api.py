@@ -88,30 +88,44 @@ class DataApiLeaderSellFractionReader:
         )
         activities = self._rows(activity_payload)
         positions = self._rows(positions_payload)
+        if activities is None or positions is None or len(positions) >= 500:
+            return None
         token_id = str(signal.token_id)
         balance = self._position_balance(positions, token_id)
         if balance is None:
-            balance = _ZERO
+            return None
         target_hash = signal.tx_hash.strip().lower()
+        target_rows = [
+            row
+            for row in activities
+            if self._token_id(row) == token_id and self._transaction_hash(row) == target_hash
+        ]
+        if len(target_rows) != 1 or self._decimal(target_rows[0].get("size")) != signal.size:
+            return None
         target_seen = False
-        for row in activities:
-            if self._token_id(row) != token_id:
-                continue
+        token_activities = [row for row in activities if self._token_id(row) == token_id]
+        previous_timestamp: Decimal | None = None
+        for row in token_activities:
+            if len(token_activities) > 1 or "timestamp" in row:
+                timestamp = self._decimal(row.get("timestamp"))
+                if timestamp is None or timestamp < 0 or timestamp != timestamp.to_integral_value():
+                    return None
+                if previous_timestamp is not None and timestamp >= previous_timestamp:
+                    return None
+                previous_timestamp = timestamp
             size = self._decimal(row.get("size"))
             if size is None or size <= _ZERO:
-                continue
+                return None
             side = str(row.get("side") or "").strip().upper()
-            row_hash = (
-                str(row.get("transactionHash") or row.get("txHash") or row.get("tx_hash") or "")
-                .strip()
-                .lower()
-            )
+            row_hash = self._transaction_hash(row)
             if side == "SELL":
                 balance += size
             elif side == "BUY":
-                balance = max(_ZERO, balance - size)
+                balance -= size
+                if balance < _ZERO:
+                    return None
             else:
-                continue
+                return None
             if row_hash == target_hash and side == "SELL":
                 target_seen = True
                 break
@@ -120,22 +134,30 @@ class DataApiLeaderSellFractionReader:
         fraction = signal.size / balance
         if not fraction.is_finite() or fraction <= _ZERO:
             return None
-        return min(_ONE, fraction)
+        return fraction if fraction <= _ONE else None
 
     @staticmethod
     def _url(base: str, params: Mapping[str, str]) -> str:
         return f"{base}?{urlencode(params)}"
 
+    @staticmethod
+    def _transaction_hash(row: Mapping[str, object]) -> str:
+        return (
+            str(row.get("transactionHash") or row.get("txHash") or row.get("tx_hash") or "")
+            .strip()
+            .lower()
+        )
+
     @classmethod
-    def _rows(cls, payload: object) -> list[Mapping[str, object]]:
-        if isinstance(payload, list):
-            return [row for row in payload if isinstance(row, Mapping)]
+    def _rows(cls, payload: object) -> list[Mapping[str, object]] | None:
         if isinstance(payload, Mapping):
             for key in ("data", "activities", "results"):
-                rows = payload.get(key)
-                if isinstance(rows, list):
-                    return [row for row in rows if isinstance(row, Mapping)]
-        return []
+                if key in payload:
+                    payload = payload[key]
+                    break
+        if not isinstance(payload, list) or any(not isinstance(row, Mapping) for row in payload):
+            return None
+        return list(payload)
 
     @classmethod
     def _position_balance(
@@ -143,13 +165,17 @@ class DataApiLeaderSellFractionReader:
         positions: Sequence[Mapping[str, object]],
         token_id: str,
     ) -> Decimal | None:
+        balance = _ZERO
+        seen: set[str] = set()
         for position in positions:
-            if cls._token_id(position) != token_id:
-                continue
+            asset = cls._token_id(position)
             size = cls._decimal(position.get("size"))
-            if size is not None and size >= _ZERO:
-                return size
-        return None
+            if not asset or asset in seen or size is None or size < _ZERO:
+                return None
+            seen.add(asset)
+            if asset == token_id:
+                balance = size
+        return balance
 
     @staticmethod
     def _token_id(row: Mapping[str, object]) -> str:
@@ -157,8 +183,10 @@ class DataApiLeaderSellFractionReader:
 
     @staticmethod
     def _decimal(value: object) -> Decimal | None:
+        if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+            return None
         try:
-            parsed = Decimal(str(value))
+            parsed = Decimal(value)
         except (InvalidOperation, TypeError, ValueError):
             return None
         return parsed if parsed.is_finite() else None

@@ -25,7 +25,7 @@ _BASE_LIVE_ENV = {
     "RPC_URL": "https://polygon-rpc.example.com",
     "CHAIN_ID": "137",
     "TRADING_MODE": "live",
-    "KILL_SWITCH": "false",
+    "APP_KILL_SWITCH": "false",
     "POSITION_DRIFT_CHECK_ON_STARTUP": "true",
     "ENFORCE_GEOBLOCK": "false",
 }
@@ -44,7 +44,7 @@ def test_doctor_formats_deposit_wallet_diagnostics() -> None:
 
     assert "walletType=DEPOSIT_WALLET" in detail
     assert "signature_type=3" in detail
-    assert "sdk_wallet_type_authoritative=true" in detail
+    assert "ccxt_explicit_funder_authoritative=true" in detail
 
 
 def _config_loader(env_overrides: dict[str, str] | None = None):
@@ -144,17 +144,11 @@ async def _run_doctor(
 
             return SimpleNamespace(allowed=True, reason="stub")
 
-        async def _fake_wallet_sig(_wallet, **_kw):
-            from config.env import SignatureType
-
-            return (SignatureType.EOA, "EOA", "0x" + "a" * 40)
-
         patches = [
             patch.object(doctor_mod, "load_config", new=lambda *a, **kw: loader()),
             patch.object(doctor_mod, "_check_wss_endpoint", return_value=(True, "ok")),
             patch.object(startup_health_mod, "_check_rpc", new=_fake_rpc),
             patch.object(compliance_mod, "check_geoblock", new=_fake_geoblock),
-            patch.object(doctor_mod, "detect_wallet_signature_type", new=_fake_wallet_sig),
         ]
         if tmp_log is not None:
             patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
@@ -184,7 +178,6 @@ async def test_doctor_paper_returns_structured_list(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_doctor_live_blocked_when_trading_mode_is_paper(tmp_path):
     out = await _run_doctor("live", {"TRADING_MODE": "paper"}, tmp_log=tmp_path, tmp_path=tmp_path)
     rec = _checks_by_name(out)["paper_trade_only_false"]
@@ -194,7 +187,9 @@ async def test_doctor_live_blocked_when_trading_mode_is_paper(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
-    out = await _run_doctor("live", {"KILL_SWITCH": "true"}, tmp_log=tmp_path, tmp_path=tmp_path)
+    out = await _run_doctor(
+        "live", {"APP_KILL_SWITCH": "true"}, tmp_log=tmp_path, tmp_path=tmp_path
+    )
     rec = _checks_by_name(out)["kill_switch_off"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
@@ -220,7 +215,9 @@ async def test_doctor_live_logs_path_unwritable_blocks(tmp_path, monkeypatch):
         bad.chmod(0o700)
     rec = _checks_by_name(out)["log_directory_writable"]
     assert rec["status"] == "blocked"
-    assert "writable" in rec["fix"].lower()
+    assert "not writable" in rec["detail"].lower()
+    assert "log_dir" in rec["fix"]
+    assert "config/logging.yml" in rec["fix"]
 
 
 @pytest.mark.asyncio
@@ -271,6 +268,7 @@ async def test_doctor_live_passes_when_discovery_enabled_without_manual_leaders(
             "LEADER_WALLETS": "",
             "USER_ADDRESS": "",
             "DISCOVERY_API_TOKEN": "test-token",
+            "DISCOVERY_SCHEDULER_ENABLED": "true",
         },
         tmp_log=tmp_path,
         tmp_path=tmp_path,
@@ -289,6 +287,7 @@ async def test_doctor_live_blocks_when_discovery_credentials_are_missing(tmp_pat
             "LEADER_WALLETS": "",
             "USER_ADDRESS": "",
             "DISCOVERY_API_TOKEN": "",
+            "DISCOVERY_SCHEDULER_ENABLED": "true",
         },
         tmp_log=tmp_path,
         tmp_path=tmp_path,

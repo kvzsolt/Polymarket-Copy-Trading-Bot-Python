@@ -219,6 +219,8 @@ def is_stale_pending(signal: OnchainTradeSignal, now_ms: int, max_age_ms: int) -
     """Return True if a pending signal is older than ``max_age_ms`` at dispatch."""
     if not signal.provisional:
         return False
+    if signal.event_ts is None or signal.event_ts > now_ms:
+        return True
     if max_age_ms <= 0:
         return False
     return (now_ms - signal.event_ts) > max_age_ms

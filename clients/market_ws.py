@@ -23,6 +23,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 
 from services.metrics import METRIC_WSS_HEARTBEAT_STALL, METRIC_WSS_RECONNECT, metrics
+from clients.market_book_decoder import MarketBookDecoder
 from utils.logger import get_logger
 
 try:
@@ -71,7 +72,15 @@ class MarketWebSocket:
         on_connected: Callable[[], Coroutine[Any, Any, None]] | None = None,
         on_disconnected: Callable[[], Coroutine[Any, Any, None]] | None = None,
         on_state_change: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
+        on_quote_invalidated: Callable[[str], None] | None = None,
+        max_pending_callbacks: int = 128,
     ) -> None:
+        if (
+            isinstance(max_pending_callbacks, bool)
+            or not isinstance(max_pending_callbacks, int)
+            or max_pending_callbacks <= 0
+        ):
+            raise ValueError("max_pending_callbacks must be a positive integer")
         self._cache = cache
         self._ws_url = ws_url
         self._rest_bootstrap = rest_bootstrap
@@ -97,11 +106,15 @@ class MarketWebSocket:
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_state_change = on_state_change
-        self._tasks: set[asyncio.Task] = set()
+        self._on_quote_invalidated = on_quote_invalidated
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._max_pending_callbacks = max_pending_callbacks
+        self._closed = False
 
     async def connect(self, asset_ids: list[str]) -> None:
         """Open the market WebSocket connection."""
         self._asset_ids = _dedupe_asset_ids(asset_ids)
+        self._closed = False
         self._running = True
         logger.info("MarketWS: starting for %d asset(s)", len(self._asset_ids))
         await self._reconnect_loop()
@@ -109,10 +122,15 @@ class MarketWebSocket:
     async def stop(self) -> None:
         """Stop the market WebSocket client and release its tasks."""
         self._running = False
+        self._closed = True
         if self._ws is not None:
             with contextlib.suppress(Exception):
                 await self._ws.close()
         self._mark_all_stale("stopped")
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("MarketWS: stopped")
 
     async def subscribe(self, asset_ids: list[str]) -> None:
@@ -168,7 +186,8 @@ class MarketWebSocket:
                     self._ws_url,
                     ping_interval=None,  # Polymarket uses literal text PING
                     close_timeout=5,
-                    max_queue=None,
+                    max_queue=16,
+                    max_size=2**20,
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = self._reconnect_min_delay
@@ -176,15 +195,18 @@ class MarketWebSocket:
                     # detector has a stable anchor even when no inbound frame
                     # ever arrives (silent server case).
                     self._last_pong_monotonic = time.monotonic()
-                    logger.info("MarketWS: connected to %s", self._ws_url)
+                    logger.info("MarketWS: connected")
 
                     await self._subscribe(ws)
 
                     if self._on_connected is not None:
                         try:
                             await self._on_connected()
-                        except Exception:
-                            logger.warning("MarketWS: on_connected callback failed", exc_info=True)
+                        except Exception as exc:
+                            logger.warning(
+                                "MarketWS: on_connected callback failed | error_type=%s",
+                                type(exc).__name__,
+                            )
 
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     try:
@@ -195,18 +217,21 @@ class MarketWebSocket:
                             await heartbeat_task
 
             except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK) as exc:
-                logger.warning("MarketWS: connection closed: %s", exc)
+                logger.warning("MarketWS: connection closed | error_type=%s", type(exc).__name__)
             except OSError as exc:
-                logger.warning("MarketWS: network error: %s", exc)
+                logger.warning("MarketWS: network error | error_type=%s", type(exc).__name__)
             except Exception as exc:
-                logger.exception("MarketWS: unexpected error: %s", exc)
+                logger.warning("MarketWS: unexpected error | error_type=%s", type(exc).__name__)
             finally:
                 self._ws = None
                 if self._on_disconnected is not None:
                     try:
                         await self._on_disconnected()
-                    except Exception:
-                        logger.warning("MarketWS: on_disconnected callback failed", exc_info=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "MarketWS: on_disconnected callback failed | error_type=%s",
+                            type(exc).__name__,
+                        )
                 self._mark_all_stale("disconnected")
 
             if not self._running:
@@ -345,7 +370,8 @@ class MarketWebSocket:
         try:
             data = orjson.loads(raw_msg)
         except (orjson.JSONDecodeError, TypeError):
-            logger.debug("MarketWS: non-JSON message: %s", str(raw_msg)[:100])
+            logger.debug("MarketWS: non-JSON message rejected")
+            self._mark_all_stale("invalid_frame")
             return
 
         events = data if isinstance(data, list) else [data]
@@ -380,12 +406,18 @@ class MarketWebSocket:
     def _handle_book(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
         if not asset_id:
+            self._mark_all_stale("unattributable_book_snapshot")
             return
 
-        bids = _parse_levels(event.get("bids") or event.get("buys") or [])
-        asks = _parse_levels(event.get("asks") or event.get("sells") or [])
+        try:
+            bids = MarketBookDecoder.levels(event.get("bids", event.get("buys", [])))
+            asks = MarketBookDecoder.levels(event.get("asks", event.get("sells", [])))
+        except ValueError:
+            self._mark_asset_stale(asset_id, "invalid_book_snapshot")
+            return
 
         if not bids and not asks:
+            self._mark_asset_stale(asset_id, "empty_book_snapshot")
             logger.debug(
                 "market_wss_event_ignored | type=book assetId=%s reason=empty_book",
                 asset_id,
@@ -398,6 +430,9 @@ class MarketWebSocket:
         replaced = self._replace_book_snapshot(
             asset_id, bids, asks, event, condition_id=condition_id
         )
+        if not replaced:
+            self._mark_asset_stale(asset_id, "book_snapshot_not_replaced")
+            return
         if replaced and prior_book_source == "rest_bootstrap":
             logger.info(
                 "market_data_rest_bootstrap_wss_override | token_id=%s event_type=book",
@@ -438,6 +473,23 @@ class MarketWebSocket:
 
     def _handle_price_change(self, event: dict[str, Any]) -> None:
         changes = event.get("price_changes") or event.get("changes") or []
+        try:
+            decoded = MarketBookDecoder.changes(changes)
+        except ValueError:
+            affected = (
+                {asset for row in changes if isinstance(row, dict) and (asset := _asset_id(row))}
+                if isinstance(changes, list)
+                else set(self._asset_ids)
+            )
+            if not affected or (
+                isinstance(changes, list)
+                and any(not isinstance(row, dict) or not _asset_id(row) for row in changes)
+            ):
+                self._mark_all_stale("unattributable_invalid_book_delta")
+                return
+            for asset in affected:
+                self._mark_asset_stale(asset, "invalid_book_delta_batch")
+            return
         if not isinstance(changes, list):
             logger.debug(
                 "market_wss_event_ignored | type=price_change reason=price_changes_not_list"
@@ -446,6 +498,26 @@ class MarketWebSocket:
 
         condition_id = str(event.get("market") or "").strip() or None
         touched: set[str] = set()
+
+        batch_hook = getattr(self._cache, "apply_book_deltas", None)
+        applied_batch = False
+        if batch_hook is not None:
+            try:
+                result = batch_hook(
+                    tuple(
+                        (change.token_id, change.side, change.price, change.size)
+                        for change in decoded
+                    )
+                )
+                if asyncio.iscoroutine(result):
+                    result.close()
+                    raise TypeError("Critical cache updates must complete synchronously")
+                applied_batch = True
+            except Exception as exc:
+                logger.warning("market_book_batch_failed | error_type=%s", type(exc).__name__)
+                for asset in {change.token_id for change in decoded}:
+                    self._mark_asset_stale(asset, "book_batch_failed")
+                return
 
         for change in changes:
             if not isinstance(change, dict):
@@ -465,7 +537,8 @@ class MarketWebSocket:
                 continue
 
             prior_source = self._get_book_source(asset_id)
-            self._apply_book_delta(asset_id, side, price, size)
+            if not applied_batch:
+                self._apply_book_delta(asset_id, side, price, size)
             if prior_source == "rest_bootstrap":
                 logger.info(
                     "market_data_rest_bootstrap_wss_override | token_id=%s event_type=price_change",
@@ -492,13 +565,14 @@ class MarketWebSocket:
     def _handle_best_bid_ask(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
         if not asset_id:
+            self._mark_all_stale("unattributable_book_quote")
             return
-        best_bid = _to_decimal(
-            event.get("best_bid") or event.get("bid") or event.get("best_bid_price")
-        )
-        best_ask = _to_decimal(
-            event.get("best_ask") or event.get("ask") or event.get("best_ask_price")
-        )
+        try:
+            best_bid = MarketBookDecoder.optional_quote(event, "best_bid", "bid", "best_bid_price")
+            best_ask = MarketBookDecoder.optional_quote(event, "best_ask", "ask", "best_ask_price")
+        except ValueError:
+            self._mark_asset_stale(asset_id, "invalid_book_quote")
+            return
         if best_bid is None and best_ask is None:
             return
         self._on_price_update(asset_id, best_bid, best_ask)
@@ -584,6 +658,12 @@ class MarketWebSocket:
     def _mark_asset_stale(self, asset_id: str, reason: str) -> None:
         if not self._call_cache_optional("mark_stale", asset_id, reason):
             self._call_cache_optional("invalidate", asset_id)
+        if self._on_quote_invalidated is not None:
+            try:
+                self._on_quote_invalidated(asset_id)
+            except Exception as exc:
+                logger.error("market_quote_invalidation_failed | error_type=%s", type(exc).__name__)
+        self._notify_state_change(asset_id, "book_invalidated")
 
     def _mark_asset_dirty(self, asset_id: str, reason: str) -> None:
         self._call_cache_optional("mark_dirty", asset_id, reason)
@@ -606,12 +686,19 @@ class MarketWebSocket:
         event_with_meta = dict(raw_event)
         if condition_id:
             event_with_meta["condition_id"] = condition_id
-        if self._call_cache_optional(
-            "replace_book_snapshot", asset_id, bids, asks, event_with_meta
-        ):
-            return True
-        if self._call_cache_optional("on_book_snapshot", asset_id, bids, asks, event_with_meta):
-            return True
+        for method_name in ("replace_book_snapshot", "on_book_snapshot"):
+            method = getattr(self._cache, method_name, None)
+            if method is None:
+                continue
+            try:
+                result = method(asset_id, bids, asks, event_with_meta)
+                if asyncio.iscoroutine(result):
+                    result.close()
+                    raise TypeError("Critical cache updates must complete synchronously")
+                return True
+            except Exception as exc:
+                logger.warning("market_book_snapshot_failed | error_type=%s", type(exc).__name__)
+                return False
         logger.warning(
             "MarketWS: cache lacks replace_book_snapshot/on_book_snapshot; "
             "book for asset %s cannot be authoritatively replaced",
@@ -647,8 +734,8 @@ class MarketWebSocket:
                 self._spawn(coro)
         except Exception as exc:
             logger.warning(
-                "MarketWS: on_state_change callback failed: %s",
-                exc,
+                "MarketWS: on_state_change callback failed | error_type=%s",
+                type(exc).__name__,
             )
 
     def _call_cache_optional(self, method_name: str, *args: Any) -> bool:
@@ -661,15 +748,32 @@ class MarketWebSocket:
                 self._spawn(result)
             return True
         except Exception as exc:
-            logger.warning("MarketWS: cache hook %s failed: %s", method_name, exc)
+            logger.warning(
+                "MarketWS: cache hook %s failed | error_type=%s", method_name, type(exc).__name__
+            )
             return False
 
-    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
-        # Hold a strong reference so background tasks aren't GC'd mid-flight.
+    def _spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None] | None:
+        if self._closed or len(self._tasks) >= self._max_pending_callbacks:
+            coro.close()
+            self._inc_metric(
+                "market_ws_callback_dropped_total",
+                {"reason": "closed" if self._closed else "capacity"},
+            )
+            return None
         task = asyncio.create_task(coro)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._callback_completed)
         return task
+
+    def _callback_completed(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning("market_ws_callback_failed | error_type=%s", type(error).__name__)
+            self._inc_metric("market_ws_callback_failed_total", {})
 
     @staticmethod
     def _inc_metric(metric_name: str, labels: dict[str, str]) -> None:
@@ -714,37 +818,6 @@ def _normalize_side(side: Any) -> str | None:
     if value in {"SELL", "ASK"}:
         return "SELL"
     return None
-
-
-def _parse_levels(raw_levels: Any) -> dict[Decimal, Decimal]:
-    levels: dict[Decimal, Decimal] = {}
-
-    if isinstance(raw_levels, dict):
-        for price_raw, size_raw in raw_levels.items():
-            price = _to_decimal(price_raw)
-            size = _to_decimal(size_raw)
-            if price is not None and size is not None and size > 0:
-                levels[price] = size
-        return levels
-
-    if not isinstance(raw_levels, list):
-        return levels
-
-    for level in raw_levels:
-        price: Decimal | None = None
-        size: Decimal | None = None
-
-        if isinstance(level, dict):
-            price = _to_decimal(level.get("price"))
-            size = _to_decimal(level.get("size"))
-        elif isinstance(level, (list, tuple)) and len(level) >= 2:
-            price = _to_decimal(level[0])
-            size = _to_decimal(level[1])
-
-        if price is not None and size is not None and size > 0:
-            levels[price] = size
-
-    return levels
 
 
 def _max_decimal(a: Decimal | None, b: Decimal) -> Decimal:

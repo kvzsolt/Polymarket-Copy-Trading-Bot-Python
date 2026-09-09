@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from dataclasses import replace
 
 import pytest
 
 from domain.leader_sell_target import LeaderSellTarget
 from services.execution.coordinator import ExecutionCoordinatorResult, ExecutionIntent
 from services.execution.leader_sell_target_service import LeaderSellTargetService
+
+
+def test_recovered_sell_preserves_task_and_protective_lot_ownership() -> None:
+    """Restart serialization must retain the reservation's ownership scope."""
+    intent = replace(_intent("scoped"), task_id="task-a", protective_lot_id="lot-a")
+    restored = LeaderSellTargetService._deserialize(LeaderSellTargetService._serialize(intent))
+    assert restored.task_id == "task-a"
+    assert restored.protective_lot_id == "lot-a"
 
 
 class _TargetRepository:
@@ -27,10 +36,11 @@ class _TargetRepository:
         token_id: str,
         source_signal_id: str,
         intent_payload: dict[str, object],
+        task_id: str | None = None,
     ) -> LeaderSellTarget:
         """Increment and return one target generation."""
 
-        key = (user_id, leader_wallet, condition_id, token_id)
+        key = (user_id, leader_wallet, condition_id, token_id, task_id)
         generation = self.targets[key].generation + 1 if key in self.targets else 1
         target = LeaderSellTarget(
             user_id=user_id,
@@ -40,6 +50,7 @@ class _TargetRepository:
             generation=generation,
             source_signal_id=source_signal_id,
             intent_payload=intent_payload,
+            task_id=task_id,
         )
         self.targets[key] = target
         return target
@@ -51,10 +62,11 @@ class _TargetRepository:
         leader_wallet: str,
         condition_id: str,
         token_id: str,
+        task_id: str | None = None,
     ) -> LeaderSellTarget | None:
         """Return the latest target."""
 
-        return self.targets.get((user_id, leader_wallet, condition_id, token_id))
+        return self.targets.get((user_id, leader_wallet, condition_id, token_id, task_id))
 
     async def claim_redrive(
         self,

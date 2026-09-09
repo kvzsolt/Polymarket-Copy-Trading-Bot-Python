@@ -24,7 +24,6 @@ from services.telemetry import RiskTelemetryEmitter
 from storage.postgres.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
-from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
 # Null-object emitter for contexts built without the telemetry field (older
@@ -190,32 +189,9 @@ async def _fetch_live_risk_position_size(
     *,
     token_id: str,
 ) -> Decimal | None:
-    wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
-    if not wallet:
+    if context.holdings_reader is None:
         return None
-    try:
-        positions = await fetch_data(
-            f"https://data-api.polymarket.com/positions?user={wallet}",
-            silent=True,
-        )
-    except Exception:
-        return None
-    live_size = Decimal("0")
-    if isinstance(positions, list):
-        for position in positions:
-            if not isinstance(position, dict):
-                continue
-            live_token_id = str(
-                position.get("asset") or position.get("tokenID") or position.get("token_id") or ""
-            ).strip()
-            if live_token_id != token_id:
-                continue
-            try:
-                live_size = Decimal(str(position.get("size") or "0"))
-            except Exception:
-                live_size = Decimal("0")
-            break
-    return live_size
+    return await context.holdings_reader.shares(context.wallet_address, token_id)
 
 
 # Per-context "already warned about this token" set lives in context.extra
@@ -989,7 +965,7 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
             try:
                 existing = pm.get_position(pos.condition_id, pos.token_id)
             except Exception:
-                existing = None
+                raise RuntimeError("position protection recovery unavailable") from None
         if existing is not None:
             continue
         try:
@@ -1002,7 +978,7 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
                 leader_wallet=pos.leader_id or "",
             )
         except Exception:
-            continue
+            raise RuntimeError("position protection recovery unavailable") from None
         # Restore durable one-shot exit state. ``near_max_warn_done`` lives
         # in-memory on the tracked position; without this a restart re-arms
         # the 60% near-max trim and bleeds the position again on every boot.
@@ -1022,7 +998,7 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
                     if tracked is not None:
                         tracked.exit_state.near_max_warn_done = True
         except Exception:
-            logger.debug("near_max_warn_rehydrate_failed", exc_info=True)
+            raise RuntimeError("position protection recovery unavailable") from None
 
 
 def _fallback_risk_decision(
@@ -1554,6 +1530,8 @@ async def run_risk_check_for_context(
     if pre_reconcile:
         await _pre_reconcile_for_context(context)
 
+    if context.task_position_manager is not None:
+        await context.task_position_manager.run_once()
     await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)

@@ -23,6 +23,8 @@ from typing import Any
 import asyncpg
 
 from ports.repositories import AbstractFillRepository
+from services.execution.fill_accounting import AccountedOrderFill, FillAccountingConflict
+from storage.postgres.task_fill_projection import PostgresTaskFillProjection
 
 
 @dataclass
@@ -35,7 +37,7 @@ class FillRecord:
     side: str
     size_tokens: Decimal
     price: Decimal
-    fee: Decimal = Decimal("0")
+    fee: Decimal | None = None
     fill_ts: int | None = None
     # P0-1: stable reconciler dedup discriminator (the cumulative-matched total
     # at settlement). When set, the fill is unique on
@@ -43,11 +45,31 @@ class FillRecord:
     # so re-applying the same settlement is skipped instead of double-applied.
     # ``None`` for non-reconciler fills (partial index excludes them).
     dedup_key: str | None = None
+    accounted_shares: Decimal | None = None
 
 
 class FillsRepo(AbstractFillRepository):
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(
+        self, pool: asyncpg.Pool, *, task_projection: PostgresTaskFillProjection | None = None
+    ):
         self._pool = pool
+        self._task_projection = task_projection
+
+    async def accounted_order_fill(self, user_id: str, order_id: str) -> AccountedOrderFill:
+        """Read confirmed ledger totals scoped to one follower and venue order."""
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                "SELECT COALESCE(SUM(size_tokens::numeric), 0) AS shares, "
+                "COALESCE(SUM(size_tokens::numeric * price::numeric), 0) AS collateral, "
+                "CASE WHEN BOOL_AND(fee_evidence_known) IS FALSE THEN NULL "
+                "ELSE COALESCE(SUM(fee::numeric), 0) END AS fees "
+                "FROM fills WHERE user_id = $1 AND order_id = $2",
+                user_id,
+                order_id,
+            )
+        if row is None:
+            raise RuntimeError("Accounted order fill totals are unavailable")
+        return AccountedOrderFill(row["shares"], row["collateral"], row["fees"])
 
     async def append_fill(self, record: FillRecord, *, raw_payload: dict | None = None) -> int:
         payload = raw_payload or {
@@ -59,7 +81,7 @@ class FillsRepo(AbstractFillRepository):
             "side": record.side,
             "size_tokens": str(record.size_tokens),
             "price": str(record.price),
-            "fee": str(record.fee),
+            "fee": None if record.fee is None else str(record.fee),
             "fill_ts": int(record.fill_ts or time.time()),
         }
 
@@ -74,8 +96,8 @@ class FillsRepo(AbstractFillRepository):
                 """
                 INSERT INTO fills (
                     user_id, leader_id, order_id, condition_id, token_id, side,
-                    size_tokens, price, fee, fill_ts, fill_json, dedup_key
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
+                    size_tokens, price, fee, fill_ts, fill_json, dedup_key, fee_evidence_known
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
                 ON CONFLICT DO NOTHING
                 RETURNING id
                 """,
@@ -87,7 +109,7 @@ class FillsRepo(AbstractFillRepository):
                 record.side,
                 str(record.size_tokens),
                 str(record.price),
-                str(record.fee),
+                None if record.fee is None else str(record.fee),
                 # cubic P2: ``record.fill_ts or time.time()`` would
                 # overwrite a legitimate ``fill_ts == 0`` epoch with the
                 # current time. ``is None`` preserves a deliberately-set
@@ -95,6 +117,7 @@ class FillsRepo(AbstractFillRepository):
                 int(record.fill_ts if record.fill_ts is not None else time.time()),
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
                 record.dedup_key,
+                record.fee is not None,
             )
             return int(new_id) if new_id is not None else 0
 
@@ -128,17 +151,33 @@ class FillsRepo(AbstractFillRepository):
             "side": record.side,
             "size_tokens": str(record.size_tokens),
             "price": str(record.price),
-            "fee": str(record.fee),
+            "fee": None if record.fee is None else str(record.fee),
             "fill_ts": int(record.fill_ts or time.time()),
         }
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                if record.order_id is not None:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        f"fill-accounting:{record.user_id}:{record.order_id}",
+                    )
+                if record.accounted_shares is not None:
+                    accounted = await conn.fetchval(
+                        "SELECT COALESCE(SUM(size_tokens::numeric), 0) FROM fills "
+                        "WHERE user_id = $1 AND order_id = $2",
+                        record.user_id,
+                        record.order_id,
+                    )
+                    if accounted != record.accounted_shares:
+                        raise FillAccountingConflict(
+                            "Accounted order fills changed during settlement"
+                        )
                 new_id = await conn.fetchval(
                     """
                     INSERT INTO fills (
                         user_id, leader_id, order_id, condition_id, token_id, side,
-                        size_tokens, price, fee, fill_ts, fill_json, dedup_key
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
+                        size_tokens, price, fee, fill_ts, fill_json, dedup_key, fee_evidence_known
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
                     ON CONFLICT DO NOTHING
                     RETURNING id
                     """,
@@ -150,10 +189,11 @@ class FillsRepo(AbstractFillRepository):
                     record.side,
                     str(record.size_tokens),
                     str(record.price),
-                    str(record.fee),
+                    None if record.fee is None else str(record.fee),
                     int(record.fill_ts if record.fill_ts is not None else time.time()),
                     json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
                     record.dedup_key,
+                    record.fee is not None,
                 )
                 fill_id = int(new_id) if new_id is not None else 0
                 if fill_id == 0:
@@ -169,6 +209,8 @@ class FillsRepo(AbstractFillRepository):
                     fill_size=record.size_tokens,
                     fill_price=record.price,
                 )
+                if self._task_projection is not None:
+                    await self._task_projection.apply(conn, fill_id, record)
                 return fill_id, updated
 
     async def list_fills_for_user(self, user_id: str) -> list[dict]:

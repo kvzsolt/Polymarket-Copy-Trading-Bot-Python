@@ -52,6 +52,14 @@ def _hermetic_deployment_root(
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_legacy_equity_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent legacy equity helpers from reading or writing operator state."""
+    import utils.dayEquity as day_equity
+
+    monkeypatch.setattr(day_equity, "_STATE_FILE", tmp_path / "day_equity.json")
+
+
+@pytest.fixture(autouse=True)
 def _run_unit_thread_work_inline(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

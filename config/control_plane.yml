@@ -1,17 +1,43 @@
-# Secure operator control-plane transport. Runtime composition is intentionally
-# opt-in; bearer credential material must be injected from the secret store and
-# must never be written to this file.
+# Configuration guide — optional operator HTTP/WebSocket control plane.
+# Purpose: expose bounded settings, commands, portfolio views, and telemetry.
+# Options: enabled/auth are booleans; host/port select the listener; sizes,
+# queue depths, limits, and time windows are positive bounds; CORS is a list.
+# Trade-offs: enabling improves remote operation but adds an attack surface;
+# larger limits reduce drops/rejections while increasing memory/abuse capacity.
+# Runtime composition is opt-in. Bearer tokens come only from secrets.env as
+# PMCOPY__CONTROL_PLANE__AUTH__TOKEN (and optional AUTH__VIEWER_TOKEN).
+# false opens no listener; true requires an auth token when authentication is on.
 enabled: false
+# Loopback is safest. A non-loopback bind is rejected when authentication is off.
 host: 127.0.0.1
+# TCP listener port; choose an unused port and restrict it at the firewall.
 port: 9103
+# true requires bearer auth. false is acceptable only on loopback and still
+# exposes control capabilities to every local process.
 require_authentication: true
+# Maximum inbound HTTP/WebSocket request bytes (1 KiB..16 MiB). Higher accepts
+# larger commands but increases memory/denial-of-service impact.
 request_max_bytes: 262144
+# Per-subscriber outbound telemetry queue (1..4096). Larger absorbs bursts but
+# holds more memory and lets slow clients lag further behind.
 websocket_queue_capacity: 128
+# Events returned in a telemetry snapshot (0..1000). Higher gives more history
+# per request at increased serialization and response cost.
 telemetry_snapshot_limit: 100
+# Mutating commands allowed per key in command_rate_window_seconds (1..10000).
 command_rate_limit: 30
+# Rate-limit window in seconds. Longer smooths abuse but delays legitimate bursts.
 command_rate_window_seconds: 60.0
+# Maximum tracked rate-limit identities (1..100000). Higher serves more clients
+# but increases bounded in-memory state.
 rate_limit_max_keys: 1024
+# Graceful server-stop timeout. Higher lets clients drain; lower stops faster.
 shutdown_timeout_seconds: 5.0
+# Portfolio cache refresh cadence. Lower is fresher but adds account-data load.
 portfolio_refresh_interval_seconds: 10.0
+# Age after which cached portfolio data is reported stale. Keep above refresh;
+# tighter values surface outages faster but cause more transient stale states.
 portfolio_stale_after_seconds: 30.0
+# Exact allowed browser origins. [] denies cross-origin browser access (safest);
+# adding origins enables dashboards but must never use an indiscriminate wildcard.
 cors_allowed_origins: []

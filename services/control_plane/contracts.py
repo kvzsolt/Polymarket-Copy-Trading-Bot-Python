@@ -7,6 +7,8 @@ HTTP and persistence adapters never need to infer binary-float semantics.
 
 from __future__ import annotations
 
+from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+
 import math
 import re
 import hashlib
@@ -35,6 +37,8 @@ class ControlPlaneReason(StrEnum):
     REVISION_MISMATCH = "revision_mismatch"
     TASK_DELETED = "task_deleted"
     TASK_RUNTIME_UNAVAILABLE = "task_runtime_unavailable"
+    TASK_PROTECTION_UNAVAILABLE = "task_protection_unavailable"
+    TASK_COUNTER_OUTCOME_UNAVAILABLE = "task_counter_outcome_unavailable"
     BULK_LIMIT_EXCEEDED = "bulk_limit_exceeded"
     DUPLICATE_BULK_TARGET = "duplicate_bulk_target"
     BULK_FAILED = "bulk_failed"
@@ -65,6 +69,10 @@ class ControlPlaneReason(StrEnum):
             self.REVISION_MISMATCH: "The resource revision no longer matches.",
             self.TASK_DELETED: "A deleted task cannot be changed.",
             self.TASK_RUNTIME_UNAVAILABLE: ("The task cannot be activated by the current runtime."),
+            self.TASK_PROTECTION_UNAVAILABLE: "The task requires enabled protective management.",
+            self.TASK_COUNTER_OUTCOME_UNAVAILABLE: (
+                "The task requires an authoritative opposite-outcome binding."
+            ),
             self.BULK_LIMIT_EXCEEDED: "Bulk commands support between 1 and 100 items.",
             self.DUPLICATE_BULK_TARGET: "A bulk command contains a duplicate target.",
             self.BULK_FAILED: "The atomic bulk command was not applied.",
@@ -513,6 +521,56 @@ class TaskSizingView:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectiveLevelView:
+    """One protective trigger in percentage points and a share fraction."""
+
+    trigger_percent: str
+    exit_fraction: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProtectiveRiskView:
+    """Exact per-fill protective settings; absent thresholds remain unset."""
+
+    enabled: bool = True
+    stop_loss_percent: str | None = None
+    stop_loss_price: str | None = None
+    take_profit_percent: str | None = None
+    take_profit_price: str | None = None
+    trailing_stop_percent: str | None = None
+    layered_stop_loss: tuple[ProtectiveLevelView, ...] = ()
+    layered_take_profit: tuple[ProtectiveLevelView, ...] = ()
+
+    @classmethod
+    def from_domain(cls, policy: "ProtectiveRiskPolicy") -> "TaskProtectiveRiskView":
+        """Serialize configured decimals without changing their units."""
+        return cls(
+            enabled=policy.enabled,
+            stop_loss_percent=None
+            if policy.stop_loss_percent is None
+            else str(policy.stop_loss_percent),
+            stop_loss_price=None if policy.stop_loss_price is None else str(policy.stop_loss_price),
+            take_profit_percent=None
+            if policy.take_profit_percent is None
+            else str(policy.take_profit_percent),
+            take_profit_price=None
+            if policy.take_profit_price is None
+            else str(policy.take_profit_price),
+            trailing_stop_percent=None
+            if policy.trailing_stop_percent is None
+            else str(policy.trailing_stop_percent),
+            layered_stop_loss=tuple(
+                ProtectiveLevelView(str(level.trigger_percent), str(level.exit_fraction))
+                for level in policy.layered_stop_loss
+            ),
+            layered_take_profit=tuple(
+                ProtectiveLevelView(str(level.trigger_percent), str(level.exit_fraction))
+                for level in policy.layered_take_profit
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TaskConfigurationView:
     """Complete typed configuration projection for one copy task."""
 
@@ -523,6 +581,7 @@ class TaskConfigurationView:
     market_filter: TaskMarketFilterView
     schedule: TaskScheduleView
     sizing: TaskSizingView
+    protective_risk: TaskProtectiveRiskView = TaskProtectiveRiskView()
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,6 +598,7 @@ class TaskDetailView:
         return cls(
             task=TaskView.from_domain(task),
             configuration=TaskConfigurationView(
+                protective_risk=TaskProtectiveRiskView.from_domain(task.protective_risk),
                 trigger=TaskTriggerView(
                     enabled=task.trigger.enabled,
                     min_notional=format(task.trigger.min_notional, "f"),
@@ -890,14 +950,15 @@ class PortfolioView:
     follower_account: str
     cash_usdc: str
     reserved_usdc: str
-    positions_value_usdc: str
-    equity_usdc: str
+    positions_value_usdc: str | None
+    equity_usdc: str | None
     observed_at: datetime
     stale: bool
     copyable_balance_usdc: str = "0"
     position_count: int = 0
     valuation_basis: str = "cost_basis"
     unrealized_pnl_usdc: str | None = None
+    positions_cost_usdc: str | None = None
 
     def __post_init__(self) -> None:
         """Validate cached portfolio fields."""
@@ -906,16 +967,17 @@ class PortfolioView:
         for value in (
             self.cash_usdc,
             self.reserved_usdc,
-            self.positions_value_usdc,
-            self.equity_usdc,
             self.copyable_balance_usdc,
         ):
             ContractValidation.require_decimal_string(value)
         if self.position_count < 0:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
-        if self.valuation_basis not in {"cost_basis", "market_mark"}:
+        if self.valuation_basis not in {"cost_basis", "market_mark", "unavailable"}:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
         ContractValidation.optional_decimal_string(self.unrealized_pnl_usdc)
+        ContractValidation.optional_decimal_string(self.positions_value_usdc)
+        ContractValidation.optional_decimal_string(self.equity_usdc)
+        ContractValidation.optional_decimal_string(self.positions_cost_usdc)
         ContractValidation.require_aware_datetime(self.observed_at)
 
 

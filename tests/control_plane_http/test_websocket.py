@@ -39,6 +39,7 @@ class _Subscription:
 
 class _Hub:
     def __init__(self) -> None:
+        self.boot_id = "test-stream-boot"
         self.subscription: _Subscription | None = None
         self.capacities: list[int] = []
         self.unsubscribed: list[_Subscription] = []
@@ -122,7 +123,7 @@ async def test_stream_requires_authentication_and_uses_bounded_subscription() ->
             headers={"Authorization": f"Bearer {_TOKEN}"},
         )
         ready = await ws.receive_json()
-        assert ready == {"type": "stream_ready"}
+        assert ready["type"] == "stream_ready"
         assert hub.capacities == [2]
 
         assert hub.subscription is not None
@@ -211,7 +212,7 @@ async def test_the_subprotocol_carrier_authenticates_and_echoes_the_bearer_token
         with caplog.at_level(logging.INFO, logger="integrations.control_plane.http"):
             operator = await client.ws_connect("/api/v1/stream", protocols=("bearer", _TOKEN))
             assert operator.protocol == "bearer"
-            assert await operator.receive_json() == {"type": "stream_ready"}
+            assert (await operator.receive_json())["type"] == "stream_ready"
             await operator.close()
 
         opened = [
@@ -225,7 +226,7 @@ async def test_the_subprotocol_carrier_authenticates_and_echoes_the_bearer_token
 
         viewer = await client.ws_connect("/api/v1/stream", protocols=(_VIEWER_TOKEN, "bearer"))
         assert viewer.protocol == "bearer"
-        assert await viewer.receive_json() == {"type": "stream_ready"}
+        assert (await viewer.receive_json())["type"] == "stream_ready"
         await viewer.close()
     finally:
         await client.close()
@@ -256,7 +257,7 @@ async def test_the_authorization_header_outranks_the_subprotocol_offer() -> None
             protocols=("bearer", _TOKEN),
         )
         assert agreeing.protocol == "bearer"
-        assert await agreeing.receive_json() == {"type": "stream_ready"}
+        assert (await agreeing.receive_json())["type"] == "stream_ready"
         await agreeing.close()
 
         with pytest.raises(WSServerHandshakeError) as conflicting:
@@ -347,7 +348,7 @@ async def test_an_unsafe_configured_credential_disables_the_carrier_with_one_war
             headers={"Authorization": f"Bearer {unsafe_token}"},
         )
         assert header_only.protocol is None
-        assert await header_only.receive_json() == {"type": "stream_ready"}
+        assert (await header_only.receive_json())["type"] == "stream_ready"
         await header_only.close()
 
         with pytest.raises(WSServerHandshakeError) as refused:
@@ -387,5 +388,28 @@ async def test_a_head_upgrade_cannot_slip_an_offer_past_the_subprotocol_guard(
         assert response.status in {400, 405}
         assert [record for record in caplog.records if record.name == "aiohttp.websocket"] == []
         assert hub.capacities == []
+    finally:
+        await client.close()
+
+
+async def test_stream_declares_session_ordering_and_requires_authoritative_resync() -> None:
+    hub = _Hub()
+    hub.boot_id = "deterministic-stream-boot"
+    client = await _client(hub)
+    try:
+        ws = await client.ws_connect(
+            "/api/v1/stream", headers={"Authorization": f"Bearer {_TOKEN}"}
+        )
+        ready = await ws.receive_json()
+        assert ready["stream_boot_id"] == hub.boot_id
+        assert ready["ordering"] == "session_per_producer"
+        assert ready["durable_replay"] is False
+        assert ready["resync_required"] is True
+        await ws.send_json({"type": "resync"})
+        response = await ws.receive_json()
+        assert response["type"] == "telemetry_snapshot"
+        assert response["authoritative_financial_state"] is False
+        assert response["stream_boot_id"] == hub.boot_id
+        await ws.close()
     finally:
         await client.close()

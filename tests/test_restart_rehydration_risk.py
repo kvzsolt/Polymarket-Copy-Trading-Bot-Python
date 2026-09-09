@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from application.trading_context import TradingContext
+from integrations.polymarket.models import VenueFill
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -52,7 +53,8 @@ async def _pg_pool():
 
 
 class _FakeClobGateway:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, confirmed_fills=()):
+        self._fills = tuple(confirmed_fills)
         self._responses = responses or {}
 
     async def get_order(self, order_id: str):
@@ -72,14 +74,22 @@ class _FakeClobGateway:
     async def submit_limit_order(self, request):
         return None
 
-    async def get_fills(self, market=None):
-        return []
+    async def get_fills(self, market=None, *, order_id=None, trade_id=None):
+        return [fill for fill in self._fills if order_id is None or fill.order_id == order_id]
+
+    async def list_open_orders(self, *, order_id=None, market=None):
+        return [
+            response
+            for identifier, response in self._responses.items()
+            if (order_id is None or identifier == order_id)
+            and response["status"] == "partially_filled"
+        ]
 
     async def cancel_order(self, order_id: str):
         return None
 
     async def check_compatibility(self):
-        return {"sdk_available": True}
+        return {"available": True, "authenticated": True, "live_execution_ready": True}
 
 
 class _FakeClient:
@@ -601,6 +611,18 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
             extra={
                 "slippage_tolerance_bps": 50,
                 "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-1",
+                            order_id="venue-risk-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("10"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
                     responses={
                         "venue-risk-1": {
                             "status": "filled",
@@ -608,7 +630,7 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
                             "avg_price": "0.30",
                             "orderID": "venue-risk-1",
                         },
-                    }
+                    },
                 ),
             },
         )
@@ -704,6 +726,18 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
             extra={
                 "slippage_tolerance_bps": 50,
                 "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-partial-1",
+                            order_id="venue-risk-partial-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("4"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
                     responses={
                         "venue-risk-partial-1": {
                             "status": "cancelled",
@@ -711,7 +745,7 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
                             "avg_price": "0.30",
                             "orderID": "venue-risk-partial-1",
                         },
-                    }
+                    },
                 ),
             },
         )
@@ -821,6 +855,18 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
             extra={
                 "slippage_tolerance_bps": 50,
                 "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-progress-1",
+                            order_id="venue-risk-progress-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("5"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
                     responses={
                         "venue-risk-progress-1": {
                             "status": "partially_filled",
@@ -828,7 +874,7 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
                             "avg_price": "0.30",
                             "orderID": "venue-risk-progress-1",
                         },
-                    }
+                    },
                 ),
             },
         )
@@ -841,7 +887,7 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
         assert remaining.size_tokens == Decimal("5")
         order_row = await orders_repo.get_by_order_id("venue-risk-progress-1")
         assert order_row is not None
-        assert order_row["status"] == "submitted_unconfirmed"
+        assert order_row["status"] == "order_live"
         assert order_row["response"].get("matched_previous") == "2"
         assert order_row["response"].get("matched_delta") == "3"
         assert (
@@ -852,6 +898,8 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
             )
             is None
         )
+
+        assert await startup_reconcile_unconfirmed([context]) == {}
 
 
 @pytest.mark.asyncio
@@ -906,6 +954,18 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
             extra={
                 "slippage_tolerance_bps": 50,
                 "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-sell-1",
+                            order_id="venue-sell-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("10"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
                     responses={
                         "venue-sell-1": {
                             "status": "filled",
@@ -913,7 +973,7 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
                             "avg_price": "0.30",
                             "orderID": "venue-sell-1",
                         },
-                    }
+                    },
                 ),
             },
         )

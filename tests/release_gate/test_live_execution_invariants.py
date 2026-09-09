@@ -14,7 +14,7 @@ Invariants asserted here:
 2. the durable order row carries the venue order_id
 3. subsequent identical execute() returns ``duplicate_ignored`` against the
    real persisted row (no second POST)
-4. an unknown SDK exception keeps the duplicate-lock active (#100) — the
+4. an unknown gateway exception keeps the duplicate-lock active (#100) — the
    reservation does not silently free
 """
 
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 # so we don't duplicate construction code.
 from tests.test_execution_idempotency_extended import (  # type: ignore[import-not-found]  # noqa: E402
     _FeeSvc,
-    _SimpleClob,
+    _make_gateway,
     _make_exec_config,
     _make_mds,
     _make_req,
@@ -39,36 +39,7 @@ from tests.test_execution_idempotency_extended import (  # type: ignore[import-n
     _reset_circuit,  # noqa: F401 — re-export so the autouse fixture applies
 )
 from services.executionService import ExecutionService  # noqa: E402
-from integrations.polymarket.models import VenueSubmitResult  # noqa: E402
 from storage.postgres.orders_repo import OrdersRepo  # noqa: E402
-
-
-class _LegacyBridgeGateway:
-    """Bridge the legacy ``_SimpleClob`` fixture to the ``ClobGateway`` port.
-
-    ExecutionService only calls ``submit_marketable_order`` on the gateway, so
-    this double delegates to the fixture's ``post_signed_order`` /
-    ``create_market_order`` and maps the legacy dict response to
-    ``VenueSubmitResult``. It preserves the historical assertion surface
-    (``clob.post_signed_order.await_count``) without reintroducing the SDK
-    gateway.
-    """
-
-    def __init__(self, clob: _SimpleClob) -> None:
-        self._clob = clob
-
-    async def submit_marketable_order(self, request) -> VenueSubmitResult:
-        side_effect = getattr(self._clob.create_market_order, "side_effect", None)
-        if side_effect is not None and not isinstance(side_effect, AsyncMock):
-            raise side_effect
-        raw = await self._clob.post_signed_order()
-        order_id = raw.get("orderID") or raw.get("order_id")
-        return VenueSubmitResult(
-            success=bool(raw.get("success", False)),
-            order_id=str(order_id) if order_id else None,
-            status=str(raw.get("status") or "submitted"),
-            raw=raw,
-        )
 
 
 @pytest.mark.asyncio
@@ -77,14 +48,14 @@ async def test_concurrent_identical_intents_durable_state():
     POST, and the durable order row carries the venue's order_id."""
     async with _pg_pool() as pool:
         repo = OrdersRepo(pool)
-        clob = _SimpleClob()
+        clob = _make_gateway()
         config = _make_exec_config()
         svc = ExecutionService(
-            clob,
+            None,
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=_LegacyBridgeGateway(clob),
+            clob_gateway=clob,
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-live-inv")
@@ -93,7 +64,7 @@ async def test_concurrent_identical_intents_durable_state():
         results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
 
         # Exactly one signed order ever reached the venue.
-        assert clob.post_signed_order.await_count == 1
+        assert clob.submit_marketable_order.await_count == 1
         # At least one task got the live order_id; losers either duplicate_ignored
         # (after the winner persisted) or atomic-lock-rejected.
         accepted = [r for r in results if r.order_id == "ord-1"]
@@ -107,14 +78,14 @@ async def test_replay_after_persist_collapses_to_duplicate():
     the real Postgres row (no second venue POST)."""
     async with _pg_pool() as pool:
         repo = OrdersRepo(pool)
-        clob = _SimpleClob()
+        clob = _make_gateway()
         config = _make_exec_config()
         svc = ExecutionService(
-            clob,
+            None,
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=_LegacyBridgeGateway(clob),
+            clob_gateway=clob,
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-dup-live")
@@ -124,7 +95,7 @@ async def test_replay_after_persist_collapses_to_duplicate():
 
         second = await svc.execute(req)
         assert second.status == "duplicate_ignored"
-        assert clob.post_signed_order.await_count == 1
+        assert clob.submit_marketable_order.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -134,17 +105,17 @@ async def test_unknown_post_call_exception_keeps_duplicate_lock():
     intent is collapsed instead of producing a second signed order."""
     async with _pg_pool() as pool:
         repo = OrdersRepo(pool)
-        clob = _SimpleClob()
+        clob = _make_gateway()
         # Novel exception type → unknown classification → VenueUnavailableError
         # (ambiguous) → submitted_unconfirmed → persisted row keeps the lock.
-        clob.create_market_order = AsyncMock(side_effect=RuntimeError("upstream closed"))
+        clob.submit_marketable_order = AsyncMock(side_effect=RuntimeError("upstream closed"))
         config = _make_exec_config()
         svc = ExecutionService(
-            clob,
+            None,
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=_LegacyBridgeGateway(clob),
+            clob_gateway=clob,
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-unknown-live")
@@ -153,7 +124,7 @@ async def test_unknown_post_call_exception_keeps_duplicate_lock():
         assert first.status == "submitted_unconfirmed"
 
         # Replay: must collapse against the durable lock, not generate another
-        # signed order. ``create_market_order`` raises again but a second invocation
+        # signed order. ``submit_marketable_order`` raises again but a second invocation
         # is the exact regression #100 prevents.
         second = await svc.execute(req)
         # The duplicate-lock path must absorb the second execute() — either

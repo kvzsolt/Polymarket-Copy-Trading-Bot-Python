@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from types import TracebackType
 from typing import Protocol
+
+import asyncpg
 
 from services.copy_tasks.lots import (
     DurableRiskLot,
     ProtectiveLotExitFill,
     RiskLotExitApplication,
+    RiskLotExitReducer,
     RiskLotInvariantError,
     RiskLotStatus,
     RiskLotValueParser,
@@ -20,6 +23,7 @@ from services.copy_tasks.lots import (
 from services.copy_tasks.protective_exits import (
     FillRiskLot,
     LayeredLevel,
+    PendingLayerExit,
     ProtectiveRiskPolicy,
 )
 
@@ -34,7 +38,13 @@ class TransactionContext(Protocol):
 
         ...
 
-    async def __aexit__(self, *args: object) -> object:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> object:
         """Exit one transaction."""
 
         ...
@@ -80,7 +90,13 @@ class AcquireContext(Protocol):
 
         ...
 
-    async def __aexit__(self, *args: object) -> object:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> object:
         """Release an acquired connection."""
 
         ...
@@ -148,13 +164,39 @@ class RiskLotCodec:
                 opened_at=self._datetime(row, "opened_at"),
                 peak_price=self._decimal(row, "peak_price"),
                 triggered_levels=tuple(self._level_id(value) for value in levels_payload),
+                pending_exits=self.decode_pending(row.get("pending_exits", [])),
             ),
-            policy=self._decode_policy(policy_payload),
+            policy=self.decode_policy(policy_payload),
             status=RiskLotStatus(self._text(row, "status")),
             version=self._integer(row, "version"),
         )
 
-    def _decode_policy(self, payload: Mapping[str, object]) -> ProtectiveRiskPolicy:
+    @staticmethod
+    def encode_pending(pending: tuple[PendingLayerExit, ...]) -> str:
+        """Serialize outstanding layer shares without binary floating-point conversion."""
+        return json.dumps(
+            [
+                {"level_id": item.level_id, "remaining_shares": str(item.remaining_shares)}
+                for item in pending
+            ]
+        )
+
+    def decode_pending(self, raw: object) -> tuple[PendingLayerExit, ...]:
+        """Validate durable outstanding layer targets."""
+        pending: list[PendingLayerExit] = []
+        for item in self._json_list(raw, "pending_exits"):
+            if not isinstance(item, Mapping):
+                raise ValueError("Pending protective exit must be an object")
+            pending.append(
+                PendingLayerExit(
+                    self._text(item, "level_id"),
+                    self._decimal(item, "remaining_shares"),
+                )
+            )
+        return tuple(pending)
+
+    def decode_policy(self, payload: Mapping[str, object]) -> ProtectiveRiskPolicy:
+        """Decode exact protective settings from a stored policy snapshot."""
         return ProtectiveRiskPolicy(
             enabled=self._boolean(payload, "enabled", default=True),
             stop_loss_percent=self._optional_payload_decimal(payload, "stop_loss_percent"),
@@ -287,40 +329,49 @@ class PostgresRiskLotRepository:
         """Create one entry-fill lot idempotently and detect conflicts."""
 
         async with self._pool.acquire() as connection:
-            created = await connection.fetchrow(
-                """
-                INSERT INTO copy_task_risk_lots
-                    (lot_id, entry_fill_id, follower_account, task_id,
-                     leader_wallet, market_id, outcome_id, entry_price,
-                     original_shares, remaining_shares, peak_price,
-                     policy_snapshot, triggered_levels, status, opened_at,
-                     version, updated_at)
-                VALUES
-                    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                     $12::jsonb, $13::jsonb, $14, $15, $16, NOW())
-                ON CONFLICT DO NOTHING
-                RETURNING 1 AS created
-                """,
-                lot.lot.lot_id,
-                lot.entry_fill_id,
-                lot.follower_account,
-                lot.lot.task_id,
-                lot.leader_wallet,
-                lot.lot.market_id,
-                lot.lot.outcome_id,
-                lot.lot.entry_price,
-                lot.lot.original_shares,
-                lot.lot.remaining_shares,
-                lot.lot.peak_price,
-                json.dumps(self._codec.encode_policy(lot.policy), sort_keys=True),
-                json.dumps(list(lot.lot.triggered_levels)),
-                lot.status.value,
-                lot.lot.opened_at,
-                lot.version,
-            )
-            if created is not None:
-                return True
-            existing = await connection.fetchrow(self._select_sql(), lot.lot.lot_id)
+            return await self.create_in_connection(connection, lot)
+
+    async def create_in_connection(
+        self,
+        connection: DatabaseConnection | asyncpg.pool.PoolConnectionProxy,
+        lot: DurableRiskLot,
+    ) -> bool:
+        """Append a lot inside the caller's fill-accounting transaction."""
+        created = await connection.fetchrow(
+            """
+            INSERT INTO copy_task_risk_lots
+                (lot_id, entry_fill_id, follower_account, task_id,
+                 leader_wallet, market_id, outcome_id, entry_price,
+                 original_shares, remaining_shares, peak_price,
+                 policy_snapshot, triggered_levels, status, opened_at,
+                 version, updated_at, pending_exits)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12::jsonb, $13::jsonb, $14, $15, $16, NOW(), $17::jsonb)
+            ON CONFLICT DO NOTHING
+            RETURNING 1 AS created
+            """,
+            lot.lot.lot_id,
+            lot.entry_fill_id,
+            lot.follower_account,
+            lot.lot.task_id,
+            lot.leader_wallet,
+            lot.lot.market_id,
+            lot.lot.outcome_id,
+            lot.lot.entry_price,
+            lot.lot.original_shares,
+            lot.lot.remaining_shares,
+            lot.lot.peak_price,
+            json.dumps(self._codec.encode_policy(lot.policy), sort_keys=True),
+            json.dumps(list(lot.lot.triggered_levels)),
+            lot.status.value,
+            lot.lot.opened_at,
+            lot.version,
+            self._codec.encode_pending(lot.lot.pending_exits),
+        )
+        if created is not None:
+            return True
+        existing = await connection.fetchrow(self._select_sql(), lot.lot.lot_id)
         if existing is None:
             raise RiskLotInvariantError("risk lot conflict did not resolve to an existing row")
         if self._codec.decode(existing) == lot:
@@ -376,7 +427,7 @@ class PostgresRiskLotRepository:
                 RETURNING lot_id, entry_fill_id, follower_account, task_id,
                           leader_wallet, market_id, outcome_id, entry_price,
                           original_shares, remaining_shares, peak_price,
-                          policy_snapshot, triggered_levels, status, opened_at,
+                          policy_snapshot, triggered_levels, pending_exits, status, opened_at,
                           version
                 """,
                 identity,
@@ -396,85 +447,80 @@ class PostgresRiskLotRepository:
 
         async with self._pool.acquire() as connection:
             async with connection.transaction():
-                existing_fill = await connection.fetchrow(
-                    """
-                    SELECT fill_id, lot_id, shares, price, level_id, occurred_at
-                      FROM copy_task_protective_exit_fill_ledger
-                     WHERE fill_id = $1
-                     FOR UPDATE
-                    """,
-                    fill.fill_id,
-                )
-                lot_row = await connection.fetchrow(
-                    f"{self._select_sql()} FOR UPDATE",
-                    fill.lot_id,
-                )
-                if lot_row is None:
-                    raise LookupError(f"risk lot does not exist: {fill.lot_id}")
-                current = self._codec.decode(lot_row)
-                if existing_fill is not None:
-                    self._validate_existing_fill(existing_fill, fill)
-                    return RiskLotExitApplication(created=False, lot=current)
-                if current.status is RiskLotStatus.CLOSED:
-                    raise RiskLotInvariantError("cannot apply a new fill to a closed risk lot")
-                if fill.shares > current.lot.remaining_shares:
-                    raise ValueError("protective fill shares exceed lot remaining shares")
-                remaining = current.lot.remaining_shares - fill.shares
-                levels = current.lot.triggered_levels
-                if fill.level_id is not None and fill.level_id not in levels:
-                    levels = (*levels, fill.level_id)
-                status = RiskLotStatus.CLOSED if remaining == _ZERO else RiskLotStatus.OPEN
-                await connection.execute(
-                    """
-                    INSERT INTO copy_task_protective_exit_fill_ledger
-                        (fill_id, lot_id, shares, price, level_id, occurred_at, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                    """,
-                    fill.fill_id,
-                    fill.lot_id,
-                    fill.shares,
-                    fill.price,
-                    fill.level_id,
-                    fill.occurred_at,
-                )
-                updated_row = await connection.fetchrow(
-                    """
-                    UPDATE copy_task_risk_lots
-                       SET remaining_shares = remaining_shares - $2,
-                           triggered_levels = $3::jsonb,
-                           status = $4,
-                           closed_at = CASE WHEN $4 = 'closed' THEN $5 ELSE NULL END,
-                           version = version + 1,
-                           updated_at = NOW()
-                     WHERE lot_id = $1
-                    RETURNING lot_id, entry_fill_id, follower_account, task_id,
-                              leader_wallet, market_id, outcome_id, entry_price,
-                              original_shares, remaining_shares, peak_price,
-                              policy_snapshot, triggered_levels, status, opened_at,
-                              version
-                    """,
-                    fill.lot_id,
-                    fill.shares,
-                    json.dumps(list(levels)),
-                    status.value,
-                    fill.occurred_at,
-                )
-                if updated_row is None:
-                    raise RiskLotInvariantError("risk lot update returned no row")
-                updated = self._codec.decode(updated_row)
-                expected = replace(
-                    current,
-                    lot=replace(
-                        current.lot,
-                        remaining_shares=remaining,
-                        triggered_levels=levels,
-                    ),
-                    status=status,
-                    version=current.version + 1,
-                )
-                if updated != expected:
-                    raise RiskLotInvariantError("risk lot update contradicted expected state")
-                return RiskLotExitApplication(created=True, lot=updated)
+                return await self.record_exit_in_connection(connection, fill)
+
+    async def record_exit_in_connection(
+        self,
+        connection: DatabaseConnection | asyncpg.pool.PoolConnectionProxy,
+        fill: ProtectiveLotExitFill,
+    ) -> RiskLotExitApplication:
+        """Consume a lot within the caller's fill-accounting transaction."""
+        existing_fill = await connection.fetchrow(
+            """
+            SELECT fill_id, lot_id, shares, price, level_id, occurred_at, level_target_shares
+              FROM copy_task_protective_exit_fill_ledger
+             WHERE fill_id = $1
+             FOR UPDATE
+            """,
+            fill.fill_id,
+        )
+        lot_row = await connection.fetchrow(
+            f"{self._select_sql()} FOR UPDATE",
+            fill.lot_id,
+        )
+        if lot_row is None:
+            raise LookupError(f"risk lot does not exist: {fill.lot_id}")
+        current = self._codec.decode(lot_row)
+        if existing_fill is not None:
+            self._validate_existing_fill(existing_fill, fill)
+            return RiskLotExitApplication(created=False, lot=current)
+        expected = RiskLotExitReducer.apply(current, fill)
+        levels = expected.lot.triggered_levels
+        status = expected.status
+        await connection.execute(
+            """
+            INSERT INTO copy_task_protective_exit_fill_ledger
+                (fill_id, lot_id, shares, price, level_id, occurred_at, created_at, level_target_shares)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+            """,
+            fill.fill_id,
+            fill.lot_id,
+            fill.shares,
+            fill.price,
+            fill.level_id,
+            fill.occurred_at,
+            fill.level_target_shares,
+        )
+        updated_row = await connection.fetchrow(
+            """
+            UPDATE copy_task_risk_lots
+               SET remaining_shares = remaining_shares - $2,
+                   triggered_levels = $3::jsonb,
+                   pending_exits = $6::jsonb,
+                   status = $4,
+                   closed_at = CASE WHEN $4 = 'closed' THEN $5::timestamptz ELSE NULL END,
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE lot_id = $1
+            RETURNING lot_id, entry_fill_id, follower_account, task_id,
+                      leader_wallet, market_id, outcome_id, entry_price,
+                      original_shares, remaining_shares, peak_price,
+                      policy_snapshot, triggered_levels, pending_exits, status, opened_at,
+                      version
+            """,
+            fill.lot_id,
+            fill.shares,
+            json.dumps(list(levels)),
+            status.value,
+            fill.occurred_at,
+            self._codec.encode_pending(expected.lot.pending_exits),
+        )
+        if updated_row is None:
+            raise RiskLotInvariantError("risk lot update returned no row")
+        updated = self._codec.decode(updated_row)
+        if updated != expected:
+            raise RiskLotInvariantError("risk lot update contradicted expected state")
+        return RiskLotExitApplication(created=True, lot=updated)
 
     def _validate_existing_fill(
         self,
@@ -488,6 +534,7 @@ class PostgresRiskLotRepository:
             price=RiskLotCodec._decimal(row, "price"),
             level_id=self._optional_row_text(row, "level_id"),
             occurred_at=RiskLotCodec._datetime(row, "occurred_at"),
+            level_target_shares=self._codec._optional_payload_decimal(row, "level_target_shares"),
         )
         if existing != fill:
             raise RiskLotInvariantError("protective fill identity conflicts with existing state")
@@ -498,7 +545,7 @@ class PostgresRiskLotRepository:
             SELECT lot_id, entry_fill_id, follower_account, task_id,
                    leader_wallet, market_id, outcome_id, entry_price,
                    original_shares, remaining_shares, peak_price,
-                   policy_snapshot, triggered_levels, status, opened_at,
+                   policy_snapshot, triggered_levels, pending_exits, status, opened_at,
                    version
               FROM copy_task_risk_lots
         """

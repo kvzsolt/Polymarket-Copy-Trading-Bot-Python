@@ -89,10 +89,11 @@ async def test_portfolio_cache_serves_aliases_and_marks_expired_snapshot_stale()
     assert current.cash_usdc == "100.005"
     assert current.reserved_usdc == "2.50"
     assert current.copyable_balance_usdc == "97.505"
-    assert current.positions_value_usdc == "25.125"
-    assert current.equity_usdc == "125.130"
+    assert current.positions_cost_usdc == "25.125"
+    assert current.positions_value_usdc is None
+    assert current.equity_usdc is None
     assert current.position_count == 2
-    assert current.valuation_basis == "cost_basis"
+    assert current.valuation_basis == "unavailable"
     assert current.unrealized_pnl_usdc is None
     assert current.stale is False
 

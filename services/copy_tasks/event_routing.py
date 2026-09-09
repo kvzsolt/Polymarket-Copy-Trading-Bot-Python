@@ -8,12 +8,17 @@ copy-task coordinator and every mutation to an injected execution port.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Protocol
 
 from domain.detection import LeaderTradeEvent
+from domain.source_time import TransportReceipt
+from services.metrics import LatencyPhase
+from services.telemetry.latency import LatencyMeasurement, PipelineLatency
 from services.copy_sizing_v5.domain import CopySizingRequest
 from services.copy_tasks.budget import (
     TaskBudgetKey,
@@ -26,6 +31,8 @@ from services.copy_tasks.domain import (
     TaskAdmissionContext,
 )
 from services.copy_tasks.lifecycle import TaskExecutionOutcome
+from services.copy_tasks.reconciliation import Clock
+from services.copy_tasks.source_freshness import SourceFreshnessPolicy
 from services.copy_tasks.runtime import (
     CopyTaskRuntimeCoordinator,
     RuntimeDecision,
@@ -70,6 +77,7 @@ class CopyTaskSourceEvent:
     leader_total_portfolio_notional: Decimal | None = None
     leader_market_weight: Decimal | None = None
     leader_sell_fraction: Decimal | None = None
+    normalized_receipt: TransportReceipt | None = None
 
     def __post_init__(self) -> None:
         """Validate exact-decimal metadata without inventing missing values."""
@@ -134,7 +142,7 @@ class FollowerTaskSnapshot:
                 _decimal(
                     getattr(self, name),
                     name=name,
-                    positive=name == "follower_pusd_balance",
+                    positive=False,
                 ),
             )
         object.__setattr__(
@@ -180,6 +188,7 @@ class TaskExecutionCommand:
     order_type: str
     signal_id: str
     task_budget_reservation_id: str | None
+    source_promotion_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +232,21 @@ class TaskExecutionPort(Protocol):
         ...
 
 
+class TaskDecisionObserver(Protocol):
+    """Observe policy results synchronously through a bounded, non-raising sink."""
+
+    def task_decision(
+        self,
+        task: CopyTask,
+        event: CopyTaskSourceEvent,
+        result: TaskRouteResult,
+        evaluated_at: datetime,
+        max_signal_age_seconds: float,
+    ) -> bool:
+        """Return whether delivery was admitted; false records a telemetry gap."""
+        ...
+
+
 class CopyTaskEventProcessor:
     """Process leader events serially across every matching active task."""
 
@@ -234,12 +258,20 @@ class CopyTaskEventProcessor:
         coordinator: CopyTaskRuntimeCoordinator,
         snapshot_provider: FollowerTaskSnapshotProvider,
         execution: TaskExecutionPort,
+        clock: Clock | None = None,
+        max_signal_age_seconds: float = 0,
+        decision_observer: TaskDecisionObserver | None = None,
+        latency: PipelineLatency | None = None,
     ) -> None:
         self._task_reader = task_reader
         self._task_budgets = task_budgets
         self._coordinator = coordinator
         self._snapshot_provider = snapshot_provider
         self._execution = execution
+        self._clock = clock
+        self._freshness = SourceFreshnessPolicy(max_signal_age_seconds)
+        self._decision_observer = decision_observer
+        self._latency = latency
 
     async def __call__(self, leader: str, event: CopyTaskSourceEvent) -> None:
         """Handle one worker event while keeping worker callback shape narrow."""
@@ -253,26 +285,77 @@ class CopyTaskEventProcessor:
     ) -> tuple[TaskRouteResult, ...]:
         """Route one event through matching tasks in stable task-id order."""
 
+        tasks = await self.matching_tasks(leader, event)
+        return await self.process_batch(tasks, event)
+
+    async def matching_tasks(self, leader: str, event: CopyTaskSourceEvent) -> tuple[CopyTask, ...]:
+        """Read enabled task allocations for one validated leader observation."""
         normalized_leader = str(leader).strip().lower()
         if normalized_leader != event.trade.leader_wallet.lower():
             raise ValueError("worker leader does not match source event leader")
-        tasks = tuple(
-            task
-            for task in await self._task_reader.list_active()
-            if task.enabled and task.leader_wallet.lower() == normalized_leader
-        )
         return tuple(
-            [
-                await self._process_task(task, event)
-                for task in sorted(tasks, key=lambda item: item.task_id)
-            ]
+            sorted(
+                (
+                    task
+                    for task in await self._task_reader.list_active()
+                    if task.enabled and task.leader_wallet.lower() == normalized_leader
+                ),
+                key=lambda task: task.task_id,
+            )
         )
+
+    async def process_batch(
+        self, tasks: tuple[CopyTask, ...], event: CopyTaskSourceEvent
+    ) -> tuple[TaskRouteResult, ...]:
+        """Process an ordered allocation batch through the existing money path."""
+        if self._latency is not None:
+            self._latency.observe(LatencyPhase.NORMALIZED_TO_WORKER_START, event.normalized_receipt)
+        results = []
+        for task in sorted(tasks, key=lambda item: item.task_id):
+            evaluated_at = self._clock.now() if self._clock is not None else event.trade.detected_at
+            result = await self._process_task(task, event)
+            results.append(result)
+            if self._decision_observer is not None:
+                self._decision_observer.task_decision(
+                    task, event, result, evaluated_at, self._freshness.max_age_seconds
+                )
+        return tuple(results)
+
+    def reject_batch(
+        self, tasks: tuple[CopyTask, ...], event: CopyTaskSourceEvent, reason: str
+    ) -> None:
+        """Publish explicit admission failures without taking financial ownership."""
+        if self._decision_observer is None:
+            return
+        now = self._clock.now() if self._clock is not None else event.trade.detected_at
+        for task in tasks:
+            self._decision_observer.task_decision(
+                task,
+                event,
+                TaskRouteResult(task.task_id, False, reason),
+                now,
+                self._freshness.max_age_seconds,
+            )
 
     async def _process_task(
         self,
         task: CopyTask,
         event: CopyTaskSourceEvent,
     ) -> TaskRouteResult:
+        with (
+            self._latency.span(LatencyPhase.COPY_DECISION)
+            if self._latency is not None
+            else nullcontext()
+        ) as decision_span:
+            return await self._route_task(task, event, decision_span)
+
+    async def _route_task(
+        self, task: CopyTask, event: CopyTaskSourceEvent, decision_span: LatencyMeasurement | None
+    ) -> TaskRouteResult:
+        now = self._clock.now() if self._clock is not None else event.trade.detected_at
+        reason = self._freshness.rejection(event.trade, now)
+        if reason is not None:
+            return TaskRouteResult(task_id=task.task_id, allowed=False, reason=reason)
         try:
             follower = await self._snapshot_provider.snapshot_for(task, event)
         except Exception as exc:
@@ -302,9 +385,9 @@ class CopyTaskEventProcessor:
                 market_id=source.market_id,
                 sports_market_type=event.sports_market_type,
             ),
-            event.trade.detected_at,
+            now,
         )
-        admission = self._admission_context(event, source, budget)
+        admission = self._admission_context(event, source, budget, now=now)
         sizing = self._sizing_request(event, follower) if source.action == "BUY" else None
         reservation_id = self._reservation_id(task, event)
 
@@ -314,6 +397,8 @@ class CopyTaskEventProcessor:
                 follower=follower,
                 envelope=envelope,
             )
+            if decision_span is not None:
+                decision_span.finish()
             return await self._execution.submit(command)
 
         decision = await self._coordinator.process(
@@ -324,6 +409,11 @@ class CopyTaskEventProcessor:
             downstream=downstream,
             reservation_id=reservation_id,
             execution_reference_price=follower.execution_reference_price,
+            prior_reservation_ids=(
+                (self._execution_identity(task, event, promotion=True),)
+                if event.trade.economic_key != event.trade.promotion_key
+                else ()
+            ),
         )
         return TaskRouteResult(
             task_id=task.task_id,
@@ -351,9 +441,11 @@ class CopyTaskEventProcessor:
         event: CopyTaskSourceEvent,
         source: SourceTrade,
         budget: TaskBudgetSnapshot,
+        *,
+        now: datetime,
     ) -> TaskAdmissionContext:
         return TaskAdmissionContext(
-            now=event.trade.detected_at,
+            now=now,
             action=source.action,
             outcome_label=source.outcome_label,
             leader_trade_notional=source.notional,
@@ -403,14 +495,19 @@ class CopyTaskEventProcessor:
         return CopyTaskEventProcessor._execution_identity(task, event)
 
     @staticmethod
-    def _execution_identity(task: CopyTask, event: CopyTaskSourceEvent) -> str:
+    def _execution_identity(
+        task: CopyTask,
+        event: CopyTaskSourceEvent,
+        *,
+        promotion: bool = False,
+    ) -> str:
         """Return one task-scoped identity across source promotions."""
 
         payload = "|".join(
             (
                 str(task.task_id),
                 str(task.follower_account).strip().lower(),
-                event.trade.economic_key,
+                event.trade.promotion_key if promotion else event.trade.economic_key,
             )
         )
         return f"copy-task:{sha256(payload.encode('utf-8')).hexdigest()}"
@@ -449,6 +546,11 @@ class CopyTaskEventProcessor:
             order_type=envelope.entry_price_decision.order_type,
             signal_id=CopyTaskEventProcessor._execution_identity(envelope.task, event),
             task_budget_reservation_id=envelope.task_budget_reservation_id,
+            source_promotion_id=CopyTaskEventProcessor._execution_identity(
+                envelope.task,
+                event,
+                promotion=True,
+            ),
         )
 
 

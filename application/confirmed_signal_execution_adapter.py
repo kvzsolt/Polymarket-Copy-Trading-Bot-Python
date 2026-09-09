@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
@@ -12,6 +11,7 @@ from domain.source_transactions import (
     WatchedRole,
 )
 from interfaces.source_transactions import Clock
+from interfaces.source_time import BlockTimestampReader
 from services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     MAKER_SIDE_BUY,
@@ -32,18 +32,24 @@ class OnchainSignalSink(Protocol):
 class ConfirmedSignalExecutionAdapter:
     """Publish only atomically claimed, successfully confirmed source fills."""
 
-    _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-    def __init__(self, sink: OnchainSignalSink, clock: Clock) -> None:
+    def __init__(
+        self,
+        sink: OnchainSignalSink,
+        clock: Clock,
+        *,
+        block_timestamp_reader: BlockTimestampReader | None = None,
+    ) -> None:
         """Initialize the compatibility adapter.
 
         Args:
             sink: Existing on-chain leader signal boundary.
             clock: Deterministic signal observation clock.
+            block_timestamp_reader: Immutable chain time; missing wiring preserves unknown age.
         """
 
         self._sink = sink
         self._clock = clock
+        self._block_timestamp_reader = block_timestamp_reader
 
     async def execute_confirmed_source(self, claim: ConfirmedExecutionClaim) -> None:
         """Publish one confirmed source execution claim.
@@ -53,6 +59,11 @@ class ConfirmedSignalExecutionAdapter:
         """
 
         fill = claim.fill
+        event_ts = (
+            await self._block_timestamp_reader.timestamp_ms(fill.block_hash)
+            if self._block_timestamp_reader is not None
+            else None
+        )
         signal = OnchainTradeSignal(
             leader_wallet=fill.leader_wallet,
             token_id=fill.token_id,
@@ -64,7 +75,7 @@ class ConfirmedSignalExecutionAdapter:
             confidence=DetectionConfidence.MINED_AUTHORITATIVE,
             maker_side=self._maker_side_for(fill.side, fill.watched_role),
             watched_role=fill.watched_role.value,
-            event_ts=self._milliseconds_since_epoch(self._clock.now()),
+            event_ts=event_ts,
             log_index=fill.log_index,
             condition_id=fill.condition_id,
             provisional=False,
@@ -72,6 +83,7 @@ class ConfirmedSignalExecutionAdapter:
             order_hash=fill.order_hash,
             block_number=fill.block_number,
             block_hash=fill.block_hash,
+            source_receipt=claim.source_receipt,
         )
         await self._sink.submit(signal)
 
@@ -81,15 +93,6 @@ class ConfirmedSignalExecutionAdapter:
         if role is WatchedRole.MAKER:
             return maker_side
         return MAKER_SIDE_SELL if maker_side == MAKER_SIDE_BUY else MAKER_SIDE_BUY
-
-    @classmethod
-    def _milliseconds_since_epoch(cls, value: datetime) -> int:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("clock must return a timezone-aware datetime")
-        return (value - cls._EPOCH) // (datetime.resolution * 1000)
-
-
-__all__ = ["ConfirmedSignalExecutionAdapter"]
 
 
 class CallableOnchainSignalSink:

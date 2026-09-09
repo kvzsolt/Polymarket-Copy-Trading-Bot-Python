@@ -75,16 +75,19 @@ class RuntimeTaskActivationGuard:
         *,
         bindings: TaskBindingReader,
         monitoring: LeaderMonitorReader,
+        protective_management_enabled: bool = False,
     ) -> None:
         """Store narrow injected runtime readers.
 
         Args:
             bindings: Exact follower and leader context binding reader.
             monitoring: Current successfully started monitor reader.
+            protective_management_enabled: Whether the configured risk loop runs.
         """
 
         self._bindings = bindings
         self._monitoring = monitoring
+        self._protective_management_enabled = protective_management_enabled
 
     def ensure_available(self, task: CopyTask) -> None:
         """Reject activation unless events can reach the bound money path.
@@ -100,6 +103,10 @@ class RuntimeTaskActivationGuard:
             task.leader_wallet
         ):
             raise ControlPlaneError(ControlPlaneReason.TASK_RUNTIME_UNAVAILABLE)
+        if task.protective_risk.requires_monitoring and not self._protective_management_enabled:
+            raise ControlPlaneError(ControlPlaneReason.TASK_PROTECTION_UNAVAILABLE)
+        if task.reaction.counter_trade:
+            raise ControlPlaneError(ControlPlaneReason.TASK_COUNTER_OUTCOME_UNAVAILABLE)
 
 
 __all__ = [

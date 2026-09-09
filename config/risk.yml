@@ -1,19 +1,42 @@
-# Account/exposure risk limits and the risk-monitor cadence.
-enable_risk_mgmt: true
+# Configuration guide — account exposure and continuous risk monitoring.
+# Purpose: cap BUY headroom, validate WSS risk marks, and pace protective exits.
+# Options: booleans enable policies; USDC/position limits are positive; 0
+# disables only mark/cooldown or derived values explicitly described below.
+# Trade-offs: tighter caps and mark filters preserve capital but skip more BUYs
+# or exit ticks; looser caps improve participation while increasing concentration.
+# The live environment overrides enable_risk_mgmt back to true.
+# Master risk/position-exit engine. false disables continuous protective-action
+# evaluation in the base profile; true enables it subject to individual exits.
+enable_risk_mgmt: false
+# Maximum bid/ask spread in mid-relative bps for a usable risk mark; 0 disables.
+# Lower avoids misleading thin-book marks but may delay a needed exit.
 risk_mark_max_spread_bps: 2000
+# Maximum absolute bid/ask price gap for a usable risk mark; 0 disables. This
+# catches near-1.0 books where a bps gate is weak; too low rejects normal books.
 risk_mark_max_abs_distance: 0.03
 # 350 pUSD moderate profile. Per-market 35 = two 17.5 copies in one
 # condition; per-leader 140 = 40 % of the bankroll (8 copies, 2-leader
 # roster); category 210 = the 60 % exposure ceiling (documented no-op:
 # the pipeline passes category exposure 0).
+# Lower per-market exposure prevents outcome concentration; higher permits
+# repeated copies in one condition. Active only with the tiered policy switch.
 max_market_exposure_usdc: 35.0
+# Category exposure ceiling. Higher permits thematic concentration; lower
+# diversifies. Currently the pipeline supplies category exposure as zero, so
+# this value is documented no-op until category attribution is wired.
 max_category_exposure_usdc: 210.0
+# Per-leader exposure ceiling. Lower limits dependence on one trader; higher
+# follows sustained leader activity more completely.
 max_leader_exposure_usdc: 140.0
-# floor(210 / 17.5) = 12 concurrent copies; matches the tiered value
-# below so the cap is the same whichever branch reads it.
+# Open-position cap used when the tiered policy is off. Higher supports broader
+# books but spreads balance/risk monitoring across more positions; the tiered
+# branch separately uses balance_policy_max_open_positions=12.
 max_open_positions: 25
-# 10 % of day-start equity = a 35 pUSD daily-loss BUY stop.
+# 10 % of day-start equity = a 35 pUSD daily-loss BUY stop when tiered headroom
+# is enabled. Lower halts BUYs sooner; higher accepts a larger losing day.
 max_daily_drawdown_pct: 10.0
+# Risk-engine BUY stop. true blocks new risk actions at the risk layer; false
+# permits evaluation. It is separate from execution/app kill switches.
 kill_switch: false
 # Master switch for headroom_for_buy — the only consumer of the
 # max_*_exposure_usdc / max_open_positions / max_daily_drawdown_pct /
@@ -21,25 +44,54 @@ kill_switch: false
 # (it reuses the balance snapshot the pipeline already fetched).
 enable_balance_tiered_policy: false
 # reserve = max(35, equity * 0.40) -> 140 held back at 350 pUSD, so
-# tradable cash starts at 210 (the 60 % exposure ceiling).
+# tradable cash starts at 210. A higher percentage preserves more liquidity;
+# a lower percentage deploys more bankroll.
 balance_policy_reserve_pct: 0.40
+# Absolute minimum reserve; the larger of floor and equity percentage wins.
+# Higher protects cash but reduces tradable headroom.
 balance_policy_reserve_floor: 35.0
 # hard cap = min(tradable, equity * 0.05, 17.5) -> 5 % per copy.
 balance_policy_hard_cap_pct: 0.05
+# Absolute per-BUY cap combined with the percentage cap. Lower is safer; higher
+# allows larger individual copies.
 balance_policy_hard_cap_ceiling: 17.5
+# Open-position cap when the tiered policy is enabled; otherwise
+# max_open_positions is used.
 balance_policy_max_open_positions: 12
 # Keep the near-max 0.6 trim a partial exit: with the tiered policy on,
 # the risk monitor otherwise upgrades every partial protective exit to
 # a full close.
 balance_policy_allow_partial_exits: true
+# false blocks adding to an existing position; true permits pyramiding subject
+# to max adds and exposure caps, increasing concentration.
 balance_policy_allow_pyramiding: false
+# Maximum allowed adds when pyramiding is enabled. Higher follows repeated leader
+# entries more closely but compounds position risk.
 balance_policy_max_adds_per_position: 1
+# Decision score baseline for score-adjusted caps. Higher demands stronger
+# evidence and shrinks more orders; lower is more permissive.
 balance_policy_base_min_score: 0.22
+# Smallest strategy notional considered by dynamic cap math. Higher avoids dust;
+# too high can reject valid venue-minimum trades.
 balance_policy_min_notional_usdc: 1.0e-05
+# true raises thresholds dynamically with policy conditions; false keeps the
+# configured baseline predictable.
 balance_policy_dynamic_threshold_raise: false
+# Explicit day-start equity for drawdown math; 0 derives from runtime/current
+# equity. Fixed values are reproducible but become stale as bankroll changes.
 day_start_equity_usdc: 0.0
+# Maximum in-memory token-price entries. Higher improves cache hits at more RAM;
+# lower bounds memory but increases misses.
 risk_price_cache_max_size: 5000
+# Cooldown after a protective exit rejection/cancel; 0 disables. Longer prevents
+# retry storms but delays another legitimate attempt.
 risk_exit_reject_cooldown_seconds: 60.0
+# Timeout for authoritative pre-exit reconciliation. Shorter fails closed sooner;
+# longer tolerates slow account/venue evidence.
 risk_pre_reconcile_timeout_seconds: 25.0
+# Delay before retrying a timed-out pre-reconcile; must be >= timeout. Longer
+# reduces load/storming but postpones risk action.
 risk_pre_reconcile_backoff_seconds: 30.0
+# Risk monitor cadence. Lower reacts faster at higher WSS/CPU/order pressure;
+# higher is cheaper but delays exits.
 risk_check_interval: 6.0

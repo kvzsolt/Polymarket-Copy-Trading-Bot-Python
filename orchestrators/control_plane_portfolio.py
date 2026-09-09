@@ -8,6 +8,9 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
+from domain.cost_basis import PositionCostBasis
+from services.control_plane.valuation import CachedMarkPolicy, MarketQuoteSource
+
 from services.control_plane.portfolio import (
     Clock,
     PortfolioAccountSnapshot,
@@ -30,6 +33,7 @@ class PositionRecord(Protocol):
 
     size_tokens: Decimal
     avg_entry_price: Decimal
+    token_id: str
 
 
 class PositionReader(Protocol):
@@ -61,6 +65,8 @@ class TradingContextPortfolioSource:
         positions: PositionReader,
         reservations: ReservationReader,
         balance: BalanceReader,
+        quotes: MarketQuoteSource | None = None,
+        quote_max_age_seconds: float = 1,
     ) -> None:
         """Store one follower's narrow existing authorities.
 
@@ -79,6 +85,8 @@ class TradingContextPortfolioSource:
         self._positions = positions
         self._reservations = reservations
         self._balance = balance
+        self._quotes = quotes
+        self._marks = CachedMarkPolicy(quote_max_age_seconds)
 
     async def read(self) -> PortfolioAccountSnapshot:
         """Return one exact cost-basis snapshot or fail without partial data."""
@@ -90,20 +98,32 @@ class TradingContextPortfolioSource:
         reserved_raw = await self._reservations.sum_active_quote_for_user(self._follower_account)
         cash = self._decimal(cash_raw, name="cash")
         reserved = self._decimal(reserved_raw, name="reserved")
-        positions_cost = sum(
-            (
-                abs(self._decimal(position.size_tokens, name="position size"))
-                * self._decimal(position.avg_entry_price, name="entry price")
-                for position in positions
-            ),
-            Decimal("0"),
-        )
+        positions_cost = Decimal(0)
+        inventory_value = Decimal(0)
+        costs_complete = marks_complete = True
+        for position in positions:
+            shares = self._decimal(position.size_tokens, name="position size")
+            entry = PositionCostBasis.from_value(position.avg_entry_price).entry_price
+            mark = (
+                self._marks.midpoint(self._quotes, position.token_id)
+                if self._quotes is not None
+                else None
+            )
+            if entry is None:
+                costs_complete = False
+            else:
+                positions_cost += shares * entry
+            if mark is None:
+                marks_complete = False
+            else:
+                inventory_value += shares * mark
         return PortfolioAccountSnapshot(
             follower_account=self._follower_account,
             aliases=(self._wallet,),
             cash_usdc=cash,
             reserved_usdc=reserved,
-            positions_cost_usdc=positions_cost,
+            positions_cost_usdc=positions_cost if costs_complete else None,
+            marked_inventory_usdc=inventory_value if marks_complete else None,
             position_count=len(positions),
         )
 
@@ -128,6 +148,8 @@ class PortfolioAccountBinding:
     wallet: str
     positions: PositionReader
     reservations: ReservationReader
+    quotes: MarketQuoteSource | None = None
+    quote_max_age_seconds: float = 1
 
     def __post_init__(self) -> None:
         """Reject empty identities before background refresh starts."""
@@ -192,6 +214,8 @@ class PortfolioRuntimeFactory:
                 positions=binding.positions,
                 reservations=binding.reservations,
                 balance=self._balance,
+                quotes=binding.quotes,
+                quote_max_age_seconds=binding.quote_max_age_seconds,
             )
             for binding in bindings
         )

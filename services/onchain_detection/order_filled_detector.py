@@ -119,6 +119,47 @@ class DecodedOrderFilledLog:
     exchange: str
 
 
+@dataclass(frozen=True, slots=True)
+class _MinedLogIdentity:
+    """Identify a canonical included log without guessing missing coordinates."""
+
+    transaction_hash: str
+    log_index: int
+
+    @classmethod
+    def parse(cls, log: dict[str, object]) -> "_MinedLogIdentity | None":
+        """Reject removal notifications, pending identities, and malformed fields."""
+        if log.get("removed", False) is not False:
+            return None
+        transaction_hash = log.get("transactionHash", log.get("transaction_hash"))
+        if (
+            not isinstance(transaction_hash, str)
+            or len(transaction_hash) != 66
+            or not transaction_hash.lower().startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in transaction_hash[2:])
+        ):
+            return None
+        raw_index = log.get("logIndex", log.get("log_index"))
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (str, int)):
+            return None
+        try:
+            if isinstance(raw_index, str):
+                if (
+                    not raw_index.lower().startswith("0x")
+                    or not raw_index[2:]
+                    or any(character not in "0123456789abcdefABCDEF" for character in raw_index[2:])
+                ):
+                    return None
+                index = int(raw_index, 16)
+            else:
+                index = raw_index
+        except ValueError:
+            return None
+        if index < 0:
+            return None
+        return cls(transaction_hash.lower(), index)
+
+
 def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     """Decode a raw log dict (as delivered by an ``eth_subscribe`` ``logs`` sub).
 
@@ -130,6 +171,9 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     exchange, or if the data block is malformed. Never raises.
     """
     if not isinstance(log, dict):
+        return None
+    identity = _MinedLogIdentity.parse(log)
+    if identity is None:
         return None
     address = str(log.get("address") or "").lower()
     if address not in ONCHAIN_EXCHANGE_ADDRESSES:
@@ -151,12 +195,6 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     if len(data) < _ORDER_FILLED_DATA_BYTES:
         return None
 
-    tx_hash = str(log.get("transactionHash") or log.get("transaction_hash") or "").lower()
-    log_index_raw = log.get("logIndex", log.get("log_index", 0))
-    try:
-        log_index = int(log_index_raw, 16) if isinstance(log_index_raw, str) else int(log_index_raw)
-    except (TypeError, ValueError):
-        log_index = 0
     block_raw = log.get("blockNumber", log.get("block_number"))
     try:
         block_number = (
@@ -180,8 +218,8 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         fee=_word_to_int(data, 4),
         builder=bytes.fromhex(format(_word_to_int(data, 5), "064x")),
         metadata=bytes.fromhex(format(_word_to_int(data, 6), "064x")),
-        tx_hash=tx_hash,
-        log_index=log_index,
+        tx_hash=identity.transaction_hash,
+        log_index=identity.log_index,
         block_number=block_number,
         block_hash=str(log.get("blockHash") or log.get("block_hash") or "").lower(),
         exchange=address,
@@ -222,7 +260,7 @@ def _amounts_to_size_usdc(
 def build_signal_from_log(
     log: DecodedOrderFilledLog,
     watched_wallets: set[str],
-    event_ts: int,
+    event_ts: int | None,
     condition_id: str = "",
 ) -> OnchainTradeSignal | None:
     """Build a ``MINED_AUTHORITATIVE`` signal if the log references a watched wallet.

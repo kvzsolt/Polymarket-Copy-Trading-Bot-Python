@@ -1,6 +1,13 @@
+"""Optional entry-quality scoring with explicit time and price evidence."""
+
 from __future__ import annotations
 
 import time
+import math
+from collections.abc import Callable
+from decimal import Decimal
+
+from domain.performance import PerformanceUnits
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -17,22 +24,12 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
-def _to_seconds(ts: Any) -> float:
-    try:
-        value = float(ts or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    if value > 1e12:
-        return value / 1000.0
-    return value
-
-
 @dataclass(frozen=True)
 class TradeScore:
     score: float
     price_drift_pct: float
     edge_decay_pct: float
-    age_seconds: float
+    age_seconds: float | None
     liquidity_score: float
     hard_fail_reason: str | None
     details: dict[str, Any]
@@ -49,7 +46,11 @@ class TradeScoringService:
     bootstrap in logs rather than silently running on env defaults.
     """
 
-    def __init__(self, config: AppConfig | None = None) -> None:
+    def __init__(
+        self, config: AppConfig | None = None, *, clock: Callable[[], float] = time.time
+    ) -> None:
+        """Bind the existing quality policy and a deterministic wall clock."""
+        self._clock = clock
         if config is None:
             from config.app_config import load_config
 
@@ -70,8 +71,18 @@ class TradeScoringService:
         live_price: float,
         leader_score: float,
     ) -> TradeScore:
-        ref_price = float(trade.get("price", 0) or 0)
-        if ref_price <= 0 or live_price <= 0:
+        """Score a BUY; legacy edge/liquidity fields mean upside decay and notional strength."""
+        try:
+            reference = PerformanceUnits.finite(trade.get("price"))
+            executable = PerformanceUnits.finite(live_price)
+        except ValueError:
+            reference, executable = None, None
+        if (
+            reference is None
+            or executable is None
+            or not Decimal(0) < reference < Decimal(1)
+            or not Decimal(0) < executable < Decimal(1)
+        ):
             return TradeScore(
                 score=0.0,
                 price_drift_pct=1.0,
@@ -79,33 +90,31 @@ class TradeScoringService:
                 age_seconds=0.0,
                 liquidity_score=0.0,
                 hard_fail_reason="invalid_reference_or_live_price",
-                details={"reference_price": ref_price, "live_price": live_price},
+                details={"reference_price": str(reference), "live_price": str(executable)},
             )
 
-        now = time.time()
-        trade_ts = _to_seconds(trade.get("timestamp"))
-        age_seconds = max(0.0, now - trade_ts) if trade_ts > 0 else 0.0
+        now = self._clock()
+        trade_ts = self._timestamp_seconds(trade.get("timestamp"))
+        age_seconds = now - trade_ts if trade_ts is not None else None
         max_age_seconds = float(self._max_age_seconds)
-        age_factor = 1.0 if max_age_seconds <= 0 else _clamp(1.0 - (age_seconds / max_age_seconds))
+        age_factor = 0.0
+        if age_seconds is not None and age_seconds >= 0:
+            age_factor = 1.0 if max_age_seconds <= 0 else _clamp(1 - age_seconds / max_age_seconds)
 
-        price_drift_pct = max(0.0, (live_price - ref_price) / ref_price)
+        price_drift_pct = float(max(Decimal(0), (executable - reference) / reference))
         max_drift_pct = self._max_drift_pct
-
-        initial_edge = max(0.0, 1.0 - ref_price)
-        live_edge = max(0.0, 1.0 - live_price)
-        if initial_edge <= 0:
-            edge_decay_pct = 1.0
-        else:
-            edge_decay_pct = _clamp((initial_edge - live_edge) / initial_edge)
+        initial_upside = Decimal(1) - reference
+        remaining_upside = Decimal(1) - executable
+        edge_decay_pct = _clamp(float((initial_upside - remaining_upside) / initial_upside))
         max_edge_decay = self._max_edge_decay
 
-        leader_notional = float(trade.get("usdcSize", 0) or 0)
-        if leader_notional <= 0:
-            size = float(trade.get("size", 0) or 0)
-            leader_notional = size * ref_price
-        liquidity_target = float(self._liquidity_target)
+        leader_notional = PerformanceUnits.finite(trade.get("usdcSize"))
+        if leader_notional is None or leader_notional <= 0:
+            shares = PerformanceUnits.finite(trade.get("size"))
+            leader_notional = (shares or Decimal(0)) * reference
+        notional_target = Decimal(str(self._liquidity_target))
         liquidity_score = (
-            1.0 if liquidity_target <= 0 else _clamp(leader_notional / liquidity_target)
+            1.0 if notional_target <= 0 else _clamp(float(leader_notional / notional_target))
         )
 
         drift_penalty = _clamp(price_drift_pct / max(max_drift_pct / 100.0, 1e-9))
@@ -124,11 +133,15 @@ class TradeScoringService:
         near_res_max_age = self._near_res_max_age
 
         hard_fail_reason = None
-        if price_drift_pct > max_drift_pct / 100.0:
+        if age_seconds is None:
+            hard_fail_reason = "signal_age_unknown"
+        elif age_seconds < 0:
+            hard_fail_reason = "signal_timestamp_future"
+        elif price_drift_pct > max_drift_pct / 100.0:
             hard_fail_reason = "price_drift_exceeded"
         elif edge_decay_pct > max_edge_decay / 100.0:
             hard_fail_reason = "edge_decay_exceeded"
-        elif trade_ts > 0 and max_age_seconds > 0 and age_seconds > max_age_seconds:
+        elif max_age_seconds > 0 and age_seconds > max_age_seconds:
             hard_fail_reason = "signal_too_old"
         else:
             # Near-resolution gate: if the live price is very close to 1.0 (market
@@ -140,8 +153,8 @@ class TradeScoringService:
             if (
                 near_res_enabled
                 and near_res_price > 0
-                and live_price >= near_res_price
-                and trade_ts > 0
+                and executable >= Decimal(str(near_res_price))
+                and age_seconds is not None
                 and age_seconds > near_res_max_age
             ):
                 hard_fail_reason = "near_resolution_too_stale"
@@ -154,9 +167,11 @@ class TradeScoringService:
             liquidity_score=liquidity_score,
             hard_fail_reason=hard_fail_reason,
             details={
-                "reference_price": ref_price,
-                "live_price": live_price,
-                "leader_notional": leader_notional,
+                "reference_price": str(reference),
+                "live_price": str(executable),
+                "leader_notional": str(leader_notional),
+                "upside_decay_fraction": edge_decay_pct,
+                "leader_notional_strength": liquidity_score,
                 "max_age_seconds": max_age_seconds,
                 "max_drift_pct": max_drift_pct,
                 "max_edge_decay": max_edge_decay,
@@ -165,3 +180,15 @@ class TradeScoringService:
                 "near_resolution_max_age_seconds": near_res_max_age,
             },
         )
+
+    @staticmethod
+    def _timestamp_seconds(value: object) -> float | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            timestamp = float(str(value))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(timestamp) or timestamp <= 0:
+            return None
+        return timestamp / 1000 if timestamp > 1e12 else timestamp

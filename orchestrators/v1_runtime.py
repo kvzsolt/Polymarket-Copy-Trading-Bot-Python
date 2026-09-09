@@ -132,6 +132,7 @@ class CopyTaskV1RuntimeBuilder(Generic[EventT]):
                 queue_size=config.workers.queue_size,
                 max_concurrent_leaders=config.workers.global_concurrency,
                 max_leaders=config.workers.max_leader_workers,
+                shutdown_timeout_seconds=config.workers.shutdown_timeout_seconds,
             )
             if config.enabled and config.workers.enabled
             else None

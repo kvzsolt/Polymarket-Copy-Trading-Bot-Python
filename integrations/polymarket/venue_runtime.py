@@ -33,6 +33,7 @@ from integrations.polymarket.paper_execution import (
     PaperOrderSimulator,
 )
 from interfaces.clob_gateway import ClobGateway
+from services.telemetry.latency import PipelineLatency
 
 
 def _attribute(source: Any, name: str, default: Any = None) -> Any:
@@ -75,6 +76,7 @@ async def build_polymarket_runtime(
     ccxt_version: str | None = None,
     tick_size_resolver: TickSizeResolver | None = None,
     market_metadata_client: MarketMetadataClient | None = None,
+    latency: PipelineLatency | None = None,
 ) -> PolymarketVenueRuntime:
     """Build the single CCXT-backed Polymarket runtime for one wallet.
 
@@ -115,6 +117,7 @@ async def build_polymarket_runtime(
     market_gateway = CcxtPredictionGateway(
         client,
         tick_size_resolver=resolver,
+        latency=latency,
         metadata_ttl_seconds=float(
             getattr(getattr(config, "execution", None), "venue_metadata_ttl_seconds", 0.0) or 0.0
         ),

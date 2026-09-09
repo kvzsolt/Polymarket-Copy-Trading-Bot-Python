@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from dataclasses import dataclass, field
 from typing import Optional
 
 import asyncpg
@@ -81,12 +83,47 @@ class _BoundedAcquirePool(asyncpg.Pool):
 # happy-path against concurrent first-callers.
 _pool: Optional[asyncpg.Pool] = None
 _pool_dsn: Optional[str] = None
+_pool_configuration: _PoolConfiguration | None = None
 # INF-02: lazy lock init. ``asyncio.Lock()`` at module import time binds
 # to whatever event loop is active at first import; in test environments
 # that imported this module before pytest-asyncio created the loop the
 # lock could end up bound to a closed / wrong loop. Build on first
 # ``init_pool`` call instead, mirroring the lazy ``_pool`` pattern below.
 _init_lock: Optional[asyncio.Lock] = None
+
+
+@dataclass(frozen=True)
+class _PoolConfiguration:
+    """Validated singleton identity; credentials are excluded from representation."""
+
+    dsn: str = field(repr=False)
+    min_size: int
+    max_size: int
+    timeouts: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if any(
+            isinstance(value, bool) or not math.isfinite(value) or value <= 0
+            for value in self.timeouts
+        ):
+            raise ValueError("Pool timeout values must be positive and finite")
+        if (
+            isinstance(self.min_size, bool)
+            or isinstance(self.max_size, bool)
+            or not isinstance(self.min_size, int)
+            or not isinstance(self.max_size, int)
+            or not 0 <= self.min_size <= self.max_size
+            or self.max_size < 1
+        ):
+            raise ValueError("Pool sizes must be integers with 0 <= min_size <= max_size")
+
+    def require_match(self, active: _PoolConfiguration | None) -> None:
+        """Reject configuration drift without disclosing either DSN."""
+        if active != self:
+            raise RuntimeError(
+                "init_pool called with different configuration; "
+                "shutdown_pool() must run before configuration changes"
+            )
 
 
 async def init_pool(
@@ -115,25 +152,29 @@ async def init_pool(
       become Postgres ``server_settings`` GUCs so a hung query or abandoned
       open transaction is bounded server-side.
     """
-    global _pool, _pool_dsn, _init_lock
+    global _pool, _pool_dsn, _pool_configuration, _init_lock
+
+    configuration = _PoolConfiguration(
+        dsn,
+        min_size,
+        max_size,
+        (
+            command_timeout_seconds,
+            acquire_timeout_seconds,
+            statement_timeout_seconds,
+            idle_in_transaction_timeout_seconds,
+        ),
+    )
 
     if _pool is not None:
-        # Defensive sanity: a second init with a different DSN is almost
-        # certainly a test fixture or hot-reload bug. asyncpg.Pool uses
-        # __slots__ in modern releases so the DSN is tracked at module
-        # level instead of stashed on the Pool object.
-        if _pool_dsn is not None and _pool_dsn != dsn:
-            raise RuntimeError(
-                "init_pool called with a different DSN than the live pool; "
-                "shutdown_pool() must run between dsn changes "
-                f"(existing={_pool_dsn!r}, new={dsn!r})"
-            )
+        configuration.require_match(_pool_configuration)
         return _pool
 
     if _init_lock is None:
         _init_lock = asyncio.Lock()
     async with _init_lock:
         if _pool is not None:
+            configuration.require_match(_pool_configuration)
             return _pool
         # Postgres GUCs are millisecond integers expressed as strings.
         server_settings = {
@@ -142,18 +183,28 @@ async def init_pool(
                 int(idle_in_transaction_timeout_seconds * 1000)
             ),
         }
-        pool = await asyncpg.create_pool(
-            dsn=dsn,
-            min_size=min_size,
-            max_size=max_size,
-            command_timeout=command_timeout_seconds,
-            # Bounds connection establishment; forwarded to asyncpg.connect.
-            timeout=acquire_timeout_seconds,
-            server_settings=server_settings,
-        )
-        _install_default_acquire_timeout(pool, acquire_timeout_seconds)
+        try:
+            pool = await asyncpg.create_pool(
+                dsn=dsn,
+                min_size=min_size,
+                max_size=max_size,
+                command_timeout=command_timeout_seconds,
+                timeout=acquire_timeout_seconds,
+                server_settings=server_settings,
+            )
+        except Exception:
+            raise RuntimeError("PostgreSQL pool initialization failed") from None
+        try:
+            _install_default_acquire_timeout(pool, acquire_timeout_seconds)
+        except Exception:
+            try:
+                await pool.close()
+            except Exception:
+                raise RuntimeError("Could not initialize bounded PostgreSQL pool") from None
+            raise RuntimeError("Could not initialize bounded PostgreSQL pool") from None
         _pool = pool
         _pool_dsn = dsn
+        _pool_configuration = configuration
         logger.info(
             "asyncpg pool initialised | min=%s max=%s command_timeout=%ss "
             "acquire_timeout=%ss statement_timeout=%ss idle_in_tx=%ss",
@@ -183,10 +234,7 @@ def _install_default_acquire_timeout(pool: asyncpg.Pool, default_timeout: float)
         try:
             pool.__class__ = _BoundedAcquirePool
         except TypeError:  # pragma: no cover - layout guard, should not happen
-            logger.warning(
-                "could not install bounded-acquire pool subclass; "
-                "acquire() falls back to asyncpg default (unbounded)"
-            )
+            raise RuntimeError("Could not install bounded pool acquisition") from None
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -205,12 +253,13 @@ async def get_pool() -> asyncpg.Pool:
 
 async def shutdown_pool() -> None:
     """Close the pool and clear the singleton. Idempotent."""
-    global _pool, _pool_dsn, _init_lock
+    global _pool, _pool_dsn, _pool_configuration, _init_lock
     if _pool is None:
         return
     pool = _pool
     _pool = None
     _pool_dsn = None
+    _pool_configuration = None
     _init_lock = None
     await pool.close()
     logger.info("asyncpg pool shut down")
@@ -219,7 +268,8 @@ async def shutdown_pool() -> None:
 def _reset_for_tests() -> None:
     """Hard-reset the module state. Test-only — tears down pool reference
     without closing (caller must close first to avoid leaking connections)."""
-    global _pool, _pool_dsn, _init_lock
+    global _pool, _pool_dsn, _pool_configuration, _init_lock
     _pool = None
     _pool_dsn = None
+    _pool_configuration = None
     _init_lock = None

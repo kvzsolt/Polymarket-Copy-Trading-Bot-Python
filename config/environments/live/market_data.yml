@@ -1,5 +1,17 @@
+# Configuration guide — live market-data timing overrides.
+# Purpose: retain a bounded REST recovery path for non-copy/cache consumers;
+# copied FAK entries use explicit leader-derived limits and metadata only.
+# Options: positive millisecond ages/timeouts/budgets; spread bps >=0, where 0
+# disables the spread rejection for this snapshot path.
+# Trade-offs: larger budgets tolerate real provider latency but can slow
+# recovery; disabling the spread cap improves availability on wide books while
+# shifting price safety to the explicit execution limit and other gates.
 # Live REST remains available for non-copy cache recovery only.
+# No spread rejection on this recovery snapshot.
 rest_snapshot_max_spread_bps: 0
+# Snapshot may be at most 1.5 seconds old from fetch start.
 rest_snapshot_max_age_ms: 1500
+# Individual request may consume 1.25 seconds before timeout.
 rest_snapshot_request_timeout_ms: 1250
+# Entire snapshot workflow is bounded to 2 seconds.
 rest_snapshot_total_budget_ms: 2000

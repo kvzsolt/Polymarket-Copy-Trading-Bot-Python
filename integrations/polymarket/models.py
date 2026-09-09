@@ -78,7 +78,7 @@ class VenueFill:
     side: str | None = None
     size: Decimal = Decimal("0")
     price: Decimal = Decimal("0")
-    fee: Decimal = Decimal("0")
+    fee: Decimal | None = None
     timestamp: int | None = None
     status: str | None = None
     transaction_hash: str | None = None

@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
 from config.app_config import AppConfig, ExecutionConfig
+from domain.price_bound import HardPriceBound
 from domain.units import BASIS_POINTS_PER_UNIT
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
 # imported here. See ``interfaces/clob_gateway.py`` and issue #66.
 from integrations.polymarket.ccxt_compat.tick_size import (
+    OrderSide,
     TickRounding,
     quantize_price_to_tick,
 )
@@ -33,7 +35,9 @@ from integrations.polymarket.errors import (
     VenueRateLimitError,
     VenueUnavailableError,
 )
-from integrations.polymarket.models import MarketableOrderRequest
+from integrations.polymarket.models import MarketableOrderRequest, VenueSubmitResult
+from services.metrics import LatencyPhase
+from services.telemetry.latency import PipelineLatency
 from domain.execution import ExecutionOrderType
 from services.circuitBreaker import CircuitBreaker
 from services.idempotency import compute_effective_key as _compute_effective_key
@@ -43,6 +47,7 @@ from services.trading_permission import (
     TradingPausedError,
     TradingPermissionService,
 )
+from services.copy_tasks.entry_permission import TaskEntryPermissionService
 from utils.logger import (
     get_logger,
     log_api_error,
@@ -128,11 +133,13 @@ def _quote_outside_band(quote_price: Decimal, band_limit: Decimal, side: str) ->
     return quote_price < band_limit
 
 
-def _normalize_side(side: str) -> str:
+def _normalize_side(side: str) -> OrderSide:
     value = (side or "").strip().upper()
-    if value not in ("BUY", "SELL"):
-        raise ValueError(f"Unsupported side: {side}")
-    return value
+    if value == "BUY":
+        return "BUY"
+    if value == "SELL":
+        return "SELL"
+    raise ValueError(f"Unsupported side: {side}")
 
 
 _FORCED_EXIT_SOURCES = frozenset(
@@ -162,7 +169,7 @@ def _is_forced_sell_exit_request(req: ExecutionRequest, side: str) -> bool:
     return source in _FORCED_EXIT_SOURCES or reason in _FORCED_EXIT_REASONS
 
 
-def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
+def _quantize_price(price: Decimal, tick_size: Decimal, side: OrderSide) -> Decimal:
     """Snap a marketable quote onto the tick grid, toward the book.
 
     Args:
@@ -192,39 +199,11 @@ def _copy_fak_limit_on_tick(
     side: str,
     max_share_price: Decimal,
 ) -> Decimal:
-    """Snap a copied FAK limit onto the tick grid without losing its cross.
-
-    A copied FAK has exactly one chance to match, so the snap moves toward the
-    book: a BUY cap rounds up, a SELL floor rounds down. Because that can
-    overshoot the requested price by up to one tick, the absolute share-price
-    ceiling is re-asserted *after* the snap — it is a hard risk limit, unlike
-    the leader band, which is a budget.
-
-    Args:
-        price_limit: The band-derived cap (BUY) or floor (SELL).
-        tick_size: Venue tick; a non-positive tick leaves the price untouched.
-        side: ``"BUY"`` or ``"SELL"``.
-        max_share_price: Absolute BUY ceiling; ``0`` disables it.
-
-    Returns:
-        A tick-aligned limit that still crosses wherever the ceiling allows.
-    """
-    if tick_size <= 0:
-        return price_limit
-    snapped = quantize_price_to_tick(
-        price=price_limit,
-        tick_size=tick_size,
-        side=side,
-        rounding=TickRounding.MARKETABLE,
+    """Preserve the caller's hard FAK bound and any stricter absolute BUY cap."""
+    bound = (
+        min(price_limit, max_share_price) if side == "BUY" and max_share_price > 0 else price_limit
     )
-    if side != "BUY" or max_share_price <= 0 or snapped <= max_share_price:
-        return snapped
-    return quantize_price_to_tick(
-        price=max_share_price,
-        tick_size=tick_size,
-        side="BUY",
-        rounding=TickRounding.CONSERVATIVE,
-    )
+    return HardPriceBound.on_tick(bound, tick_size, side)
 
 
 def _submit_result_to_response(submit_result) -> dict[str, Any]:
@@ -316,6 +295,7 @@ _DEFERRED_ORDER_ACK_STATUSES = {
     "submitted",
     "submitted_unconfirmed",
     "submitted_delayed",
+    "filled",
     "order_status_live",
     "order_status_matched",
 }
@@ -475,6 +455,8 @@ class ExecutionService:
         geoblock_gate=None,
         trading_permission: TradingPermissionService | None = None,
         telemetry: "ExecutionTelemetryEmitter | None" = None,
+        task_entry_permission: TaskEntryPermissionService | None = None,
+        latency: PipelineLatency | None = None,
     ):
         if config is None:
             raise TypeError("ExecutionService requires a typed AppConfig")
@@ -487,10 +469,12 @@ class ExecutionService:
         # None = no enforcement (preserves the configless / test default).
         self._geoblock_gate = geoblock_gate
         self._trading_permission = trading_permission
+        self._task_entry_permission = task_entry_permission
         # Part C — operator telemetry emitter, used only by the post-submission
         # projection in ``execute``. ``None`` keeps the service free of both
         # cost and branching.
         self._telemetry = telemetry
+        self._latency = latency
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` must pass the same
         # CCXT-backed gateway to execution, reconciliation, and market data.
@@ -554,6 +538,26 @@ class ExecutionService:
         units = (constrained / tick_size).to_integral_value(rounding=rounding)
         return units * tick_size
 
+    async def _task_entry_denial(self, request: ExecutionRequest) -> str | None:
+        if request.side.upper() != "BUY":
+            return None
+        recovery = request.recovery_metadata or {}
+        task_id = recovery.get("task_id")
+        if task_id is None:
+            return None
+        version = recovery.get("task_version")
+        if (
+            not isinstance(task_id, str)
+            or not task_id.strip()
+            or not isinstance(version, int)
+            or isinstance(version, bool)
+            or version <= 0
+        ):
+            return "task_state_invalid"
+        if self._task_entry_permission is None:
+            return "task_state_unavailable"
+        return await self._task_entry_permission.denial(task_id, version, request.leader_id)
+
     async def _save_submission(
         self,
         *,
@@ -588,6 +592,23 @@ class ExecutionService:
         if order_repo is None:
             raise RuntimeError("ExecutionService requires an injected order repository")
         await order_repo.save_submission(record)
+
+    async def _submit_gateway(self, request: MarketableOrderRequest) -> VenueSubmitResult:
+        timing = self._latency
+        started = timing.capture() if timing is not None else None
+        try:
+            result = await self.clob_gateway.submit_marketable_order(request)
+        finally:
+            if timing is not None:
+                timing.observe(LatencyPhase.VENUE_SUBMISSION, started)
+        if (
+            timing is not None
+            and result.success
+            and result.order_id
+            and not result.ambiguous_post_failure
+        ):
+            timing.acknowledged(result.order_id, started)
+        return result
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
         """Submit one request and project its outcome onto one operator event.
@@ -1209,12 +1230,24 @@ class ExecutionService:
 
         if instant_fak:
             copied_price_limit = Decimal(str(req.price_limit))
-            worst_price = _copy_fak_limit_on_tick(
-                price_limit=copied_price_limit,
-                tick_size=tick_size,
-                side=side,
-                max_share_price=max_share_price,
-            )
+            try:
+                worst_price = _copy_fak_limit_on_tick(
+                    price_limit=copied_price_limit,
+                    tick_size=tick_size,
+                    side=side,
+                    max_share_price=max_share_price,
+                )
+            except ValueError:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="price_limit_unexecutable",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="No executable tick satisfies the caller price bound",
+                )
         else:
             slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
             if side == "BUY":
@@ -1222,10 +1255,10 @@ class ExecutionService:
             else:
                 worst_price = quote_price * (Decimal("1") - slippage)
             worst_price = _quantize_price(worst_price, tick_size, side)
-            if protective_band_limit is not None:
+            if caller_price_limit is not None:
                 worst_price = self._apply_marketable_price_protection(
                     calculated_price=worst_price,
-                    caller_limit=protective_band_limit,
+                    caller_limit=caller_price_limit,
                     tick_size=tick_size,
                     side=side,
                 )
@@ -1499,6 +1532,23 @@ class ExecutionService:
 
             submission_attempts = 1 if requested_order_type is ExecutionOrderType.FAK else 3
             for attempt in range(1, submission_attempts + 1):
+                task_denial = await self._task_entry_denial(req)
+                if task_denial is not None:
+                    await self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response={"success": False, "status": task_denial, "non_retryable": True},
+                    )
+                    return ExecutionResult(
+                        accepted=False,
+                        order_id=None,
+                        status=task_denial,
+                        requested_amount=req.amount,
+                        filled_amount=Decimal(0),
+                        avg_price=None,
+                        fees_paid=Decimal(0),
+                        error=task_denial,
+                    )
                 if self._trading_permission is not None:
                     try:
                         await self._trading_permission.require_submission_allowed(
@@ -1527,7 +1577,7 @@ class ExecutionService:
                             error=str(exc),
                         )
                 try:
-                    submit_result = await self.clob_gateway.submit_marketable_order(gateway_request)
+                    submit_result = await self._submit_gateway(gateway_request)
                     response = _submit_result_to_response(submit_result)
                     if submit_result.success:
                         self.circuit_breaker.record_success()
@@ -1782,8 +1832,31 @@ class ExecutionService:
                 )
 
             order_id = _response_order_id(response)
-            immediate_fak_fill = requested_order_type is ExecutionOrderType.FAK
+            immediate_fak_fill = (
+                requested_order_type is ExecutionOrderType.FAK
+                and getattr(ec, "trading_mode", None) != "live"
+            )
             if immediate_fak_fill:
+                if str(response.get("status") or "").lower() not in {
+                    "matched",
+                    "filled",
+                    "cancelled",
+                    "canceled",
+                    "expired",
+                    "order_not_fillable",
+                    "not_fillable",
+                }:
+                    return ExecutionResult(
+                        accepted=True,
+                        order_id=order_id,
+                        status="submitted_unconfirmed",
+                        requested_amount=req.amount,
+                        filled_amount=Decimal("0"),
+                        avg_price=None,
+                        fees_paid=Decimal("0"),
+                        error=None,
+                        effective_price=submitted_price,
+                    )
                 matched_size = _response_matched_size(response)
                 # C5b — never substitute the slippage ceiling (worst_price)
                 # for an unknown average fill price. CLAUDE.md requires unknown
@@ -1928,7 +2001,7 @@ class ExecutionService:
                             neg_risk=next_bundle.tick.neg_risk,
                             order_type=ExecutionOrderType.FAK,
                         )
-                        next_submit = await self.clob_gateway.submit_marketable_order(next_request)
+                        next_submit = await self._submit_gateway(next_request)
                         next_response = _submit_result_to_response(next_submit)
                         next_idem = f"{idem_key}:fak:{fak_attempt}"
                         next_doc = dict(request_doc)

@@ -34,6 +34,8 @@ from websockets.exceptions import (
 )
 
 from utils.logger import get_logger, redact_error_detail
+from adapters.clock import SystemReceiptClock
+from interfaces.source_time import ReceiptClock
 
 logger = get_logger("OnchainWS")
 
@@ -90,12 +92,14 @@ class OnchainWebSocket:
         reconnect_min_delay: float = _MIN_RECONNECT_DELAY,
         reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
         state_listener: OnchainWsStateListener | None = None,
+        receipt_clock: ReceiptClock | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._subscribe_params = subscribe_params
         self._name = name
         self._on_message = on_message
         self._state_listener = state_listener
+        self._receipt_clock = receipt_clock if receipt_clock is not None else SystemReceiptClock()
         self._reconnect_min_delay = reconnect_min_delay
         self._reconnect_max_delay = reconnect_max_delay
         self._reconnect_delay = reconnect_min_delay
@@ -176,9 +180,11 @@ class OnchainWebSocket:
                             break
                         await self._handle_raw(raw)
             except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK) as exc:
-                logger.warning("OnchainWS[%s]: connection closed: %s", self._name, exc)
+                logger.warning(
+                    "OnchainWS[%s]: connection closed: %s", self._name, type(exc).__name__
+                )
             except OSError as exc:
-                logger.warning("OnchainWS[%s]: network error: %s", self._name, exc)
+                logger.warning("OnchainWS[%s]: network error: %s", self._name, type(exc).__name__)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -220,7 +226,7 @@ class OnchainWebSocket:
         try:
             ack = orjson.loads(raw)
         except (orjson.JSONDecodeError, TypeError) as exc:
-            logger.warning("OnchainWS[%s]: non-JSON ack: %s", self._name, str(raw)[:100])
+            logger.warning("OnchainWS[%s]: non-JSON acknowledgement rejected", self._name)
             raise ConnectionClosed(None, None) from exc
         if not isinstance(ack, dict) or "result" not in ack:
             logger.warning("OnchainWS[%s]: subscribe failed: %s", self._name, ack)
@@ -259,12 +265,13 @@ class OnchainWebSocket:
             )
 
     async def _handle_raw(self, raw: str | bytes) -> None:
+        receipt = self._receipt_clock.capture()
         if raw in ("", b""):
             return
         try:
             data = orjson.loads(raw)
         except (orjson.JSONDecodeError, TypeError):
-            logger.debug("OnchainWS[%s]: non-JSON frame: %s", self._name, str(raw)[:100])
+            logger.debug("OnchainWS[%s]: non-JSON frame rejected", self._name)
             return
         if not isinstance(data, dict):
             return
@@ -272,8 +279,9 @@ class OnchainWebSocket:
         if data.get("method") == "eth_subscription":
             params = data.get("params") or {}
             result = params.get("result")
-            if result is None:
+            if not isinstance(result, dict):
                 return
+            result = {**result, "_source_receipt": receipt}
             try:
                 await self._on_message(result)
             except Exception as exc:

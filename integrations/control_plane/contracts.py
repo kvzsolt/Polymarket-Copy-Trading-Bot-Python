@@ -412,6 +412,11 @@ class TelemetryQueryPort(Protocol):
 class TelemetryHubPort(Protocol):
     """Manage nonblocking bounded frontend telemetry subscribers."""
 
+    @property
+    def boot_id(self) -> str:
+        """Return the hub session identity; this does not provide durable replay."""
+        ...
+
     def subscribe(self, *, capacity: int | None = None) -> TelemetrySubscription:
         """Return one bounded subscriber."""
 

@@ -24,6 +24,7 @@ from domain.order_lifecycle import (
     OrderIntentKey,
 )
 from storage.postgres.reservations_repo import ReservationsRepo
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.release_gate]
 
@@ -72,7 +73,7 @@ def _intent(side: IntentSide = IntentSide.BUY) -> OrderIntent:
         size=Decimal("5"),
         price=Decimal("0.5"),
         max_slippage_bps=100,
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
         source_signal_id="sig-1",
     )
 
@@ -137,6 +138,16 @@ async def test_sell_by_intent_short_circuits_on_active_duplicate() -> None:
     async with _pg_pool() as pool:
         repo = ReservationsRepo(pool)
         intent = _intent(IntentSide.SELL)
+        await PositionsRepo(pool).upsert_position(
+            PositionRecord(
+                user_id=intent.key.user_id,
+                condition_id=intent.key.condition_id,
+                token_id=intent.key.token_id,
+                leader_id=intent.key.leader_wallet,
+                size_tokens=Decimal("5"),
+                avg_entry_price=Decimal("0.5"),
+            )
+        )
         existing_a, first = await repo.create_sell_reservation_checked_by_intent(
             intent=intent,
             reserved_size=Decimal("3"),
@@ -161,6 +172,16 @@ async def test_sell_by_intent_rejects_when_held_short() -> None:
     async with _pg_pool() as pool:
         repo = ReservationsRepo(pool)
         intent = _intent(IntentSide.SELL)
+        await PositionsRepo(pool).upsert_position(
+            PositionRecord(
+                user_id=intent.key.user_id,
+                condition_id=intent.key.condition_id,
+                token_id=intent.key.token_id,
+                leader_id=intent.key.leader_wallet,
+                size_tokens=Decimal("4"),
+                avg_entry_price=Decimal("0.5"),
+            )
+        )
         existing, result = await repo.create_sell_reservation_checked_by_intent(
             intent=intent,
             reserved_size=Decimal("10"),

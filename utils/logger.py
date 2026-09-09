@@ -178,6 +178,49 @@ def _lifecycle_should_emit(key: str, status: str) -> bool:
     return True
 
 
+def _extra_value_text(value: Any) -> str:
+    """Render one log-extra value as a safe, bounded console string."""
+    if isinstance(value, str):
+        return _escape_markup(value)
+    if isinstance(value, (bool, int, float, type(None))):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return _escape_markup(
+            "[" + ", ".join(_extra_value_text(item) for item in value) + "]"
+        )
+    if isinstance(value, dict):
+        return _escape_markup(
+            "{" + ", ".join(f"{k}={_extra_value_text(v)}" for k, v in value.items()) + "}"
+        )
+    return _escape_markup(str(value))
+
+
+def _record_extra_fields(record: LogRecord) -> dict[str, Any]:
+    """Return non-standard log-record fields (the ``extra=...`` payload)."""
+    return {
+        str(key): value
+        for key, value in vars(record).items()
+        if key not in _STANDARD_RECORD_ATTRS
+        and key != "message"
+        and not str(key).startswith("_")
+    }
+
+
+def _append_extra_fields(msg: str, record: LogRecord) -> str:
+    """Append console-safe key=value fields to a generic log line."""
+    extras = _record_extra_fields(record)
+    if not extras:
+        return msg
+    _SECRET_KEY_FRAGMENTS = ("token", "secret", "password", "private_key", "api_key", "authorization")
+    parts: list[str] = []
+    for key, value in extras.items():
+        if any(fragment in key.lower() for fragment in _SECRET_KEY_FRAGMENTS):
+            parts.append(f"{key}=***REDACTED***")
+        else:
+            parts.append(f"{key}={_extra_value_text(value)}")
+    return f"{msg} | " + " | ".join(parts)
+
+
 class RichConsoleHandler(logging.Handler):
     """Console handler with Rich-styled rendering for structured log types."""
 
@@ -225,8 +268,9 @@ class RichConsoleHandler(logging.Handler):
             if log_type and self._render_structured(record, log_type):
                 return
 
-            # Default: plain styled text
-            msg = self.format(record)
+            # Default: plain styled text with all structured extra fields
+            # visible in the console, not only in the JSONL file.
+            msg = _append_extra_fields(self.format(record), record)
             ts = time.strftime("%I:%M:%S %p")
             style = _LEVEL_STYLES.get(record.levelname, "info")
             prefix = Text(f"[{ts}] ", style="muted")
@@ -278,7 +322,51 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "discovery_candidate_eval":
             self._render_discovery_candidate_eval(record, ts)
             return True
+        if log_type:
+            self._render_generic_event(record, ts, log_type)
+            return True
         return False
+
+    def _render_generic_event(self, record: LogRecord, ts: str, log_type: str) -> None:
+        """Render any unrecognized structured log type as a clear Rich panel."""
+        level = record.levelname
+        if level == "WARNING":
+            border, icon = "yellow", "⚠️"
+        elif level in ("ERROR", "CRITICAL"):
+            border, icon = "red", "❌"
+        else:
+            border, icon = "cyan", "ℹ️"
+
+        title_label = str(log_type).replace("_", " ").upper()
+        message = self.format(record)
+        extras = _record_extra_fields(record)
+        lines: list[str] = []
+        if message and message != title_label.lower():
+            lines.append(f"[bold]Event:[/bold]  {_escape_markup(message)}")
+        for key, value in extras.items():
+            if key == "type":
+                continue
+            if any(
+                fragment in key.lower()
+                for fragment in ("token", "secret", "password", "private_key", "api_key", "authorization")
+            ):
+                value_text = "***REDACTED***"
+            else:
+                value_text = _extra_value_text(value)
+            label = " ".join(part.capitalize() for part in str(key).replace("_", " ").split())
+            lines.append(f"[bold]{label}:[/bold]  {value_text}")
+        if not lines:
+            lines.append("[dim](no details)[/dim]")
+
+        console.print()
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"{icon} [bold {border}]{title_label}[/bold {border}]  [muted][{ts}][/muted]",
+                border_style=border,
+                padding=(1, 2),
+            )
+        )
 
     def _render_discovery_candidate_eval(self, record: LogRecord, ts: str) -> None:
         event = str(getattr(record, "event", "") or "").lower()

@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from hashlib import sha256
+from domain.source_time import TransportReceipt
 
 
 class DetectionMode(str, Enum):
@@ -82,7 +83,7 @@ class LeaderTradeEvent:
         mode: Detection source that produced the event.
         finality: Provisional or confirmed settlement confidence.
         detected_at: When the local pipeline observed the event.
-        venue_timestamp: When the venue reports the event occurred.
+        venue_timestamp: Reported source time, or None when source age is unknown.
         transaction_hash: Optional on-chain transaction hash.
         log_index: Optional event log index within a transaction.
         order_hash: Optional EIP-712 order hash.
@@ -99,13 +100,18 @@ class LeaderTradeEvent:
     mode: DetectionMode
     finality: DetectionFinality
     detected_at: datetime
-    venue_timestamp: datetime
+    venue_timestamp: datetime | None
     transaction_hash: str | None = None
     log_index: int | None = None
     order_hash: str | None = None
     source_identity: str = ""
+    source_receipt: TransportReceipt | None = None
 
     def __post_init__(self) -> None:
+        if self.source_receipt is not None and not isinstance(
+            self.source_receipt, TransportReceipt
+        ):
+            raise ValueError("Source receipt must be validated transport evidence")
         object.__setattr__(self, "leader_wallet", _normalize_wallet(self.leader_wallet))
         token_id = str(self.token_id or "").strip()
         if not token_id:
@@ -133,7 +139,9 @@ class LeaderTradeEvent:
         object.__setattr__(
             self,
             "venue_timestamp",
-            _aware(self.venue_timestamp, name="venue_timestamp"),
+            _aware(self.venue_timestamp, name="venue_timestamp")
+            if self.venue_timestamp is not None
+            else None,
         )
         if self.log_index is not None and int(self.log_index) < 0:
             raise ValueError("log_index must be non-negative")
@@ -173,7 +181,25 @@ class LeaderTradeEvent:
 
     @property
     def economic_key(self) -> str:
-        """Return a cross-source key for pending-to-confirmed promotion."""
+        """Identify a fill across providers without collapsing additive chain logs."""
+
+        if self.transaction_hash and self.log_index is not None:
+            payload = "|".join(
+                (
+                    "fill",
+                    self.transaction_hash.lower(),
+                    str(self.log_index),
+                    self.leader_wallet,
+                    self.token_id,
+                    self.side.value,
+                )
+            )
+            return sha256(payload.encode("utf-8")).hexdigest()
+        return self.promotion_key
+
+    @property
+    def promotion_key(self) -> str:
+        """Return the legacy provisional allocation alias, not an individual fill id."""
 
         if self.order_hash:
             payload = f"order|{self.transaction_hash or ''}|{self.order_hash.lower()}"

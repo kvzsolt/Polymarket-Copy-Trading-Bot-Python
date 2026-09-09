@@ -28,7 +28,13 @@ from services.control_plane.contracts import (
 # only some did; ``truncated`` means the book exceeded the rendered ceiling;
 # ``unavailable`` means nothing could be marked. Only ``wss_mid`` permits an
 # account-level total, and no basis permits inventing a mark.
-PNL_VALUATION_BASES = ("wss_mid", "partial_wss_mid", "truncated", "unavailable")
+PNL_VALUATION_BASES = (
+    "wss_mid",
+    "partial_wss_mid",
+    "truncated",
+    "unavailable",
+    "unknown_cost_basis",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +140,7 @@ class FillView:
     side: str | None
     size: str
     price: str
-    fee: str
+    fee: str | None
     filled_at: datetime | None
     created_at: datetime
 
@@ -152,8 +158,9 @@ class FillView:
         ):
             if optional_value is not None:
                 ContractValidation.require_text(optional_value)
-        for value in (self.size, self.price, self.fee):
+        for value in (self.size, self.price):
             ContractValidation.require_decimal_string(value)
+        ContractValidation.optional_decimal_string(self.fee)
         if self.filled_at is not None:
             ContractValidation.require_aware_datetime(self.filled_at)
         ContractValidation.require_aware_datetime(self.created_at)
@@ -167,27 +174,32 @@ class PnlSummaryView:
     ledger, so it covers this process session only and is reset by a restart.
     """
 
-    realized_pnl_usdc: str
+    realized_pnl_usdc: str | None
     total_invested_usdc: str
     total_returned_usdc: str
-    max_drawdown_usdc: str
+    max_drawdown_usdc: str | None
     trade_count: int
     buy_count: int
     sell_count: int
     win_count: int
     loss_count: int
     session_started_at: datetime
+    realized_basis: str = "gross_before_fees"
+    net_realized_pnl_usdc: str | None = None
 
     def __post_init__(self) -> None:
         """Validate exact ledger money text and non-negative counts."""
 
         for value in (
-            self.realized_pnl_usdc,
             self.total_invested_usdc,
             self.total_returned_usdc,
-            self.max_drawdown_usdc,
         ):
             ContractValidation.require_decimal_string(value)
+        ContractValidation.optional_decimal_string(self.max_drawdown_usdc)
+        ContractValidation.optional_decimal_string(self.realized_pnl_usdc)
+        ContractValidation.optional_decimal_string(self.net_realized_pnl_usdc)
+        if self.realized_basis != "gross_before_fees":
+            raise ValueError("Session realized PnL is gross before fees")
         for count in (
             self.trade_count,
             self.buy_count,
@@ -212,8 +224,8 @@ class PnlPositionView:
     token_id: str
     leader_wallet: str | None
     size: str
-    avg_entry_price: str
-    cost_basis_usdc: str
+    avg_entry_price: str | None
+    cost_basis_usdc: str | None
     mark_price: str | None
     market_value_usdc: str | None
     unrealized_pnl_usdc: str | None
@@ -225,8 +237,9 @@ class PnlPositionView:
         ContractValidation.require_text(self.token_id)
         if self.leader_wallet is not None:
             ContractValidation.require_text(self.leader_wallet)
-        for value in (self.size, self.avg_entry_price, self.cost_basis_usdc):
-            ContractValidation.require_decimal_string(value)
+        ContractValidation.require_decimal_string(self.size)
+        ContractValidation.optional_decimal_string(self.avg_entry_price)
+        ContractValidation.optional_decimal_string(self.cost_basis_usdc)
         for optional_value in (
             self.mark_price,
             self.market_value_usdc,
@@ -252,7 +265,7 @@ class PnlView:
     positions: tuple[PnlPositionView, ...]
     position_count: int
     truncated: bool
-    cost_basis_usdc: str
+    cost_basis_usdc: str | None
     unrealized_pnl_usdc: str | None
     unrealized_basis: str
     marked_position_count: int
@@ -270,7 +283,7 @@ class PnlView:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
         if self.truncated and self.unrealized_pnl_usdc is not None:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
-        ContractValidation.require_decimal_string(self.cost_basis_usdc)
+        ContractValidation.optional_decimal_string(self.cost_basis_usdc)
         ContractValidation.optional_decimal_string(self.unrealized_pnl_usdc)
         if self.unrealized_basis not in PNL_VALUATION_BASES:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
@@ -394,7 +407,7 @@ class RiskHeadroomView:
     cap_notional_usdc: str
     equity_usdc: str
     free_cash_usdc: str
-    daily_loss_usdc: str
+    daily_loss_usdc: str | None
     open_position_count: int
 
     def __post_init__(self) -> None:
@@ -406,9 +419,9 @@ class RiskHeadroomView:
             self.cap_notional_usdc,
             self.equity_usdc,
             self.free_cash_usdc,
-            self.daily_loss_usdc,
         ):
             ContractValidation.require_decimal_string(value)
+        ContractValidation.optional_decimal_string(self.daily_loss_usdc)
         ContractValidation.require_count(self.open_position_count)
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from domain.detection import DetectionFinality, DetectionMode, TradeSide
+from domain.execution import ExecutionMetadata
 from orchestrators.v1_event_adapters import (
     CopyTaskRuntimeIngress,
     DeferredCopyTaskEventHandler,
@@ -25,6 +26,8 @@ from services.copy_tasks.event_routing import (
     TaskExecutionCommand,
 )
 from services.copy_tasks.lifecycle import TaskExecutionDisposition
+from services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
+from tests.v1.test_durable_risk_lots import _lot
 from services.execution.coordinator import ExecutionCoordinatorResult
 
 _LEADER = "0x1111111111111111111111111111111111111111"
@@ -74,6 +77,14 @@ class Reservations:
 
         assert user_id == "user-a"
         return Decimal("3")
+
+
+class MetadataReader:
+    """Provide validated metadata through the production market-data port."""
+
+    async def require_execution_metadata(self, token_id, *, condition_id=None):
+        """Return an arbitrary tick and the venue's explicit share minimum."""
+        return ExecutionMetadata(token_id, Decimal("0.005"), Decimal("1"), False)
 
 
 class BalanceReader:
@@ -176,6 +187,7 @@ def context(
         wallet_address="0xfollower",
         leader_wallet=leader,
         positions_repo=Positions(),
+        market_data_service=MetadataReader(),
         execution_coordinator=coordinator,
         rank_size_multiplier=trust_multiplier,
         extra={"reservations_repo": Reservations()},
@@ -342,9 +354,19 @@ async def test_deferred_handler_must_be_bound_before_workers_start() -> None:
 async def test_snapshot_provider_uses_persisted_positions_reservations_and_sell_ratio() -> None:
     """Construct sizing state from authoritative follower-owned sources."""
 
+    lots = RiskLotService(InMemoryRiskLotRepository())
+    owned = _lot()
+    await lots.create_from_entry_fill(
+        replace(
+            owned,
+            follower_account="user-a",
+            lot=replace(owned.lot, market_id="condition-a", outcome_id="token-yes"),
+        )
+    )
     provider = TradingContextTaskSnapshotProvider(
         contexts=[context()],
         balance_reader=BalanceReader(),
+        risk_lots=lots,
     )
 
     snapshot = await provider.snapshot_for(task(), event(side=TradeSide.SELL))
@@ -357,6 +379,45 @@ async def test_snapshot_provider_uses_persisted_positions_reservations_and_sell_
     assert snapshot.sell_shares == Decimal("2.50")
     assert snapshot.execution_reference_price == Decimal("0.4")
     assert snapshot.trust_multiplier == Decimal("1.1")
+
+
+@pytest.mark.asyncio
+async def test_zero_collateral_does_not_prevent_a_task_owned_sell():
+    """A funded inventory reduction requires shares, not a positive cash balance."""
+
+    class ZeroBalance(BalanceReader):
+        async def read(self, wallet: str) -> Decimal:
+            return Decimal("0")
+
+    lots = RiskLotService(InMemoryRiskLotRepository())
+    owned = _lot()
+    await lots.create_from_entry_fill(
+        replace(
+            owned,
+            follower_account="user-a",
+            lot=replace(owned.lot, market_id="condition-a", outcome_id="token-yes"),
+        )
+    )
+    provider = TradingContextTaskSnapshotProvider(
+        contexts=[context()],
+        balance_reader=ZeroBalance(),
+        risk_lots=lots,
+    )
+    snapshot = await provider.snapshot_for(task(), event(side=TradeSide.SELL))
+    assert snapshot.sell_shares == Decimal("2.5")
+    assert snapshot.follower_pusd_balance == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_reservation_reader_is_not_zero_reserved_balance():
+    """A missing mandatory capacity dependency is not evidence of free collateral."""
+    current = context()
+    current.extra = {}
+    provider = TradingContextTaskSnapshotProvider(
+        contexts=[current], balance_reader=BalanceReader()
+    )
+    with pytest.raises(TaskSnapshotUnavailable, match="reservation"):
+        await provider.snapshot_for(task(), event())
 
 
 @pytest.mark.asyncio

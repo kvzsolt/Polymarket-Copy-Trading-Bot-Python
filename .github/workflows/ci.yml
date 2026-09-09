@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "issue-*", "feat/*"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "issue-*", "feat/*", "feature/hybrid-ccxt-implementation"]
   pull_request:
-    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "feature/hybrid-ccxt-implementation"]
 
 permissions:
   contents: read
@@ -73,10 +73,11 @@ jobs:
             tests/test_ccxt_prediction_gateway_errors.py \
             tests/test_ccxt_prediction_gateway_pagination.py \
             tests/test_ccxt_prediction_market_data.py \
-            tests/test_hybrid_polymarket_gateway.py \
-            tests/test_runtime_polymarket_gateway.py \
-            tests/test_runtime_bootstrap_venue_backend.py \
-            tests/test_sdk_gateway_regressions.py \
+            tests/test_ccxt_compat_tick_size.py \
+            tests/test_ccxt_compat_credentials.py \
+            tests/test_ccxt_compat_version_and_health.py \
+            tests/test_paper_execution_gateway.py \
+            tests/test_venue_runtime.py \
             tests/test_ccxt_optional_dependency.py
   release-gate:
     name: release-gate (py${{ matrix.python-version }})

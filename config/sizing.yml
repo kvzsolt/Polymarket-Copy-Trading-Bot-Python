@@ -1,25 +1,67 @@
-# Copy sizing (shared engine + V5 pUSD-balance-aware envelope, folded
+# Configuration guide — follower BUY notional sizing.
+# Purpose: translate leader size/account context into an exact pUSD amount
+# before account risk caps and venue minimums are applied.
+# Options: mode is fixed | exact_mirror | proportional | balance_weighted |
+# portfolio_weighted | adaptive | tiered; adaptive_basis is trade_size |
+# performance; 0 disables only the documented ceilings/thresholds.
+# Trade-offs: fixed is predictable but ignores leader conviction; exact mirror
+# is faithful but bankroll-unsafe; proportional scales simply; weighted modes
+# fit bankroll/portfolio but need more leader data; adaptive/tiered are flexible
+# but harder to reason about. Strict modes reject rather than silently clamp.
+# Shared engine + V5 pUSD-balance-aware envelope, folded
 # from copy_sizing_v5.yaml).
+# Active strategy; proportional copies a percentage of leader notional.
 mode: proportional
+# Percent of leader trade for proportional/adaptive/tiered modes. Higher copies
+# more conviction and consumes bankroll faster.
 percentage: 5.0
+# Exact pUSD request in fixed mode. Predictable, but insensitive to trade size.
 fixed_amount: 3.0
+# Strategy multiplier. Above 1 amplifies every target; below 1 de-risks it.
 trade_multiplier: 1.0
+# Comma-separated threshold:multiplier pairs for tiered mode. Empty means no
+# tiers; tiers add control but are harder to tune and malformed entries fail.
 tiered_trade_multipliers: ''
+# adaptive trade_size scales with leader notional; performance uses an injected
+# quality signal. Performance is selective but depends on reliable scoring.
 adaptive_basis: trade_size
+# Adaptive percentage at zero signal. With max=0, interpolation is disabled.
 adaptive_min_percent: 0.0
+# Adaptive percentage at full signal; 0 falls back to percentage.
 adaptive_max_percent: 0.0
+# Leader notional that saturates trade_size adaptation. Lower reaches maximum
+# sooner; higher scales more gradually.
 adaptive_threshold_usdc: 500.0
+# Minimum final BUY. Higher avoids dust but rejects more small copies.
 buy_min_amount: 5.0
 # 5 % of the 350 pUSD bankroll — the moderate-profile per-copy cap.
 buy_max_amount: 17.5
+# Open-position count that blocks a new market; 0 disables this sizing gate.
 position_threshold: 0
+# Per-market room as follower-balance fraction, in (0,1]. Higher permits more
+# concentration; lower diversifies but clips/skips more targets.
 max_position_pct: 0.07
+# true applies bounded leader-trust multipliers; false keeps configured sizing
+# independent of scorer output.
 enable_trust_size_multipliers: false
+# Lower trust clamp (>0). Lower cuts weak-leader targets more aggressively.
 trust_size_multiplier_min: 0.5
+# Upper trust clamp (>0). Higher rewards strong scores but amplifies model error.
 trust_size_multiplier_max: 1.25
+# Percent of follower balance usable for copies, in (0,100]. Lower preserves
+# more cash; higher deploys more bankroll.
 copyable_balance_percent: 75.0
-proportional_balance_cap_enabled: true
-require_leader_balance_for_proportional: true
+# true caps proportional percentage by follower/leader balance ratio. false
+# avoids a leader-balance dependency but can overscale a small follower.
+proportional_balance_cap_enabled: false
+# When that proportional cap is enabled and leader balance is absent, true
+# rejects instead of guessing; false proceeds with configured percentage.
+require_leader_balance_for_proportional: false
+# Multiplier for balance/portfolio-weighted targets. Above 1 concentrates;
+# below 1 trims exposure.
 portfolio_weight_multiplier: 1.0
+# fixed mode: true rejects when the exact amount does not fit; false clamps.
 strict_fixed_amount: true
+# exact_mirror: true rejects when a full mirror does not fit; false clamps and
+# therefore loses exact-mirror semantics.
 strict_exact_mirror: true

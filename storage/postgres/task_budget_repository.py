@@ -26,6 +26,8 @@ from services.copy_tasks.budget import (
     TaskBudgetSnapshot,
 )
 from services.copy_tasks.domain import TaskSpendPolicy
+from services.metrics import LatencyPhase
+from services.telemetry.latency import PipelineLatency
 
 
 class TransactionContext(Protocol):
@@ -93,6 +95,21 @@ class DatabasePool(Protocol):
         ...
 
 
+class _MeasuredAcquireContext:
+    """Measure only pool acquisition while preserving context ownership."""
+
+    def __init__(self, context: AcquireContext, latency: PipelineLatency) -> None:
+        self._context = context
+        self._latency = latency
+
+    async def __aenter__(self) -> DatabaseConnection:
+        with self._latency.span(LatencyPhase.DATABASE_ACQUISITION):
+            return await self._context.__aenter__()
+
+    async def __aexit__(self, *args: object) -> object:
+        return await self._context.__aexit__(*args)
+
+
 class PostgresTaskBudgetRepository:
     """Persist task budgets with transaction-scoped concurrency control."""
 
@@ -101,9 +118,17 @@ class PostgresTaskBudgetRepository:
         pool: DatabasePool,
         *,
         evaluator: TaskBudgetPolicyEvaluator | None = None,
+        latency: PipelineLatency | None = None,
     ) -> None:
         self._pool = pool
         self._evaluator = evaluator or TaskBudgetPolicyEvaluator()
+        self._latency = latency
+
+    def _acquire(self) -> AcquireContext:
+        context = self._pool.acquire()
+        if self._latency is None:
+            return context
+        return _MeasuredAcquireContext(context, self._latency)
 
     async def snapshot(
         self,
@@ -114,7 +139,7 @@ class PostgresTaskBudgetRepository:
 
         if now.tzinfo is None:
             raise ValueError("task budget snapshot time must be timezone-aware")
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             return await self._load_snapshot(connection, key=key, now=now)
 
     async def reserve(
@@ -130,7 +155,7 @@ class PostgresTaskBudgetRepository:
         order.
         """
 
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             async with connection.transaction():
                 lock_names = [
                     f"reservation:{request.reservation_id}",
@@ -157,6 +182,17 @@ class PostgresTaskBudgetRepository:
                         row=existing_row,
                         snapshot=snapshot,
                     )
+
+                for prior_id in request.prior_reservation_ids:
+                    prior = await connection.fetchrow(self._reservation_select_sql(), prior_id)
+                    if prior is not None:
+                        return TaskBudgetReservationDecision(
+                            False,
+                            "task_budget_submission_retained",
+                            False,
+                            None,
+                            snapshot,
+                        )
 
                 reason = self._evaluator.evaluate(
                     request=request,
@@ -245,7 +281,7 @@ class PostgresTaskBudgetRepository:
         if occurred_at.tzinfo is None:
             raise ValueError("occurred_at must be timezone-aware")
 
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             async with connection.transaction():
                 await self._acquire_locks(
                     connection,
@@ -392,7 +428,7 @@ class PostgresTaskBudgetRepository:
             terminal_fill_id,
             name="terminal_fill_id",
         )
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             async with connection.transaction():
                 await self._acquire_locks(
                     connection,
@@ -441,7 +477,7 @@ class PostgresTaskBudgetRepository:
         """Persist a non-expiring blocking state after any POST attempt."""
 
         identity = self._required_text(reservation_id, name="reservation_id")
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             count = await connection.fetchval(
                 """
                 WITH retained AS (
@@ -508,7 +544,7 @@ class PostgresTaskBudgetRepository:
         """Release one pending reservation without touching committed spend."""
 
         identity = self._required_text(reservation_id, name="reservation_id")
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             count = await connection.fetchval(
                 """
                 WITH released AS (
@@ -529,7 +565,7 @@ class PostgresTaskBudgetRepository:
 
         if now.tzinfo is None:
             raise ValueError("sweep time must be timezone-aware")
-        async with self._pool.acquire() as connection:
+        async with self._acquire() as connection:
             count = await connection.fetchval(
                 """
                 WITH expired AS (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import timedelta
+from domain.source_time import TransportReceipt
 
 from domain.source_transactions import (
     PendingSourceMatch,
@@ -102,7 +103,10 @@ class PendingTransactionFactory:
             )
         if not matches:
             return None
-        observed_at = self._clock.now()
+        receipt = notification.get("_source_receipt")
+        if receipt is not None and not isinstance(receipt, TransportReceipt):
+            return None
+        observed_at = receipt.received_at if receipt is not None else self._clock.now()
         try:
             return PendingTransaction(
                 chain_id=self._chain_id,
@@ -113,6 +117,7 @@ class PendingTransactionFactory:
                 observed_at=observed_at,
                 expires_at=observed_at + self._confirmation_timeout,
                 matches=tuple(matches),
+                source_receipt=receipt,
             )
         except ValueError:
             return None

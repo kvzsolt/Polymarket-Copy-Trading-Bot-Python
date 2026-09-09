@@ -22,6 +22,7 @@ from application.confirmed_signal_execution_adapter import (
 from application.source_transaction_pipeline import SourceTransactionPipeline
 from domain.source_transactions import EvmReceipt
 from interfaces.source_transactions import EvmRpcPort, SourceTransactionStateStore
+from interfaces.source_time import BlockTimestampReader
 from orchestration.polygon_source_transaction_runtime import (
     PolygonSourceTransactionRuntime,
 )
@@ -138,6 +139,7 @@ class PolygonSourceRuntimeBootstrap:
         config: PolygonSourceRuntimeConfig,
         signal_callback: Callable[[OnchainTradeSignal], Awaitable[None]],
         state_store: SourceTransactionStateStore | None = None,
+        block_timestamp_reader: BlockTimestampReader | None = None,
     ) -> PolygonSourceTransactionRuntime:
         """Return a fully composed but not-yet-started runtime.
 
@@ -145,6 +147,7 @@ class PolygonSourceRuntimeBootstrap:
             config: Validated Polygon source runtime configuration.
             signal_callback: Existing authoritative leader-signal consumer.
             state_store: Durable source reservation/idempotency snapshot adapter.
+            block_timestamp_reader: Public immutable block-time evidence.
 
         Returns:
             Runtime ready to connect, subscribe, and resynchronize at startup.
@@ -154,7 +157,11 @@ class PolygonSourceRuntimeBootstrap:
         registry = SourceTransactionRegistry(clock=clock, state_store=state_store)
         rpc = _BoundEvmRpcPort()
         signal_sink = CallableOnchainSignalSink(signal_callback)
-        execution = ConfirmedSignalExecutionAdapter(signal_sink, clock)
+        execution = ConfirmedSignalExecutionAdapter(
+            signal_sink,
+            clock,
+            block_timestamp_reader=block_timestamp_reader,
+        )
         gate = SourceTransactionGate(
             registry=registry,
             evm_rpc=rpc,

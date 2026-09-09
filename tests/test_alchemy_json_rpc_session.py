@@ -217,8 +217,13 @@ async def test_session_routes_full_pending_head_and_log_notifications() -> None:
         await sink.head_ready.wait()
         await sink.log_ready.wait()
 
-        assert sink.pending == [pending]
-        assert sink.logs == [raw_log]
+        assert len(sink.pending) == len(sink.logs) == 1
+        assert {
+            key: value for key, value in sink.pending[0].items() if key != "_source_receipt"
+        } == pending
+        assert {
+            key: value for key, value in sink.logs[0].items() if key != "_source_receipt"
+        } == raw_log
         assert sink.heads == [
             EvmHead(
                 chain_id=_CHAIN_ID,

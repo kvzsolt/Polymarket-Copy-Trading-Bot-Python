@@ -144,8 +144,8 @@ async def test_data_api_reader_rewinds_newer_activity_to_pre_sell_balance() -> N
 
 
 @pytest.mark.asyncio
-async def test_data_api_reader_preserves_stable_order_for_equal_timestamps() -> None:
-    """API-provided order disambiguates trades sharing one second timestamp."""
+async def test_data_api_reader_rejects_unordered_equal_timestamps() -> None:
+    """Second-resolution timestamps cannot prove ordering of different transactions."""
 
     async def fetch_json(url: str) -> object:
         if "/positions" in url:
@@ -171,7 +171,7 @@ async def test_data_api_reader_preserves_stable_order_for_equal_timestamps() -> 
 
     fraction = await reader.fraction_for(_signal())
 
-    assert fraction == Decimal("0.6666666666666666666666666667")
+    assert fraction is None
 
 
 @pytest.mark.asyncio
@@ -186,3 +186,81 @@ async def test_data_api_reader_returns_none_without_canonical_transaction() -> N
     reader = DataApiLeaderSellFractionReader(fetch_json=fetch_json)
 
     assert await reader.fraction_for(_signal()) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "positions",
+    [
+        None,
+        {},
+        [None],
+        [{"asset": _TOKEN}],
+        [{"asset": _TOKEN, "size": "NaN"}],
+        [{"asset": _TOKEN, "size": "-1"}],
+        [{"asset": _TOKEN, "size": True}],
+        [{"asset": _TOKEN, "size": "10"}, {"asset": _TOKEN, "size": "20"}],
+    ],
+)
+async def test_data_api_rejects_unknown_holdings_instead_of_full_sell(positions) -> None:
+    async def fetch_json(url: str) -> object:
+        if "/positions" in url:
+            return positions
+        return [{"transactionHash": _TX, "asset": _TOKEN, "side": "SELL", "size": "40"}]
+
+    reader = DataApiLeaderSellFractionReader(fetch_json=fetch_json)
+    assert await reader.fraction_for(_signal()) is None
+
+
+@pytest.mark.asyncio
+async def test_data_api_rejects_multiple_target_fills_without_log_identity() -> None:
+    async def fetch_json(url: str) -> object:
+        if "/positions" in url:
+            return [{"asset": _TOKEN, "size": "10"}]
+        return [
+            {"transactionHash": _TX, "asset": _TOKEN, "side": "SELL", "size": "40"},
+            {"transactionHash": _TX, "asset": _TOKEN, "side": "SELL", "size": "20"},
+        ]
+
+    assert (
+        await DataApiLeaderSellFractionReader(fetch_json=fetch_json).fraction_for(_signal()) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_api_negative_rewind_balance_is_unknown() -> None:
+    async def fetch_json(url: str) -> object:
+        if "/positions" in url:
+            return [{"asset": _TOKEN, "size": "10"}]
+        return [
+            {
+                "transactionHash": "other",
+                "asset": _TOKEN,
+                "side": "BUY",
+                "size": "20",
+                "timestamp": 1700000002,
+            },
+            {
+                "transactionHash": _TX,
+                "asset": _TOKEN,
+                "side": "SELL",
+                "size": "40",
+                "timestamp": 1700000001,
+            },
+        ]
+
+    assert (
+        await DataApiLeaderSellFractionReader(fetch_json=fetch_json).fraction_for(_signal()) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_api_rejects_binary_float_financial_payloads() -> None:
+    async def fetch_json(url: str) -> object:
+        if "/positions" in url:
+            return [{"asset": _TOKEN, "size": 10.1234567890123456789}]
+        return [{"transactionHash": _TX, "asset": _TOKEN, "side": "SELL", "size": "40"}]
+
+    assert (
+        await DataApiLeaderSellFractionReader(fetch_json=fetch_json).fraction_for(_signal()) is None
+    )

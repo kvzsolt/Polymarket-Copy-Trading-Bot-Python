@@ -17,7 +17,11 @@ class _FrozenModel(BaseModel):
 
 
 class LeaderWorkerRuntimeConfig(_FrozenModel):
-    """Bounded serial-per-leader worker settings."""
+    """Bounds applied independently to leader and account dispatch stages.
+
+    Both stages use these existing queue, actor and concurrency limits. The
+    shutdown timeout is one total deadline for draining both stages.
+    """
 
     enabled: bool = True
     queue_size: int = Field(default=64, ge=1, le=100_000)

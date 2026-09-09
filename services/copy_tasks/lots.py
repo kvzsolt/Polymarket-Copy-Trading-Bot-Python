@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Protocol
 
-from services.copy_tasks.protective_exits import FillRiskLot, ProtectiveRiskPolicy
+from services.copy_tasks.protective_exits import FillRiskLot, PendingLayerExit, ProtectiveRiskPolicy
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
@@ -122,6 +122,7 @@ class ProtectiveLotExitFill:
     price: Decimal
     occurred_at: datetime
     level_id: str | None = None
+    level_target_shares: Decimal | None = None
 
     def __post_init__(self) -> None:
         fill_identity = str(self.fill_id or "").strip()
@@ -142,6 +143,71 @@ class ProtectiveLotExitFill:
         object.__setattr__(self, "shares", shares)
         object.__setattr__(self, "price", price)
         object.__setattr__(self, "level_id", level)
+        if self.level_target_shares is not None:
+            target = RiskLotValueParser.positive_decimal(
+                self.level_target_shares, name="level_target_shares"
+            )
+            if level is None or target < shares:
+                raise ValueError("Layer target requires a level and must cover the fill")
+            object.__setattr__(self, "level_target_shares", target)
+
+
+class RiskLotExitReducer:
+    """Share exact partial-layer accounting across persistence substitutes."""
+
+    @staticmethod
+    def apply(current: DurableRiskLot, fill: ProtectiveLotExitFill) -> DurableRiskLot:
+        """Consume confirmed shares and complete a level only at its target.
+
+        Raises:
+            RiskLotInvariantError: The lot is closed or level evidence conflicts.
+            ValueError: The fill exceeds the owned shares.
+        """
+        if current.status is RiskLotStatus.CLOSED:
+            raise RiskLotInvariantError("cannot apply a new fill to a closed risk lot")
+        if fill.shares > current.lot.remaining_shares:
+            raise ValueError("protective fill shares exceed lot remaining shares")
+        remaining = current.lot.remaining_shares - fill.shares
+        levels = current.lot.triggered_levels
+        pending = {item.level_id: item.remaining_shares for item in current.lot.pending_exits}
+        if fill.level_id is not None:
+            if fill.level_id in levels:
+                raise RiskLotInvariantError("protective layer already completed")
+            target = pending.get(fill.level_id, fill.level_target_shares)
+            if target is None:
+                candidates = {
+                    **{f"sl:{i}": item for i, item in enumerate(current.policy.layered_stop_loss)},
+                    **{
+                        f"tp:{i}": item for i, item in enumerate(current.policy.layered_take_profit)
+                    },
+                }
+                policy_level = candidates.get(fill.level_id)
+                if policy_level is None:
+                    raise RiskLotInvariantError("protective layer policy is unavailable")
+                target = current.lot.remaining_shares * policy_level.exit_fraction
+            if fill.shares > target:
+                raise RiskLotInvariantError("protective fill exceeds the layer target")
+            outstanding = target - fill.shares
+            if outstanding == 0 or remaining == 0:
+                levels = (*levels, fill.level_id)
+                pending.pop(fill.level_id, None)
+            else:
+                pending[fill.level_id] = outstanding
+        return replace(
+            current,
+            lot=replace(
+                current.lot,
+                remaining_shares=remaining,
+                triggered_levels=levels,
+                pending_exits=tuple(
+                    PendingLayerExit(key, value) for key, value in sorted(pending.items())
+                )
+                if remaining
+                else (),
+            ),
+            status=RiskLotStatus.CLOSED if remaining == 0 else RiskLotStatus.OPEN,
+            version=current.version + 1,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,24 +345,7 @@ class InMemoryRiskLotRepository:
             current = self._lots.get(fill.lot_id)
             if current is None:
                 raise LookupError(f"risk lot does not exist: {fill.lot_id}")
-            if current.status is RiskLotStatus.CLOSED:
-                raise RiskLotInvariantError("cannot apply a new fill to a closed risk lot")
-            if fill.shares > current.lot.remaining_shares:
-                raise ValueError("protective fill shares exceed lot remaining shares")
-            remaining = current.lot.remaining_shares - fill.shares
-            levels = current.lot.triggered_levels
-            if fill.level_id is not None and fill.level_id not in levels:
-                levels = (*levels, fill.level_id)
-            updated = replace(
-                current,
-                lot=replace(
-                    current.lot,
-                    remaining_shares=remaining,
-                    triggered_levels=levels,
-                ),
-                status=(RiskLotStatus.CLOSED if remaining == _ZERO else RiskLotStatus.OPEN),
-                version=current.version + 1,
-            )
+            updated = RiskLotExitReducer.apply(current, fill)
             self._exit_fills[fill.fill_id] = fill
             self._lots[fill.lot_id] = updated
             return RiskLotExitApplication(created=True, lot=updated)

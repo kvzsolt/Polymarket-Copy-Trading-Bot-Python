@@ -9,7 +9,7 @@ remains authoritative for wallet collateral and portfolio risk.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -82,10 +82,15 @@ class TaskBudgetReservationRequest:
     amount: Decimal
     reserved_at: datetime
     expires_at: datetime
+    prior_reservation_ids: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         if not str(self.reservation_id).strip():
             raise ValueError("reservation_id is required")
+        if not isinstance(self.prior_reservation_ids, tuple) or any(
+            not isinstance(identity, str) or not identity for identity in self.prior_reservation_ids
+        ):
+            raise ValueError("Prior reservation identities must be an immutable tuple of ids")
         if self.reserved_at.tzinfo is None or self.expires_at.tzinfo is None:
             raise ValueError("task budget timestamps must be timezone-aware")
         if self.expires_at <= self.reserved_at:
@@ -299,6 +304,14 @@ class InMemoryTaskBudgetRepository:
         async with self._lock:
             existing = self._reservations.get(request.reservation_id)
             snapshot = self._snapshot(request.key, request.reserved_at)
+            if any(identity in self._reservations for identity in request.prior_reservation_ids):
+                return TaskBudgetReservationDecision(
+                    False,
+                    "task_budget_submission_retained",
+                    False,
+                    None,
+                    snapshot,
+                )
             if existing is not None:
                 if existing.request != request:
                     return TaskBudgetReservationDecision(

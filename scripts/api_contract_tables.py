@@ -132,6 +132,7 @@ DECIMAL_FIELDS: Mapping[str, tuple[str, ...]] = {
         "total_invested_usdc",
         "total_returned_usdc",
         "max_drawdown_usdc",
+        "net_realized_pnl_usdc",
     ),
     "PnlView": ("cost_basis_usdc", "unrealized_pnl_usdc"),
     "PortfolioView": (
@@ -141,6 +142,7 @@ DECIMAL_FIELDS: Mapping[str, tuple[str, ...]] = {
         "equity_usdc",
         "copyable_balance_usdc",
         "unrealized_pnl_usdc",
+        "positions_cost_usdc",
     ),
     "PositionView": ("size", "avg_entry_price"),
     "ReservationView": ("amount",),

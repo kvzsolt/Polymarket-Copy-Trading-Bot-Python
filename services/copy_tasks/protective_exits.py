@@ -54,6 +54,23 @@ class ProtectiveRiskPolicy:
     layered_stop_loss: tuple[LayeredLevel, ...] = ()
     layered_take_profit: tuple[LayeredLevel, ...] = ()
 
+    @property
+    def requires_monitoring(self) -> bool:
+        """Return whether an enabled rule needs continuing runtime management."""
+        return self.enabled and (
+            bool(self.layered_stop_loss or self.layered_take_profit)
+            or any(
+                value is not None
+                for value in (
+                    self.stop_loss_percent,
+                    self.stop_loss_price,
+                    self.take_profit_percent,
+                    self.take_profit_price,
+                    self.trailing_stop_percent,
+                )
+            )
+        )
+
     def __post_init__(self) -> None:
         for name in (
             "stop_loss_percent",
@@ -65,6 +82,20 @@ class ProtectiveRiskPolicy:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _decimal(value, name=name))
+
+
+@dataclass(frozen=True, slots=True)
+class PendingLayerExit:
+    """Confirmed partial execution leaves this exact layer target outstanding."""
+
+    level_id: str
+    remaining_shares: Decimal
+
+    def __post_init__(self) -> None:
+        if not self.level_id or not isinstance(self.remaining_shares, Decimal):
+            raise ValueError("Pending layer requires an identity and exact shares")
+        if not self.remaining_shares.is_finite() or self.remaining_shares <= 0:
+            raise ValueError("Pending layer shares must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +112,7 @@ class FillRiskLot:
     opened_at: datetime
     peak_price: Decimal
     triggered_levels: tuple[str, ...] = ()
+    pending_exits: tuple[PendingLayerExit, ...] = ()
 
     def __post_init__(self) -> None:
         if self.opened_at.tzinfo is None:
@@ -167,6 +199,9 @@ class ProtectiveExitEngine:
         policy: ProtectiveRiskPolicy,
         price: Decimal,
     ) -> ProtectiveExitDecision | None:
+        pending = self._pending(lot, "sl:", "layered_stop_loss")
+        if pending is not None:
+            return pending
         for index, level in enumerate(policy.layered_stop_loss):
             level_id = f"sl:{index}"
             if level_id in lot.triggered_levels:
@@ -182,6 +217,9 @@ class ProtectiveExitEngine:
         policy: ProtectiveRiskPolicy,
         price: Decimal,
     ) -> ProtectiveExitDecision | None:
+        pending = self._pending(lot, "tp:", "layered_take_profit")
+        if pending is not None:
+            return pending
         for index, level in enumerate(policy.layered_take_profit):
             level_id = f"tp:{index}"
             if level_id in lot.triggered_levels:
@@ -189,6 +227,20 @@ class ProtectiveExitEngine:
             threshold = lot.entry_price * (_HUNDRED + level.trigger_percent) / _HUNDRED
             if price >= threshold:
                 return self._fraction(lot, "layered_take_profit", level, level_id)
+        return None
+
+    @staticmethod
+    def _pending(lot: FillRiskLot, prefix: str, reason: str) -> ProtectiveExitDecision | None:
+        for pending in lot.pending_exits:
+            if pending.level_id.startswith(prefix):
+                shares = min(pending.remaining_shares, lot.remaining_shares)
+                return ProtectiveExitDecision(
+                    True,
+                    reason,
+                    shares,
+                    shares == lot.remaining_shares,
+                    pending.level_id,
+                )
         return None
 
     @staticmethod

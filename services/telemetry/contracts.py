@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
+from math import isfinite
 from enum import StrEnum
 from typing import TypeAlias
 
@@ -334,6 +336,44 @@ class TaskEvent:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TaskDecisionDetails:
+    """Allowlisted policy inputs; amounts are exact and timestamps preserve missing evidence."""
+
+    account_ref: str
+    task_version: str
+    reason_code: str
+    source_price: Decimal
+    source_shares: Decimal
+    source_timestamp: datetime | None
+    evaluated_at: datetime
+    max_signal_age_seconds: float
+    price_limit: Decimal | None
+    policy_revision: str = "copy-task-v1"
+
+    def __post_init__(self) -> None:
+        """Validate bounded identifiers, UTC evidence and exact finite amounts."""
+        _require_safe_token("account_ref", self.account_ref)
+        _require_safe_code("reason_code", self.reason_code)
+        _require_safe_token("policy_revision", self.policy_revision)
+        if not self.task_version.isascii() or not self.task_version.isdecimal():
+            raise ValueError("Task version must be an exact non-negative integer string")
+        for value in (self.source_price, self.source_shares, self.price_limit):
+            if value is not None and (
+                not isinstance(value, Decimal) or not value.is_finite() or value < 0
+            ):
+                raise ValueError("Decision amounts must be finite non-negative decimals")
+        for timestamp in (self.source_timestamp, self.evaluated_at):
+            if timestamp is not None and timestamp.utcoffset() is None:
+                raise ValueError("Decision timestamps must be timezone-aware")
+        if isinstance(self.max_signal_age_seconds, bool) or not isfinite(
+            self.max_signal_age_seconds
+        ):
+            raise ValueError("Signal age limit must be finite")
+        if self.max_signal_age_seconds < 0:
+            raise ValueError("Signal age limit cannot be negative")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TradeEvent:
     """Describe one copy-trade outcome without raw venue data."""
 
@@ -342,6 +382,7 @@ class TradeEvent:
     side: TradeSide
     order_ref: str | None = None
     order_outcome: OrderOutcome | None = OrderOutcome.SUBMITTED
+    decision: TaskDecisionDetails | None = None
     category: TelemetryCategory = field(default=TelemetryCategory.TRADE, init=False)
 
     def __post_init__(self) -> None:
@@ -369,6 +410,7 @@ class SkipEvent:
 
     reason: SkipReason
     task_ref: str | None = None
+    decision: TaskDecisionDetails | None = None
     category: TelemetryCategory = field(default=TelemetryCategory.SKIP, init=False)
 
     def __post_init__(self) -> None:

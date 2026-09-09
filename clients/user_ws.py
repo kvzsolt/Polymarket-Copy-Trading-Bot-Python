@@ -261,7 +261,7 @@ class UserWebSocket:
         try:
             data = orjson.loads(raw_msg)
         except (orjson.JSONDecodeError, TypeError):
-            logger.debug("UserWS: non-JSON message: %s", str(raw_msg)[:100])
+            logger.debug("UserWS: non-JSON message rejected")
             return
 
         events = data if isinstance(data, list) else [data]

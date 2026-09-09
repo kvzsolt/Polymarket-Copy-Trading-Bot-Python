@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from cache.market_state_store import MarketStateStore
 from clients.user_ws import DEFAULT_USER_WS_URL, UserWebSocket
-from services.healthServer import ReadinessTracker
+from interfaces.readiness import ReadinessWriter
 from services.telemetry import WssTelemetryEmitter
 from utils.logger import get_logger, redact_error_detail
 
@@ -65,7 +65,7 @@ class UserDataRuntime:
     """
 
     market_store: MarketStateStore
-    readiness: ReadinessTracker
+    readiness: ReadinessWriter
     api_creds: dict[str, str]
     user_id: str
     ws_url: str = DEFAULT_USER_WS_URL
@@ -210,18 +210,19 @@ class UserDataRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._status.last_error = repr(exc)
+            self._status.last_error = type(exc).__name__
             self._status.authenticated = False
             self._update_readiness(
                 wss_user_ok=False,
                 wss_user_connecting=False,
-                last_error=repr(exc),
+                last_error=type(exc).__name__,
             )
-            logger.exception(
+            self._status.running = False
+            logger.error(
                 "user_ws_task_failed",
-                extra={"user_id": self.user_id},
+                extra={"user_id": self.user_id, "error_type": type(exc).__name__},
             )
-            raise
+            raise RuntimeError("User websocket task failed") from None
 
     def _emit_wss_connected(self) -> None:
         """Publish the first authentication as CONNECTED, later ones RECONNECTED."""

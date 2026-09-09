@@ -13,6 +13,7 @@ from typing import Any
 
 from aiohttp import WSMsgType, WSCloseCode, hdrs, web
 
+from integrations.control_plane.stream_sender import ControlPlaneStreamSender
 from services.control_plane.contracts import (
     BulkTaskCommand,
     BulkTaskItem,
@@ -86,6 +87,9 @@ class ControlPlaneHttpApplication:
     ) -> None:
         _validate_bind_auth(config, authenticator)
         self._config = config
+        self._stream_sender = ControlPlaneStreamSender(
+            timeout_seconds=config.websocket_send_timeout_seconds
+        )
         self._authenticator = authenticator
         self._dependencies = dependencies
         self._websocket_credentials = (
@@ -910,7 +914,16 @@ class ControlPlaneHttpApplication:
         delivery_task: asyncio.Task[Any] | None = None
         receive_task: asyncio.Task[Any] | None = None
         try:
-            await ws.send_json({"type": "stream_ready"})
+            await self._stream_sender.send(
+                ws,
+                {
+                    "type": "stream_ready",
+                    "stream_boot_id": hub.boot_id,
+                    "ordering": "session_per_producer",
+                    "durable_replay": False,
+                    "resync_required": True,
+                },
+            )
             delivery_task = asyncio.create_task(
                 subscription.get(), name="control-plane-telemetry-delivery"
             )
@@ -940,23 +953,28 @@ class ControlPlaneHttpApplication:
                         )
                         break
                     if delivery.resync_required:
-                        await ws.send_json(
+                        await self._stream_sender.send(
+                            ws,
                             {
                                 "type": "resync_required",
                                 "dropped_count": delivery.dropped_count,
-                            }
+                            },
                         )
                         await self._send_snapshot(ws)
                     elif delivery.event is not None:
-                        await ws.send_json(
+                        await self._stream_sender.send(
+                            ws,
                             {
                                 "type": "telemetry_event",
+                                "stream_boot_id": hub.boot_id,
                                 "data": self._serializer.to_jsonable(delivery.event),
-                            }
+                            },
                         )
                     delivery_task = asyncio.create_task(
                         subscription.get(), name="control-plane-telemetry-delivery"
                     )
+        except (TimeoutError, ConnectionError):
+            _LOGGER.warning("control_plane_stream_transport_unavailable")
         finally:
             for task in (delivery_task, receive_task):
                 if task is not None and not task.done():
@@ -991,12 +1009,13 @@ class ControlPlaneHttpApplication:
             return True
         decision = self._rate_limiter.check(f"{principal.subject}:telemetry.stream.message")
         if not decision.allowed:
-            await ws.send_json(
+            await self._stream_sender.send(
+                ws,
                 {
                     "type": "error",
                     "code": "rate_limited",
                     "retry_after_seconds": decision.retry_after_seconds,
-                }
+                },
             )
             await ws.close(
                 code=WSCloseCode.POLICY_VIOLATION,
@@ -1006,31 +1025,36 @@ class ControlPlaneHttpApplication:
         try:
             payload = json.loads(message.data)
         except (json.JSONDecodeError, TypeError):
-            await ws.send_json({"type": "error", "code": "invalid_stream_message"})
+            await self._stream_sender.send(ws, {"type": "error", "code": "invalid_stream_message"})
             return True
         if not isinstance(payload, dict):
-            await ws.send_json({"type": "error", "code": "invalid_stream_message"})
+            await self._stream_sender.send(ws, {"type": "error", "code": "invalid_stream_message"})
             return True
         message_type = payload.get("type")
         if message_type == "ping":
-            await ws.send_json({"type": "pong"})
+            await self._stream_sender.send(ws, {"type": "pong"})
         elif message_type == "resync":
             await self._send_snapshot(ws)
         else:
-            await ws.send_json({"type": "error", "code": "unsupported_stream_message"})
+            await self._stream_sender.send(
+                ws, {"type": "error", "code": "unsupported_stream_message"}
+            )
         return True
 
     async def _send_snapshot(self, ws: web.WebSocketResponse) -> None:
         query = self._dependencies.telemetry_query
-        if query is None:
-            await ws.send_json({"type": "telemetry_snapshot", "data": None})
-            return
-        snapshot = query.snapshot(limit=self._config.telemetry_snapshot_limit)
-        await ws.send_json(
+        hub = self._dependencies.telemetry_hub
+        snapshot = (
+            None if query is None else query.snapshot(limit=self._config.telemetry_snapshot_limit)
+        )
+        await self._stream_sender.send(
+            ws,
             {
                 "type": "telemetry_snapshot",
+                "stream_boot_id": None if hub is None else hub.boot_id,
+                "authoritative_financial_state": False,
                 "data": self._serializer.to_jsonable(snapshot),
-            }
+            },
         )
 
     async def _on_shutdown(self, app: web.Application) -> None:

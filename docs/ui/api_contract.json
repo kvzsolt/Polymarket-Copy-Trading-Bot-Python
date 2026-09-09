@@ -79,7 +79,8 @@
       "realized_pnl_usdc",
       "total_invested_usdc",
       "total_returned_usdc",
-      "max_drawdown_usdc"
+      "max_drawdown_usdc",
+      "net_realized_pnl_usdc"
     ],
     "PnlView": [
       "cost_basis_usdc",
@@ -91,7 +92,8 @@
       "positions_value_usdc",
       "equity_usdc",
       "copyable_balance_usdc",
-      "unrealized_pnl_usdc"
+      "unrealized_pnl_usdc",
+      "positions_cost_usdc"
     ],
     "PositionView": [
       "size",
@@ -159,6 +161,8 @@
       "revision_mismatch",
       "task_deleted",
       "task_runtime_unavailable",
+      "task_protection_unavailable",
+      "task_counter_outcome_unavailable",
       "bulk_limit_exceeded",
       "duplicate_bulk_target",
       "bulk_failed",
@@ -199,7 +203,8 @@
       "wss_mid",
       "partial_wss_mid",
       "truncated",
-      "unavailable"
+      "unavailable",
+      "unknown_cost_basis"
     ],
     "PriceOffsetDirection": [
       "above",
@@ -329,9 +334,17 @@
         "http_status": 503,
         "message": "Settings storage is unavailable."
       },
+      "task_counter_outcome_unavailable": {
+        "http_status": 503,
+        "message": "The task requires an authoritative opposite-outcome binding."
+      },
       "task_deleted": {
         "http_status": 409,
         "message": "A deleted task cannot be changed."
+      },
+      "task_protection_unavailable": {
+        "http_status": 503,
+        "message": "The task requires enabled protective management."
       },
       "task_runtime_unavailable": {
         "http_status": 503,
@@ -1920,6 +1933,13 @@
           },
           {
             "decimal": false,
+            "name": "decision",
+            "nullable": true,
+            "type": "TaskDecisionDetails",
+            "vocabulary": null
+          },
+          {
+            "decimal": false,
             "name": "category",
             "nullable": false,
             "type": "TelemetryCategory",
@@ -1998,6 +2018,13 @@
             "name": "order_outcome",
             "nullable": true,
             "type": "OrderOutcome",
+            "vocabulary": null
+          },
+          {
+            "decimal": false,
+            "name": "decision",
+            "nullable": true,
+            "type": "TaskDecisionDetails",
             "vocabulary": null
           },
           {
@@ -2725,7 +2752,7 @@
         {
           "decimal": true,
           "name": "fee",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3080,14 +3107,14 @@
         {
           "decimal": true,
           "name": "avg_entry_price",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
         {
           "decimal": true,
           "name": "cost_basis_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3120,7 +3147,7 @@
         {
           "decimal": true,
           "name": "realized_pnl_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3141,7 +3168,7 @@
         {
           "decimal": true,
           "name": "max_drawdown_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3185,6 +3212,20 @@
           "name": "session_started_at",
           "nullable": false,
           "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "realized_basis",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "net_realized_pnl_usdc",
+          "nullable": true,
+          "type": "string",
           "vocabulary": null
         }
       ]
@@ -3230,7 +3271,7 @@
         {
           "decimal": true,
           "name": "cost_basis_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3250,7 +3291,8 @@
             "wss_mid",
             "partial_wss_mid",
             "truncated",
-            "unavailable"
+            "unavailable",
+            "unknown_cost_basis"
           ]
         },
         {
@@ -3296,14 +3338,14 @@
         {
           "decimal": true,
           "name": "positions_value_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
         {
           "decimal": true,
           "name": "equity_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -3345,6 +3387,13 @@
         {
           "decimal": true,
           "name": "unrealized_pnl_usdc",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "positions_cost_usdc",
           "nullable": true,
           "type": "string",
           "vocabulary": null
@@ -3401,6 +3450,25 @@
           "name": "updated_at",
           "nullable": false,
           "type": "timestamp",
+          "vocabulary": null
+        }
+      ]
+    },
+    "ProtectiveLevelView": {
+      "doc": "One protective trigger in percentage points and a share fraction.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "trigger_percent",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "exit_fraction",
+          "nullable": false,
+          "type": "string",
           "vocabulary": null
         }
       ]
@@ -3788,7 +3856,7 @@
         {
           "decimal": true,
           "name": "daily_loss_usdc",
-          "nullable": false,
+          "nullable": true,
           "type": "string",
           "vocabulary": null
         },
@@ -4360,6 +4428,13 @@
           "nullable": false,
           "type": "TaskSizingView",
           "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "protective_risk",
+          "nullable": false,
+          "type": "TaskProtectiveRiskView",
+          "vocabulary": null
         }
       ]
     },
@@ -4566,6 +4641,67 @@
           "name": "max_slippage_percent",
           "nullable": false,
           "type": "string",
+          "vocabulary": null
+        }
+      ]
+    },
+    "TaskProtectiveRiskView": {
+      "doc": "Exact per-fill protective settings; absent thresholds remain unset.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "enabled",
+          "nullable": false,
+          "type": "boolean",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "stop_loss_percent",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "stop_loss_price",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "take_profit_percent",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "take_profit_price",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "trailing_stop_percent",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "layered_stop_loss",
+          "nullable": false,
+          "type": "array<ProtectiveLevelView>",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "layered_take_profit",
+          "nullable": false,
+          "type": "array<ProtectiveLevelView>",
           "vocabulary": null
         }
       ]

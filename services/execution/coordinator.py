@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from inspect import isawaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ from services.execution.reservation_service import (
     ReservationService,
 )
 from services.execution.state_machine import assert_transition_allowed
+from services.metrics import LatencyPhase
+from services.telemetry.latency import PipelineLatency
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,8 @@ class ExecutionIntent:
     leader_sell_fraction: Decimal | None = None
     live_position_size: Decimal | None = None
     sub_min_sell_policy: str | None = None
+    task_id: str | None = None
+    protective_lot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,17 @@ _TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
         "stale_market_data",
         "market_not_ready",
         "circuit_open",
+        "price_limit_unexecutable",
+        "task_deleted",
+        "task_paused",
+        "task_account_mismatch",
+        "task_leader_mismatch",
+        "task_version_conflict",
+        "task_state_unavailable",
+        "task_state_invalid",
+        "outside_schedule",
+        "trading_paused",
+        "kill_switch",
     }
 )
 
@@ -246,6 +262,7 @@ class ExecutionCoordinator:
         live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
         execution_service: Any | None = None,
         position_coordinator: Any | None = None,
+        latency: PipelineLatency | None = None,
     ) -> None:
         self.reservation_service = reservation_service
         self.orders_repo = orders_repo
@@ -263,6 +280,7 @@ class ExecutionCoordinator:
         # Production wrapper deps. ``execute_intent`` (V2) does not use these.
         self.execution_service = execution_service
         self.position_coordinator = position_coordinator
+        self._latency = latency
         self.leader_sell_target_service: object | None = None
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
@@ -666,7 +684,12 @@ class ExecutionCoordinator:
 
         # ---- Reservation acquire (dup-guard layer #1) -----------------
         try:
-            reservation = await self.reservation_service.reserve_for_intent(order_intent)
+            with (
+                self._latency.span(LatencyPhase.RESERVATION)
+                if self._latency is not None
+                else nullcontext()
+            ):
+                reservation = await self.reservation_service.reserve_for_intent(order_intent)
         except ReservationConflict as exc:
             self._safe_audit(
                 "coordinator_duplicate_reservation_conflict",
@@ -785,17 +808,16 @@ class ExecutionCoordinator:
         try:
             result = await self.execution_service.execute(exec_request)
         except Exception as exc:
-            await self._release_reservation(reservation_id, reason="execute_exception")
             self._safe_audit(
                 "coordinator_execute_exception",
                 {
                     "reservation_id": reservation_id,
                     "side": intent.side,
                     "source": source_override,
-                    "error": repr(exc),
+                    "error_type": type(exc).__name__,
                 },
             )
-            raise
+            raise RuntimeError("Submission outcome requires reconciliation") from None
 
         status = (getattr(result, "status", "") or "").lower()
         order_id = getattr(result, "order_id", None)
@@ -850,7 +872,6 @@ class ExecutionCoordinator:
             )
 
         if status in {"filled", "partially_filled"}:
-            await self._release_reservation(reservation_id, reason=status)
             if order_id and self.reservations_repo is not None:
                 try:
                     await self.reservations_repo.link_order(reservation_id, order_id=order_id)
@@ -910,16 +931,16 @@ class ExecutionCoordinator:
                 raw_result=result,
             )
 
-        # Catch-all: status not recognised — treat as failure, release.
-        await self._release_reservation(reservation_id, reason=status or "unknown")
+        # An unrecognized acknowledgement does not establish rejection.
         return ExecutionCoordinatorResult(
             accepted=False,
-            status=status or "unknown",
-            skip_code=status or "unknown",
-            reason=getattr(result, "error", None),
+            status="submitted_unconfirmed",
+            skip_code="submission_outcome_unknown",
+            reason="Submission outcome requires reconciliation",
             order_id=order_id,
             reservation_id=reservation_id,
-            lifecycle_status="failed",
+            submission_state="submitted_unconfirmed",
+            lifecycle_status="submitted_unconfirmed",
             raw_result=result,
         )
 
@@ -963,6 +984,8 @@ class ExecutionCoordinator:
             live_position_size=intent.live_position_size,
             min_order_size=intent.min_order_size,
             round_up_to_minimum=intent.sub_min_sell_policy == "round_up",
+            task_id=intent.task_id,
+            protective_lot_id=intent.protective_lot_id,
         )
 
     async def _local_position_baseline(self, intent: Any) -> Decimal | None:
@@ -983,7 +1006,7 @@ class ExecutionCoordinator:
             failure must never block a submission.
         """
         repo = getattr(self, "positions_repo", None)
-        getter = getattr(repo, "get_position", None)
+        getter: Callable[..., Awaitable[object]] | None = getattr(repo, "get_position", None)
         if not callable(getter):
             return None
         try:

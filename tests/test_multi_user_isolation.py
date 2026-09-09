@@ -16,6 +16,7 @@ import pytest
 
 from config.app_config import load_config
 from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -62,7 +63,7 @@ class _FakeExecutionService:
             order_id=f"ord-{req.user_id}-{req.side}",
             status="filled",
             requested_amount=Decimal(str(req.amount)),
-            filled_amount=Decimal(str(req.amount)),
+            filled_amount=req.amount / Decimal("0.5") if req.side == "BUY" else req.amount,
             avg_price=Decimal("0.5"),
             fees_paid=Decimal("0"),
             error=None,
@@ -140,6 +141,14 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
     )
     mds = AsyncMock()
     mds.require_fresh_data = AsyncMock(return_value=bundle)
+    mds.require_execution_metadata = AsyncMock(
+        return_value=ExecutionMetadata(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("0.001"),
+            neg_risk=False,
+        )
+    )
 
     ctx = TradingContext(
         user_id=user_id,
@@ -176,7 +185,7 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
                 leader_id=intent.leader_wallet or "",
                 token_id=intent.token_id,
                 side=intent.side,
-                amount=intent.size,
+                amount=intent.notional_usdc if intent.side == "BUY" else intent.size,
                 max_slippage_bps=intent.max_slippage_bps,
                 reason=intent.reason or intent.source,
                 signal_id=intent.signal_id,

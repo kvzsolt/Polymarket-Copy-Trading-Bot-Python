@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from adapters.clock import SystemReceiptClock
+from interfaces.source_time import ReceiptClock
+
 import asyncio
 import contextlib
 from dataclasses import dataclass
@@ -84,6 +87,7 @@ class AlchemyJsonRpcSession:
         sink: EvmEventSink,
         clock: Clock,
         max_pending_events: int = 1024,
+        receipt_clock: ReceiptClock | None = None,
     ) -> None:
         """Initialize a not-yet-started Alchemy session.
 
@@ -104,6 +108,7 @@ class AlchemyJsonRpcSession:
         self._options = options
         self._sink = sink
         self._clock = clock
+        self._receipt_clock = receipt_clock if receipt_clock is not None else SystemReceiptClock()
         self._next_request_id = 1
         self._pending_requests: dict[int, asyncio.Future[object]] = {}
         self._subscriptions: dict[str, _SubscriptionKind] = {}
@@ -315,6 +320,7 @@ class AlchemyJsonRpcSession:
             self._disconnected.set()
 
     async def _handle_frame(self, raw: str | bytes) -> None:
+        receipt = self._receipt_clock.capture()
         try:
             payload = orjson.loads(raw)
         except (orjson.JSONDecodeError, TypeError):
@@ -333,13 +339,13 @@ class AlchemyJsonRpcSession:
         kind = self._subscriptions.get(subscription_id)
         result = params.get("result")
         if kind is _SubscriptionKind.PENDING and isinstance(result, dict):
-            self._enqueue_event(kind, dict(result))
+            self._enqueue_event(kind, {**result, "_source_receipt": receipt})
         elif kind is _SubscriptionKind.HEADS and isinstance(result, dict):
             head = self._parse_head(result)
             if head is not None:
                 self._enqueue_event(kind, head)
         elif kind is _SubscriptionKind.LOGS and isinstance(result, dict):
-            self._enqueue_event(kind, dict(result))
+            self._enqueue_event(kind, {**result, "_source_receipt": receipt})
 
     def _enqueue_event(self, kind: _SubscriptionKind, payload: object) -> None:
         try:

@@ -43,9 +43,12 @@ import asyncio
 import contextlib
 import time
 from collections import deque
+from dataclasses import replace
 from typing import Any, Callable, Coroutine
 
 from clients.onchain_ws import OnchainWebSocket
+from domain.source_time import TransportReceipt
+from interfaces.source_time import BlockTimestampReader
 from services.onchain_detection.mined_fill_deduplicator import MinedFillDeduplicator
 from services.onchain_detection.order_filled_detector import (
     DecodedOrderFilledLog,
@@ -104,6 +107,7 @@ class OnchainDetectionRuntime:
         mined_subscription_params_factory: MinedSubscriptionParamsFactory | None = None,
         queue_maxsize: int = 1000,
         dispatched_cap: int = 10_000,
+        block_timestamp_reader: BlockTimestampReader | None = None,
     ) -> None:
         self._watched = {w.lower() for w in watched_wallets}
         self._ws_url = ws_url
@@ -112,6 +116,7 @@ class OnchainDetectionRuntime:
         self._enable_mined = bool(enable_mined)
         self._pending_config = pending_config or PendingTxConfig()
         self._resolver = condition_id_resolver
+        self._block_timestamp_reader = block_timestamp_reader
         self._websocket_factory = websocket_factory
         self._mined_params_factory = mined_subscription_params_factory
         self._dedupe = MinedFillDeduplicator()
@@ -223,7 +228,11 @@ class OnchainDetectionRuntime:
             )
             return
         condition_id = await self._resolve_condition_id(str(decoded.token_id))
-        event_ts = int(time.time() * 1000)
+        event_ts = (
+            await self._block_timestamp_reader.timestamp_ms(decoded.block_hash)
+            if self._block_timestamp_reader is not None
+            else None
+        )
         signal = build_signal_from_log(
             decoded,
             watched_wallets=self._watched,
@@ -232,6 +241,9 @@ class OnchainDetectionRuntime:
         )
         if signal is None:
             return
+        receipt = log.get("_source_receipt")
+        if isinstance(receipt, TransportReceipt):
+            signal = replace(signal, source_receipt=receipt)
         # If a pending signal for this (tx_hash, leader_wallet) was recorded,
         # mark it superseded so the dispatcher drops the provisional copy in
         # favour of this mined one. Per-leader keying (not tx-wide) ensures a
@@ -243,7 +255,12 @@ class OnchainDetectionRuntime:
     async def _on_pending_tx(self, tx: dict[str, Any]) -> None:
         if not self._enable_pending:
             return
-        now_ms = int(time.time() * 1000)
+        receipt = tx.get("_source_receipt")
+        now_ms = (
+            receipt.wall_timestamp_ms
+            if isinstance(receipt, TransportReceipt)
+            else int(time.time() * 1000)
+        )
         signals = build_signals_from_pending_tx(
             tx,
             watched_wallets=self._watched,
@@ -251,6 +268,8 @@ class OnchainDetectionRuntime:
             config=self._pending_config,
         )
         for signal in signals:
+            if isinstance(receipt, TransportReceipt):
+                signal = replace(signal, source_receipt=receipt)
             # Record the pending (tx_hash, leader_wallet); if a pending for
             # this leader in this tx was already recorded, drop the duplicate
             # (do not double-dispatch). Per-leader keying allows distinct
@@ -316,7 +335,7 @@ class OnchainDetectionRuntime:
                             "onchain_pending_stale_dropped | tx=%s leader=%s age_ms=%s",
                             signal.tx_hash,
                             signal.leader_wallet,
-                            now_ms - signal.event_ts,
+                            None if signal.event_ts is None else now_ms - signal.event_ts,
                         )
                         continue
                     if not _confidence_meets_required(

@@ -7,12 +7,17 @@ module never calls CCXT or a repository mutation method directly.
 
 from __future__ import annotations
 
+from storage.postgres.risk_lot_repository import RiskLotCodec
+
 import logging
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol, cast
 
+from domain.source_time import SourceTimestampParser, TransportReceipt
+from services.metrics import LatencyPhase
+from services.telemetry.latency import PipelineLatency
 from domain.detection import (
     DetectionFinality,
     DetectionMode,
@@ -20,6 +25,7 @@ from domain.detection import (
     TradeSide,
 )
 from services.copy_tasks.domain import CopyTask
+from services.copy_tasks.lots import RiskLotService
 from services.copy_tasks.event_routing import (
     CopyTaskSourceEvent,
     FollowerTaskSnapshot,
@@ -36,7 +42,6 @@ from services.execution.coordinator import (
 from services.onchain_detection.leader_sell_scope_guard import LeaderSellBuyScopeGuard
 
 _ZERO = Decimal("0")
-_MILLISECONDS_THRESHOLD = Decimal("100000000000")
 
 logger = logging.getLogger(__name__)
 
@@ -226,8 +231,11 @@ class DeferredCopyTaskEventHandler:
 class LeaderEventNormalizer:
     """Translate REST/on-chain dictionaries into immutable source events."""
 
-    def __init__(self, *, clock: Clock | None = None) -> None:
+    def __init__(
+        self, *, clock: Clock | None = None, latency: PipelineLatency | None = None
+    ) -> None:
         self._clock = clock or SystemClock()
+        self._latency = latency
 
     def normalize_raw(
         self,
@@ -276,10 +284,13 @@ class LeaderEventNormalizer:
         finality = DetectionFinality.PROVISIONAL if provisional else DetectionFinality.CONFIRMED
         venue_timestamp = self._timestamp(
             self._first_value(raw, "event_ts", "timestamp"),
-            fallback=now,
+            unit=raw.get("timestamp_unit"),
         )
         log_index_raw = raw.get("log_index")
         log_index = None if log_index_raw is None else int(str(log_index_raw))
+        receipt = raw.get("_source_receipt")
+        if receipt is not None and not isinstance(receipt, TransportReceipt):
+            raise ValueError("Source receipt must be validated transport evidence")
         trade = LeaderTradeEvent(
             leader_wallet=str(leader),
             token_id=token_id,
@@ -290,7 +301,8 @@ class LeaderEventNormalizer:
             notional=notional,
             mode=mode,
             finality=finality,
-            detected_at=now,
+            detected_at=receipt.received_at if receipt is not None else now,
+            source_receipt=receipt,
             venue_timestamp=venue_timestamp,
             transaction_hash=(
                 self._first_text(
@@ -312,8 +324,11 @@ class LeaderEventNormalizer:
                 "id",
             ),
         )
+        if self._latency is not None:
+            self._latency.observe(LatencyPhase.SOURCE_DETECTION_TO_NORMALIZED, receipt)
         return CopyTaskSourceEvent(
             trade=trade,
+            normalized_receipt=self._latency.capture() if self._latency is not None else None,
             outcome_label=self._first_text(
                 raw,
                 "outcome",
@@ -400,13 +415,8 @@ class LeaderEventNormalizer:
         return cls._decimal(value, name="optional non-negative decimal")
 
     @classmethod
-    def _timestamp(cls, value: object | None, *, fallback: datetime) -> datetime:
-        if value is None or not str(value).strip():
-            return fallback
-        seconds = cls._decimal(value, name="timestamp")
-        if seconds > _MILLISECONDS_THRESHOLD:
-            seconds /= Decimal("1000")
-        return datetime.fromtimestamp(float(seconds), tz=UTC)
+    def _timestamp(cls, value: object | None, *, unit: object = None) -> datetime | None:
+        return SourceTimestampParser.parse(value, unit=unit)
 
     @staticmethod
     def _aware(value: datetime, *, name: str) -> datetime:
@@ -524,9 +534,11 @@ class TradingContextTaskSnapshotProvider:
         *,
         contexts: Iterable[object],
         balance_reader: FollowerBalanceReader,
+        risk_lots: RiskLotService | None = None,
     ) -> None:
         self._contexts = _TaskContextRegistry(contexts)
         self._balance_reader = balance_reader
+        self._risk_lots = risk_lots
 
     def add_contexts(self, contexts: Iterable[object]) -> None:
         """Register newly discovered follower contexts without replacing state."""
@@ -581,6 +593,19 @@ class TradingContextTaskSnapshotProvider:
             ),
             _ZERO,
         )
+        if event.trade.side is TradeSide.SELL:
+            if self._risk_lots is None:
+                raise TaskSnapshotUnavailable("task inventory ownership is unavailable")
+            held = sum(
+                (
+                    lot.lot.remaining_shares
+                    for lot in await self._risk_lots.list_open(user_id)
+                    if lot.lot.task_id == task.task_id
+                    and lot.lot.market_id == event.trade.condition_id
+                    and lot.lot.outcome_id == event.trade.token_id
+                ),
+                _ZERO,
+            )
         sell_shares = (
             None
             if event.trade.side is TradeSide.SELL and event.leader_sell_fraction is None
@@ -593,11 +618,9 @@ class TradingContextTaskSnapshotProvider:
         if sell_shares is not None and sell_shares <= 0:
             sell_shares = None
         reservations = self._reservations_repo(context)
-        reserved = (
-            _ZERO
-            if reservations is None
-            else Decimal(str(await reservations.sum_active_quote_for_user(user_id)))
-        )
+        if reservations is None:
+            raise TaskSnapshotUnavailable("follower reservation capacity is unavailable")
+        reserved = Decimal(str(await reservations.sum_active_quote_for_user(user_id)))
         return FollowerTaskSnapshot(
             follower_pusd_balance=Decimal(str(balance)),
             follower_reserved_notional=reserved,
@@ -647,6 +670,14 @@ class TradingContextTaskExecutionAdapter:
         context = self._contexts.resolve(task.follower_account)
         return context is not None and getattr(context, "execution_coordinator", None) is not None
 
+    def account_key(self, task: CopyTask) -> str | None:
+        """Resolve wallet aliases to the canonical account queue identity."""
+        context = self._contexts.resolve(task.follower_account)
+        if context is None:
+            return None
+        account = str(getattr(context, "user_id", "") or "").strip().lower()
+        return account or None
+
     async def submit(self, command: TaskExecutionCommand) -> TaskExecutionOutcome:
         """Submit one task command through risk, reservation, and reconciliation."""
 
@@ -656,10 +687,35 @@ class TradingContextTaskExecutionAdapter:
             raise TaskExecutionUnavailable(
                 "copy-task execution requires the existing ExecutionCoordinator"
             )
+        market_data = getattr(context, "market_data_service", None)
+        if market_data is None:
+            return TaskExecutionOutcome(
+                TaskExecutionDisposition.PRE_POST_REJECTED,
+                reason="market_data_unavailable",
+            )
+        try:
+            metadata = await market_data.require_execution_metadata(
+                command.token_id,
+                condition_id=command.condition_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "copy_task_metadata_unavailable",
+                extra={"task_id": command.task.task_id, "error_type": type(exc).__name__},
+            )
+            return TaskExecutionOutcome(
+                TaskExecutionDisposition.PRE_POST_REJECTED,
+                reason="market_metadata_unavailable",
+            )
         recovery_metadata: dict[str, object] = {
             "order_type": command.order_type,
             "price_limit": format(command.price_limit, "f"),
             "task_id": command.task.task_id,
+            "task_version": command.task.version,
+            "task_follower_account": command.task.follower_account,
+            "protective_risk": RiskLotCodec().encode_policy(command.task.protective_risk),
+            "source_promotion_id": command.source_promotion_id,
+            "source_is_provisional": command.source_event.trade.is_provisional,
         }
         if command.task_budget_reservation_id is not None:
             recovery_metadata["task_budget_reservation_id"] = command.task_budget_reservation_id
@@ -687,6 +743,10 @@ class TradingContextTaskExecutionAdapter:
             reason="copy_task",
             recovery_metadata=recovery_metadata,
             metadata={"task_id": command.task.task_id},
+            task_id=command.task.task_id,
+            tick_size=metadata.tick_size,
+            min_order_size=metadata.min_order_size,
+            neg_risk=metadata.neg_risk,
             leader_sell_fraction=(leader_sell_fraction if command.side == "SELL" else None),
             live_position_size=live_position_size,
         )
@@ -758,7 +818,7 @@ class TradingContextTaskExecutionAdapter:
             # authoritative fill identity. Retain until reconciliation emits
             # durable fill/no-fill evidence instead of fabricating one here.
             disposition = TaskExecutionDisposition.ACCEPTED_PENDING
-        return TaskExecutionOutcome(disposition=disposition)
+        return TaskExecutionOutcome(disposition=disposition, reason=result.skip_code or status)
 
 
 __all__ = [

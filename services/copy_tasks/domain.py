@@ -6,6 +6,8 @@ network, database, or exchange I/O and does not import vendor libraries.
 
 from __future__ import annotations
 
+from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time
@@ -405,6 +407,7 @@ class CopyTask:
     market_filter: TaskMarketFilter = field(default_factory=TaskMarketFilter)
     schedule: TaskSchedule = field(default_factory=TaskSchedule)
     sizing: TaskSizingPolicy = field(default_factory=TaskSizingPolicy)
+    protective_risk: ProtectiveRiskPolicy = field(default_factory=ProtectiveRiskPolicy)
     sizing_mode: str = "proportional"
     version: int = 1
     notifications_muted: bool = False

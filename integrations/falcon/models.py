@@ -9,6 +9,34 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping
 
+from domain.performance import PerformanceUnits
+from integrations.falcon.errors import FalconProtocolError
+
+
+@dataclass(frozen=True, slots=True)
+class PnlOutcomeCounts:
+    """Agent 569 counts have explicit integer units; its unversioned rate does not."""
+
+    wins: int | None
+    losses: int | None
+
+    @classmethod
+    def from_mapping(cls, row: Mapping[str, object]) -> "PnlOutcomeCounts":
+        """Validate optional counts without magnitude-based win-rate interpretation."""
+        return cls(cls._count(row.get("wins")), cls._count(row.get("losses")))
+
+    @staticmethod
+    def _count(value: object) -> int | None:
+        try:
+            number = PerformanceUnits.finite(value)
+            if number is None:
+                return None
+            if number < 0 or number != number.to_integral_value():
+                raise ValueError("Invalid count")
+            return int(number)
+        except ValueError:
+            raise FalconProtocolError("Falcon PnL outcome counts are invalid") from None
+
 
 def _first(row: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
@@ -73,10 +101,8 @@ def _datetime(value: Any) -> datetime | None:
 
 
 def _fraction_from_percent(value: Any) -> Decimal | None:
-    number = _decimal(value)
-    if number is None:
-        return None
-    return number / Decimal("100") if abs(number) > Decimal("1") else number
+    """Convert fields documented as percentage points without guessing units."""
+    return PerformanceUnits.win_rate_percent_to_fraction(value)
 
 
 def _decode_categories(value: Any) -> tuple[dict[str, Any], ...]:
@@ -139,13 +165,15 @@ class LeaderboardEntry:
         Returns:
             A normalized immutable leaderboard entry.
         """
-        h_score = _decimal(_first(row, "h_score", "score")) or Decimal("0")
+        h_score = PerformanceUnits.finite(_first(row, "h_score", "score"))
+        if h_score is None or not Decimal(0) <= h_score <= Decimal(100):
+            raise ValueError("Falcon leaderboard requires an h_score between zero and 100")
         return cls(
             wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address", "address")),
             h_score=h_score,
             roi_15d=_decimal(_first(row, "roi_15d", "roi", "return_15d")),
             pnl_15d=_decimal(_first(row, "pnl_15d", "pnl", "realized_pnl_15d")),
-            win_rate_15d=_fraction_from_percent(_first(row, "win_rate_15d", "win_rate")),
+            win_rate_15d=PerformanceUnits.fraction(_first(row, "win_rate_15d", "win_rate")),
             trades_15d=_integer(_first(row, "total_trades_15d", "trades_15d", "trades")),
             sharpe_15d=_decimal(_first(row, "sharpe_15d", "sharpe_ratio", "sharpe")),
             trajectory=str(_first(row, "trajectory", "performance_trend", "flow") or "")
@@ -205,16 +233,16 @@ class Wallet360Snapshot:
             ),
             last_active=_datetime(_first(row, "last_active", "last_trade_at")),
             avg_position_size=_decimal(row.get("avg_position_size")),
-            market_concentration_ratio=_fraction_from_percent(
+            market_concentration_ratio=PerformanceUnits.fraction(
                 row.get("market_concentration_ratio")
             ),
-            max_drawdown=_fraction_from_percent(row.get("max_drawdown")),
-            max_position_pct=_fraction_from_percent(row.get("max_position_pct")),
+            max_drawdown=PerformanceUnits.fraction(row.get("max_drawdown")),
+            max_position_pct=PerformanceUnits.fraction(row.get("max_position_pct")),
             profit_factor=_decimal(row.get("profit_factor")),
             # Wallet360 documents ROI as percentage points (e.g. 3.8743 == 3.8743%).
-            roi=_fraction_from_percent(row.get("roi")),
+            roi=PerformanceUnits.percentage_points_to_fraction(row.get("roi")),
             sharpe_ratio=_decimal(row.get("sharpe_ratio")),
-            statistical_confidence=_fraction_from_percent(row.get("statistical_confidence")),
+            statistical_confidence=PerformanceUnits.fraction(row.get("statistical_confidence")),
             performance_trend=str(row.get("performance_trend") or "").strip().lower() or None,
             sybil_risk_flag=bool(_bool(row.get("sybil_risk_flag")) or False),
             sybil_risk_score=_decimal(row.get("sybil_risk_score")),
@@ -229,8 +257,8 @@ class Wallet360Snapshot:
             markets_traded=_integer(_first(row, "markets_traded", "num_markets_traded")),
             avg_trade_size=_decimal(_first(row, "avg_trade_size", "avg_position_size")),
             total_trades=_integer(row.get("total_trades")),
-            win_rate=_fraction_from_percent(row.get("win_rate")),
-            win_rate_last_30d=_fraction_from_percent(
+            win_rate=PerformanceUnits.fraction(row.get("win_rate")),
+            win_rate_last_30d=PerformanceUnits.fraction(
                 _first(row, "win_rate_last_30d", "win_rate_last_30day")
             ),
             total_pnl=_decimal(row.get("total_pnl")),

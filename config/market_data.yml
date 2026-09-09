@@ -1,3 +1,12 @@
+# Configuration guide — public market-data freshness and fallback policy.
+# Purpose: choose the execution metadata source, bound REST recovery, and decide
+# when WSS quotes/books/ticks are fresh enough to use.
+# Options: primary_source is rest_snapshot | wss; booleans enable bootstrap
+# requirements; ages/timeouts are positive; spread caps are non-negative and
+# 0 disables the corresponding spread check.
+# Trade-offs: tighter ages/spreads reduce stale or adverse decisions but reject
+# more data; longer timeouts/budgets improve recovery on slow networks but add
+# detection-to-action latency. These are public reads, never private order writes.
 # Market-data WSS health monitoring and REST snapshot/bootstrap policy.
 # The compatibility value ``rest_snapshot`` selects metadata-only copy
 # prefetch; `/book` remains scoped to cache recovery and non-copy consumers.
@@ -6,19 +15,41 @@ primary_source: rest_snapshot
 # fetch_start); live round trips measure 520-570 ms, so 500 rejected the very
 # fallback it was meant to provide.
 rest_snapshot_max_age_ms: 1500
+# Network timeout for the snapshot request. Lower frees the hot path sooner;
+# higher tolerates slow providers but must fit inside the total budget.
 rest_snapshot_request_timeout_ms: 1250
+# End-to-end snapshot work budget. Lower bounds latency; higher gives recovery
+# more room. Keep >= request timeout.
 rest_snapshot_total_budget_ms: 2000
 # Copy entries do not consume this spread gate; it remains for non-copy REST
 # snapshot consumers.
 rest_snapshot_max_spread_bps: 0
+# true permits REST to seed/recover the WSS cache; false requires WSS-native data
+# and can prolong cold-start/outage unavailability.
 enable_rest_bootstrap: true
+# Maximum age of a REST bootstrap snapshot. Lower is fresher but easier to reject.
 rest_bootstrap_max_age_ms: 500
+# Per-bootstrap request timeout. Lower fails fast; higher tolerates provider lag.
 rest_bootstrap_request_timeout_ms: 750
+# Total bootstrap budget including processing. Higher improves success at the
+# cost of slower readiness/recovery.
 rest_bootstrap_total_budget_ms: 1000
+# Bootstrap spread ceiling; 0 disables. Lower rejects thin books but may block
+# recovery when liquidity is sparse.
 rest_bootstrap_max_spread_bps: 300
+# true allows REST bootstrap only while the WSS transport is connected, avoiding
+# a REST-only masquerade; false improves outage availability with weaker proof.
 rest_bootstrap_require_wss_connected: true
+# Maximum WSS quote age. Lower rejects quiet snapshots sooner; liveness can keep
+# quiet books executable within the connection-silence policy.
 executable_quote_max_age_seconds: 2.0
+# Maximum WSS order-book age. Lower improves freshness but causes more fallbacks.
 executable_book_max_age_seconds: 2.0
+# Tick metadata age ceiling. Lower catches tick changes sooner at more metadata I/O.
 executable_tick_max_age_seconds: 300.0
+# Maximum heartbeat/pong silence before WSS is unhealthy. Lower detects outages
+# faster but is more sensitive to transient network stalls.
 wss_connection_max_silence_seconds: 20.0
+# Time allowed for a token subscription acknowledgement. Lower bounds startup
+# latency; higher tolerates busy connections.
 subscribe_timeout_seconds: 2.0

@@ -17,6 +17,7 @@ ADDRESS = "0x" + "1" * 40
 
 
 def _overrides() -> dict:
+    """Isolate loader tests from the separately tested task-engine profile."""
     return {
         "database": {"dsn": "postgresql://test:test@localhost/test"},
         "wallet": {
@@ -24,6 +25,7 @@ def _overrides() -> dict:
             "polygon_rpc_url": "https://rpc.invalid",
         },
         "network": {"rpc_url": "https://rpc.invalid"},
+        "copy_trading": {"copy_tasks": {"enabled": False}},
     }
 
 
@@ -732,13 +734,13 @@ def test_pending_copy_confirmation_defaults_load_from_packaged_yaml() -> None:
     packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
     onchain_yaml = packaged["onchain"]
 
-    assert onchain_yaml["pending_copy_confirmation_enabled"] is True
+    assert onchain_yaml["pending_copy_confirmation_enabled"] is False
     assert onchain_yaml["pending_copy_confirmation_deadline_seconds"] == 60.0
     assert onchain_yaml["pending_copy_confirmation_max_tracked"] == 2048
     assert onchain_yaml["pending_copy_auto_unwind_enabled"] is False
 
     onchain = load_config(_overrides()).detection.onchain
-    assert onchain.pending_copy_confirmation_enabled is True
+    assert onchain.pending_copy_confirmation_enabled is False
     assert onchain.pending_copy_confirmation_deadline_seconds == 60.0
     assert onchain.pending_copy_confirmation_max_tracked == 2048
     assert onchain.pending_copy_auto_unwind_enabled is False
@@ -916,7 +918,7 @@ def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
     assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
     onchain = config.detection.onchain
     assert onchain.confirmed_source == "logs_only"
-    assert onchain.pending_tx_provider == "alchemy"
+    assert onchain.pending_tx_provider == "generic"
     assert onchain.pending_tx_max_signal_age_ms == 700
     assert onchain.pending_tx_detection_confidence_required == "pending_probable"
     assert onchain.pending_tx_hashes_only is False

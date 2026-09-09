@@ -1,3 +1,8 @@
+# Configuration guide — live sizing override.
+# Purpose: keep order amounts independent of leader trust-score multipliers.
+# Options: enable_trust_size_multipliers is true | false.
+# Trade-offs: false is deterministic and avoids scorer-error amplification;
+# true sizes down/up by bounded trust values but couples capital to score quality.
 # Live profile: trust-score size multipliers stay off — the copy size comes
 # from the sizing mode and the account caps alone, with no scoring feedback.
 enable_trust_size_multipliers: false

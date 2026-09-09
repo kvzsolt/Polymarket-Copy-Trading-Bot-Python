@@ -109,7 +109,8 @@ async def test_partial_exit_is_exactly_once_and_closes_only_at_zero_remaining() 
     assert first.created is True
     assert first.lot.lot.remaining_shares == Decimal("6")
     assert first.lot.status is RiskLotStatus.OPEN
-    assert first.lot.lot.triggered_levels == ("tp:0",)
+    assert first.lot.lot.triggered_levels == ()
+    assert first.lot.lot.pending_exits[0].remaining_shares == Decimal("1")
     assert duplicate.created is False
     assert duplicate.lot == first.lot
     assert terminal.lot.lot.remaining_shares == Decimal("0")

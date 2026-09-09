@@ -16,7 +16,15 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from integrations.falcon.errors import FalconError
+from integrations.falcon.errors import (
+    FalconError,
+    FalconAuthenticationError,
+    FalconBadRequestError,
+    FalconConfigurationError,
+    FalconPermissionError,
+    FalconProtocolError,
+)
+from integrations.falcon.models import PnlOutcomeCounts
 from integrations.falcon.models import (
     MARKET_TOXICITY_FLAGS,
     LeaderboardEntry,
@@ -437,6 +445,8 @@ class FalconCandidateService:
             if isinstance(analysis, BaseException):
                 if isinstance(analysis, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                     raise analysis
+                if isinstance(analysis, FalconError) and not analysis.retryable:
+                    raise type(analysis)("Falcon discovery evidence is unavailable") from None
                 rejected.append(
                     RejectedTrader(
                         wallet=entry.wallet,
@@ -576,6 +586,8 @@ class FalconCandidateService:
             if isinstance(result, BaseException):
                 if not isinstance(result, FalconError):
                     raise result
+                if not result.retryable:
+                    raise type(result)("Falcon discovery shortlist is unavailable") from None
                 first_error = first_error or result
                 warnings.append(f"leaderboard:{mode}:{type(result).__name__}")
                 continue
@@ -621,6 +633,7 @@ class FalconCandidateService:
     ) -> tuple[RankedTrader | None, RejectedTrader | None]:
         async with self._semaphore:
             context = await self._load_context(entry, now, official_rank)
+        self._require_usable_provider_evidence(context.source_errors)
         reasons, evidence, metrics = self._hard_gate_inputs(context, now)
         avg_position = self._avg_position_size(context.wallet360)
         bankroll_fit = evaluate_bankroll_compatibility(
@@ -687,8 +700,13 @@ class FalconCandidateService:
                 return window, select_latest_wallet360(rows, expected_window_days=window)
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
-            except BaseException as exc:
-                source_errors.append(f"wallet360_{window}:{type(exc).__name__}")
+            except Exception as exc:
+                error_type = (
+                    "FalconProtocolError"
+                    if isinstance(exc, (TypeError, ValueError))
+                    else type(exc).__name__
+                )
+                source_errors.append(f"wallet360_{window}:{error_type}")
                 return window, None
 
         wallet_rows, trades_result, all_time_result, pnl_result = await asyncio.gather(
@@ -769,7 +787,11 @@ class FalconCandidateService:
             rows = await result if inspect.isawaitable(result) else result
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException:
+        except FalconError as exc:
+            if not exc.retryable:
+                raise type(exc)("Falcon corroborating leaderboard is unavailable") from None
+            return {}
+        except Exception:
             return {}
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
             return {}
@@ -829,7 +851,7 @@ class FalconCandidateService:
                 )
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
-            except BaseException as exc:
+            except Exception as exc:
                 errors.append(f"price_jumps:{type(exc).__name__}")
                 return 0
 
@@ -853,7 +875,7 @@ class FalconCandidateService:
             )
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(f"trades:{type(exc).__name__}")
             return []
         parsed: list[TradeSnapshot] = []
@@ -886,7 +908,7 @@ class FalconCandidateService:
             rows = await self._client.wallet_stats_all_time(wallet)
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(f"all_time:{type(exc).__name__}")
             return None
         snapshots = [WalletAllTimeSnapshot.from_mapping(row) for row in rows]
@@ -912,7 +934,7 @@ class FalconCandidateService:
             )
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(f"pnl:{type(exc).__name__}")
             return []
 
@@ -950,7 +972,7 @@ class FalconCandidateService:
             rows = await self._client.markets(condition_id=condition_id, limit=10)
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             return None, f"market:{type(exc).__name__}"
         try:
             candidates = [MarketSnapshot.from_mapping(row) for row in rows]
@@ -969,7 +991,7 @@ class FalconCandidateService:
             rows = await self._client.market_360(condition_id=condition_id, limit=10)
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             return None, f"market360:{type(exc).__name__}"
         try:
             quality = select_latest_market360(rows)
@@ -987,7 +1009,7 @@ class FalconCandidateService:
             return await self._capacity_probe.visible_capacity_usdc(trade, market)  # type: ignore[union-attr]
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(f"depth:{type(exc).__name__}")
             return None
 
@@ -1222,13 +1244,24 @@ class FalconCandidateService:
         return None
 
     @staticmethod
+    def _require_usable_provider_evidence(errors: Sequence[str]) -> None:
+        """Fail the cycle on authentication, configuration or malformed provider evidence."""
+        for error_type in (
+            FalconAuthenticationError,
+            FalconPermissionError,
+            FalconConfigurationError,
+            FalconBadRequestError,
+            FalconProtocolError,
+        ):
+            if any(error.rsplit(":", 1)[-1] == error_type.__name__ for error in errors):
+                raise error_type("Falcon discovery evidence is unavailable")
+
+    @staticmethod
     def _pnl_summary(rows: Sequence[Mapping[str, Any]]) -> tuple[Decimal, Decimal, Decimal | None]:
         total_pnl = _ZERO
         total_invested = _ZERO
         wins = 0
         losses = 0
-        weighted_win_numerator = _ZERO
-        weighted_win_denominator = _ZERO
         for row in rows:
             pnl = _safe_decimal(row.get("pnl"))
             invested = _safe_decimal(row.get("invested"))
@@ -1236,22 +1269,12 @@ class FalconCandidateService:
                 total_pnl += pnl
             if invested is not None and invested > 0:
                 total_invested += invested
-            row_wins = int(_safe_decimal(row.get("wins")) or 0)
-            row_losses = int(_safe_decimal(row.get("losses")) or 0)
-            wins += max(0, row_wins)
-            losses += max(0, row_losses)
-            row_trades = _safe_decimal(row.get("trades")) or _ZERO
-            row_win_rate = _safe_decimal(row.get("win_rate"))
-            if row_win_rate is not None and row_trades > 0:
-                row_win_rate = (
-                    row_win_rate / Decimal("100") if abs(row_win_rate) > _ONE else row_win_rate
-                )
-                weighted_win_numerator += _clamp(row_win_rate) * row_trades
-                weighted_win_denominator += row_trades
+            counts = PnlOutcomeCounts.from_mapping(row)
+            if counts.wins is not None and counts.losses is not None:
+                wins += counts.wins
+                losses += counts.losses
         if wins + losses > 0:
             win_rate = Decimal(wins) / Decimal(wins + losses)
-        elif weighted_win_denominator > 0:
-            win_rate = weighted_win_numerator / weighted_win_denominator
         else:
             win_rate = None
         return total_pnl, total_invested, win_rate
@@ -1273,7 +1296,7 @@ class FalconCandidateService:
         else:
             roi_score = Decimal("0.5") if total_pnl == 0 else (_ONE if total_pnl > 0 else _ZERO)
         win_score = (
-            _clamp(((win_rate or Decimal("0.5")) - Decimal("0.40")) / Decimal("0.40"))
+            _clamp((win_rate - Decimal("0.40")) / Decimal("0.40"))
             if win_rate is not None
             else Decimal("0.5")
         )
@@ -1346,7 +1369,9 @@ class FalconCandidateService:
         )
         profit_factor = short_window.profit_factor if short_window else None
         roi_score = _clamp(((roi or _ZERO) + Decimal("0.10")) / Decimal("0.50"))
-        win_score = _clamp(((win_rate or Decimal("0.5")) - Decimal("0.45")) / Decimal("0.30"))
+        win_score = _clamp(
+            ((Decimal("0.5") if win_rate is None else win_rate) - Decimal("0.45")) / Decimal("0.30")
+        )
         pf_score = _clamp(((profit_factor or Decimal("1")) - Decimal("0.8")) / Decimal("1.2"))
         base_performance = (
             roi_score * Decimal("0.4") + win_score * Decimal("0.3") + pf_score * Decimal("0.3")

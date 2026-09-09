@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 
 from application.trading_context import TradingContext
+from integrations.polymarket.models import VenueFill
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -80,7 +81,8 @@ async def _pg_pool():
 
 
 class _FakeClobGateway:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, confirmed_fills=()):
+        self._fills = tuple(confirmed_fills)
         self._responses = responses or dict(_FILL_RESPONSES)
 
     async def get_order(self, order_id: str):
@@ -98,14 +100,22 @@ class _FakeClobGateway:
     async def submit_limit_order(self, request):
         return None
 
-    async def get_fills(self, market=None):
-        return []
+    async def get_fills(self, market=None, *, order_id=None, trade_id=None):
+        return [fill for fill in self._fills if order_id is None or fill.order_id == order_id]
+
+    async def list_open_orders(self, *, order_id=None, market=None):
+        return [
+            response
+            for identifier, response in self._responses.items()
+            if (order_id is None or identifier == order_id)
+            and response["status"] == "partially_filled"
+        ]
 
     async def cancel_order(self, order_id: str):
         return None
 
     async def check_compatibility(self):
-        return {"sdk_available": True}
+        return {"available": True, "authenticated": True, "live_execution_ready": True}
 
 
 class _FakeClient:
@@ -187,7 +197,24 @@ def _make_context(pool, *, execution_service=None, risk_triggers_repo=None, clob
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=execution_service or _FakeExecutionService(),
-        extra={"slippage_tolerance_bps": 50, "clob_gateway": clob_gateway or _FakeClobGateway()},
+        extra={
+            "slippage_tolerance_bps": 50,
+            "clob_gateway": clob_gateway
+            or _FakeClobGateway(
+                confirmed_fills=(
+                    VenueFill(
+                        fill_id="confirmed-risk-dup",
+                        order_id="venue-risk-dup-1",
+                        token_id=FAKE_TOKEN_ID,
+                        side="SELL",
+                        size=Decimal(10),
+                        price=Decimal("0.30"),
+                        fee=Decimal(0),
+                        status="CONFIRMED",
+                    ),
+                )
+            ),
+        },
     )
 
 

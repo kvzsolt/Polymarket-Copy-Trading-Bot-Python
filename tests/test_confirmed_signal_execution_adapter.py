@@ -113,7 +113,7 @@ async def test_adapter_emits_only_authoritative_confirmed_signal() -> None:
     assert signal.usdc_size == Decimal("2")
     assert signal.price == Decimal("0.5")
     assert signal.exchange == _EXCHANGE
-    assert signal.event_ts == 1_786_615_200_000
+    assert signal.event_ts is None
 
 
 @pytest.mark.asyncio

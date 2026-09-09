@@ -31,6 +31,7 @@ class LeaderSellTargetRepo:
         token_id: str,
         source_signal_id: str,
         intent_payload: dict[str, object],
+        task_id: str | None = None,
     ) -> LeaderSellTarget:
         """Persist a fresh target and atomically increment its generation.
 
@@ -56,20 +57,21 @@ class LeaderSellTargetRepo:
                 """
                 INSERT INTO leader_sell_targets (
                     user_id, leader_wallet, condition_id, token_id,
-                    generation, source_signal_id, intent_json, updated_at
-                ) VALUES ($1, $2, $3, $4, 1, $5, $6::jsonb, now())
-                ON CONFLICT (user_id, leader_wallet, condition_id, token_id)
+                    generation, source_signal_id, intent_json, updated_at, task_id
+                ) VALUES ($1, $2, $3, $4, 1, $5, $6::jsonb, now(), $7)
+                ON CONFLICT (user_id, leader_wallet, condition_id, token_id, task_id)
                 DO UPDATE SET
                     generation = leader_sell_targets.generation + 1,
                     source_signal_id = EXCLUDED.source_signal_id,
                     intent_json = EXCLUDED.intent_json,
                     updated_at = now()
                 RETURNING user_id, leader_wallet, condition_id, token_id,
-                          generation, source_signal_id, intent_json
+                          generation, source_signal_id, intent_json, task_id
                 """,
                 *scope,
                 signal,
                 encoded,
+                task_id or "",
             )
         if row is None:
             raise RuntimeError("leader SELL target upsert returned no row")
@@ -82,6 +84,7 @@ class LeaderSellTargetRepo:
         leader_wallet: str,
         condition_id: str,
         token_id: str,
+        task_id: str | None = None,
     ) -> LeaderSellTarget | None:
         """Return the latest target for one normalized scope.
 
@@ -100,12 +103,13 @@ class LeaderSellTargetRepo:
             row = await connection.fetchrow(
                 """
                 SELECT user_id, leader_wallet, condition_id, token_id,
-                       generation, source_signal_id, intent_json
+                       generation, source_signal_id, intent_json, task_id
                 FROM leader_sell_targets
                 WHERE user_id = $1 AND leader_wallet = $2
-                  AND condition_id = $3 AND token_id = $4
+                  AND condition_id = $3 AND token_id = $4 AND task_id = $5
                 """,
                 *scope,
+                task_id or "",
             )
         return self._target(row) if row is not None else None
 
@@ -133,8 +137,8 @@ class LeaderSellTargetRepo:
                 """
                 INSERT INTO leader_sell_target_redrives (
                     user_id, leader_wallet, condition_id, token_id,
-                    generation, released_reservation_id, claimed_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, now())
+                    generation, released_reservation_id, claimed_at, task_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, now(), $7)
                 ON CONFLICT DO NOTHING
                 RETURNING 1
                 """,
@@ -144,6 +148,7 @@ class LeaderSellTargetRepo:
                 target.token_id,
                 int(target.generation),
                 reservation_id,
+                target.task_id or "",
             )
         return value == 1
 
@@ -164,6 +169,7 @@ class LeaderSellTargetRepo:
             generation=int(str(row["generation"])),
             source_signal_id=str(row["source_signal_id"]),
             intent_payload=dict(decoded),
+            task_id=str(row["task_id"]) or None,
         )
 
     @staticmethod

@@ -1,7 +1,14 @@
+# Configuration guide — example copy-task override.
+# Purpose: demonstrate environment-specific v1 task-engine activation without
+# duplicating trader wallets or strategies.
+# Options: copy_tasks.enabled is true | false.
+# Trade-offs: true adds task workers, budgets, and reentry locks but requires
+# polling detection today; false keeps the simpler account-level pipeline.
 # Example environment override for the global copy-trading engine.
 #
 # Followed leaders are configured in config/traders/<fantasy-name>.yml, not
 # here. Use this file only to override engine settings for the example
 # environment.
 copy_tasks:
+  # Keep example task seeding/workers disabled.
   enabled: false

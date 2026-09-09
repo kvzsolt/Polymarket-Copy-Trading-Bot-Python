@@ -23,6 +23,8 @@ carried in the request but never logged here.
 
 from __future__ import annotations
 
+from interfaces.source_time import BlockTimestampReader
+
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Coroutine, Protocol
@@ -228,6 +230,7 @@ class ConfirmedSourceBuilder:
         exchange_addresses: tuple[str, ...],
         state_store_provider: StateStoreProvider,
         bootstrap: PolygonSourceRuntimeBootstrap | None = None,
+        block_timestamp_reader_factory: Callable[[], BlockTimestampReader] | None = None,
     ) -> None:
         """Store the exchange filter, state-store provider, and composer.
 
@@ -243,6 +246,7 @@ class ConfirmedSourceBuilder:
         self._exchange_addresses = tuple(exchange_addresses)
         self._state_store_provider = state_store_provider
         self._bootstrap = bootstrap if bootstrap is not None else PolygonSourceRuntimeBootstrap()
+        self._block_timestamp_reader_factory = block_timestamp_reader_factory
 
     @property
     def mode(self) -> DetectionMode:
@@ -291,6 +295,13 @@ class ConfirmedSourceBuilder:
             exchange_addresses=self._exchange_addresses,
             watched_wallets=request.watched_wallets,
         )
+        if self._block_timestamp_reader_factory is not None:
+            return self._bootstrap.build(
+                config,
+                request.signal_sink,
+                state_store=state_store,
+                block_timestamp_reader=self._block_timestamp_reader_factory(),
+            )
         return self._bootstrap.build(config, request.signal_sink, state_store=state_store)
 
 
@@ -316,6 +327,7 @@ class LogsOnlyConfirmedSourceBuilder:
         condition_id_resolver: ConditionIdResolver,
         runtime_factory: Callable[..., DetectionSourceRuntime] = OnchainDetectionRuntime,
         websocket_factory: Callable[..., Any] = OnchainWebSocket,
+        block_timestamp_reader_factory: Callable[[], BlockTimestampReader] | None = None,
     ) -> None:
         """Store the exchange filter and the gen-1 runtime constructors.
 
@@ -333,6 +345,7 @@ class LogsOnlyConfirmedSourceBuilder:
         self._condition_id_resolver = condition_id_resolver
         self._runtime_factory = runtime_factory
         self._websocket_factory = websocket_factory
+        self._block_timestamp_reader_factory = block_timestamp_reader_factory
 
     @property
     def mode(self) -> DetectionMode:
@@ -377,6 +390,11 @@ class LogsOnlyConfirmedSourceBuilder:
             condition_id_resolver=self._condition_id_resolver,
             websocket_factory=self._websocket_factory,
             mined_subscription_params_factory=self._mined_subscription_params,
+            block_timestamp_reader=(
+                self._block_timestamp_reader_factory()
+                if self._block_timestamp_reader_factory is not None
+                else None
+            ),
         )
 
 

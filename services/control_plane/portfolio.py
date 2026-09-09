@@ -62,8 +62,9 @@ class PortfolioAccountSnapshot:
     aliases: tuple[str, ...]
     cash_usdc: Decimal
     reserved_usdc: Decimal
-    positions_cost_usdc: Decimal
+    positions_cost_usdc: Decimal | None
     position_count: int
+    marked_inventory_usdc: Decimal | None = None
 
     def __post_init__(self) -> None:
         """Validate identities and non-negative exact amounts."""
@@ -75,10 +76,14 @@ class PortfolioAccountSnapshot:
         for value in (
             self.cash_usdc,
             self.reserved_usdc,
-            self.positions_cost_usdc,
         ):
             if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
                 raise ValueError("portfolio amounts must be non-negative finite decimals")
+        for valuation in (self.positions_cost_usdc, self.marked_inventory_usdc):
+            if valuation is not None and (
+                not isinstance(valuation, Decimal) or not valuation.is_finite() or valuation < 0
+            ):
+                raise ValueError("Portfolio valuations must be finite non-negative decimals")
         if isinstance(self.position_count, bool) or self.position_count < 0:
             raise ValueError("position count must be a non-negative integer")
 
@@ -133,19 +138,30 @@ class PortfolioSnapshotCache:
         snapshot, observed_at = record
         stale = self._clock.now() - observed_at > self._stale_after
         copyable = max(Decimal("0"), snapshot.cash_usdc - snapshot.reserved_usdc)
-        equity = snapshot.cash_usdc + snapshot.positions_cost_usdc
+        marked_value = snapshot.marked_inventory_usdc
+        equity = None if marked_value is None else snapshot.cash_usdc + marked_value
+        unrealized = (
+            None
+            if marked_value is None or snapshot.positions_cost_usdc is None
+            else marked_value - snapshot.positions_cost_usdc
+        )
         return PortfolioView(
             follower_account=snapshot.follower_account,
             cash_usdc=format(snapshot.cash_usdc, "f"),
             reserved_usdc=format(snapshot.reserved_usdc, "f"),
-            positions_value_usdc=format(snapshot.positions_cost_usdc, "f"),
-            equity_usdc=format(equity, "f"),
+            positions_value_usdc=None if marked_value is None else format(marked_value, "f"),
+            equity_usdc=None if equity is None else format(equity, "f"),
+            positions_cost_usdc=(
+                None
+                if snapshot.positions_cost_usdc is None
+                else format(snapshot.positions_cost_usdc, "f")
+            ),
             observed_at=observed_at,
             stale=stale,
             copyable_balance_usdc=format(copyable, "f"),
             position_count=snapshot.position_count,
-            valuation_basis="cost_basis",
-            unrealized_pnl_usdc=None,
+            valuation_basis="unavailable" if marked_value is None else "market_mark",
+            unrealized_pnl_usdc=None if unrealized is None else format(unrealized, "f"),
         )
 
 

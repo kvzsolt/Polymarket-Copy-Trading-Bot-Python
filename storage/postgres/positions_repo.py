@@ -35,10 +35,13 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import TypeAlias
 
 import asyncpg
 
 from ports.repositories import AbstractPositionRepository
+from domain.cost_basis import PositionCostBasis
+from domain.position_ownership import PositionOwnership
 from utils import is_valid_clob_token_id
 from utils.logger import get_logger
 
@@ -50,7 +53,7 @@ logger = get_logger("PositionsRepo")
 # the DB-side hash CPU cost and the asyncpg str→bytea type-mismatch
 # surface — Python ``int`` maps natively to PG ``bigint``.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
-PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
+PostgresConnection: TypeAlias = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -356,6 +359,8 @@ class PositionsRepo(AbstractPositionRepository):
             new_size = current.size_tokens + fill_size
             if new_size > 0 and current.size_tokens <= 0:
                 avg = fill_price
+            elif PositionCostBasis.from_value(current.avg_entry_price).entry_price is None:
+                avg = Decimal("0")
             elif new_size > 0:
                 avg = (
                     (current.size_tokens * current.avg_entry_price) + (fill_size * fill_price)
@@ -368,7 +373,9 @@ class PositionsRepo(AbstractPositionRepository):
                 user_id=current.user_id,
                 condition_id=current.condition_id,
                 token_id=token_id or current.token_id,
-                leader_id=leader_id or current.leader_id,
+                leader_id=PositionOwnership.after_buy(
+                    current.leader_id, leader_id, current.size_tokens
+                ),
                 size_tokens=new_size,
                 avg_entry_price=avg,
             )

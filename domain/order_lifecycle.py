@@ -151,6 +151,10 @@ class OrderIntent:
     live_position_size: Decimal | None = None
     min_order_size: Decimal | None = None
     round_up_to_minimum: bool = False
+    task_id: str | None = None
+    protective_lot_id: str | None = None
+    max_market_notional: Decimal | None = None
+    max_open_markets: int = 0
 
 
 @dataclass(frozen=True)

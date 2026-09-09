@@ -9,14 +9,19 @@ import uuid
 
 import asyncpg
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from domain.position_ownership import PositionOwnership
+from domain.cost_basis import PositionCostBasis
 from decimal import Decimal, ROUND_DOWN
-from typing import Any
+from typing import Any, Callable
 
 from config.app_config import AppConfig, ExecutionConfig
 from application.copy_trade_service import CopyTradeIdentityBuilder
 from domain.execution import ExecutionOrderType, LeaderPriceBand
 from domain.models import TradeSignal
-from domain.units import BASIS_POINTS_PER_UNIT, UNIX_MILLISECONDS_THRESHOLD
+from domain.source_time import SourceTimestampParser
+from services.copy_tasks.source_freshness import SourceFreshnessPolicy
+from domain.units import BASIS_POINTS_PER_UNIT
 from application.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.execution.reconciliation_service import ReconciliationService
@@ -26,6 +31,7 @@ from services.execution.pending_order_reconciliation import (
 from services.execution.types import ExecutionAmountProjection
 from services.executionService import ExecutionRequest
 from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
+from services.leader_performance import FollowerLeaderKey
 from services.order_sizing import MinimumOrderPolicy
 from services.telemetry import (
     ExecutionTelemetryEmitter,
@@ -34,11 +40,11 @@ from services.telemetry import (
 )
 from domain.position_key import PositionKey
 from services.risk.risk_engine import headroom_for_buy
+from services.risk.account_snapshot import AccountRiskSnapshot, AccountRiskSnapshotBuilder
+from domain.performance import PerformanceUnits
 from storage.postgres.fills_repo import FillRecord
 from storage.postgres.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
-from utils.dayEquity import get_day_start_equity
-from utils.fetchData import fetch_data
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
     get_logger,
@@ -140,7 +146,9 @@ def _resolve_entry_drift_pct(app_config: Any, leader_id: str) -> float:
         The per-leader band when the configuration can resolve one, otherwise
         the execution-layer value, otherwise the typed default.
     """
-    resolver = getattr(app_config, "entry_price_drift_pct_for_leader", None)
+    resolver: Callable[[str], float] | None = getattr(
+        app_config, "entry_price_drift_pct_for_leader", None
+    )
     if callable(resolver) and leader_id:
         return float(resolver(leader_id))
     return float(
@@ -251,6 +259,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             task_budget_settlement=task_budget_settlement,
             telemetry=_execution_telemetry(context),
             leader_sell_target_service=context.extra.get("leader_sell_target_service"),
+            accounted_fill_reader=context.extra.get("accounted_fill_reader"),
         )
         context.extra["_reconciliation_service"] = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
@@ -834,40 +843,9 @@ async def _fetch_live_position_size(
     *,
     token_id: str,
 ) -> Decimal | None:
-    wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
-    if not wallet:
+    if context.holdings_reader is None:
         return None
-
-    try:
-        positions = await fetch_data(
-            f"https://data-api.polymarket.com/positions?user={wallet}",
-            silent=True,
-        )
-    except Exception as exc:
-        logger.warning(
-            "live_position_sync_fetch_failed | user_id=%s token=%s error=%s",
-            context.user_id,
-            token_id,
-            repr(exc),
-        )
-        return None
-
-    live_size = Decimal("0")
-    if isinstance(positions, list):
-        for position in positions:
-            if not isinstance(position, dict):
-                continue
-            live_token_id = str(
-                position.get("asset") or position.get("tokenID") or position.get("token_id") or ""
-            ).strip()
-            if live_token_id != token_id:
-                continue
-            try:
-                live_size = Decimal(str(position.get("size") or "0"))
-            except Exception:
-                live_size = Decimal("0")
-            break
-    return live_size
+    return await context.holdings_reader.shares(context.wallet_address, token_id)
 
 
 async def _sync_sell_position_from_live_holdings(
@@ -908,7 +886,11 @@ async def _sync_sell_position_from_live_holdings(
             user_id=context.user_id,
             condition_id=condition_id,
             token_id=token_id,
-            leader_id=leader_id,
+            leader_id=PositionOwnership.after_snapshot(
+                existing.leader_id if existing is not None else None,
+                existing.size_tokens if existing is not None else Decimal(0),
+                live_size,
+            ),
             size_tokens=live_size,
             avg_entry_price=Decimal(str(avg_entry_price or 0)),
         )
@@ -1119,15 +1101,6 @@ def _seed_position_pct_cap_snapshot_if_stale(
     seed_position_pct_cap_snapshot(context, balance_usdc)
 
 
-def _to_optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _max_non_terminal_failure_attempts(context: TradingContext) -> int:
     raw = _trade_config(context).execution.non_terminal_failure_max_attempts
     try:
@@ -1184,13 +1157,6 @@ def _trade_config(context: TradingContext) -> AppConfig:
     if config is None:
         raise RuntimeError("TradingContext.config is required for live tier gating")
     return config
-
-
-def _position_notional_usdc(position: Any) -> Decimal:
-    size_tokens = _to_decimal(getattr(position, "size_tokens", 0))
-    avg_entry_price = _to_decimal(getattr(position, "avg_entry_price", 0))
-    notional = size_tokens * avg_entry_price
-    return notional if notional > 0 else Decimal("0")
 
 
 def _extract_leader_sell_fraction(raw_trade: dict[str, Any]) -> Decimal | None:
@@ -1301,64 +1267,30 @@ def _resolve_leader_sell_tokens(
     return target
 
 
-class _BalanceSnapshot:
-    """Cached balance + exposure data shared across cap resolvers."""
-
-    __slots__ = (
-        "free_cash_usdc",
-        "equity_usdc",
-        "total_exposure_usdc",
-        "market_exposure_usdc",
-        "leader_exposure_usdc",
-        "open_positions_count",
-    )
-
-    def __init__(
-        self,
-        free_cash_usdc: Decimal,
-        total_exposure_usdc: Decimal,
-        market_exposure_usdc: Decimal,
-        leader_exposure_usdc: Decimal,
-        open_positions_count: int,
-    ) -> None:
-        self.free_cash_usdc = free_cash_usdc
-        self.total_exposure_usdc = total_exposure_usdc
-        self.market_exposure_usdc = market_exposure_usdc
-        self.leader_exposure_usdc = leader_exposure_usdc
-        self.equity_usdc = free_cash_usdc + total_exposure_usdc
-        self.open_positions_count = open_positions_count
-
-
 async def _fetch_balance_snapshot(
     context: TradingContext,
     condition_id: str,
     leader_id: str,
-) -> _BalanceSnapshot | None:
-    """Single balance + positions fetch shared by both cap resolvers."""
+) -> AccountRiskSnapshot | None:
+    """Fetch cash and scoped inventory once; keep missing marks and cost distinct."""
     balance_usdc = await get_my_balance(_funder_wallet_address(context))
-    if balance_usdc is None:
+    try:
+        free_cash = PerformanceUnits.finite(balance_usdc)
+    except ValueError:
         return None
-
-    free_cash_usdc = Decimal(str(balance_usdc))
-    _seed_position_pct_cap_snapshot_if_stale(context, free_cash_usdc)
-    open_positions = await context.positions_repo.list_open_positions(context.user_id)
-    total_exposure_usdc = Decimal("0")
-    market_exposure_usdc = Decimal("0")
-    leader_exposure_usdc = Decimal("0")
-    for position in open_positions:
-        position_notional = _position_notional_usdc(position)
-        total_exposure_usdc += position_notional
-        if str(getattr(position, "condition_id", "") or "") == condition_id:
-            market_exposure_usdc += position_notional
-        if str(getattr(position, "leader_id", "") or "") == leader_id:
-            leader_exposure_usdc += position_notional
-
-    return _BalanceSnapshot(
-        free_cash_usdc=free_cash_usdc,
-        total_exposure_usdc=total_exposure_usdc,
-        market_exposure_usdc=market_exposure_usdc,
-        leader_exposure_usdc=leader_exposure_usdc,
-        open_positions_count=len(open_positions),
+    if free_cash is None or free_cash < 0:
+        return None
+    _seed_position_pct_cap_snapshot_if_stale(context, free_cash)
+    positions = await context.positions_repo.list_open_positions(context.user_id)
+    return AccountRiskSnapshotBuilder(
+        context.market_quotes,
+        max_age_seconds=_trade_config(context).market_data.executable_quote_max_age_seconds,
+    ).build(
+        account=context.user_id,
+        free_cash=free_cash,
+        positions=positions,
+        condition_id=condition_id,
+        leader_id=leader_id,
     )
 
 
@@ -1382,7 +1314,7 @@ async def _position_pct_cap_balance_usdc(context: TradingContext) -> Decimal | N
 async def _resolve_position_pct_cap(
     context: TradingContext,
     signal: TradeSignal,
-    snapshot: _BalanceSnapshot,
+    snapshot: AccountRiskSnapshot,
 ) -> _BuyRiskCap:
     max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
@@ -1432,14 +1364,32 @@ async def _resolve_buy_risk_cap(
     context: TradingContext,
     leader_id: str,
     signal: TradeSignal,
-    snapshot: _BalanceSnapshot,
+    snapshot: AccountRiskSnapshot,
 ) -> _BuyRiskCap:
     equity_usdc = snapshot.equity_usdc
     free_cash_usdc = snapshot.free_cash_usdc
-
-    day_start_equity = Decimal(str(_trade_config(context).risk.day_start_equity_usdc or 0))
-    if day_start_equity <= 0:
-        day_start_equity = get_day_start_equity(equity_usdc)
+    missing_reason = None
+    if equity_usdc is None:
+        missing_reason = "marked_equity_unavailable"
+    elif (
+        snapshot.total_exposure_usdc is None
+        or snapshot.market_exposure_usdc is None
+        or snapshot.leader_exposure_usdc is None
+    ):
+        missing_reason = "position_cost_basis_unavailable"
+    day_start_equity = Decimal(str(_trade_config(context).risk.day_start_equity_usdc))
+    if missing_reason is None and day_start_equity <= 0:
+        missing_reason = "account_day_start_equity_unavailable"
+    if missing_reason is not None:
+        return _BuyRiskCap(
+            allow=False,
+            reason=missing_reason,
+            policy_name="account_cap",
+            cap_notional_usdc=Decimal(0),
+        )
+    assert equity_usdc is not None
+    assert snapshot.market_exposure_usdc is not None
+    assert snapshot.leader_exposure_usdc is not None
     daily_loss_usdc = max(Decimal("0"), day_start_equity - equity_usdc)
 
     # The active pipeline does not yet persist per-position categories, so
@@ -1548,12 +1498,13 @@ def normalize_signals(
         if usdc_size <= 0 and size > 0 and price > 0:
             usdc_size = size * price
 
-        ts_raw = raw.get("timestamp") or int(time.time())
-        ts = (
-            int(float(ts_raw) / 1000)
-            if float(ts_raw) > UNIX_MILLISECONDS_THRESHOLD
-            else int(float(ts_raw))
-        )
+        try:
+            source_time = SourceTimestampParser.parse(
+                raw.get("timestamp"), unit=raw.get("timestamp_unit")
+            )
+        except ValueError:
+            source_time = None
+        ts = None if source_time is None else int(source_time.timestamp())
 
         signal = TradeSignal(
             leader_id=leader_id,
@@ -1589,6 +1540,28 @@ async def _reconcile_one(
         return False
 
     reconciler = get_reconciliation_service(context)
+    request = record.get("request")
+    signal_id = str(request.get("signal_id") or "") if isinstance(request, dict) else ""
+    is_risk_exit = side == "SELL" and (
+        signal_id.startswith("risk:") or str(record.get("trade_key") or "").startswith("risk:")
+    )
+    if is_risk_exit:
+        risk_record = record
+        if not isinstance(request, dict):
+            persisted = await context.orders_repo.get_by_order_id(str(record["order_id"]))
+            if persisted is None or not isinstance(persisted.get("request"), dict):
+                raise RuntimeError("Protective reconciliation request is unavailable")
+            risk_record = {**record, "request": persisted["request"]}
+        return await reconciler.reconcile_risk_record(
+            risk_record,
+            user_id=context.user_id,
+            condition_id=str(record["condition_id"]),
+            token_id=str(record["asset"]),
+            confirm_fill=reconciler.confirm_fill,
+            pnl_tracker=context.pnl_tracker,
+            get_position=context.positions_repo.get_position,
+            logger=logger,
+        )
     return await reconciler.reconcile_trade_record(
         record,
         side,
@@ -1965,6 +1938,30 @@ async def _execute_trades_impl(
 
     normalized = normalize_signals(signals, leader_id)
     results: list[TradePipelineResult] = []
+    freshness = SourceFreshnessPolicy(
+        _trade_config(context).copy_trading.copy_max_signal_age_seconds
+    )
+    processing_time = datetime.fromtimestamp(now_ts, timezone.utc)
+    admitted: list[tuple[TradeSignal, dict[str, Any]]] = []
+    for signal, raw in normalized:
+        source_time = SourceTimestampParser.parse(signal.event_ts, unit="seconds")
+        reason = (
+            freshness.entry_rejection(source_time, processing_time)
+            if signal.side == "BUY"
+            else None
+        )
+        if reason is None:
+            admitted.append((signal, raw))
+        else:
+            results.append(
+                TradePipelineResult(
+                    trade_key=build_trade_key(context.user_id, leader_id, raw),
+                    status="skipped",
+                    reason=reason,
+                    order_id=None,
+                )
+            )
+    normalized = admitted
 
     leader_tier_resolved = await _resolve_leader_tier(context, leader_id)
     if _trade_config(context).execution.paper_trade_only and leader_tier_resolved == "live_follow":
@@ -1978,17 +1975,20 @@ async def _execute_trades_impl(
         )
         leader_tier_resolved = "paper_follow"
 
-    pnl_metrics = (
-        context.pnl_tracker.metrics()
-        if context.pnl_tracker is not None and hasattr(context.pnl_tracker, "metrics")
-        else {}
-    )
+    analytics: dict[str, object] = {}
+    if context.leader_performance is not None:
+        stats = await context.leader_performance.get_closed_episode_stats(
+            FollowerLeaderKey(context.user_id, leader_id)
+        )
+        win_fraction = stats.win_rate_fraction
+        analytics = {
+            "net_pnl": stats.realized_pnl if stats.closed_episodes else None,
+            "win_rate": None if win_fraction is None else win_fraction * Decimal(100),
+            "sample_size": stats.closed_episodes,
+        }
     leader_score = leader_scorer.score_leader(
         leader_id,
-        analytics={
-            "net_pnl": float(pnl_metrics.get("net_pnl", 0.0) or 0.0),
-            "win_rate": float(pnl_metrics.get("win_rate", 50.0) or 50.0),
-        },
+        analytics=analytics,
         recent_trade_count=len(signals),
     )
 
@@ -2044,7 +2044,7 @@ async def _execute_trades_impl(
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
-        sell_entry_price: float | None = None
+        sell_entry_price: Decimal | None = None
         metrics.inc("trades_detected_total", labels=labels)
 
         trade_key = build_trade_key(context.user_id, leader_id, raw)
@@ -2989,7 +2989,9 @@ async def _execute_trades_impl(
                     continue
 
                 # Capture entry price before apply_fill mutates or closes/deletes the position.
-                sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
+                sell_entry_price = PositionCostBasis.from_value(
+                    getattr(pos, "avg_entry_price", None)
+                ).entry_price
 
                 sell_missing_policy = (
                     context.config.execution.sell_fraction_missing_policy
@@ -3144,7 +3146,13 @@ async def _execute_trades_impl(
                 )
 
                 if sell_tokens <= Decimal("0"):
-                    reason = "SELL size is zero"
+                    below_minimum = requested_sell_tokens > 0 and max_sell_tokens > 0
+                    skip_code = "sell_below_exchange_minimum" if below_minimum else "sell_size_zero"
+                    reason = (
+                        "Sellable shares do not meet the exchange minimum under the configured policy"
+                        if below_minimum
+                        else "SELL size is zero"
+                    )
                     print_skip_reason("SELL skipped", reason)
                     log_trade_skip(
                         logger,
@@ -3154,14 +3162,14 @@ async def _execute_trades_impl(
                         size=float(sell_tokens),
                         price=live_price,
                         usdc_value=float(signal.usdc_size),
-                        skip_code="sell_size_zero",
+                        skip_code=skip_code,
                         reason=reason,
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
                     metrics.inc(
                         "trades_skipped_total",
-                        labels={**labels, "reason": "sell_size_zero"},
+                        labels={**labels, "reason": skip_code},
                     )
                     await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
@@ -3171,9 +3179,13 @@ async def _execute_trades_impl(
                         side=signal.side,
                         asset=signal.token_id,
                         condition_id=signal.condition_id,
-                        status="skipped_sell_size_zero",
+                        status=f"skipped_{skip_code}",
                     )
-                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
+                    results.append(
+                        TradePipelineResult(
+                            trade_key, "skipped", skip_code if below_minimum else reason, None
+                        )
+                    )
                     continue
 
                 if requested_sell_tokens + Decimal("1e-12") < sell_tokens:
@@ -3662,56 +3674,30 @@ async def _execute_trades_impl(
                 if context.pnl_tracker is not None:
                     context.pnl_tracker.record_buy(
                         condition_id=signal.condition_id,
-                        price=float(fill_price or 0),
-                        size_tokens=float(fill_size),
-                        usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+                        price=Decimal(str(fill_price)),
+                        size_tokens=fill_size,
+                        usdc_value=fill_size * Decimal(str(fill_price)),
                         leader_wallet=leader_id,
                         event_slug=signal.event_slug,
                         title=signal.title,
                     )
             else:
-                updated_entry_price = _to_optional_float(
+                updated_basis = PositionCostBasis.from_value(
                     getattr(updated_position, "avg_entry_price", None)
                     if updated_position is not None
                     else None
                 )
-                signal_entry_price = _to_optional_float(signal.price)
-                entry_price = next(
-                    (
-                        candidate
-                        for candidate in (
-                            sell_entry_price,
-                            updated_entry_price,
-                            signal_entry_price,
-                        )
-                        if candidate is not None
-                    ),
-                    0.0,
+                basis = PositionCostBasis(
+                    sell_entry_price if sell_entry_price is not None else updated_basis.entry_price
                 )
-                if entry_price == 0.0 and all(
-                    candidate is None
-                    for candidate in (
-                        sell_entry_price,
-                        updated_entry_price,
-                        signal_entry_price,
-                    )
-                ):
-                    logger.warning(
-                        "trade_sell_entry_price_missing",
-                        extra={
-                            "user_id": context.user_id,
-                            "leader_id": leader_id,
-                            "condition_id": signal.condition_id,
-                            "order_id": exec_result.order_id,
-                        },
-                    )
-                realized = (float(fill_price or 0) - entry_price) * float(fill_size)
+                entry_price = basis.entry_price
+                realized = basis.gross_realized_pnl(Decimal(str(fill_price)), fill_size)
                 if context.pnl_tracker is not None:
                     context.pnl_tracker.record_sell(
                         condition_id=signal.condition_id,
-                        price=float(fill_price or 0),
-                        size_tokens=float(fill_size),
-                        usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+                        price=Decimal(str(fill_price)),
+                        size_tokens=fill_size,
+                        usdc_value=fill_size * Decimal(str(fill_price)),
                         entry_price=entry_price,
                         realized_pnl=realized,
                         exit_reason="leader_sell",

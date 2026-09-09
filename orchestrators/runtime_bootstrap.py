@@ -1,6 +1,7 @@
 """Compose per-user trading dependencies behind venue-neutral ports."""
 
 from __future__ import annotations
+from services.telemetry.latency import PipelineLatency
 
 import inspect
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.pnlTracker import PnLTracker
+from services.leader_performance import LeaderPerformanceReader
+from storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader
 from services.positionManager import PositionManager
 from services.risk.risk_engine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
@@ -31,15 +34,21 @@ from services.risk.risk_monitor import (
 from services.trading_permission import TradingPermissionService
 from services.telemetry import TelemetryEmitters
 from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.copy_task_repository import PostgresCopyTaskRepository
+from services.copy_tasks.entry_permission import TaskEntryPermissionService
+from storage.postgres.task_fill_projection import PostgresTaskFillProjection
+from storage.postgres.risk_lot_repository import PostgresRiskLotRepository
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 from storage.postgres.trading_control_repo import TradingControlRepo
-from utils.fetchData import fetch_data
+from utils.fetchData import _get_http_client, fetch_data
+from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from services.manual_sync_service import ManualSyncService
     from config.app_config import AppConfig
     from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
     from integrations.polymarket.venue_runtime import PolymarketVenueRuntime
@@ -181,13 +190,14 @@ class UserRuntimeState:
     # PR7 — manual / off-bot position drift sweep.
     position_drift_service: "object | None" = None
     # Manual sync service — funder activity + position seeder (TS port).
-    manual_sync_service: "object | None" = None
+    manual_sync_service: ManualSyncService | None = None
     # Cached durable control state; refreshed off the order hot path.
     trading_permission: TradingPermissionService | None = None
     # Part C — operator telemetry emitters shared by every collaborator this
     # follower owns. Defaults to the disabled null-object bundle so existing
     # fixtures keep constructing state without telemetry.
     telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
+    leader_performance: LeaderPerformanceReader | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -235,36 +245,9 @@ def ensure_runtime_follows(
                 runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
-async def fetch_live_positions(wallet: str) -> list[dict] | None:
-    """Fetch the wallet's live positions from the data API.
-
-    Returns ``None`` when the snapshot could not be fetched (network error,
-    non-list response). Callers MUST distinguish ``None`` (fetch failed →
-    fail closed, do not prune/delete local state) from ``[]`` (the wallet
-    genuinely holds no open positions).
-    """
-    try:
-        positions = await fetch_data(
-            f"https://data-api.polymarket.com/positions?user={wallet}",
-            silent=True,
-        )
-    except Exception:
-        return None
-
-    if not isinstance(positions, list):
-        return None
-
-    live_positions: list[dict] = []
-    for position in positions:
-        try:
-            size = float(position.get("size") or 0)
-            value = float(position.get("currentValue") or 0)
-        except (TypeError, ValueError):
-            continue
-        if abs(size) <= 1e-12 or value <= 0:
-            continue
-        live_positions.append(position)
-    return live_positions
+async def fetch_live_positions(wallet: str) -> list[dict[str, object]] | None:
+    """Read a bounded complete inventory without equating zero marks to disposal."""
+    return await DataApiPositionSizeReader(_get_http_client).positions(wallet)
 
 
 def build_user_state(
@@ -299,7 +282,9 @@ def build_user_state(
     _configure_balance_module(config)
 
     order_repo = OrdersRepo(pool)
-    fills_repo = FillsRepo(pool)
+    fills_repo = FillsRepo(
+        pool, task_projection=PostgresTaskFillProjection(PostgresRiskLotRepository(pool))
+    )
     positions_repo = PositionsRepo(pool)
     risk_blocks_repo = RiskBlocksRepo(pool)
     risk_triggers_repo = RiskTriggersRepo(pool)
@@ -376,6 +361,12 @@ def build_user_state(
         geoblock_gate=GeoblockGate(config.polymarket.enforce_geoblock),
         trading_permission=trading_permission,
         telemetry=emitters.execution,
+        latency=emitters.latency,
+        task_entry_permission=TaskEntryPermissionService(
+            PostgresCopyTaskRepository(pool),
+            follower_accounts=(runtime_user.user_id, runtime_user.wallet.funder_address or ""),
+            protective_management_enabled=config.risk.enable_risk_mgmt,
+        ),
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
@@ -389,6 +380,7 @@ def build_user_state(
         execution_service=execution_service,
         funder_address=runtime_user.wallet.funder_address,
         config=config,
+        latency=emitters.latency,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
@@ -440,6 +432,7 @@ def build_user_state(
         manual_sync_service=manual_sync_service,
         trading_permission=trading_permission,
         telemetry=emitters,
+        leader_performance=PostgresLeaderPerformanceReader(pool),
     )
 
 
@@ -504,6 +497,7 @@ def _build_manual_sync_service(
     return ManualSyncService(
         funder_address=funder_address,
         user_id=user_id,
+        positions_fetcher=fetch_live_positions,
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
@@ -558,6 +552,7 @@ def _build_execution_coordinator(
     execution_service: ExecutionService,
     funder_address: str,
     config: "AppConfig | None" = None,
+    latency: PipelineLatency | None = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -589,6 +584,10 @@ def _build_execution_coordinator(
         funder_address=funder_address,
         ttl_seconds=_reservation_ttl,
         enabled=reservations_enabled,
+        task_market_fraction=Decimal(str(config.sizing.max_position_pct))
+        if config is not None
+        else None,
+        task_max_open_markets=config.sizing.position_threshold if config is not None else 0,
     )
     if not reservations_enabled:
         logger.warning(
@@ -604,6 +603,7 @@ def _build_execution_coordinator(
         fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
+        latency=latency,
     )
     from services.execution.leader_sell_target_service import (
         LeaderSellTargetService,
@@ -894,6 +894,7 @@ async def build_trading_context(
         orders_repo=user_state.orders_repo,
         risk_blocks_repo=user_state.risk_blocks_repo,
         pnl_tracker=user_state.pnl_tracker,
+        leader_performance=user_state.leader_performance,
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
@@ -909,11 +910,14 @@ async def build_trading_context(
         rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
+        market_quotes=getattr(user_state, "market_store", None),
+        holdings_reader=DataApiPositionSizeReader(_get_http_client),
         telemetry=_user_state_telemetry(user_state),
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
             "clob_gateway": user_state.clob_gateway,
             "leader_wallet": follow.leader_id,
+            "accounted_fill_reader": user_state.fills_repo,
         },
     )
     if user_state.risk_triggers_repo is not None:
@@ -961,11 +965,13 @@ async def build_trading_context(
                     _recovered,
                 )
         except Exception as _exc:
+            context.readiness.update(reconciler_ok=False)
             logger.warning(
-                "runtime_bootstrap.intent_recovery_failed user_id=%s error=%r",
+                "runtime_bootstrap.intent_recovery_failed user_id=%s error_type=%s",
                 context.user_id,
-                _exc,
+                type(_exc).__name__,
             )
+            raise RuntimeError("reservation ownership recovery unavailable") from None
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)
@@ -1003,12 +1009,13 @@ async def startup_drift_check(
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
         if user_state is None:
+            per_user[runtime_user.user_id] = False
+            all_clean = False
             continue
         drift_svc = getattr(user_state, "position_drift_service", None)
         if drift_svc is None:
-            # No drift service wired (e.g. partial test state). Skip
-            # gracefully; in production this is unreachable.
-            per_user[runtime_user.user_id] = True
+            per_user[runtime_user.user_id] = False
+            all_clean = False
             continue
         try:
             report = await drift_svc.scan_user(
@@ -1263,12 +1270,14 @@ async def build_context_maps(
             continue
         follow = next(iter(runtime_user.follows.values()), None)
         if follow is None:
-            logger.warning(
-                "risk_only_context_skipped_no_follow | user=%s open_positions=%d",
-                runtime_user.user_id,
-                len(open_positions),
+            follow = UserFollowConfig(
+                user_id=runtime_user.user_id,
+                leader_id="",
+                enabled=False,
+                allocation_pct=0,
+                max_trade_usdc=0,
+                max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
             )
-            continue
         context = await build_trading_context(
             risk_user_state,
             follow,

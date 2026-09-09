@@ -102,9 +102,14 @@ class CopyTaskPayloadDecoder:
         """Reject unknown or incomplete nested configuration fields."""
 
         section_types = get_type_hints(TaskConfigurationView)
-        if frozenset(configuration) != frozenset(section_types):
+        required = frozenset(section_types) - {"protective_risk"}
+        if not required.issubset(configuration) or not frozenset(configuration).issubset(
+            section_types
+        ):
             raise ControlPlaneError(ControlPlaneReason.INVALID_REQUEST)
         for section_name, section_type in section_types.items():
+            if section_name == "protective_risk" and section_name not in configuration:
+                continue
             section = self._mapping(configuration.get(section_name))
             expected_fields = frozenset(item.name for item in fields(section_type))
             if frozenset(section) != expected_fields:

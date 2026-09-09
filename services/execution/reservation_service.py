@@ -3,7 +3,7 @@
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
@@ -85,6 +85,8 @@ class ReservationService:
         reconciler_callback: ReconcilerCallback | None = None,
         enabled: bool = True,
         force_release_grace_seconds: float | None = None,
+        task_market_fraction: Decimal | None = None,
+        task_max_open_markets: int = 0,
     ):
         self.reservations_repo = reservations_repo
         self.positions_repo = positions_repo
@@ -99,6 +101,20 @@ class ReservationService:
         self.reconciler_callback = reconciler_callback
         self.enabled = enabled
         self.force_release_grace_seconds = force_release_grace_seconds
+        if task_market_fraction is not None and (
+            not isinstance(task_market_fraction, Decimal)
+            or not task_market_fraction.is_finite()
+            or not Decimal("0") < task_market_fraction <= Decimal("1")
+        ):
+            raise ValueError("Task market capacity fraction must be in (0, 1]")
+        if (
+            isinstance(task_max_open_markets, bool)
+            or not isinstance(task_max_open_markets, int)
+            or task_max_open_markets < 0
+        ):
+            raise ValueError("Task open-market limit must be a non-negative integer")
+        self._task_market_fraction = task_market_fraction
+        self._task_max_open_markets = task_max_open_markets
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         """Atomically reserve the capacity required by an execution intent."""
@@ -163,6 +179,12 @@ class ReservationService:
         if intent.key.side == IntentSide.BUY:
             required_usdc = intent.size * intent.price
             balance = await self._get_available_balance(intent.key.user_id, required_usdc)
+            if intent.task_id is not None and self._task_market_fraction is not None:
+                intent = replace(
+                    intent,
+                    max_market_notional=balance * self._task_market_fraction,
+                    max_open_markets=self._task_max_open_markets,
+                )
             logger.info(
                 "reservation.acquire.buy key=%s size=%s price=%s usdc=%s expires=%d",
                 stable_key,

@@ -127,7 +127,7 @@ class FakePnlTracker:
             "win_rate": 100.0,
             "total_invested": Decimal("20.00"),
             "total_returned": Decimal("12.50"),
-            "net_pnl": Decimal("2.50"),
+            "gross_realized_pnl": Decimal("2.50"),
             "max_drawdown": Decimal("0.00"),
         }
         self._metrics.update(overrides)
@@ -508,7 +508,7 @@ async def test_fill_and_risk_reads_reject_an_uncomposed_follower_account() -> No
         portfolio=None,
         config=build_config(),
         clock=FixedClock(),
-        day_start_equity=lambda: None,
+        day_start_equity=lambda _account: None,
         scope=scope,
     )
 
@@ -761,7 +761,7 @@ async def test_risk_state_omits_headroom_without_a_cached_portfolio() -> None:
         portfolio=None,
         config=build_config(),
         clock=FixedClock(),
-        day_start_equity=lambda: None,
+        day_start_equity=lambda _account: None,
     )
 
     view = await service.get("account-a")
@@ -784,7 +784,7 @@ async def test_risk_state_computes_headroom_from_the_cached_snapshot_only() -> N
         portfolio=FakePortfolioCache(portfolio()),
         config=build_config(enable_balance_tiered_policy=True),
         clock=FixedClock(),
-        day_start_equity=lambda: Decimal("400"),
+        day_start_equity=lambda _account: Decimal("400"),
     )
 
     view = await service.get("account-a")
@@ -808,7 +808,7 @@ async def test_risk_state_omits_headroom_for_a_stale_cached_snapshot() -> None:
         portfolio=FakePortfolioCache(portfolio(stale=True)),
         config=build_config(),
         clock=FixedClock(),
-        day_start_equity=lambda: None,
+        day_start_equity=lambda _account: None,
     )
 
     view = await service.get("account-a")

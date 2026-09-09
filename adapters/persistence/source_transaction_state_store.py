@@ -61,8 +61,8 @@ class SourceTransactionSnapshotCodec:
 
         try:
             return cast(SourceTransactionSnapshot, self._adapter.validate_json(payload))
-        except ValidationError as exc:
-            raise ValueError("persisted source transaction state is invalid") from exc
+        except ValidationError:
+            raise ValueError("persisted source transaction state is invalid") from None
 
 
 class PostgresSourceTransactionStateStore:

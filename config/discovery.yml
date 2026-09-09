@@ -1,3 +1,13 @@
+# Configuration guide — Falcon/Heisenberg trader discovery and roster scoring.
+# Purpose: retrieve candidate evidence, reject unsafe/unscalable wallets, score
+# survivors, apply hysteresis, and optionally maintain the leader roster.
+# Options: booleans enable features; fractions are generally 0..1; percentages
+# are 0..100 where named pct/percentile; windows/sort modes use listed values;
+# counts, durations, page/concurrency limits are bounded positive integers.
+# Trade-offs: stricter gates produce fewer, safer candidates; wider histories
+# and more probes improve evidence but increase provider calls/startup time.
+# Larger concurrency speeds sweeps but raises rate-limit pressure. Changing
+# scoring/policy settings invalidates the persisted roster hash and rebuilds it.
 # Trader discovery (Falcon analytics, scoring, and scheduler).
 # The shortlist/wallet360/recency/market/social/scoring/longitudinal/
 # hysteresis/falcon sections feed discovery_config_hash: changing any
@@ -5,65 +15,126 @@
 # rebuild). Values are migrated verbatim from trader_discovery.yaml so
 # the roster hash is stable across the config split.
 api:
+  # Provider endpoint. Changing it enables another compatible service only if
+  # the same schema/auth contract is honored; malformed schema fails closed.
   base_url: https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized
+  # Secret bearer token placeholder. Keep empty in tracked YAML and set
+  # PMCOPY__DISCOVERY__API__TOKEN in secrets.env; empty disables usable Falcon I/O.
   token: ''
+  # Per-request timeout (>0). Lower bounds hangs; higher tolerates slow analytics.
   timeout_seconds: 20.0
+  # Attempts (1..10) for classified retryable provider failures. More improves
+  # outage tolerance but delays a fail-closed result.
   max_retries: 6
+  # Sustained client rate (>0). Higher accelerates discovery but risks throttling.
   requests_per_second: 1.0
+  # Token-bucket burst (>=1). Higher permits short fan-out spikes.
   burst: 1.0
+  # Total HTTP connection ceiling. Higher supports concurrency at socket cost.
   max_connections: 32
+  # Idle keep-alive pool ceiling; 0 disables pooled idle connections. More lowers
+  # handshake latency but holds provider/network resources.
   max_keepalive_connections: 16
+  # Idle keep-alive lifetime. Longer improves reuse; shorter retires stale sockets.
   keepalive_expiry_seconds: 30.0
+  # Initial exponential retry delay. Lower retries faster and can amplify outages.
   retry_base_delay_seconds: 1.0
+  # Retry delay ceiling. Higher reduces sustained pressure but lengthens sweeps.
   retry_max_delay_seconds: 30.0
+  # Random delay fraction [0,1]. More jitter avoids synchronized clients but makes
+  # sweep duration less predictable.
   retry_jitter_ratio: 0.5
 shortlist:
+  # 15-day win-rate admission band [0,1]. Raising minimum favors consistency;
+  # lowering maximum rejects suspiciously perfect/brittle histories.
   min_win_rate_15d: 0.45
   max_win_rate_15d: 0.92
+  # Minimum 15-day ROI and realized PnL. Higher demands stronger evidence but
+  # biases toward already-large or recent winners.
   min_roi_15d: 0.0
   min_pnl_15d: 100.0
+  # 15-day trade-count band. Higher minimum improves sample size; lower maximum
+  # filters bots/high-frequency wallets but can exclude active humans.
   min_total_trades_15d: 30
   max_total_trades_15d: 5000
+  # Provider leaderboard orderings queried. More modes diversify candidates but
+  # add pages/calls and overlap that must be deduplicated.
   sort_modes:
   - h_score
   - roi
   - win_rate
   - pnl
+  # Results per provider page (1..200). Larger reduces calls but grows responses.
   page_size: 100
+  # Pages per sort mode. Higher broadens search at greater provider cost.
   max_pages: 5
+  # Deduplicated shortlist bound. Higher feeds more deep evaluations and cost.
   candidate_pool_size: 250
 wallet360:
+  # Evidence windows; valid values are '1','3','7','15', unique, and '15' is
+  # required. More windows improve stability proof but cost more provider calls.
   windows:
   - '1'
   - '3'
   - '7'
   - '15'
+  # Maximum accepted drawdown percentage. Lower rejects riskier wallets; higher
+  # admits volatile strategies.
   max_drawdown_pct: 35.0
+  # Minimum distinct markets. Higher reduces concentration but excludes specialists.
   min_market_diversity: 3
+  # true rejects provider bot flags (safer, possible false positives); false ignores.
   reject_bot_flagged: true
+  # Maximum stake-size coefficient of variation. Lower favors regular sizing;
+  # higher admits bursty/conviction strategies.
   max_stake_cv: 3.2
+  # Minimum cross-window win-rate consistency [0,1]. Higher favors stability.
   min_win_rate_consistency: 0.6
 recency:
+  # Maximum hours since last trade. Lower keeps roster active but churns more.
   max_hours_since_last_trade: 48
+  # Minimum trades inside lookback. Higher improves activity evidence.
   min_trades_lookback: 3
+  # Activity history span. Longer tolerates quieter specialists but costs pages.
   lookback_hours: 168
+  # Page size (1..200) and page ceiling for activity retrieval. Larger values
+  # improve completeness at response/provider cost.
   page_size: 100
   max_pages: 5
 market:
+  # Minimum 24h market volume. Higher favors executable markets but narrows scope.
   min_volume_24h: 5000.0
+  # Minimum provider liquidity percentile [0,100]. Higher is safer for copying.
   min_liquidity_percentile: 40.0
+  # Required volume direction: UP | DOWN | ALL. UP seeks momentum, DOWN seeks
+  # contraction, ALL avoids trend filtering.
   volume_trend: ALL
+  # Maximum top-wallet concentration percent. Lower rejects whale-controlled books.
   max_top1_wallet_pct: 60.0
+  # Minimum unique traders over 7 days. Higher favors broader participation.
   min_unique_traders_7d: 25
+  # Fraction [0,1] of sampled markets that must pass. Higher demands consistent
+  # market quality; lower tolerates a mixed portfolio.
   min_pass_ratio: 0.6
+  # Markets sampled per candidate. More improves confidence at provider cost.
   max_markets_per_candidate: 8
 social:
+  # Optional social-acceleration evidence. true adds provider work and potentially
+  # noisy sentiment; false excludes social data from discovery.
   enabled: false
+  # Single-token keywords (no spaces/braces/commas). Empty means no keyword filter.
   keywords: []
+  # Social lookback hours. Longer gets more evidence but dilutes recent acceleration.
   hours_back: 24
+  # Minimum activity acceleration ratio. Higher requires stronger trend change.
   min_acceleration: 1.0
+  # Minimum distinct-author percentage [0,100]. Higher resists coordinated spam.
   min_author_diversity_pct: 20.0
 scoring:
+  # Final component weights; non-negative and must sum to 1. Raising one makes
+  # that signal dominate and requires lowering others. quality rewards provider
+  # skill, copyability rewards bankroll fit, consistency/market/volume/rank add
+  # execution evidence, and risk_inverse rewards lower risk.
   weights:
     falcon_quality: 0.3
     copyability: 0.25
@@ -72,17 +143,26 @@ scoring:
     volume_fit: 0.1
     rank_quality: 0.05
     risk_inverse: 0.05
+  # Falcon quality sub-score weights; must sum to 1. H-score is the provider's
+  # composite; ROI/win rate/Sharpe emphasize returns; baseline prevents an
+  # otherwise empty quality score. Return-heavy mixes chase performance more.
   quality_weights:
     h_score: 0.5
     roi: 0.2
     win_rate: 0.15
     sharpe: 0.1
     baseline: 0.05
+  # Runtime score blend; must sum to 1. roster_score preserves discovery rank;
+  # the remaining fields react to fresh win-rate, PnL, and activity evidence.
+  # More runtime weight adapts faster but is noisier.
   runtime_weights:
     roster_score: 0.7
     win_rate: 0.15
     pnl: 0.1
     activity: 0.05
+  # Normalization ranges [low, high] for provider metrics; values below/above
+  # clamp to 0/1. Narrow ranges separate ordinary candidates more aggressively;
+  # wide ranges reduce sensitivity to outliers.
   h_score_range:
   - 0.0
   - 100.0
@@ -95,27 +175,49 @@ scoring:
   sharpe_15d_range:
   - -1.0
   - 5.0
+  # 15-day volume producing full volume-fit score. Higher favors scalable leaders.
   volume_target_15d: 50000.0
+  # Rank at/inside which rank quality saturates. Lower rewards only top leaders.
   rank_target: 100
+  # Copyable recent-trade count producing full copyability sample score.
   copyability_trade_target: 50
+  # Drawdown percentage mapped to worst inverse-risk score. Lower penalizes risk
+  # sooner; higher is more forgiving.
   risk_drawdown_max_pct: 100.0
+  # Fallback roster score [0,1] when persisted rank is unavailable. Higher is
+  # optimistic; lower is fail-closed.
   runtime_default_roster_score: 0.5
+  # Fresh PnL target for normalized runtime PnL score. Higher needs more profit.
   runtime_pnl_target_usdc: 100.0
+  # Fresh activity-count target for normalized activity score.
   runtime_activity_target: 8
+  # Minimum final runtime score [0,1]. Higher rejects more weak/noisy signals.
   runtime_score_floor: 0.1
 longitudinal:
+  # Blend historical trajectories into discovery. true stabilizes rankings using
+  # more data/backfill; false is faster and more reactive to the base snapshot.
   enabled: true
+  # Exponential evidence half-life. Shorter adapts faster/noisier; longer is stable.
   half_life_days: 7.0
+  # Prior score [0,1] for sparse histories. Higher is optimistic; lower conservative.
   prior_score: 0.5
+  # Trades required before shrinkage toward prior fades. Higher resists small samples.
   shrinkage_trade_count: 30
+  # Retained score-history and PnL backfill windows. Longer captures regimes but
+  # increases storage/provider work and can overweight stale performance.
   history_days: 90
   pnl_backfill_days: 180
+  # Historical component weights, non-negative and summing to 1. Sharpe/ROI slope
+  # favor improving returns; stability/rank reward persistence; drawdown rewards
+  # safety. Reweighting changes both roster hash and ranking behavior.
   weights:
     sharpe: 0.3
     roi_slope: 0.2
     win_rate_stability: 0.2
     rank_trajectory: 0.15
     drawdown: 0.15
+  # Normalization ranges for Sharpe, ROI slope, and rank slope. Narrower ranges
+  # amplify small changes; wider ranges damp noise.
   sharpe_range:
   - -1.0
   - 5.0
@@ -125,97 +227,198 @@ longitudinal:
   rank_slope_range:
   - -2.0
   - 2.0
+  # Drawdown percent mapped to the worst historical risk component.
   drawdown_max_pct: 50.0
+  # Snapshot counts used for stability and trend calculations (>=2). Longer
+  # windows are smoother but react later.
   stability_window: 4
   trend_window: 7
+  # Candidates backfilled each cycle; 0 disables incremental backfill. Higher
+  # completes history sooner at more provider load.
   backfill_candidates_per_cycle: 10
+  # Parallel backfill requests. Higher is faster but increases rate-limit pressure.
   backfill_concurrency: 2
+  # Maximum history pages for trades and PnL. Higher improves completeness while
+  # bounding worst-case provider cost and startup duration.
   trade_backfill_max_pages: 50
   pnl_backfill_max_pages: 10
+  # Provider leaderboard windows; valid unique days are 1,3,7,30. More windows
+  # strengthen trajectory evidence at more calls.
   leaderboard_windows:
   - 1
   - 3
   - 7
   - 30
+  # Min/max multiplier derived from longitudinal score. Wider bounds change size
+  # more aggressively; tight bounds keep ranking mostly admission-only.
   sizing_multiplier_min: 0.75
   sizing_multiplier_max: 1.25
+  # Curve exponent (>0): >1 emphasizes high scores, <1 lifts mid scores.
   sizing_multiplier_exponent: 1.0
+  # Base versus longitudinal blend; each is [0,1] and they must sum to 1.
+  # More longitudinal weight is stable/slower; more base is responsive/noisier.
   base_score_weight: 0.7
   longitudinal_score_weight: 0.3
 hysteresis:
+  # Score to add a leader [0,1]; must exceed demote_score. Higher improves entry
+  # quality but leaves fewer active leaders.
   promote_score: 0.55
+  # Score below which an incumbent becomes demotion-eligible. A wider gap reduces
+  # roster flapping but retains deteriorating leaders longer.
   demote_score: 0.5
+  # Consecutive qualifying cycles before promotion/demotion. Higher is stable/slower.
   min_tenure_cycles: 3
+  # Minimum roster dwell time before transition. Higher reduces churn.
   min_dwell_seconds: 10800
 scheduler:
+  # Background roster maintenance. true adds recurring provider/database work;
+  # false keeps the configured/persisted roster unless --auto-trader forces a run.
   enabled: false
+  # Full rediscovery and cheaper rescore cadences (>=30s). Shorter adapts faster
+  # but spends more provider quota.
   rediscover_seconds: 1800
   rescore_seconds: 900
+  # Wallet evaluations in parallel. Higher shortens cycles and risks throttling.
   evaluation_concurrency: 2
+  # Maximum failed-evaluation fraction [0,1] before a cycle fails closed. Lower is
+  # stricter; higher tolerates partial provider outages.
   max_evaluation_error_ratio: 0.25
+  # Active roster ceiling. Higher diversifies signals but divides bankroll and
+  # increases monitoring load.
   max_active_leaders: 3
+  # true rechecks persisted roster before sweeping; false starts from fresh
+  # discovery, increasing startup time/cost but avoiding stale incumbents.
   start_from_roster: true
+  # Maximum startup wait for discovery qualification. Longer tolerates slow
+  # multi-cycle hysteresis; shorter fails startup sooner.
   startup_wait_timeout_seconds: 3900
 falcon:
+  # Falcon policy switch. true requires a valid API token/schema and evaluates
+  # candidates; false performs no provider discovery unless --auto-trader forces
+  # it for that process. Failures/zero-safe results never silently use weaker data.
   enabled: false
   # Bounds one full leaderboard sweep. The `--auto-trader` startup burst
   # re-checks the persisted accepted roster first and only sweeps when the
   # database is empty or that re-check produces nothing.
   candidate_limit: 50
+  # Candidate evaluations in parallel. Higher makes sweeps faster but can exceed
+  # the api rate/burst limit and provider capacity.
   candidate_concurrency: 12
+  # Wallet360 day windows; unique selections from 1,3,7,15. More windows improve
+  # multi-horizon proof at higher provider cost.
   wallet360_windows:
   - 1
   - 3
   - 7
   - 15
+  # Minimum successful Wallet360 windows. Higher fails closed on incomplete
+  # evidence; lower improves availability with less stability proof.
   required_wallet360_windows: 3
+  # Maximum Wallet360 snapshot age. Lower is fresher but causes more refetch/reject.
   max_wallet360_snapshot_age_hours: 72
+  # Recent-trade sample horizon and last-trade recency ceiling. Longer lookback
+  # improves sample size; smaller max age favors currently active leaders.
   recent_trade_lookback_hours: 48
   max_last_trade_age_hours: 36
+  # Rolling activity window and minimum trades in it. A shorter/stricter pair
+  # selects active wallets but excludes low-frequency specialists.
   activity_window_hours: 24
   min_activity_window_trades: 1
+  # Accepted recent sample count band. Higher minimum improves evidence; lower
+  # maximum rejects hyperactive/bot-like wallets and bounds processing.
   min_recent_trades: 10
   max_recent_trades: 500
+  # Distinct markets retained per wallet. Higher improves concentration/quality
+  # analysis but increases memory and downstream probes.
   max_recent_markets_per_wallet: 30
+  # Order-book depth probes per wallet; 0 disables depth probing. More gives
+  # stronger capacity evidence at direct market-data cost.
   max_depth_probes_per_wallet: 8
+  # Price-jump probes per wallet; 0 disables probes. More detects anomalies at
+  # additional history calls.
   max_price_jump_probes_per_wallet: 3
+  # Jump history horizon and minimum percent change counted as a jump. Longer/
+  # lower settings flag more volatility; shorter/higher settings are permissive.
   price_jump_lookback_hours: 24
   price_jump_min_change_pct: '10'
+  # Maximum recent jumps before rejection. Lower avoids unstable markets but may
+  # exclude profitable event-driven specialists.
   max_recent_price_jumps: 8
+  # true enforces the jump gate; false records/ignores it, improving coverage
+  # with more anomaly exposure.
   enable_price_jump_risk: true
+  # Markets closing within this many days count as short duration. Larger treats
+  # more of the portfolio as short-term.
   short_market_max_days: 30
+  # Minimum short-duration count/share [0,1] required. Zero disables this
+  # specialization requirement; raising selects faster-resolving strategies.
   min_short_trade_count: 0
   min_short_trade_share: '0'
+  # Minimum provider H-score [0,100]. Higher favors quality but shrinks roster.
   min_h_score: '60'
+  # Minimum liquidity percentile [0,100]. Higher improves copy capacity.
   min_liquidity_percentile: '50'
+  # Provider market-risk labels treated as toxic. More labels are safer/stricter;
+  # removing labels accepts their associated risk.
   toxic_market_flags:
   - liquidity_risk
   - volume_collapse
   - whale_control
+  # Maximum recent-trade share [0,1] in toxic markets. Lower is safer.
   max_toxic_market_share: '0.50'
+  # Maximum recent share [0,1] in one market. Lower diversifies; higher admits
+  # specialists and concentrated conviction.
   max_market_concentration: '0.65'
+  # Maximum missing required-evidence ratio [0,1]. Lower fails closed sooner but
+  # rejects partially populated provider records.
   max_missing_field_ratio: '0.25'
+  # Optional drawdown rejection. true enforces max_drawdown; false leaves
+  # drawdown in scoring/evidence but does not hard-reject on this field.
   drawdown_gate_enabled: false
+  # Maximum drawdown fraction [0,1] when gate enabled. Lower is safer/stricter.
   max_drawdown: '0.35'
+  # Maximum provider sybil score (>=0). Lower rejects more linked-wallet risk.
   max_sybil_score: '20'
+  # Provider anomaly hard gates. true rejects flagged timing/win-rate patterns;
+  # false tolerates possible false positives at greater manipulation risk.
   reject_perfect_timing_flag: true
   reject_suspicious_win_rate_flag: true
+  # Maximum similar-wallet count. Lower reduces coordinated/sybil exposure but
+  # can reject legitimate related strategies.
   max_similar_wallets: 2
+  # Maximum average trades/day; 0 is the strict numeric floor, not documented as
+  # disabled. Higher admits faster strategies with more copy/load pressure.
   max_trades_per_day: '300'
+  # Minimum average leader trade size in USDC. Higher improves scaled copy
+  # viability but excludes small-bankroll leaders.
   min_avg_trade_size_usdc: '5'
+  # Categories excluded from acceptable activity. More exclusions narrow risk;
+  # fewer broaden opportunity.
   excluded_categories:
   - Crypto
+  # Maximum trade share [0,1] in excluded categories. 0 rejects any; 1 makes the
+  # category exclusion effectively permissive.
   max_excluded_category_trade_share: '0.50'
+  # Add a score bonus for a dominant-category specialist that meets thresholds.
+  # true can surface skilled specialists but increases concentration preference.
   specialist_bonus_enabled: true
+  # Dominant-category share and win-rate minima [0,1] for specialist status.
+  # Higher demands purer/stronger specialization.
   specialist_min_dominant_share: '0.80'
   specialist_min_win_rate: '0.57'
+  # Additive specialist score weight [0,1]. Higher has more ranking influence.
   specialist_bonus_weight: '0.10'
+  # 15-day provider leaderboard admission band: win rates [0,1], minimum ROI,
+  # trade-count range, and minimum PnL. Stricter bounds improve sample/quality
+  # selectivity while reducing and potentially biasing the candidate pool.
   leaderboard_min_win_rate_15d: '0.45'
   leaderboard_max_win_rate_15d: '0.95'
   leaderboard_min_roi_15d: '0'
   leaderboard_min_trades_15d: 15
   leaderboard_max_trades_15d: 3000
   leaderboard_min_pnl_15d: '0'
+  # Provider ranking modes swept. More modes broaden discovery but increase
+  # provider calls and duplicate candidates.
   leaderboard_sort_modes:
   - h_score
   - roi
@@ -224,13 +427,29 @@ falcon:
   - sharpe
   - trades
   bankroll:
+    # Fraction [0,1) of follower funds reserved from copyability calculations.
+    # Higher is safer but makes fewer leader trades practical.
     reserve_fraction: '0.20'
+    # Position slots assumed for bankroll fit. Higher spreads funds thinner;
+    # lower permits larger per-position capacity.
     max_positions: 12
+    # Maximum bankroll fraction per position (0,1]. Lower improves diversification.
     max_position_fraction: '0.10'
+    # Preferred bankroll fraction per copied trade (0,1]. Higher targets larger
+    # copies and rejects more oversized leaders.
     target_trade_fraction: '0.08'
+    # Assumed minimum executable order USDC (>0). Higher avoids dust but reduces
+    # the fraction of leader trades that can be copied.
     min_order_usdc: '1'
+    # Practical follower/leader scaling ratio floor and ceiling, each (0,1].
+    # A higher floor rejects huge leaders; a lower ceiling prevents overscaling.
     min_practical_copy_ratio: '0.001'
     max_copy_ratio: '1'
+    # Minimum recent-trade share [0,1] that remains copyable after scaling and
+    # venue minimums. Higher demands more representative replication.
     min_copyable_trade_share: '0.35'
+    # Minimum aggregate bankroll-fit score [0,1]. Higher is safer/stricter.
     min_fit_score: '0.45'
+    # Fraction (0,1] of visible book capacity considered usable. Lower reserves
+    # liquidity/slippage margin; 1 trusts all observed capacity.
     visible_capacity_utilization: '1'

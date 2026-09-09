@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import IntEnum, StrEnum
+from domain.source_time import TransportReceipt
 
 
 class TransactionState(StrEnum):
@@ -154,6 +155,7 @@ class PendingTransaction:
     observed_at: datetime
     expires_at: datetime
     matches: tuple[PendingSourceMatch, ...]
+    source_receipt: TransportReceipt | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate transaction identity and lifetime."""
@@ -512,6 +514,7 @@ class ConfirmedExecutionClaim:
     consumption_key: CopyConsumptionKey
     correlation: LeaderTradeCorrelation
     fill: ConfirmedSourceFill
+    source_receipt: TransportReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)

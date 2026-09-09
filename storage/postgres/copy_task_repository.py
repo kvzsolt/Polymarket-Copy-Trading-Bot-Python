@@ -8,6 +8,8 @@ Business services depend on the repository protocol in
 
 from __future__ import annotations
 
+from storage.postgres.risk_lot_repository import RiskLotCodec
+
 import json
 from collections.abc import Mapping, Sequence
 from datetime import time
@@ -63,6 +65,7 @@ class CopyTaskCodec:
         """Serialize nested task policies without converting decimals to floats."""
 
         value: dict[str, object] = {
+            "protective_risk": RiskLotCodec().encode_policy(task.protective_risk),
             "trigger": {
                 "enabled": task.trigger.enabled,
                 "min_notional": format(task.trigger.min_notional, "f"),
@@ -193,6 +196,9 @@ class CopyTaskCodec:
 
         return CopyTask(
             task_id=self._text(row, "task_id"),
+            protective_risk=RiskLotCodec().decode_policy(
+                self._optional_mapping(configuration, "protective_risk") or {}
+            ),
             name=self._text(row, "name"),
             leader_wallet=self._text(row, "leader_wallet"),
             follower_account=self._text(row, "follower_account"),

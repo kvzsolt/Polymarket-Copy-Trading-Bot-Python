@@ -6,7 +6,7 @@ import contextlib
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -416,9 +416,9 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
 
 @pytest.mark.asyncio
 async def test_live_trading_enabled_allows_live(tmp_path):
-    """P0-2: with the LIVE_TRADING master switch enabled and a live_follow leader,
-    execution runs live (not demoted to paper)."""
+    """Explicit live selection reaches the injected execution boundary for a live-follow tier."""
     from services.executionService import ExecutionResult
+    from tests.test_trade_pipeline_safety import _PassThroughCoordinator
 
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "live_follow"})
@@ -438,12 +438,17 @@ async def test_live_trading_enabled_allows_live(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=exec_svc,
-            config=_config(LIVE_TRADING="enabled"),
+            config=_config(TRADING_MODE="live"),
             tmp_path=tmp_path,
         )
-        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance", AsyncMock(return_value=Decimal(1000))
+        ):
+            results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
-        assert results[0].status != "paper"
+        assert results[0].status == "executed"
+        exec_svc.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -464,12 +469,14 @@ async def test_watchlist_gate_requires_injected_config(tmp_path):
             position_manager=PositionManager(),
             execution_service=MagicMock(),
             leaders_repo=repo,
+            config=_config(),
             allocation_pct=1.0,
             buy_min_amount=0.01,
             buy_max_amount=1000.0,
             extra={"slippage_tolerance_bps": 200},
         )
 
+        ctx.config = None
         with pytest.raises(
             RuntimeError, match="TradingContext.config is required for live tier gating"
         ):

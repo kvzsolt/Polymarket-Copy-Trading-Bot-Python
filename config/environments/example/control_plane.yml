@@ -1,9 +1,22 @@
-# Example remains disabled and loopback-only. Supply bearer credentials through
+# Configuration guide — example operator API overrides.
+# Purpose: demonstrate a disabled, authenticated, loopback-only control plane.
+# Options: booleans toggle service/auth; host/port select listener; refresh/stale
+# are positive seconds; CORS is an exact-origin list.
+# Trade-offs: enabling adds convenient control/telemetry and a security surface;
+# faster refresh is fresher but increases account-data load. Supply bearer credentials through
 # the deployment secret boundary before enabling the server.
+# false opens no server.
 enabled: false
+# Loopback is safest; non-loopback requires authentication.
 host: 127.0.0.1
+# Listener port.
 port: 9103
+# true requires secret bearer credentials; false is limited to loopback but still
+# trusts every local process.
 require_authentication: true
+# Portfolio refresh cadence; lower is fresher/more expensive.
 portfolio_refresh_interval_seconds: 10.0
+# Age reported stale; tighter detects trouble faster but raises transient alerts.
 portfolio_stale_after_seconds: 30.0
+# Empty denies cross-origin browser calls; add only exact trusted dashboard origins.
 cors_allowed_origins: []

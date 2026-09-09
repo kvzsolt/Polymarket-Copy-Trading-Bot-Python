@@ -5,9 +5,9 @@ Owns three things:
 1. **Reservations** — quote (USDC) and token-share holds for in-flight intents,
    so two concurrent BUY/SELL intents on the same position cannot
    overspend / over-sell.
-2. **Duplicate-intent blocking** — at most one *unresolved* intent per
-   ``PositionScope`` may be active. A second submitter on the same scope
-   raises :class:`DuplicateIntentError`.
+2. **Duplicate-intent blocking** — a new submitter is blocked while any
+   unresolved intent owns the ``PositionScope``. Restart can restore several
+   already-owned durable task allocations on that scope.
 3. **Lifecycle ownership** — ``finalize_intent`` is the **only** path that
    moves an intent into a terminal state (``DONE`` / ``ERROR`` /
    ``CANCELLED``). Submitters may call ``transition`` for non-terminal
@@ -191,11 +191,10 @@ class IntentRegistry:
 
     def __init__(self) -> None:
         self._intents: dict[str, IntentRecord] = {}
-        # scope -> intent_id of the currently unresolved intent (at most one)
+        # scope -> one unresolved intent; restored scopes can have more than one
         self._scope_open: dict[tuple[str, str, str], str] = {}
         # scope -> aggregate reserved totals (always == sum of unresolved
-        # reservations on that scope; under this design that's at most one
-        # in-flight intent's reservation).
+        # reservations on that scope, including every restored allocation).
         self._reserved: dict[tuple[str, str, str], Reservation] = {}
         self._lock = asyncio.Lock()
         # Max retained resolved intents before pruning (memory leak guard)
@@ -226,6 +225,46 @@ class IntentRegistry:
         return len(self._scope_open)
 
     # --- lifecycle ----------------------------------------------------------
+
+    async def restore_intent(self, record: IntentRecord) -> None:
+        """Restore an already-owned durable allocation without admitting new risk.
+
+        Several tasks can own distinct durable allocations on one scope.
+        Normal ``begin_intent`` admission stays blocked until all are resolved.
+        Replaying the same identity and financial evidence is idempotent.
+
+        Args:
+            record: Explicit durable identity, state, timestamps and reservation.
+
+        Raises:
+            ValueError: For invalid amounts, terminal state or conflicting evidence.
+        """
+        if not record.intent_id or record.is_resolved():
+            raise ValueError("Recovery requires an unresolved durable intent")
+        for value in (record.reservation.quote_usdc, record.reservation.token_shares):
+            if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
+                raise ValueError("Recovery reservations must be finite non-negative decimals")
+        async with self._lock:
+            existing = self._intents.get(record.intent_id)
+            if existing is not None:
+                if (
+                    existing.scope != record.scope
+                    or existing.side != record.side
+                    or existing.reservation != record.reservation
+                    or existing.venue_order_id != record.venue_order_id
+                    or existing.is_resolved()
+                ):
+                    raise ValueError("Recovered intent conflicts with existing ownership")
+                return
+            stored = copy.deepcopy(record)
+            self._intents[record.intent_id] = stored
+            key = _scope_key(record.scope)
+            self._scope_open.setdefault(key, record.intent_id)
+            aggregate = self._reserved.get(key, Reservation())
+            self._reserved[key] = Reservation(
+                quote_usdc=aggregate.quote_usdc + record.reservation.quote_usdc,
+                token_shares=aggregate.token_shares + record.reservation.token_shares,
+            )
 
     async def begin_intent(
         self,
@@ -387,6 +426,10 @@ class IntentRegistry:
         key = _scope_key(record.scope)
         if self._scope_open.get(key) == intent_id:
             self._scope_open.pop(key, None)
+            for other in self._intents.values():
+                if not other.is_resolved() and _scope_key(other.scope) == key:
+                    self._scope_open[key] = other.intent_id
+                    break
 
         agg = self._reserved.get(key)
         if agg is not None:

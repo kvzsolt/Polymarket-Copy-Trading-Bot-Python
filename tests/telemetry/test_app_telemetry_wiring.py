@@ -79,6 +79,8 @@ async def test_emitter_bundle_is_built_from_the_started_telemetry_runtime() -> N
     emitters = _build_telemetry_emitters(runtime)
     assert isinstance(emitters, TelemetryEmitters)
     assert emitters.enabled is True
+    assert emitters.latency is not None
+    assert emitters.execution._latency is emitters.latency
     assert emitters.detection.signal_received("polling", "0x" + "ab" * 20, "0x" + "cd" * 32) is True
     assert len(runtime.service.history_snapshot()) == 2
 
@@ -237,6 +239,7 @@ def test_build_trading_context_copies_the_bundle_from_the_user_state() -> None:
         clob_gateway=None,
         risk_triggers_repo=None,
         telemetry=emitters,
+        leader_performance=None,
     )
 
     with patch(

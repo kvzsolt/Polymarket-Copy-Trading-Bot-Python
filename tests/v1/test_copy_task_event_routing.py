@@ -227,7 +227,8 @@ async def test_routes_only_active_tasks_for_the_event_leader() -> None:
 
     results = await processor.process(_LEADER.upper(), source_event())
 
-    assert [(item.task_id, item.allowed) for item in results] == [("active", True)]
+    assert [(item.task_id, item.allowed) for item in results] == [("active", False)]
+    assert results[0].reason == "pre_post_rejected"
     assert len(execution.commands) == 1
 
 
@@ -283,7 +284,8 @@ async def test_sell_command_uses_authoritative_follower_shares() -> None:
 
     results = await processor.process(_LEADER, source_event(side=TradeSide.SELL))
 
-    assert results[0].allowed is True
+    assert results[0].allowed is False
+    assert results[0].reason == "pre_post_rejected"
     assert execution.commands[0].side == "SELL"
     assert execution.commands[0].amount == Decimal("4")
     assert execution.commands[0].notional_usdc == Decimal("1.6")
@@ -355,7 +357,7 @@ async def test_cross_source_promotion_uses_one_economic_execution_identity(
     second_result = await processor.process(_LEADER, second)
 
     assert first.trade.exact_key != second.trade.exact_key
-    assert first.trade.economic_key == second.trade.economic_key
+    assert first.trade.promotion_key == second.trade.promotion_key
     assert first_result[0].allowed is True
     assert second_result[0].allowed is False
     assert second_result[0].reason == "task_budget_submission_retained"
@@ -411,7 +413,7 @@ async def test_one_task_snapshot_failure_does_not_block_later_matching_tasks() -
 
     assert [(result.task_id, result.reason) for result in results] == [
         ("task-a", "follower_snapshot_unavailable"),
-        ("task-b", "admitted"),
+        ("task-b", "pre_post_rejected"),
     ]
     assert len(execution.commands) == 1
     assert execution.commands[0].task.task_id == "task-b"

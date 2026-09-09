@@ -19,7 +19,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +36,8 @@ from services.executionService import (
 )
 from storage.postgres.orders_repo import OrdersRepo
 from utils.createClobClient import MarketMeta
+from tests.conftest import make_clob_gateway
+from integrations.polymarket.models import VenueSubmitResult
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from services.market_data_service import MarketDataBundle, MarketDataSource
 
@@ -149,22 +151,9 @@ class _MetaSvc:
         )
 
 
-class _SimpleClob:
-    def __init__(self):
-        self.get_price = AsyncMock(return_value={"price": "0.50"})
-        self.post_signed_order = AsyncMock(
-            return_value={"success": True, "orderID": "ord-1", "status": "submitted"}
-        )
-        self.client = SimpleNamespace(
-            get_order=lambda _oid: {
-                "status": "filled",
-                "size_matched": "5",
-                "avg_price": "0.50",
-            }
-        )
-
-    async def create_market_order(self, **kwargs):
-        return {"signed": True}
+def _make_gateway() -> MagicMock:
+    """Expose the canonical typed venue boundary; private SDK hooks are absent."""
+    return make_clob_gateway(VenueSubmitResult(success=True, order_id="ord-1", status="submitted"))
 
 
 @contextlib.asynccontextmanager
@@ -220,9 +209,14 @@ class TestDuplicateSignalSuppression:
     async def test_same_signal_id_second_call_ignored(self, tmp_path):
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-dup")
 
@@ -238,9 +232,14 @@ class TestDuplicateSignalSuppression:
     async def test_different_signal_id_allowed(self, tmp_path):
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
 
             req1 = _make_req(signal_id="sig-A")
@@ -249,16 +248,21 @@ class TestDuplicateSignalSuppression:
             result2 = await svc.execute(req2)
             assert result1.accepted is True
             assert result2.accepted is True
-            assert clob.post_signed_order.await_count == 2
+            assert clob.submit_marketable_order.await_count == 2
 
     @pytest.mark.asyncio
     async def test_same_idempotency_key_blocks(self, tmp_path):
         """Two identical requests -> second blocked by effective-idempotency."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
 
             req = _make_req(signal_id="same-key")
@@ -329,9 +333,14 @@ class TestStaleLockExpiry:
         """
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-stale")
 
@@ -386,16 +395,21 @@ class TestAmbiguousPostHandling:
     async def test_ambiguous_post_failure_returns_unconfirmed(self, tmp_path):
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
-            clob.post_signed_order = AsyncMock(
-                return_value={
-                    "success": False,
-                    "ambiguous_post_failure": True,
-                    "error": "timeout after POST",
-                }
+            clob = _make_gateway()
+            clob.submit_marketable_order = AsyncMock(
+                return_value=VenueSubmitResult(
+                    success=False,
+                    ambiguous_post_failure=True,
+                    error="timeout after POST",
+                )
             )
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-ambig")
             result = await svc.execute(req)
@@ -404,13 +418,18 @@ class TestAmbiguousPostHandling:
 
     @pytest.mark.asyncio
     async def test_post_exception_after_create_flagged_ambiguous(self, tmp_path):
-        """If create_market_order succeeds but post_signed_order throws, it's ambiguous."""
+        """An unclassified transport failure retains reconciliation ownership."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
-            clob.post_signed_order = AsyncMock(side_effect=ConnectionError("connection lost"))
+            clob = _make_gateway()
+            clob.submit_marketable_order = AsyncMock(side_effect=ConnectionError("connection lost"))
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-exc")
             result = await svc.execute(req)
@@ -418,7 +437,7 @@ class TestAmbiguousPostHandling:
 
     @pytest.mark.asyncio
     async def test_create_exception_unknown_is_ambiguous(self, tmp_path):
-        """Issue #100: an unknown SDK exception type (here ValueError with
+        """Issue #100: an unknown gateway exception type (here ValueError with
         a message the substring classifier doesn't recognize) must be
         treated as **ambiguous**, not terminal — the call may have already
         touched the wire before raising. Releasing the duplicate-lock on
@@ -427,10 +446,15 @@ class TestAmbiguousPostHandling:
         resolution."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
-            clob.create_market_order = AsyncMock(side_effect=ValueError("bad params"))
+            clob = _make_gateway()
+            clob.submit_marketable_order = AsyncMock(side_effect=ValueError("bad params"))
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-create-fail")
             result = await svc.execute(req)
@@ -449,48 +473,41 @@ class TestConcurrentSubmissionBlocking:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
 
-            class _BlockingClob:
-                def __init__(self):
-                    self.get_price = AsyncMock(return_value={"price": "0.50"})
-                    self.post_signed_order = AsyncMock(
-                        return_value={"success": True, "orderID": "ord-race", "status": "submitted"}
-                    )
-                    self.client = SimpleNamespace(
-                        get_order=lambda _oid: {
-                            "status": "filled",
-                            "size_matched": "5",
-                            "avg_price": "0.50",
-                        }
-                    )
-                    self.started = asyncio.Event()
-                    self.proceed = asyncio.Event()
+            started = asyncio.Event()
+            proceed = asyncio.Event()
 
-                async def create_market_order(self, **kwargs):
-                    self.started.set()
-                    await self.proceed.wait()
-                    return {"signed": True}
+            async def submit(request):
+                started.set()
+                await proceed.wait()
+                return VenueSubmitResult(success=True, order_id="ord-race", status="submitted")
 
-            clob = _BlockingClob()
+            clob = _make_gateway()
+            clob.submit_marketable_order = AsyncMock(side_effect=submit)
             svc = ExecutionService(
-                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+                None,
+                _FeeSvc(),
+                repo,
+                clob_gateway=clob,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-race")
 
-            # Launch first task that will block during create_market_order
+            # Launch first task that will block during the gateway submit
             task1 = asyncio.create_task(svc.execute(req))
-            await clob.started.wait()
+            await started.wait()
 
             # Second request should be blocked (duplicate_ignored or inflight_lock)
             result2 = await svc.execute(req)
             assert result2.status in {"duplicate_ignored", "inflight_lock"}
 
             # Release the first task
-            clob.proceed.set()
+            proceed.set()
             result1 = await task1
             assert result1.accepted is True
 
-            # Only one post_signed_order call happened
-            assert clob.post_signed_order.await_count == 1
+            # Only one gateway submission occurred
+            assert clob.submit_marketable_order.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -712,12 +729,13 @@ class TestBlankSignalIdFallback:
         because the venue saw the first POST but the caller did not."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
 
@@ -729,7 +747,7 @@ class TestBlankSignalIdFallback:
 
             assert result1.accepted is True
             assert result2.status == "duplicate_ignored"
-            assert clob.post_signed_order.await_count == 1
+            assert clob.submit_marketable_order.await_count == 1
 
     @pytest.mark.asyncio
     async def test_empty_string_signal_id_also_retry_safe(self, tmp_path):
@@ -737,12 +755,13 @@ class TestBlankSignalIdFallback:
         the deterministic-hash branch — neither generates a fresh per-call id."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
 
@@ -751,7 +770,7 @@ class TestBlankSignalIdFallback:
             await svc.execute(req1)
             await svc.execute(req2)
             # Retry-safe: second call collides on dedup, venue saw only one POST.
-            assert clob.post_signed_order.await_count == 1
+            assert clob.submit_marketable_order.await_count == 1
 
     @pytest.mark.asyncio
     async def test_distinct_intents_with_blank_signal_id_must_set_signal_id(self, tmp_path):
@@ -760,12 +779,13 @@ class TestBlankSignalIdFallback:
         ``signal_id``. With distinct signal_ids both reach the venue."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
 
@@ -773,7 +793,7 @@ class TestBlankSignalIdFallback:
             req2 = _make_req(signal_id="sig-B")
             await svc.execute(req1)
             await svc.execute(req2)
-            assert clob.post_signed_order.await_count == 2
+            assert clob.submit_marketable_order.await_count == 2
 
     @pytest.mark.asyncio
     async def test_explicit_signal_id_still_collapses_duplicates(self, tmp_path):
@@ -782,12 +802,13 @@ class TestBlankSignalIdFallback:
         collapse (existing duplicate-ignored behavior unchanged)."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
 
@@ -796,7 +817,7 @@ class TestBlankSignalIdFallback:
             result2 = await svc.execute(req)
             assert result1.accepted is True
             assert result2.status == "duplicate_ignored"
-            assert clob.post_signed_order.await_count == 1
+            assert clob.submit_marketable_order.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -830,13 +851,14 @@ class TestAtomicLockFailClosed:
     async def test_repo_without_atomic_lock_fails_closed_before_gateway(self, tmp_path):
         """No try_acquire_submission_lock → reject with atomic_lock_unavailable;
         the gateway must never be called."""
-        clob = _SimpleClob()
+        clob = _make_gateway()
         repo = _NoCASRepo()
         svc = ExecutionService(
-            clob,
+            None,
             _FeeSvc(),
             repo,
             config=_make_exec_config(),
+            clob_gateway=clob,
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-no-cas")
@@ -847,12 +869,7 @@ class TestAtomicLockFailClosed:
         assert result.status == "atomic_lock_unavailable"
         assert "atomic" in (result.error or "")
         # Critical invariant: no signed order ever reached the venue.
-        assert clob.post_signed_order.await_count == 0
-        assert (
-            clob.create_market_order.await_count == 0
-            if hasattr(clob.create_market_order, "await_count")
-            else True
-        )
+        assert clob.submit_marketable_order.await_count == 0
 
 
 class TestAtomicLockConcurrencyStress:
@@ -874,12 +891,13 @@ class TestAtomicLockConcurrencyStress:
         """
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-race")
@@ -889,7 +907,7 @@ class TestAtomicLockConcurrencyStress:
 
             # THE safety invariant: exactly one signed order ever reached the
             # venue across all N concurrent identical intents.
-            assert clob.post_signed_order.await_count == 1
+            assert clob.submit_marketable_order.await_count == 1
 
             # Every other task must have collapsed to a NON-submitting status —
             # never a second signed order. Two correct loser outcomes exist and
@@ -925,12 +943,13 @@ class TestAtomicLockConcurrencyStress:
         """
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            clob = _SimpleClob()
+            clob = _make_gateway()
             svc = ExecutionService(
-                clob,
+                None,
                 _FeeSvc(),
                 repo,
                 config=_make_exec_config(),
+                clob_gateway=clob,
                 market_data_service=_make_mds(),
             )
             req = _make_req(signal_id="sig-expiry-race")
@@ -966,7 +985,7 @@ class TestAtomicLockConcurrencyStress:
 
             # The invariant: exactly one venue POST despite N concurrent
             # post-expiry retries against the same dead lock.
-            assert clob.post_signed_order.await_count == 1
+            assert clob.submit_marketable_order.await_count == 1
             NON_SUBMITTING = {"duplicate_ignored", "inflight_lock"}
             submitting = [r for r in results if r.status not in NON_SUBMITTING]
             assert len(submitting) == 1, (

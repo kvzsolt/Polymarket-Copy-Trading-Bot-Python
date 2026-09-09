@@ -322,6 +322,56 @@ class TestRichConsoleHandler:
         assert traceback_renderable.trace.stacks[-1].exc_type == "ValueError"
         assert "record-backed error" in str(traceback_renderable.trace.stacks[-1].exc_value)
 
+    def test_emit_default_includes_extra_fields(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="some_event",
+            args=(),
+            exc_info=None,
+        )
+        record.stage = "startup"
+        record.user = "0xabc"
+        record.private_key = "do-not-show"
+
+        with patch("utils.logger.console.print") as print_mock:
+            handler.emit(record)
+
+        rendered = str(print_mock.call_args.args[0])
+        assert "some_event" in rendered
+        assert "stage=startup" in rendered
+        assert "user=0xabc" in rendered
+        assert "private_key=***REDACTED***" in rendered
+
+    def test_emit_unknown_structured_type_uses_panel(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="coordinator_intent_built",
+            args=(),
+            exc_info=None,
+        )
+        record.type = "coordinator_intent_built"
+        record.user = "0xabc"
+        record.market = "BTC"
+
+        with patch("utils.logger.console.print") as print_mock:
+            handler.emit(record)
+
+        assert print_mock.call_count == 2
+        panel = print_mock.call_args_list[1].args[0]
+        assert "COORDINATOR INTENT BUILT" in panel.title
+        assert "User" in panel.renderable
+        assert "Market" in panel.renderable
+
     def test_emit_discovery_candidate_eval_structured_line(self):
         handler = RichConsoleHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))

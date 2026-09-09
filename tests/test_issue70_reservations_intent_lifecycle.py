@@ -390,7 +390,7 @@ class TestStartupRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_duplicate_after_crash(self):
-        """Recovery correctly rejects duplicate scope from two orders."""
+        """Recovery preserves both existing durable allocations on the same scope."""
         from services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
@@ -429,8 +429,8 @@ class TestStartupRecovery:
         mock_repo.list_active = AsyncMock(return_value=[mock_a, mock_b])
 
         count = await recover_intents_from_db(registry, mock_repo)
-        # First order recovered, second blocked as duplicate
-        assert count == 1
+        assert count == 2
+        assert registry.reserved_for(_scope("TKN-A")).quote_usdc == Decimal("125")
         mock_repo.list_active.assert_awaited_once_with()
 
 

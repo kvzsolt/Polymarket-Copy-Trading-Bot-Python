@@ -381,6 +381,7 @@ class _ViewerStreamHub:
     """Minimal bounded telemetry hub for the stream upgrade check."""
 
     def __init__(self) -> None:
+        self.boot_id = "test-stream-boot"
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
         self.unsubscribed = 0
 
@@ -452,7 +453,7 @@ async def test_viewer_credential_reads_and_streams_but_cannot_mutate_runtime() -
         assert (await readable.json())["data"]["items"][0]["size"] == "10.5"
 
         websocket = await client.ws_connect("/api/v1/stream", headers=viewer_headers)
-        assert await websocket.receive_json() == {"type": "stream_ready"}
+        assert (await websocket.receive_json())["type"] == "stream_ready"
         await websocket.close()
 
         with pytest.raises(WSServerHandshakeError) as unauthenticated:
