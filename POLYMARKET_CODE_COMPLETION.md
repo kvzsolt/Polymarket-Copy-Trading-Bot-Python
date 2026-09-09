@@ -13,9 +13,10 @@ No dependency was added or upgraded.
 
 - Branch: `feature/hybrid-ccxt-implementation`.
 - Starting HEAD: `ac3cd964bbe16a263144df347df6789fb6af7ee9`.
-  Local implementation finished at that HEAD plus the tested worktree. The user separately
-  authorized commit and push on September 9; the publication record below will identify
-  the ending code revision after the commit is created. No reset, branch switch, live order
+  Ending code revision: `3cc9f916428c6fcaca5d1c225963a965f2965a0d`.
+  The user separately authorized commit and push on September 9. The code commit contains
+  291 changed paths; this exact-revision record follows in a documentation-only commit.
+  The local Ruff/Pyright commit hook passed without bypass. No reset, branch switch, live order
   placement/cancellation, fund movement, live-permission change, or production DB write occurred.
 - The starting dirty worktree was captured in `/tmp/pmcopy-completion/starting-status.txt`
   and `starting-worktree.patch`. Existing operator YAML/logging changes were preserved and
@@ -229,7 +230,8 @@ as a completed green suite.
   continuation or durable replay stream. Freshness health samples at half the configured
   age limit; submission performs its own freshness check. Stops do not guarantee trigger fills.
 - Python 3.11 compatibility is covered by repository contract/syntax tests and remains in CI;
-  this host's full suite ran on 3.12. No remote CI or Docker application smoke/deployment ran.
+  this host's full suite ran on 3.12. Remote CI and application-container smoke outcomes are
+  not part of this local evidence; no application deployment was performed.
 - No new dependencies. The existing user-level Bandit executable ran under its Python 3.13.5
   interpreter; application/tests remained on 3.12.9. Nothing was installed for this check.
 
