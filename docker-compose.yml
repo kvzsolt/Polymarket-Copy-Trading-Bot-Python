@@ -1,17 +1,17 @@
-# Local dev stack for the Polymarket copy-trading bot.
+# CCXT-only main branch stack. See docs/docker.md for setup and upgrades.
 #
 # Usage:
 #   docker compose up -d postgres  # PG only
-#   docker compose up              # bot + PG
+#   docker compose up --build -d   # bot + PG from the current checkout
+#   docker compose run --rm bot doctor
 #
 # Set POSTGRES_PASSWORD and PMCOPY__DATABASE__DSN in mode-0600 secrets.env (see
 # secrets.env.example). Both services pick them up via env_file, so no
 # --env-file flag is needed. There is deliberately no production default
 # password; postgres itself refuses to start if POSTGRES_PASSWORD is unset.
 #
-# The bot service additionally bind-mounts config/runtime.local.yml, so run the
-# documented setup first or compose refuses to start it:
-#   cp config/runtime.local.example.yml config/runtime.local.yml
+# The current service YAML, environment overlays, and trader files are mounted
+# read-only. No deprecated runtime.local.yml setup file is required.
 
 services:
   postgres:
@@ -38,6 +38,7 @@ services:
       start_period: 5s
 
   bot:
+    image: polymarket-copy-trader:main
     build: .
     container_name: polymarket-bot
     restart: unless-stopped
@@ -50,30 +51,30 @@ services:
       # PMCOPY__DATABASE__DSN comes from secrets.env; inside
       # the compose network the bot reaches PG via the "postgres" service name,
       # e.g. postgresql://bot:<POSTGRES_PASSWORD>@postgres:5432/polymarket_copytrading_python
-      # execution.trading_mode defaults to paper in config/runtime.yml.
+      # execution.trading_mode defaults to paper in config/execution.yml.
       # Live mode also remains paused in PostgreSQL until an operator resumes it.
-      PMCOPY__NETWORK__ENABLE_METRICS_SERVER: "true"
-      PMCOPY__NETWORK__METRICS_PORT: "9102"
+      PMCOPY__APP__ENABLE_METRICS_SERVER: "true"
+      PMCOPY__APP__METRICS_BIND_HOST: "0.0.0.0"
+      PMCOPY__APP__METRICS_PORT: "9102"
     ports:
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
+    stop_grace_period: 60s
     volumes:
-      # config/runtime.local.yml is .dockerignore'd so local-only overrides
-      # never bake into image layers, which means this mount is the only way
-      # the documented `cp config/runtime.local.example.yml
-      # config/runtime.local.yml` step reaches the container. Read-only: the
-      # bot only ever reads it. create_host_path must stay false — the short
-      # `./a:/b` syntax silently creates a *directory* when the source file is
-      # missing, and AppConfig then dies on "Is a directory" instead of
-      # naming the setup step the operator skipped.
+      # Keep this tree from the same checkout as the image: config includes
+      # Python modules as well as YAML. Fail instead of creating a missing path.
       - type: bind
-        source: ./config/runtime.local.yml
-        target: /app/config/runtime.local.yml
+        source: ./config
+        target: /app/config
         read_only: true
         bind:
           create_host_path: false
-      # Persist bot logs to the host so operator can tail them.
-      - ./log:/app/log
+      # New managed volumes inherit botuser ownership from the image, avoiding
+      # root-owned host directories that make non-root startup fail.
+      - bot_data:/app/data
+      - bot_logs:/app/log
 
 volumes:
   postgres_data:
     name: polymarket_copytrading_python_postgres_data
+  bot_data:
+  bot_logs:

@@ -195,6 +195,11 @@ jobs:
           env -u POSTGRES_PASSWORD docker compose --env-file secrets.env config >/dev/null
       - name: docker build
         run: docker build -t polymarket-copy-trader:ci .
+      - name: docker CLI smoke (offline)
+        run: |
+          docker run --rm --network none polymarket-copy-trader:ci --help
+          docker run --rm --network none polymarket-copy-trader:ci run --help
+          docker run --rm --network none polymarket-copy-trader:ci doctor --help
       - name: start PostgreSQL
         run: |
           docker network create pmct-smoke-net
@@ -205,7 +210,7 @@ jobs:
             --health-cmd='pg_isready -U bot -d polymarket_copytrading_python' \
             --health-interval=2s --health-timeout=2s --health-retries=20 \
             postgres:16-alpine
-          for i in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-postgres)" = "healthy" ]; then
               exit 0
             fi
@@ -223,9 +228,9 @@ jobs:
             -e PMCOPY__NETWORK__RPC_URL=https://polygon-bor-rpc.publicnode.com \
             -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
             -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
-            -e PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true \
-            -e PMCOPY__NETWORK__METRICS_BIND_HOST=0.0.0.0 \
-            -e PMCOPY__NETWORK__METRICS_PORT=9102 \
+            -e PMCOPY__APP__ENABLE_METRICS_SERVER=true \
+            -e PMCOPY__APP__METRICS_BIND_HOST=0.0.0.0 \
+            -e PMCOPY__APP__METRICS_PORT=9102 \
             --health-cmd='python -c "import json, urllib.request; payload = json.load(urllib.request.urlopen(\"http://localhost:9102/health\", timeout=3)); raise SystemExit(0 if payload.get(\"ok\") else 1)"' \
             --health-interval=2s --health-timeout=5s --health-retries=30 \
             -p 9102:9102 \

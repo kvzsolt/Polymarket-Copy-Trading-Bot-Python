@@ -69,7 +69,7 @@ def test_healthcheck_port_matches_metrics_port(dockerfile_text: str) -> None:
 
 
 def test_metrics_server_enabled_by_default(dockerfile_text: str) -> None:
-    assert "ENV PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
+    assert "ENV PMCOPY__APP__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
         "Metrics server must start by default so the HEALTHCHECK has a port"
     )
 

@@ -3,8 +3,12 @@
 # build layer leaves the key in layer history even if a later
 # step deletes the file.
 secrets.env
+secrets.env.*
+!secrets.env.example
 .env
+.env.*
 config/runtime.local.yml
+config/runtime.local.*
 secrets.toml
 *.env.bak
 *.env.bak.*
@@ -54,3 +58,5 @@ plan.md
 0
 _handle_*
 *.egg-info/
+build/
+dist/
