@@ -2,8 +2,8 @@
 # RC1 validation bundle (PR9).
 #
 # Runs compileall + pytest + Python source forbid scans + an unguarded
-# execution_service.execute alias scan, plus the doctor live gate if
-# PRIVATE_KEY / FUNDER_ADDRESS are exported. Exits non-zero on the first
+# execution_service.execute alias scan, plus the doctor live gate against the
+# same layered config used by the application. Exits non-zero on the first
 # blocker so CI / operators see the failure clearly.
 
 set -euo pipefail
@@ -68,10 +68,6 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "[4/4] doctor live..."
-if [ -n "${PRIVATE_KEY-}" ] && [ -n "${FUNDER_ADDRESS-}" ]; then
-    python -m bot_cli.main doctor --live
-else
-    echo "  skipped: PRIVATE_KEY / FUNDER_ADDRESS not exported"
-fi
+python -m bot_cli.main doctor --live
 
 echo "RC1 check complete."

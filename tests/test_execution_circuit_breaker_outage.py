@@ -67,9 +67,31 @@ def _make_mds(token_id: str = "t1") -> AsyncMock:
     bid, ask = Decimal("0.49"), Decimal("0.51")
     bundle = MarketDataBundle(
         token_id=token_id,
-        quote=QuoteSnapshot(token_id=token_id, best_bid=bid, best_ask=ask, last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=token_id, bids={bid: Decimal("100")}, asks={ask: Decimal("100")}, best_bid=bid, best_ask=ask, source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=Decimal("1"), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=bid,
+            best_ask=ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={bid: Decimal("100")},
+            asks={ask: Decimal("100")},
+            best_bid=bid,
+            best_ask=ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()

@@ -1,4 +1,5 @@
 """PR7: PositionDriftService behaviour."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -42,8 +43,8 @@ def _make_svc(
     config=None,
 ):
     positions_repo = MagicMock()
-    positions_repo.list_open_positions = AsyncMock(return_value=local_positions or [])
-    positions_repo.delete_position = AsyncMock()
+    positions_repo.list_held_positions = AsyncMock(return_value=local_positions or [])
+    positions_repo.delete_position_if_unchanged = AsyncMock(return_value=True)
     reservations_repo = MagicMock()
     reservations_repo.list_active_for_scope = AsyncMock(return_value=active_reservations or [])
     fetcher = AsyncMock(return_value=venue_positions or [])
@@ -119,8 +120,11 @@ async def test_local_only_with_no_active_reservations_prunes_when_allowed():
     report = await svc.scan_user(user_id="u1", wallet="0xfunder")
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION
-    assert rec.status == PositionDriftStatus.LOCAL_MISSING_VENUE_POSITION
-    positions_repo.delete_position.assert_called_once_with("u1", "cond1", token_id="0xtok")
+    assert rec.status == PositionDriftStatus.RECONCILED
+    assert report.clean is True
+    positions_repo.delete_position_if_unchanged.assert_awaited_once_with(
+        "u1", "cond1", token_id="0xtok", expected_size=Decimal("10")
+    )
     assert svc.is_scope_paused(user_id="u1", condition_id="cond1", token_id="0xtok") is False
 
 
@@ -135,7 +139,7 @@ async def test_local_only_with_active_reservation_does_not_prune():
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PAUSE_SCOPE
     assert rec.status == PositionDriftStatus.UNRESOLVED
-    positions_repo.delete_position.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_not_awaited()
     assert svc.is_scope_paused(user_id="u1", condition_id="cond1", token_id="0xtok") is True
 
 
@@ -149,7 +153,7 @@ async def test_local_only_with_auto_prune_disabled_pauses():
     report = await svc.scan_user(user_id="u1", wallet="0xfunder")
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PAUSE_SCOPE
-    positions_repo.delete_position.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -197,9 +201,7 @@ async def test_was_recently_pruned_marks_after_prune_action():
     report = await svc.scan_user(user_id="u1", wallet="0xfunder")
     # Confirm the single record is the prune action.
     assert any(r.action == PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION for r in report.records)
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok"
-    ) is True
+    assert svc.was_recently_pruned(user_id="u1", condition_id="cond1", token_id="0xtok") is True
 
 
 @pytest.mark.asyncio
@@ -212,10 +214,16 @@ async def test_was_recently_pruned_honours_ttl():
     await svc.scan_user(user_id="u1", wallet="0xfunder")
     # Manually advance: pass a ``now`` 120s into the future, ttl=60s.
     far_future = svc._prune_timestamps["u1|cond1|0xtok"] + 120.0
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok",
-        ttl_seconds=60.0, now=far_future,
-    ) is False
+    assert (
+        svc.was_recently_pruned(
+            user_id="u1",
+            condition_id="cond1",
+            token_id="0xtok",
+            ttl_seconds=60.0,
+            now=far_future,
+        )
+        is False
+    )
     # Side-effect: TTL elapse drops the stamp so memory stays bounded.
     assert "u1|cond1|0xtok" not in svc._prune_timestamps
 
@@ -229,9 +237,10 @@ async def test_was_recently_pruned_uses_configured_holdoff():
     )
     await svc.scan_user(user_id="u1", wallet="0xfunder")
     future = svc._prune_timestamps["u1|cond1|0xtok"] + 120.0
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok", now=future
-    ) is True
+    assert (
+        svc.was_recently_pruned(user_id="u1", condition_id="cond1", token_id="0xtok", now=future)
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -244,9 +253,7 @@ async def test_was_recently_pruned_false_for_non_prune_status():
         config=_cfg(allow_auto_prune_zero=False),
     )
     await svc.scan_user(user_id="u1", wallet="0xfunder")
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok"
-    ) is False
+    assert svc.was_recently_pruned(user_id="u1", condition_id="cond1", token_id="0xtok") is False
 
 
 @pytest.mark.asyncio
@@ -256,10 +263,6 @@ async def test_clear_prune_record_drops_holdoff():
         venue_positions=[],
     )
     await svc.scan_user(user_id="u1", wallet="0xfunder")
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok"
-    ) is True
+    assert svc.was_recently_pruned(user_id="u1", condition_id="cond1", token_id="0xtok") is True
     svc.clear_prune_record(user_id="u1", condition_id="cond1", token_id="0xtok")
-    assert svc.was_recently_pruned(
-        user_id="u1", condition_id="cond1", token_id="0xtok"
-    ) is False
+    assert svc.was_recently_pruned(user_id="u1", condition_id="cond1", token_id="0xtok") is False

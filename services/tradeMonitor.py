@@ -1,3 +1,5 @@
+"""Poll and normalize leader trades while preserving durable cursors."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from services.leaderCursorStore import LeaderCursorStore
-from services.metrics import metrics
+from services.metrics import METRIC_DETECTION_SIGNALS, metrics
 from storage.postgres.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
 
@@ -36,7 +38,6 @@ def _leader_fetch_key(kind: str, leader_wallet: str) -> tuple[str, str]:
     return kind, str(leader_wallet or "").strip().lower()
 
 
-
 def _leader_fetch_lock(kind: str, leader_wallet: str) -> asyncio.Lock:
     key = _leader_fetch_key(kind, leader_wallet)
     lock = _LEADER_FETCH_LOCKS.get(key)
@@ -46,14 +47,13 @@ def _leader_fetch_lock(kind: str, leader_wallet: str) -> asyncio.Lock:
     return lock
 
 
-
 def _leader_fetch_spacing_seconds(kind: str) -> float:
     global _fetch_spacing_config
     if _fetch_spacing_config is not None:
         ms = (
-            _fetch_spacing_config.polling.leader_positions_min_fetch_spacing_ms
+            _fetch_spacing_config.detection.leader_positions_min_fetch_spacing_ms
             if kind == "positions"
-            else _fetch_spacing_config.polling.leader_activity_min_fetch_spacing_ms
+            else _fetch_spacing_config.detection.leader_activity_min_fetch_spacing_ms
         )
         return max(0.0, ms / 1000.0)
 
@@ -101,10 +101,14 @@ async def _guarded_leader_fetch(kind: str, leader_wallet: str, url: str):
 # Position save interval (seconds) — avoid saving on every loop
 @dataclass
 class LeaderMonitorState:
+    """Track bounded polling state for one leader monitor."""
+
     recent_activities: list[dict] = field(default_factory=list)
     seen_hashes: set[str] = field(default_factory=set)
     last_processed_ts: float = 0.0
-    last_cursor: TradeCursor = field(default_factory=lambda: TradeCursor(timestamp=0, tx_hash="", trade_id=None))
+    last_cursor: TradeCursor = field(
+        default_factory=lambda: TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    )
 
 
 def _to_seconds(ts) -> float:
@@ -120,7 +124,9 @@ def _to_seconds(ts) -> float:
 def _trade_ordering_key(trade: dict) -> tuple[int, str, str]:
     ts = int(_to_seconds(trade.get("timestamp")))
     tx_hash = str(trade.get("transactionHash") or trade.get("txHash") or "").strip().lower()
-    trade_id = str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "").strip().lower()
+    trade_id = (
+        str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "").strip().lower()
+    )
     return ts, tx_hash, trade_id
 
 
@@ -169,9 +175,7 @@ def _spawn_research_capture(
     """Fire-and-forget the research-capture coroutine with a strong ref
     + a done-callback that logs any unhandled exception so the task is
     never silently lost."""
-    task = asyncio.create_task(
-        _run_research_capture(research_capture_service, raw_trades)
-    )
+    task = asyncio.create_task(_run_research_capture(research_capture_service, raw_trades))
     _research_capture_tasks.add(task)
 
     def _on_done(t: asyncio.Task) -> None:
@@ -189,12 +193,12 @@ def _spawn_research_capture(
     return task
 
 
-
-
-
 async def init(user_address: str, state: LeaderMonitorState):
+    """Initialize the leader-trade monitor dependencies."""
     if not user_address or len(user_address) != 42:
-        logger.error(f'Invalid wallet address "{user_address}" — must be 42-char hex (0x + 40 digits)')
+        logger.error(
+            f'Invalid wallet address "{user_address}" — must be 42-char hex (0x + 40 digits)'
+        )
         state.recent_activities = []
         state.seen_hashes.clear()
         return
@@ -202,15 +206,15 @@ async def init(user_address: str, state: LeaderMonitorState):
         state.last_cursor = _normalize_cursor(state.last_cursor)
         state.last_processed_ts = max(state.last_processed_ts, float(state.last_cursor.timestamp))
         user_activities = await fetch_data(
-            f'https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0',
+            f"https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0",
             silent=True,
         )
         normalized = _normalize_activities(user_activities)
         state.recent_activities = normalized[-200:]
         state.seen_hashes = {
-            str(t.get('transactionHash') or '').lower()
+            str(t.get("transactionHash") or "").lower()
             for t in state.recent_activities
-            if t.get('transactionHash')
+            if t.get("transactionHash")
         }
         if normalized:
             latest_activity = max(normalized, key=_trade_ordering_key)
@@ -220,7 +224,7 @@ async def init(user_address: str, state: LeaderMonitorState):
                 state.last_cursor = latest_cursor
                 state.last_processed_ts = float(ts)
     except Exception as e:
-        logger.error(f'Init activity failed: {e}')
+        logger.error(f"Init activity failed: {e}")
         state.recent_activities = []
         state.seen_hashes.clear()
 
@@ -231,14 +235,14 @@ def _normalize_activities(raw):
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        return raw.get('data', raw.get('activities', raw.get('results', []))) or []
+        return raw.get("data", raw.get("activities", raw.get("results", []))) or []
     return []
 
 
 def _trade_usdc_value(trade: dict) -> float:
-    usdc = float(trade.get('usdcSize') or 0)
+    usdc = float(trade.get("usdcSize") or 0)
     if usdc <= 0:
-        usdc = float(trade.get('size', 0) or 0) * float(trade.get('price', 0) or 0)
+        usdc = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
     return max(0.0, usdc)
 
 
@@ -259,23 +263,36 @@ async def _annotate_sell_fractions(trades: list[dict], leader_wallet: str) -> No
     if not sell_trades:
         return
 
-    try:
-        positions = await _guarded_leader_fetch(
-            "positions",
-            leader_wallet,
-            f"https://data-api.polymarket.com/positions?user={leader_wallet}",
-        )
-    except Exception as exc:
-        logger.warning(
-            "leader_positions_fetch_failed",
-            extra={
-                "leader_wallet": leader_wallet,
-                "error": redact_error_detail(exc),
-            },
-        )
-        return
+    positions: Any = None
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            positions = await _guarded_leader_fetch(
+                "positions",
+                leader_wallet,
+                f"https://data-api.polymarket.com/positions?user={leader_wallet}",
+            )
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                await asyncio.sleep(1.5)
 
-    if not isinstance(positions, list):
+    if last_exc is not None or not isinstance(positions, list):
+        if last_exc is not None:
+            logger.warning(
+                "leader_positions_fetch_failed",
+                extra={
+                    "leader_wallet": leader_wallet,
+                    "error": redact_error_detail(last_exc),
+                },
+            )
+        # Explicit sentinel: the downstream sell sizing must know the fraction
+        # is unknowable right now (policy decides skip vs full close) instead
+        # of silently treating it as a legacy unannotated feed.
+        for trade in sell_trades:
+            trade["_leader_sell_fraction_unavailable"] = True
         return
 
     remaining_by_key: dict[tuple[str, str], float] = {}
@@ -344,61 +361,69 @@ def _aggregate_trades(trades: list[dict], window_s: float = 2.0) -> list[dict]:
     if not trades:
         return []
 
-    ordered = sorted(trades, key=lambda x: (_to_seconds(x.get('timestamp')), str(x.get('transactionHash') or '')))
+    ordered = sorted(
+        trades,
+        key=lambda x: (
+            _to_seconds(x.get("timestamp")),
+            str(x.get("transactionHash") or ""),
+        ),
+    )
     aggregated: list[dict] = []
 
     for trade in ordered:
-        ts = _to_seconds(trade.get('timestamp'))
-        asset = trade.get('tokenID') or trade.get('token_id') or trade.get('asset')
+        ts = _to_seconds(trade.get("timestamp"))
+        asset = trade.get("tokenID") or trade.get("token_id") or trade.get("asset")
         if not asset:
             aggregated.append(trade)
             continue
 
         key = (
-            str(trade.get('proxyWallet') or trade.get('user') or '').lower(),
-            str(trade.get('conditionId') or ''),
+            str(trade.get("proxyWallet") or trade.get("user") or "").lower(),
+            str(trade.get("conditionId") or ""),
             str(asset),
-            str(trade.get('side') or '').upper(),
+            str(trade.get("side") or "").upper(),
         )
 
         last = aggregated[-1] if aggregated else None
         if last:
-            last_asset = last.get('tokenID') or last.get('token_id') or last.get('asset')
+            last_asset = last.get("tokenID") or last.get("token_id") or last.get("asset")
             last_key = (
-                str(last.get('proxyWallet') or last.get('user') or '').lower(),
-                str(last.get('conditionId') or ''),
+                str(last.get("proxyWallet") or last.get("user") or "").lower(),
+                str(last.get("conditionId") or ""),
                 str(last_asset),
-                str(last.get('side') or '').upper(),
+                str(last.get("side") or "").upper(),
             )
-            last_ts = _to_seconds(last.get('timestamp'))
+            last_ts = _to_seconds(last.get("timestamp"))
         else:
             last_key = None
             last_ts = 0.0
 
         if last and key == last_key and (ts - last_ts) <= window_s:
-            last_size = float(last.get('size', 0) or 0)
-            cur_size = float(trade.get('size', 0) or 0)
+            last_size = float(last.get("size", 0) or 0)
+            cur_size = float(trade.get("size", 0) or 0)
             last_usdc = _trade_usdc_value(last)
             cur_usdc = _trade_usdc_value(trade)
             total_size = last_size + cur_size
             total_usdc = last_usdc + cur_usdc
-            weighted_price = (total_usdc / total_size) if total_size > 0 else float(last.get('price', 0) or 0)
-            last['size'] = total_size
-            last['usdcSize'] = total_usdc
-            last['price'] = weighted_price
-            tx_hashes = list(last.get('_txHashes') or [])
-            tx_hash = trade.get('transactionHash')
+            weighted_price = (
+                (total_usdc / total_size) if total_size > 0 else float(last.get("price", 0) or 0)
+            )
+            last["size"] = total_size
+            last["usdcSize"] = total_usdc
+            last["price"] = weighted_price
+            tx_hashes = list(last.get("_txHashes") or [])
+            tx_hash = trade.get("transactionHash")
             if tx_hash:
                 tx_hashes.append(tx_hash)
-            last['_txHashes'] = tx_hashes
-            last['_aggregatedCount'] = int(last.get('_aggregatedCount') or 1) + 1
+            last["_txHashes"] = tx_hashes
+            last["_aggregatedCount"] = int(last.get("_aggregatedCount") or 1) + 1
             # Keep the newest timestamp so cursor progression remains monotonic.
-            last['timestamp'] = max(last_ts, ts)
+            last["timestamp"] = max(last_ts, ts)
         else:
             clone = dict(trade)
-            if clone.get('transactionHash'):
-                clone['_txHashes'] = [clone['transactionHash']]
-            clone['_aggregatedCount'] = 1
+            if clone.get("transactionHash"):
+                clone["_txHashes"] = [clone["transactionHash"]]
+            clone["_aggregatedCount"] = 1
             aggregated.append(clone)
 
     return aggregated
@@ -436,7 +461,9 @@ async def _persist_cursor(cursor_store: Any, leader_wallet: str, cursor: TradeCu
         return False
 
 
-def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int, readiness_tracker: ReadinessTracker) -> bool:
+def _monitor_loop_healthy(
+    *, fetch_ok: bool, fetch_interval_s: float, readiness_tracker: ReadinessTracker
+) -> bool:
     if not fetch_ok:
         return False
     readiness = readiness_tracker.get_all()
@@ -452,6 +479,7 @@ def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int, readiness_tr
 
 
 def _log_detected_trade(leader_wallet: str, trade: dict) -> None:
+    trade.setdefault("_copy_detected_monotonic", time.monotonic())
     submarket = (
         trade.get("submarket")
         or trade.get("subMarket")
@@ -502,6 +530,7 @@ async def fetch_trade_data(
     readiness_tracker: ReadinessTracker,
     config: AppConfig,
     research_capture_service: Any | None = None,
+    aggregate_signals: bool = True,
 ):
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
     checked_activities = 0
@@ -509,10 +538,10 @@ async def fetch_trade_data(
         user_activities = await _guarded_leader_fetch(
             "activity",
             user_address,
-            f'https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0',
+            f"https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0",
         )
     except Exception as e:
-        logger.error(f'Fetch activity failed: {e}')
+        logger.error(f"Fetch activity failed: {e}")
         return False, checked_activities
     user_activities = _normalize_activities(user_activities)
     checked_activities = len(user_activities)
@@ -525,46 +554,55 @@ async def fetch_trade_data(
         state.last_cursor = _normalize_cursor(state.last_cursor)
         cursor_key = _cursor_key(state.last_cursor)
 
-        new_trades = [
-            a for a in user_activities
-            if _trade_ordering_key(a) > cursor_key
-        ]
+        new_trades = [a for a in user_activities if _trade_ordering_key(a) > cursor_key]
         if new_trades:
             newest = max(_to_seconds(t.get("timestamp")) for t in new_trades)
             ingest_lag = max(0.0, float(current_timestamp) - newest)
             metrics.set_gauge("ingest_lag_seconds", ingest_lag)
         for t in new_trades:
-            t['bot'] = False
-            t['botExcutedTime'] = 0
-            t['proxyWallet'] = t.get('proxyWallet') or user_address
-        new_trades.sort(key=lambda x: x.get('timestamp', 0))
+            t["bot"] = False
+            t["botExcutedTime"] = 0
+            t["proxyWallet"] = t.get("proxyWallet") or user_address
+        new_trades.sort(key=lambda x: x.get("timestamp", 0))
         state.recent_activities.extend(new_trades)
         if len(state.recent_activities) > 200:
             state.recent_activities = state.recent_activities[-200:]
         state.seen_hashes = {
-            str(t.get('transactionHash') or '').lower()
+            str(t.get("transactionHash") or "").lower()
             for t in state.recent_activities
-            if t.get('transactionHash')
+            if t.get("transactionHash")
         }
 
         trade_candidates = []
         max_seen_ts = state.last_processed_ts
         for trade in new_trades:
-            if str(trade.get('type', '')).upper() != 'TRADE':
+            if str(trade.get("type", "")).upper() != "TRADE":
                 continue
             metrics.inc("signals_seen_total")
+            metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": "polling"})
+            logger.debug(
+                "detection_signal | source=polling leader=%s tx=%s side=%s token=%s",
+                user_address,
+                trade.get("transactionHash"),
+                str(trade.get("side") or "").upper(),
+                trade.get("asset") or trade.get("tokenID") or trade.get("token_id"),
+            )
 
-            if not trade.get('asset'):
-                trade['asset'] = trade.get('tokenID') or trade.get('token_id')
+            if not trade.get("asset"):
+                trade["asset"] = trade.get("tokenID") or trade.get("token_id")
 
             trade_candidates.append(trade)
             ts = _to_seconds(trade.get("timestamp"))
             if ts > max_seen_ts:
                 max_seen_ts = ts
 
-        trade_list = _aggregate_trades(
-            trade_candidates,
-            window_s=config.polling.aggregate_signal_window_seconds
+        trade_list = (
+            _aggregate_trades(
+                trade_candidates,
+                window_s=config.detection.aggregate_signal_window_seconds,
+            )
+            if aggregate_signals
+            else list(trade_candidates)
         )
         if trade_candidates and research_capture_service is not None:
             _spawn_research_capture(research_capture_service, list(trade_candidates))
@@ -588,11 +626,12 @@ async def fetch_trade_data(
             state.last_processed_ts = max(state.last_processed_ts, float(ts))
             try:
                 from models.userHistory import get_user_activity_model
+
                 await get_user_activity_model(user_address).insert_many(new_trades)
             except Exception as e:
-                logger.error(f'DB save activities: {e}')
+                logger.error(f"DB save activities: {e}")
     except Exception as e:
-        logger.error(f'Error fetch_trade_data: {e}')
+        logger.error(f"Error fetch_trade_data: {e}")
         return False, checked_activities
     return True, checked_activities
 
@@ -603,20 +642,21 @@ async def trade_monitor(
     readiness_tracker: ReadinessTracker,
     config: AppConfig,
     research_capture_service: Any | None = None,
+    aggregate_signals: bool = True,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
     global _fetch_spacing_config
     _fetch_spacing_config = config
-    fetch_interval = float(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
+    fetch_interval = float(bot_params.get("FETCH_INTERVAL", config.detection.fetch_interval))
     state = LeaderMonitorState()
     cursor_store = await LeaderCursorStore.create()
-    leader_wallet = bot_params['leaderWallet']
+    leader_wallet = bot_params["leaderWallet"]
     state.last_cursor = _normalize_cursor(await cursor_store.get_cursor(leader_wallet))
     state.last_processed_ts = float(state.last_cursor.timestamp)
 
     await init(leader_wallet, state)
     await _persist_cursor(cursor_store, leader_wallet, state.last_cursor)
-    monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
+    monitored_leader_count = int(bot_params.get("MONITORED_LEADER_COUNT", 1) or 1)
     while True:
         previous_cursor = state.last_cursor
         fetch_ok, checked_activities = await fetch_trade_data(
@@ -626,6 +666,7 @@ async def trade_monitor(
             readiness_tracker=readiness_tracker,
             config=config,
             research_capture_service=research_capture_service,
+            aggregate_signals=aggregate_signals,
         )
         if (
             state.last_cursor.timestamp != previous_cursor.timestamp
@@ -634,7 +675,11 @@ async def trade_monitor(
         ):
             await _persist_cursor(cursor_store, leader_wallet, state.last_cursor)
 
-        if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
+        if _monitor_loop_healthy(
+            fetch_ok=fetch_ok,
+            fetch_interval_s=fetch_interval,
+            readiness_tracker=readiness_tracker,
+        ):
             monitor_heartbeat_tick(
                 trader_count=monitored_leader_count,
                 checked_activities=checked_activities,

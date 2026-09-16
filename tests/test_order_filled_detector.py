@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/order_filled_detector.py`` (PR2)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -156,10 +157,17 @@ def test_decode_log_handles_decimal_log_index() -> None:
 
 
 def test_build_signal_watched_maker_buy() -> None:
-    log = _build_log(maker=_WATCHED, maker_side=MAKER_SIDE_BUY, maker_amount_filled=2_000_000, taker_amount_filled=1_000_000)
+    log = _build_log(
+        maker=_WATCHED,
+        maker_side=MAKER_SIDE_BUY,
+        maker_amount_filled=2_000_000,
+        taker_amount_filled=1_000_000,
+    )
     decoded = decode_order_filled_log(log)
     assert decoded is not None
-    signal = build_signal_from_log(decoded, {_WATCHED}, event_ts=1700000000000, condition_id="cond-x")
+    signal = build_signal_from_log(
+        decoded, {_WATCHED}, event_ts=1700000000000, condition_id="cond-x"
+    )
     assert signal is not None
     assert signal.leader_wallet == _WATCHED
     assert signal.watched_role == "maker"
@@ -167,6 +175,7 @@ def test_build_signal_watched_maker_buy() -> None:
     assert signal.side == "BUY"
     assert signal.confidence == DetectionConfidence.MINED_AUTHORITATIVE
     assert signal.log_index == 7
+    assert signal.block_number == 123
     assert signal.provisional is False
     assert signal.condition_id == "cond-x"
     assert signal.tx_hash == _TX
@@ -225,3 +234,124 @@ def test_build_signal_log_index_always_set() -> None:
     assert signal is not None
     assert signal.log_index == 99
     assert signal.provisional is False
+
+
+# ---------------------------------------------------------------------------
+# Watched-wallet topic-filtered subscription params (logs_only confirmed mode)
+# ---------------------------------------------------------------------------
+
+_TOPIC0_HEX = "0x" + ORDER_FILLED_TOPIC0.hex()
+
+_LEADER_A = "0x" + "11" * 20
+_LEADER_B = "0xAB" + "cd" * 19  # mixed case on purpose
+_EXCHANGE_FILTER = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+
+
+def test_watched_params_build_maker_and_taker_filters() -> None:
+    """One subscription per indexed role: topic2 (maker) / topic3 (taker).
+
+    A single ``logs`` filter cannot OR topic2 with topic3, so the runtime
+    opens both subscriptions and keeps the client-side maker/taker match as
+    the second guard.
+    """
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    maker, taker = log_subscription_params_for_watched(
+        exchange_addresses=_EXCHANGE_FILTER,
+        watched_wallets={_LEADER_B, _LEADER_A},
+    )
+
+    expected_topics = sorted((_pad32(_LEADER_A), _pad32(_LEADER_B)))
+    assert maker == [
+        "logs",
+        {
+            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "topics": [[_TOPIC0_HEX], None, expected_topics],
+        },
+    ]
+    assert taker == [
+        "logs",
+        {
+            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "topics": [[_TOPIC0_HEX], None, None, expected_topics],
+        },
+    ]
+
+
+def test_watched_params_pad_and_lowercase_the_address_topics() -> None:
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    (maker, _taker) = log_subscription_params_for_watched(
+        exchange_addresses=_EXCHANGE_FILTER,
+        watched_wallets={_LEADER_B},
+    )
+
+    topics = maker[1]["topics"]
+    assert topics[2] == [_pad32(_LEADER_B)]
+    assert topics[2][0] == "0x" + "0" * 24 + ("ab" + "cd" * 19)
+
+
+def test_watched_params_cap_the_filter_and_warn_with_the_count_only() -> None:
+    """Beyond the cap the filter keeps a deterministic prefix and the WARN
+    names only counts (never wallet addresses)."""
+    import logging
+
+    from services.onchain_detection import order_filled_detector as detector_module
+    from services.onchain_detection.order_filled_detector import (
+        WATCHED_TOPIC_FILTER_CAP,
+        log_subscription_params_for_watched,
+    )
+
+    roster = {f"0x{i:040x}" for i in range(WATCHED_TOPIC_FILTER_CAP + 50)}
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    detector_module.logger.addHandler(handler)
+    previous_level = detector_module.logger.level
+    detector_module.logger.setLevel(logging.WARNING)
+    try:
+        maker, _taker = log_subscription_params_for_watched(
+            exchange_addresses=_EXCHANGE_FILTER,
+            watched_wallets=roster,
+        )
+    finally:
+        detector_module.logger.removeHandler(handler)
+        detector_module.logger.setLevel(previous_level)
+
+    assert len(maker[1]["topics"][2]) == WATCHED_TOPIC_FILTER_CAP
+    assert records, "expected a WARN naming the capped count"
+    warning = records[-1].getMessage()
+    assert str(WATCHED_TOPIC_FILTER_CAP) in warning
+    assert str(WATCHED_TOPIC_FILTER_CAP + 50) in warning
+    for address in roster:
+        assert address not in warning
+
+
+def test_watched_params_with_an_empty_roster_open_no_subscriptions() -> None:
+    """Zero watched leaders must not re-open the unfiltered logs feed.
+
+    The address-only subscription costs ~40k CU/min — exactly what
+    ``logs_only`` exists to avoid — so an empty roster (e.g. discovery
+    rotating every leader out) opens nothing; the runtime idles until the
+    roster delivers a leader again.
+    """
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    for empty in (None, set()):
+        assert (
+            log_subscription_params_for_watched(
+                exchange_addresses=_EXCHANGE_FILTER, watched_wallets=empty
+            )
+            == ()
+        )

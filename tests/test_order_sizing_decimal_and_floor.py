@@ -15,6 +15,7 @@ Three review findings:
 
 Tests below pin each contract.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

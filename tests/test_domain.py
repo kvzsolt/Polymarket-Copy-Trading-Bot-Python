@@ -145,9 +145,7 @@ class TestClientPortsAreAsync:
     def test_all_abstracts_are_coroutines(self, port: type) -> None:
         for name in port.__abstractmethods__:
             method = getattr(port, name)
-            assert inspect.iscoroutinefunction(method), (
-                f"{port.__name__}.{name} should be async"
-            )
+            assert inspect.iscoroutinefunction(method), f"{port.__name__}.{name} should be async"
 
 
 # ---------------------------------------------------------------------------

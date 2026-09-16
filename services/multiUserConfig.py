@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from pydantic import SecretStr
 
 from config.env import SignatureType, WalletConfig
 
@@ -33,12 +35,35 @@ def _parse_signature_type(value) -> SignatureType:
 
 
 def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
+    legacy_signature_type = payload.get("signature_type", 3)
+    if int(legacy_signature_type) != int(SignatureType.DEPOSIT_WALLET):
+        raise ValueError(
+            "multi-user signature_type is no longer configurable; "
+            "only Deposit Wallet/POLY_1271 type 3 is supported"
+        )
+    funder_address = str(payload.get("funder_address", "")).strip()
+    # Mirrors the single-user AppConfig invariant. Paper never authenticates,
+    # so no secure client resolves a Deposit Wallet and
+    # ``bind_resolved_deposit_wallet`` never runs: the configured funder is
+    # this entry's only wallet identity. Left empty, the balance and
+    # live-position probes query "" and fail readiness with no actionable
+    # error. Live may omit it — the authenticated SDK derives the address from
+    # this entry's own private_key and binds it back.
+    if config.execution.paper_trade_only and not funder_address:
+        entry = str(payload.get("user_id", "")).strip() or "<unknown>"
+        raise ValueError(
+            f"multi-user entry {entry!r} is missing funder_address, which is "
+            "required in paper mode (it is the wallet identity used by the "
+            "balance/live-position health probes; live mode derives it from "
+            "the entry's private_key instead)"
+        )
     wallet = WalletConfig(
-        private_key=str(payload["private_key"]),
+        private_key=SecretStr(str(payload["private_key"])),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
-        signature_type=_parse_signature_type(payload.get("signature_type", 0)),
-        funder_address=str(payload["funder_address"]),
-        polygon_rpc_url=str(payload.get("polygon_rpc_url", config.network.rpc_url)),
+        signature_type=SignatureType.DEPOSIT_WALLET,
+        funder_address=funder_address,
+        polygon_rpc_url=config.polymarket.rpc_url,
+        fallback_rpc_url=config.polymarket.fallback_rpc_url,
     )
     follows: dict[str, UserFollowConfig] = {}
     for item in payload.get("follows", []):
@@ -63,7 +88,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     Fallback behavior keeps the existing single-user flow but sources defaults
     from the strongly typed AppConfig instead of the legacy ENV snapshot.
     """
-    config_file = (config.discovery.multi_user_config_file or "").strip()
+    config_file = (config.app.multi_user_config_file or "").strip()
     if not config_file:
         # Pre-fix: signature_type=None left a hole that crashed
         # downstream callers doing ``int(wallet.signature_type)``.
@@ -73,14 +98,18 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         base_wallet = WalletConfig(
             private_key=config.wallet.private_key,
             chain_id=config.wallet.chain_id,
-            signature_type=getattr(config.wallet, "signature_type", SignatureType(0))
-                or SignatureType(0),
+            signature_type=SignatureType.DEPOSIT_WALLET,
             funder_address=config.wallet.funder_address,
             polygon_rpc_url=config.wallet.polygon_rpc_url,
+            fallback_rpc_url=config.wallet.fallback_rpc_url,
         )
+        # One identity for the user and its follows. Deriving them separately
+        # left every funder-configured deployment with a RuntimeUser keyed on
+        # the funder while its follows still said "default".
+        user_id = config.wallet.funder_address or "default"
         follows = {
             leader: UserFollowConfig(
-                user_id="default",
+                user_id=user_id,
                 leader_id=leader,
                 enabled=True,
                 allocation_pct=config.sizing.percentage / 100.0,
@@ -89,7 +118,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             )
             for leader in leader_wallets
         }
-        return [RuntimeUser(user_id=config.wallet.funder_address or "default", wallet=base_wallet, follows=follows)]
+        return [RuntimeUser(user_id=user_id, wallet=base_wallet, follows=follows)]
 
     # Confined-deputy guard: an operator-supplied path is read as JSON
     # into the process. ``Path(x).resolve()`` so symlinks are followed,
@@ -102,9 +131,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         Path.home().resolve(strict=False),
         Path.cwd().resolve(strict=False),
     )
-    if not any(
-        resolved == root or _is_descendant(resolved, root) for root in safe_roots
-    ):
+    if not any(resolved == root or _is_descendant(resolved, root) for root in safe_roots):
         raise ValueError(
             f"MULTI_USER_CONFIG_FILE must point under $HOME or the working "
             f"directory; resolved path was {resolved}"
@@ -112,13 +139,37 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     # ``json.loads`` cannot parse JSONC (comments/trailing commas); only
     # accept .json. Operators wanting comments must strip them upstream.
     if resolved.suffix.lower() != ".json":
-        raise ValueError(
-            f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}"
-        )
+        raise ValueError(f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}")
 
     payload = json.loads(resolved.read_text(encoding="utf-8"))
     users = [_runtime_user_from_payload(p, config) for p in payload.get("users", [])]
     return users
+
+
+def bind_resolved_deposit_wallet(
+    runtime_user: RuntimeUser,
+    wallet_address: str | None,
+) -> None:
+    """Bind the type-3 Deposit Wallet before runtime services wire.
+
+    ``wallet_address`` is the verified Deposit Wallet funder address. Callers
+    pass it through as-is: for a live user that is an unresolved wallet, and
+    rejecting it here is what stops an empty funder from reaching the runtime.
+    """
+    resolved = str(wallet_address or "").strip()
+    if not resolved:
+        raise ValueError("no Deposit Wallet address was provided to bind")
+    runtime_user.wallet = replace(
+        runtime_user.wallet,
+        funder_address=resolved,
+        signature_type=SignatureType.DEPOSIT_WALLET,
+    )
+    if runtime_user.user_id in {"", "default"}:
+        runtime_user.user_id = resolved
+        runtime_user.follows = {
+            leader_id: replace(follow, user_id=resolved)
+            for leader_id, follow in runtime_user.follows.items()
+        }
 
 
 def _is_descendant(child: Path, parent: Path) -> bool:

@@ -1,12 +1,20 @@
+"""Shared bounded HTTP reads and writes with configurable response decoding."""
+
 from __future__ import annotations
 
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
+
+
+# aiohttp default is 8190 bytes; Polymarket can serve CSP headers larger than
+# that (measured ~8.2 KB), which otherwise surfaces as a client-side HTTP 400.
+MAX_HTTP_HEADER_SIZE = 64 * 1024
 
 
 @dataclass
@@ -35,8 +43,12 @@ class AsyncHttpClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         silent: bool = False,
+        json_decoder: Callable[[str], object] | None = None,
     ) -> Any:
-        return await self._request_json("GET", url, params=params, headers=headers, silent=silent)
+        """Fetch JSON, optionally preserving decimal numbers through a decoder."""
+        return await self._request_json(
+            "GET", url, params=params, headers=headers, silent=silent, json_decoder=json_decoder
+        )
 
     async def post_json(
         self,
@@ -48,7 +60,15 @@ class AsyncHttpClient:
     ) -> Any:
         return await self._request_json("POST", url, json=json_body, headers=headers, silent=silent)
 
-    async def _request_json(self, method: str, url: str, *, silent: bool = False, **kwargs) -> Any:
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        silent: bool = False,
+        json_decoder: Callable[[str], object] | None = None,
+        **kwargs,
+    ) -> Any:
         last_exc = None
 
         for attempt in range(1, self.retry_policy.attempts + 1):
@@ -56,7 +76,11 @@ class AsyncHttpClient:
             try:
                 timeout = aiohttp.ClientTimeout(total=self.retry_policy.timeout_seconds)
                 async with self.session.request(method, url, timeout=timeout, **kwargs) as resp:
-                    payload = await resp.json(content_type=None)
+                    payload = (
+                        await resp.json(content_type=None, loads=json_decoder)
+                        if json_decoder is not None
+                        else await resp.json(content_type=None)
+                    )
                     latency_ms = round((time.perf_counter() - started) * 1000, 2)
                     if self.logger and not silent:
                         self.logger.debug(
@@ -116,4 +140,6 @@ async def build_shared_session() -> aiohttp.ClientSession:
         timeout=aiohttp.ClientTimeout(total=15),
         connector=aiohttp.TCPConnector(limit=100, keepalive_timeout=30),
         headers={"Accept": "application/json", "User-Agent": "polymarket-copy-bot/2.0"},
+        max_line_size=MAX_HTTP_HEADER_SIZE,
+        max_field_size=MAX_HTTP_HEADER_SIZE,
     )

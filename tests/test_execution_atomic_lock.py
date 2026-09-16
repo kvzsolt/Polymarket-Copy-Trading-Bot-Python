@@ -4,6 +4,7 @@ Repo-level invariants live on the canonical async PG ``OrdersRepo``. The
 ExecutionService integration test runs against the same async repo so
 the lock contract is exercised end-to-end on the production code path.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,8 @@ from services.executionService import ExecutionRequest, ExecutionService
 from services.market_data_service import MarketDataBundle, MarketDataSource
 from storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
 from utils.createClobClient import MarketMeta
+from tests.conftest import make_clob_gateway
+from integrations.polymarket.models import VenueSubmitResult
 
 
 @contextlib.asynccontextmanager
@@ -105,39 +108,36 @@ class _MetaSvc:
         )
 
 
-class _ConcurrentClob:
-    def __init__(self):
-        self.get_price = AsyncMock(return_value={"price": "0.50"})
-        self.post_signed_order = AsyncMock(
-            return_value={"success": True, "orderID": "ord-1", "status": "submitted"}
-        )
-        self.client = SimpleNamespace(
-            get_order=lambda _order_id: {
-                "status": "filled",
-                "size_matched": "5",
-                "avg_price": "0.50",
-            }
-        )
-        self.first_create_started = asyncio.Event()
-        self.release_first_create = asyncio.Event()
-        self._first_create_seen = False
-
-    async def create_market_order(self, **kwargs):
-        if not self._first_create_seen:
-            self._first_create_seen = True
-            self.first_create_started.set()
-            await self.release_first_create.wait()
-        return {"signed": True}
-
-
 def _make_mds(token_id: str = "t1") -> AsyncMock:
     now = _time.monotonic()
     bid, ask = Decimal("0.49"), Decimal("0.51")
     bundle = MarketDataBundle(
         token_id=token_id,
-        quote=QuoteSnapshot(token_id=token_id, best_bid=bid, best_ask=ask, last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=token_id, bids={bid: Decimal("100")}, asks={ask: Decimal("100")}, best_bid=bid, best_ask=ask, source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=Decimal("1"), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=bid,
+            best_ask=ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={bid: Decimal("100")},
+            asks={ask: Decimal("100")},
+            best_bid=bid,
+            best_ask=ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()
@@ -169,10 +169,22 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission():
     """
     async with _pg_pool() as pool:
         repo = PgOrdersRepo(pool)
-        clob = _ConcurrentClob()
+        started = asyncio.Event()
+        proceed = asyncio.Event()
+
+        async def submit(request):
+            started.set()
+            await proceed.wait()
+            return VenueSubmitResult(success=True, order_id="ord-1", status="submitted")
+
+        gateway = make_clob_gateway()
+        gateway.submit_marketable_order = AsyncMock(side_effect=submit)
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            None,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
+            clob_gateway=gateway,
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -187,12 +199,12 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission():
         )
 
         first_task = asyncio.create_task(svc.execute(req))
-        await clob.first_create_started.wait()
+        await started.wait()
 
         second_result = await svc.execute(req)
-        clob.release_first_create.set()
+        proceed.set()
         first_result = await first_task
 
         assert second_result.status in {"duplicate_ignored", "inflight_lock"}
         assert first_result.accepted is True
-        assert clob.post_signed_order.await_count == 1
+        assert gateway.submit_marketable_order.await_count == 1

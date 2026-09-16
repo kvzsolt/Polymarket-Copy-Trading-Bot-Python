@@ -4,6 +4,7 @@ Provides a standalone, stateless exit evaluator that mirrors the core
 logic in ``services.positionManager`` but can be used independently
 for pre-trade risk checks and monitoring hooks.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

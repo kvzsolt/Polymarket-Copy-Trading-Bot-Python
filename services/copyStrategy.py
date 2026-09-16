@@ -102,29 +102,27 @@ def parse_tiered_multipliers(tiers_str: str | None) -> list[MultiplierTier]:
         range_part, multiplier_part = raw_tier.split(":", 1)
         multiplier = _to_decimal(multiplier_part, "-1")
         if multiplier < _DECIMAL_ZERO:
-            raise ValueError(f"Invalid multiplier in tier \"{raw_tier}\": {multiplier_part}")
+            raise ValueError(f'Invalid multiplier in tier "{raw_tier}": {multiplier_part}')
 
         range_part = range_part.strip()
         if range_part.endswith("+"):
             min_usdc = _to_decimal(range_part[:-1], "-1")
             if min_usdc < _DECIMAL_ZERO:
-                raise ValueError(f"Invalid minimum value in tier \"{raw_tier}\": {range_part}")
+                raise ValueError(f'Invalid minimum value in tier "{raw_tier}": {range_part}')
             tiers.append(MultiplierTier(min_usdc=min_usdc, max_usdc=None, multiplier=multiplier))
             continue
 
         if "-" not in range_part:
-            raise ValueError(
-                f'Invalid range format in tier "{raw_tier}". Use "min-max" or "min+"'
-            )
+            raise ValueError(f'Invalid range format in tier "{raw_tier}". Use "min-max" or "min+"')
 
         min_part, max_part = range_part.split("-", 1)
         min_usdc = _to_decimal(min_part, "-1")
         max_usdc = _to_decimal(max_part, "-1")
         if min_usdc < _DECIMAL_ZERO:
-            raise ValueError(f"Invalid minimum value in tier \"{raw_tier}\": {min_part}")
+            raise ValueError(f'Invalid minimum value in tier "{raw_tier}": {min_part}')
         if max_usdc <= min_usdc:
             raise ValueError(
-                f"Invalid maximum value in tier \"{raw_tier}\": {max_part} (must be > {min_usdc})"
+                f'Invalid maximum value in tier "{raw_tier}": {max_part} (must be > {min_usdc})'
             )
 
         tiers.append(MultiplierTier(min_usdc=min_usdc, max_usdc=max_usdc, multiplier=multiplier))
@@ -187,6 +185,7 @@ def calculate_copy_notional(
     adaptive_max_percent=None,
     adaptive_threshold_usdc=None,
     performance_win_rate=None,
+    rank_multiplier=None,
 ) -> CopySizingResult:
     strategy_name = normalize_strategy(strategy)
     leader_notional = max(_DECIMAL_ZERO, _to_decimal(leader_notional_usdc))
@@ -223,9 +222,7 @@ def calculate_copy_notional(
                 adaptive_threshold_usdc=adaptive_threshold_usdc,
             )
             base_notional = leader_notional * (adaptive_pct / Decimal("100"))
-            reasoning = (
-                f"adaptive-trade-size {adaptive_pct:.4f}% of ${leader_notional:.4f}"
-            )
+            reasoning = f"adaptive-trade-size {adaptive_pct:.4f}% of ${leader_notional:.4f}"
     else:
         base_notional = leader_notional * (copy_pct / Decimal("100"))
         reasoning = f"proportional {copy_pct:.4f}% of ${leader_notional:.4f}"
@@ -235,6 +232,7 @@ def calculate_copy_notional(
         tiered_multipliers=tiered_multipliers,
         trade_multiplier=trade_multiplier,
     )
+    multiplier *= max(_DECIMAL_ZERO, _to_decimal(rank_multiplier, "1"))
     final_notional = base_notional * multiplier
     if multiplier != _DECIMAL_ONE:
         reasoning += f" → multiplier {multiplier:.4f}x"

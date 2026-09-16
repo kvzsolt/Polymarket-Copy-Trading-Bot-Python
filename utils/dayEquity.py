@@ -56,9 +56,7 @@ def get_day_start_equity(current_equity: float | Decimal) -> Decimal:
 
     # New day or first run — snapshot current equity as Decimal.
     equity_dec = (
-        current_equity
-        if isinstance(current_equity, Decimal)
-        else Decimal(str(current_equity))
+        current_equity if isinstance(current_equity, Decimal) else Decimal(str(current_equity))
     )
     state = {
         "date": today,
@@ -70,6 +68,33 @@ def get_day_start_equity(current_equity: float | Decimal) -> Decimal:
     _save_state(state)
     logger.info("Day-start equity recorded: $%s for %s", equity_dec, today)
     return equity_dec
+
+
+def peek_day_start_equity() -> Decimal | None:
+    """Return today's recorded starting equity without recording anything.
+
+    ``get_day_start_equity`` writes the state file on the first call of a day,
+    which makes it unsafe for a read-only operator query: an observer must not
+    be able to define the day-start baseline the risk policy then enforces.
+    This probe returns the value only when today's snapshot already exists.
+
+    Returns:
+        Today's recorded day-start equity, or ``None`` when this day has no
+        recorded snapshot or the state file is unreadable.
+    """
+
+    state = _load_state()
+    if state.get("date") != _today_str():
+        return None
+    raw = state.get("equity")
+    if raw is None:
+        return None
+    try:
+        equity = Decimal(str(raw))
+    except (ArithmeticError, TypeError, ValueError):
+        logger.warning("Ignoring malformed day equity snapshot")
+        return None
+    return equity if equity.is_finite() else None
 
 
 def get_daily_loss(current_equity: float | Decimal) -> Decimal:

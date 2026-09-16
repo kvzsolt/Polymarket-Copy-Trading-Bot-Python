@@ -40,9 +40,15 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from typing import TypeAlias
+
 import asyncpg
 
+from storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
 from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reservation
+from domain.position_ownership import PositionOwnership
+from domain.performance import PerformanceUnits
+from storage.postgres.task_lot_capacity import PostgresTaskLotCapacity
 
 
 # DL-05: Advisory lock slot is a signed bigint. Hash the key to SHA-256 in
@@ -51,6 +57,7 @@ from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reserv
 # (Python ``int`` maps natively to PG ``bigint``). Same shape used in
 # positions_repo so collisions stay symmetric across both repos.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
+PostgresConnection: TypeAlias = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -65,12 +72,13 @@ def _lock_key(key: str) -> int:
 
 
 class ReservationsRepo:
+    """Persist collateral and share reservations in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def get_active_by_intent_key(
-        self, intent_key: str
-    ) -> Reservation | None:
+    async def get_active_by_intent_key(self, intent_key: str) -> Reservation | None:
+        """Return active by intent key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -112,6 +120,7 @@ class ReservationsRepo:
     async def create_buy_reservation(
         self, intent: OrderIntent, reserved_usdc: Decimal, expires_at: int
     ) -> Reservation:
+        """Create a quote-collateral reservation for a BUY intent."""
         return await self._create_reservation(
             intent,
             reserved_usdc=reserved_usdc,
@@ -122,6 +131,7 @@ class ReservationsRepo:
     async def create_sell_reservation(
         self, intent: OrderIntent, reserved_size: Decimal, expires_at: int
     ) -> Reservation:
+        """Create an outcome-share reservation for a SELL intent."""
         return await self._create_reservation(
             intent,
             reserved_usdc=Decimal("0"),
@@ -136,6 +146,7 @@ class ReservationsRepo:
         expires_at: int,
         available_balance: Decimal,
     ) -> Reservation | None:
+        """Create a BUY reservation after an atomic available-balance check."""
         res_id = str(uuid.uuid4())
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
@@ -226,6 +237,8 @@ class ReservationsRepo:
                 already_reserved = self._sum_decimal_rows(rows, "reserved_usdc")
                 if available_balance - already_reserved < reserved_usdc:
                     return None, None
+                if not await PostgresTaskBuyCapacity.permits(conn, intent, reserved_usdc):
+                    return None, None
                 await self._insert_reservation(
                     conn,
                     res_id,
@@ -245,6 +258,7 @@ class ReservationsRepo:
         expires_at: int,
         held_size: Decimal,
     ) -> Reservation | None:
+        """Create a SELL reservation after an atomic available-share check."""
         res_id = str(uuid.uuid4())
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
@@ -262,7 +276,7 @@ class ReservationsRepo:
                 )
                 rows = await conn.fetch(
                     """
-                    SELECT reserved_size FROM order_reservations
+                    SELECT reserved_size, metadata_json FROM order_reservations
                     WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
                           AND side = 'SELL' AND status = 'active'
                     FOR SHARE
@@ -291,6 +305,10 @@ class ReservationsRepo:
         reserved_size: Decimal,
         expires_at: int,
         held_size: Decimal,
+        sell_fraction: Decimal | None = None,
+        live_position_size: Decimal | None = None,
+        min_order_size: Decimal | None = None,
+        round_up_to_minimum: bool = False,
     ) -> tuple["Reservation | None", "Reservation | None"]:
         """SELL parity for ``create_buy_reservation_checked_by_intent``.
 
@@ -339,16 +357,73 @@ class ReservationsRepo:
                     intent.key.token_id,
                 )
                 already_reserved = self._sum_decimal_rows(rows, "reserved_size")
-                if held_size - already_reserved < reserved_size:
+                if intent.task_id is None and intent.key.reason is IntentReason.COPY_SELL:
+                    position = await conn.fetchrow(
+                        "SELECT leader_id, size_tokens FROM positions "
+                        "WHERE user_id = $1 AND condition_id = $2 AND token_id = $3",
+                        intent.key.user_id,
+                        intent.key.condition_id,
+                        intent.key.token_id,
+                    )
+                    if position is None or not PositionOwnership.matches(
+                        position["leader_id"], intent.key.leader_wallet
+                    ):
+                        return None, None
+                    position_shares = PerformanceUnits.finite(position["size_tokens"])
+                    if position_shares is None or position_shares <= 0:
+                        return None, None
+                    held_size = min(held_size, position_shares)
+                capacity = held_size - already_reserved
+                target_size = reserved_size
+                lot_capacity = await PostgresTaskLotCapacity().available(conn, intent)
+                available_lots = lot_capacity.lots
+                owned = sum((lot.shares for lot in available_lots), Decimal(0))
+                unattributed = (
+                    max(Decimal(0), held_size - lot_capacity.attributed_shares)
+                    if intent.task_id is None
+                    else Decimal(0)
+                )
+                capacity = min(capacity, owned + unattributed)
+                if sell_fraction is not None:
+                    if not sell_fraction.is_finite() or not (
+                        Decimal("0") < sell_fraction <= Decimal("1")
+                    ):
+                        raise ValueError("sell_fraction must be finite and in (0, 1]")
+                    if live_position_size is None or not live_position_size.is_finite():
+                        raise ValueError(
+                            "live_position_size is required for fractional SELL reservation"
+                        )
+                    free_size = min(
+                        max(Decimal("0"), capacity),
+                        max(Decimal("0"), live_position_size),
+                    )
+                    target_size = free_size * sell_fraction
+                    if (
+                        min_order_size is not None
+                        and min_order_size > 0
+                        and target_size < min_order_size
+                    ):
+                        target_size = (
+                            min_order_size
+                            if round_up_to_minimum and free_size >= min_order_size
+                            else Decimal("0")
+                        )
+                    target_size = min(target_size, free_size)
+                if target_size <= 0 or capacity < target_size:
                     return None, None
                 await self._insert_reservation(
                     conn,
                     res_id,
                     intent,
                     Decimal("0"),
-                    reserved_size,
+                    target_size,
                     created_at,
                     expires_at,
+                    lot_allocations=(
+                        PostgresTaskLotCapacity.allocate(available_lots, min(target_size, owned))
+                        if available_lots
+                        else {}
+                    ),
                 )
         new_row = await self.get_by_id(res_id)
         return None, new_row
@@ -379,13 +454,14 @@ class ReservationsRepo:
 
     @staticmethod
     async def _insert_reservation(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         res_id: str,
         intent: OrderIntent,
         reserved_usdc: Decimal,
         reserved_size: Decimal,
         created_at: int,
         expires_at: int,
+        lot_allocations: dict[str, str] | None = None,
     ) -> None:
         await conn.execute(
             """
@@ -412,26 +488,31 @@ class ReservationsRepo:
             created_at,
             created_at,
             expires_at,
-            json.dumps({"source_signal_id": intent.source_signal_id}),
+            json.dumps(
+                {
+                    "source_signal_id": intent.source_signal_id,
+                    "task_id": intent.task_id,
+                    "protective_lot_id": intent.protective_lot_id,
+                    "lot_allocations": lot_allocations,
+                }
+            ),
         )
 
     async def get_by_id(self, res_id: str) -> Reservation | None:
+        """Return by id."""
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM order_reservations WHERE id = $1", res_id
-            )
+            row = await conn.fetchrow("SELECT * FROM order_reservations WHERE id = $1", res_id)
         return self._row_to_reservation(row) if row else None
 
     # Backward-compat alias used by older tests/helpers.
     async def _get_by_id(self, res_id: str) -> asyncpg.Record | None:
         async with self._pool.acquire() as conn:
-            return await conn.fetchrow(
-                "SELECT * FROM order_reservations WHERE id = $1", res_id
-            )
+            return await conn.fetchrow("SELECT * FROM order_reservations WHERE id = $1", res_id)
 
     async def list_expired_active(
         self, now_ts: int, user_id: str | None = None
     ) -> list[Reservation]:
+        """Return expired active."""
         query = """
             SELECT * FROM order_reservations
             WHERE status = 'active' AND expires_at < $1
@@ -445,15 +526,15 @@ class ReservationsRepo:
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active(self) -> list[Reservation]:
+        """Return active."""
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM order_reservations WHERE status = 'active'"
-            )
+            rows = await conn.fetch("SELECT * FROM order_reservations WHERE status = 'active'")
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active_for_scope(
         self, user_id: str, condition_id: str, token_id: str
     ) -> list[Reservation]:
+        """Return active for scope."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -470,6 +551,7 @@ class ReservationsRepo:
     async def sum_active_for_scope(
         self, user_id: str, condition_id: str, token_id: str, side: str
     ) -> tuple[Decimal, Decimal]:
+        """Return the total active for scope."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -488,6 +570,7 @@ class ReservationsRepo:
         )
 
     async def sum_active_quote_for_user(self, user_id: str) -> Decimal:
+        """Return the total active quote for user."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -499,9 +582,7 @@ class ReservationsRepo:
         return self._sum_decimal_rows(rows, "reserved_usdc")
 
     @staticmethod
-    def _sum_decimal_rows(
-        rows: Iterable[asyncpg.Record], field: str
-    ) -> Decimal:
+    def _sum_decimal_rows(rows: Iterable[asyncpg.Record], field: str) -> Decimal:
         total = Decimal("0")
         for row in rows:
             total += Decimal(str(row[field] or "0"))
@@ -515,6 +596,7 @@ class ReservationsRepo:
         venue_order_id: str | None = None,
     ) -> None:
         # Static-SQL cartesian — no f-string fragments. See Batch 8.
+        """Link order."""
         if order_id is None and venue_order_id is None:
             return
 
@@ -548,9 +630,8 @@ class ReservationsRepo:
                     reservation_id,
                 )
 
-    async def mark_released(
-        self, reservation_id: str, reason: str, released_at: int
-    ) -> None:
+    async def mark_released(self, reservation_id: str, reason: str, released_at: int) -> None:
+        """Mark released."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 # Take the same per-scope advisory lock the capacity

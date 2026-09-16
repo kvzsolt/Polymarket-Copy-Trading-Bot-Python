@@ -8,6 +8,7 @@ Backed by a live ``postgres:16-alpine`` testcontainer per the PG-A5
 sweep — the persisted-listing test owns its own pool via the shared
 ``_pg_pool()`` async context manager.
 """
+
 from __future__ import annotations
 
 import contextlib

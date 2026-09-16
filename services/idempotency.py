@@ -10,6 +10,7 @@ or :func:`services.order_sizing.size_sell_order` has produced the effective
 size and price, ensuring the hash reflects what the venue will actually
 receive.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -78,6 +79,7 @@ def compute_effective_key(
     str
         SHA-256 hex digest representing the executable order identity.
     """
+
     # Issue #102: canonical Decimal form so that benign formatting
     # differences (10 vs 10.00, 0.5 vs 0.50) produce identical keys.
     # ``Decimal.normalize()`` strips trailing zeros and ``format(..., "f")``

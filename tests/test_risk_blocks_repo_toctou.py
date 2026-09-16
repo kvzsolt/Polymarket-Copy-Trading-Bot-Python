@@ -14,6 +14,7 @@ The fix accepts an optional ``triggered_at`` arg and adds
 caller meant to clear. The expires_at filter also lands here so a
 stale clear cannot resurrect a window-expired block.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -64,9 +65,7 @@ async def test_clear_with_wrong_triggered_at_is_noop():
             reason="stop_loss",
             source="risk_monitor",
         )
-        active = await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        )
+        active = await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t")
         assert active is not None
         t1 = active["triggered_at"]
 
@@ -90,12 +89,8 @@ async def test_clear_with_wrong_triggered_at_is_noop():
         )
         assert cleared is False, "stale-pinned clear must be a no-op"
 
-        still_active = await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        )
-        assert still_active is not None, (
-            "active re-trigger block must survive stale-pinned clear"
-        )
+        still_active = await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t")
+        assert still_active is not None, "active re-trigger block must survive stale-pinned clear"
 
 
 async def test_clear_with_matching_triggered_at_succeeds():
@@ -108,9 +103,7 @@ async def test_clear_with_matching_triggered_at_succeeds():
             reason="stop_loss",
             source="risk_monitor",
         )
-        active = await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        )
+        active = await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t")
         assert active is not None
 
         cleared = await repo.clear_risk_block(

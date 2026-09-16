@@ -1,4 +1,5 @@
 """ReservationService end-to-end against async PG repos (PG-A6 port)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -92,6 +93,12 @@ def create_mock_intent(
     side: IntentSide,
     size: Decimal = Decimal("10"),
     price: Decimal = Decimal("0.5"),
+    *,
+    source_event_id: str | None = None,
+    sell_fraction: Decimal | None = None,
+    live_position_size: Decimal | None = None,
+    min_order_size: Decimal | None = None,
+    round_up_to_minimum: bool = False,
 ) -> OrderIntent:
     return OrderIntent(
         key=OrderIntentKey(
@@ -100,16 +107,17 @@ def create_mock_intent(
             condition_id="cond1",
             token_id="1" * 70,
             side=side,
-            reason=(
-                IntentReason.COPY_BUY
-                if side == IntentSide.BUY
-                else IntentReason.COPY_SELL
-            ),
+            reason=(IntentReason.COPY_BUY if side == IntentSide.BUY else IntentReason.COPY_SELL),
+            source_event_id=source_event_id,
         ),
         size=size,
         price=price,
         max_slippage_bps=200,
         created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
+        sell_fraction=sell_fraction,
+        live_position_size=live_position_size,
+        min_order_size=min_order_size,
+        round_up_to_minimum=round_up_to_minimum,
     )
 
 
@@ -147,6 +155,79 @@ async def test_reserve_sell_success():
         assert res.status == "active"
         assert res.reserved_size == Decimal("15")
         assert res.reserved_usdc == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_fractional_sell_reserves_only_atomic_free_remainder() -> None:
+    """A later full-exit signal reserves the shares not owned by an older order."""
+
+    async with _pg_pool() as pool:
+        svc = _build_service(pool, MockClock(1000))
+        positions_repo = PositionsRepo(pool)
+        await positions_repo.apply_fill(
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id="1" * 70,
+            side="BUY",
+            fill_size=Decimal("62.2902"),
+            fill_price=Decimal("0.5"),
+        )
+        first = create_mock_intent(
+            IntentSide.SELL,
+            size=Decimal("54.17783035269195928218"),
+            source_event_id="leader-sell-1",
+        )
+        await svc.reserve_for_intent(first)
+        final_exit = create_mock_intent(
+            IntentSide.SELL,
+            size=Decimal("62.29"),
+            source_event_id="leader-sell-2",
+            sell_fraction=Decimal("1"),
+            live_position_size=Decimal("62.2902"),
+            min_order_size=Decimal("5"),
+            round_up_to_minimum=True,
+        )
+
+        reservation = await svc.reserve_for_intent(final_exit)
+
+        assert reservation.reserved_size == Decimal("8.11236964730804071782")
+
+
+@pytest.mark.asyncio
+async def test_fractional_sell_uses_lower_live_balance_as_atomic_cap() -> None:
+    """Free shares are capped by the latest live holding inside the locked check."""
+
+    async with _pg_pool() as pool:
+        svc = _build_service(pool, MockClock(1000))
+        positions_repo = PositionsRepo(pool)
+        await positions_repo.apply_fill(
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id="1" * 70,
+            side="BUY",
+            fill_size=Decimal("100"),
+            fill_price=Decimal("0.5"),
+        )
+        await svc.reserve_for_intent(
+            create_mock_intent(
+                IntentSide.SELL,
+                size=Decimal("20"),
+                source_event_id="leader-sell-1",
+            )
+        )
+        next_sell = create_mock_intent(
+            IntentSide.SELL,
+            size=Decimal("50"),
+            source_event_id="leader-sell-2",
+            sell_fraction=Decimal("0.5"),
+            live_position_size=Decimal("60"),
+        )
+
+        reservation = await svc.reserve_for_intent(next_sell)
+
+        assert reservation.reserved_size == Decimal("30")
 
 
 @pytest.mark.asyncio
@@ -244,9 +325,7 @@ async def test_legacy_format_reservation_blocks_new_key_intent():
     # key-format change cannot double-reserve during deployment.
     async with _pg_pool() as pool:
         svc = _build_service(pool, MockClock(1000))
-        await _insert_legacy_reservation(
-            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
-        )
+        await _insert_legacy_reservation(pool, create_mock_intent(IntentSide.BUY), expires_at=1060)
         with pytest.raises(ReservationConflict):
             await svc.reserve_for_intent(_new_key_buy_intent("0xdifferenttx"))
 
@@ -259,9 +338,7 @@ async def test_expired_legacy_reservation_allows_new_key_intent():
     async with _pg_pool() as pool:
         clock = MockClock(1000)
         svc = _build_service(pool, clock)
-        await _insert_legacy_reservation(
-            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
-        )
+        await _insert_legacy_reservation(pool, create_mock_intent(IntentSide.BUY), expires_at=1060)
         clock.advance(61)  # now past the legacy reservation's expiry
         res = await svc.reserve_for_intent(_new_key_buy_intent("0xtx"))
         assert res.status == "active"

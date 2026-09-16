@@ -10,7 +10,6 @@ from dataclasses import asdict
 from datetime import datetime
 
 from config.app_config import load_config
-from config.runtime_env import load_runtime_env
 
 
 def register_trading_command(subparsers: argparse._SubParsersAction) -> None:
@@ -40,7 +39,6 @@ def _json_state(state) -> str:
 
 
 async def _run_trading_async(args: argparse.Namespace) -> int:
-    load_runtime_env()
     config = load_config()
 
     from storage.postgres.connection import init_pool, shutdown_pool

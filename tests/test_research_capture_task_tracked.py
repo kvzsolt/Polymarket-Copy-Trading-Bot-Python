@@ -12,6 +12,7 @@ Post-fix: ``_spawn_research_capture`` keeps a strong reference in
 task on completion AND logs any unhandled exception, so a crash
 inside ``capture_observed_trades`` is observable.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +59,9 @@ async def test_task_exception_does_not_leak_or_destroy_pending():
 
     _research_capture_tasks.clear()
     task = _spawn_research_capture(svc, [{"x": 1}])
-    while not task.done():
+    # Deliberate loop-tick polling: the test must let the event loop run the
+    # spawned task to completion without changing scheduling order.
+    while not task.done():  # noqa: ASYNC110
         await asyncio.sleep(0)
     # done-callbacks are scheduled via call_soon — give the loop a tick.
     await asyncio.sleep(0)
@@ -66,9 +69,7 @@ async def test_task_exception_does_not_leak_or_destroy_pending():
     # Inner _run_research_capture catches and logs; task ends without
     # raising into the event loop. Crucially: registry empty + task done.
     assert task.done()
-    assert task.exception() is None, (
-        f"inner handler must swallow; got {task.exception()!r}"
-    )
+    assert task.exception() is None, f"inner handler must swallow; got {task.exception()!r}"
     assert task not in _research_capture_tasks, (
         "done-callback must remove the task from the strong-ref set"
     )

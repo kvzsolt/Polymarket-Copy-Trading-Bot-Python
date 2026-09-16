@@ -35,10 +35,14 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import TypeAlias
 
 import asyncpg
 
-from domain.ports.repositories import AbstractPositionRepository
+from ports.repositories import AbstractPositionRepository
+from domain.cost_basis import PositionCostBasis
+from domain.position_ownership import PositionOwnership
+from domain.position_lifecycle import PositionClassification, PositionLifecycle
 from utils import is_valid_clob_token_id
 from utils.logger import get_logger
 
@@ -50,6 +54,7 @@ logger = get_logger("PositionsRepo")
 # the DB-side hash CPU cost and the asyncpg str→bytea type-mismatch
 # surface — Python ``int`` maps natively to PG ``bigint``.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
+PostgresConnection: TypeAlias = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -60,12 +65,16 @@ def _lock_key(key: str) -> int:
 
 @dataclass
 class PositionRecord:
+    """Describe one durable normalized follower position."""
+
     user_id: str
     condition_id: str
     token_id: str
     leader_id: str | None
     size_tokens: Decimal
     avg_entry_price: Decimal
+    lifecycle: PositionLifecycle = PositionLifecycle.UNKNOWN
+    settlement_price: Decimal | None = None
 
 
 def _row_to_record(row: asyncpg.Record) -> PositionRecord:
@@ -76,19 +85,34 @@ def _row_to_record(row: asyncpg.Record) -> PositionRecord:
         leader_id=row["leader_id"],
         size_tokens=Decimal(str(row["size_tokens"] or "0")),
         avg_entry_price=Decimal(str(row["avg_entry_price"] or "0")),
+        lifecycle=PositionLifecycle(row.get("lifecycle", "unknown")),
+        settlement_price=(
+            Decimal(row["settlement_price"]) if row.get("settlement_price") is not None else None
+        ),
     )
 
 
 class PositionsRepo(AbstractPositionRepository):
+    """Persist normalized position state in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
+        """Return active and unclassified exposure, excluding settled claims."""
+        return [
+            position
+            for position in await self.list_held_positions(user_id)
+            if position.lifecycle is not PositionLifecycle.SETTLED
+        ]
+
+    async def list_held_positions(self, user_id: str) -> list[PositionRecord]:
+        """Return every positive holding, including settled redemption claims."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
+                       size_tokens, avg_entry_price, lifecycle, settlement_price
                 FROM positions
                 WHERE user_id = $1
                 """,
@@ -109,10 +133,9 @@ class PositionsRepo(AbstractPositionRepository):
         *,
         token_id: str | None = None,
     ) -> PositionRecord | None:
+        """Return position."""
         async with self._pool.acquire() as conn:
-            return await self._get_position_in_conn(
-                conn, user_id, condition_id, token_id=token_id
-            )
+            return await self._get_position_in_conn(conn, user_id, condition_id, token_id=token_id)
 
     # DL-02: queries are static literal strings — no f-string suffix
     # splice. ``for_update`` selects between four pre-built variants so
@@ -124,16 +147,14 @@ class PositionsRepo(AbstractPositionRepository):
     # token_id rather than silently picking a row by alphabetical order.
     _SELECT_POSITION_WITH_TOKEN = """
         SELECT user_id, condition_id, token_id, leader_id,
-               size_tokens, avg_entry_price
+               size_tokens, avg_entry_price, lifecycle, settlement_price
         FROM positions
         WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
     """
-    _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = (
-        _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
-    )
+    _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
     _SELECT_POSITION_WITHOUT_TOKEN = """
         SELECT user_id, condition_id, token_id, leader_id,
-               size_tokens, avg_entry_price
+               size_tokens, avg_entry_price, lifecycle, settlement_price
         FROM positions
         WHERE user_id = $1 AND condition_id = $2
         ORDER BY token_id ASC, leader_id ASC
@@ -142,7 +163,7 @@ class PositionsRepo(AbstractPositionRepository):
 
     @staticmethod
     async def _get_position_in_conn(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         user_id: str,
         condition_id: str,
         *,
@@ -185,11 +206,12 @@ class PositionsRepo(AbstractPositionRepository):
     async def list_positions_for_condition(
         self, user_id: str, condition_id: str
     ) -> list[PositionRecord]:
+        """Return positions for condition."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
+                       size_tokens, avg_entry_price, lifecycle, settlement_price
                 FROM positions
                 WHERE user_id = $1 AND condition_id = $2
                 """,
@@ -205,25 +227,26 @@ class PositionsRepo(AbstractPositionRepository):
         return out
 
     async def upsert_position(self, record: PositionRecord) -> None:
+        """Insert or update position."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await self._upsert_position_in_conn(conn, record)
 
     @staticmethod
-    async def _upsert_position_in_conn(
-        conn: asyncpg.Connection, record: PositionRecord
-    ) -> None:
+    async def _upsert_position_in_conn(conn: PostgresConnection, record: PositionRecord) -> None:
         await conn.execute(
             """
             INSERT INTO positions (
                 user_id, condition_id, token_id, leader_id,
-                size_tokens, avg_entry_price, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                size_tokens, avg_entry_price, updated_at, lifecycle, settlement_price
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                 leader_id       = excluded.leader_id,
                 size_tokens     = excluded.size_tokens,
                 avg_entry_price = excluded.avg_entry_price,
-                updated_at      = excluded.updated_at
+                updated_at      = excluded.updated_at,
+                lifecycle       = excluded.lifecycle,
+                settlement_price = excluded.settlement_price
             """,
             record.user_id,
             record.condition_id,
@@ -232,6 +255,8 @@ class PositionsRepo(AbstractPositionRepository):
             str(record.size_tokens),
             str(record.avg_entry_price),
             datetime.now(timezone.utc),
+            record.lifecycle.value,
+            str(record.settlement_price) if record.settlement_price is not None else None,
         )
 
     async def delete_position(
@@ -241,15 +266,97 @@ class PositionsRepo(AbstractPositionRepository):
         *,
         token_id: str | None = None,
     ) -> None:
+        """Delete position."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await self._delete_position_in_conn(
-                    conn, user_id, condition_id, token_id=token_id
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
+
+    async def _assert_absent_position_in_conn(
+        self,
+        conn: PostgresConnection,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+    ) -> None:
+        """Reject recovered SELL accounting if inventory changed during venue I/O."""
+        await conn.execute(
+            _ADVISORY_LOCK_SQL,
+            _lock_key(f"position:{user_id}:{condition_id}:{token_id}"),
+        )
+        current = await self._get_position_in_conn(
+            conn,
+            user_id,
+            condition_id,
+            token_id=token_id,
+            for_update=True,
+        )
+        if current is not None and current.size_tokens != 0:
+            raise ValueError("Recovered SELL inventory is no longer absent")
+
+    async def delete_position_if_unchanged(
+        self,
+        user_id: str,
+        condition_id: str,
+        *,
+        token_id: str,
+        expected_size: Decimal,
+    ) -> bool:
+        """Prune a verified absent holding only while its size and ownership are unchanged.
+
+        Reservation locks prevent concurrent capacity allocation during the check.
+        A position lock serializes fills and snapshot writes, including absent rows.
+        Unknown order states retain inventory until reconciliation resolves them.
+        """
+        if not is_valid_clob_token_id(token_id):
+            raise ValueError("Cannot prune an invalid outcome token")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for key in (
+                    f"buy_reservation:{user_id}",
+                    f"sell_reservation:{user_id}:{condition_id}:{token_id}",
+                    f"position:{user_id}:{condition_id}:{token_id}",
+                ):
+                    await conn.execute(_ADVISORY_LOCK_SQL, _lock_key(key))
+                current = await self._get_position_in_conn(
+                    conn,
+                    user_id,
+                    condition_id,
+                    token_id=token_id,
+                    for_update=True,
                 )
+                if current is not None and current.size_tokens != expected_size:
+                    return False
+                pending = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM order_reservations
+                        WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
+                          AND status = 'active'
+                        UNION ALL
+                        SELECT 1 FROM orders
+                        WHERE user_id = $1
+                          AND COALESCE(request_json->>'condition_id', '') = $2
+                          AND COALESCE(request_json->>'token_id', '') = $3
+                          AND status NOT IN (
+                            'filled', 'filled_reconciled', 'cancelled', 'canceled', 'rejected', 'expired',
+                            'failed', 'submission_failed', 'terminal_failed',
+                            'confirmed_absent', 'duplicate_ignored', 'cross_source_claimed'
+                          )
+                    )
+                    """,
+                    user_id,
+                    condition_id,
+                    token_id,
+                )
+                if pending:
+                    return False
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
+                return True
 
     @staticmethod
     async def _delete_position_in_conn(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         user_id: str,
         condition_id: str,
         *,
@@ -280,6 +387,7 @@ class PositionsRepo(AbstractPositionRepository):
         fill_size: Decimal,
         fill_price: Decimal,
     ) -> PositionRecord | None:
+        """Apply fill."""
         if not is_valid_clob_token_id(token_id):
             raise ValueError(f"apply_fill: refusing invalid token_id={token_id!r}")
 
@@ -353,10 +461,11 @@ class PositionsRepo(AbstractPositionRepository):
             new_size = current.size_tokens + fill_size
             if new_size > 0 and current.size_tokens <= 0:
                 avg = fill_price
+            elif PositionCostBasis.from_value(current.avg_entry_price).entry_price is None:
+                avg = Decimal("0")
             elif new_size > 0:
                 avg = (
-                    (current.size_tokens * current.avg_entry_price)
-                    + (fill_size * fill_price)
+                    (current.size_tokens * current.avg_entry_price) + (fill_size * fill_price)
                 ) / new_size
             else:
                 avg = current.avg_entry_price
@@ -366,9 +475,12 @@ class PositionsRepo(AbstractPositionRepository):
                 user_id=current.user_id,
                 condition_id=current.condition_id,
                 token_id=token_id or current.token_id,
-                leader_id=leader_id or current.leader_id,
+                leader_id=PositionOwnership.after_buy(
+                    current.leader_id, leader_id, current.size_tokens
+                ),
                 size_tokens=new_size,
                 avg_entry_price=avg,
+                lifecycle=PositionLifecycle.ACTIVE,
             )
             await self._upsert_position_in_conn(conn, updated)
             return updated
@@ -388,9 +500,7 @@ class PositionsRepo(AbstractPositionRepository):
             effective_fill = min(fill_size, current.size_tokens)
             new_size = current.size_tokens - effective_fill
             if new_size <= Decimal("1e-12"):
-                await self._delete_position_in_conn(
-                    conn, user_id, condition_id, token_id=token_id
-                )
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
                 return None
             updated = PositionRecord(
                 user_id=current.user_id,
@@ -399,6 +509,8 @@ class PositionsRepo(AbstractPositionRepository):
                 leader_id=current.leader_id,
                 size_tokens=new_size,
                 avg_entry_price=current.avg_entry_price,
+                lifecycle=current.lifecycle,
+                settlement_price=current.settlement_price,
             )
             await self._upsert_position_in_conn(conn, updated)
             return updated
@@ -415,6 +527,8 @@ class PositionsRepo(AbstractPositionRepository):
         avg_entry_price: Decimal,
         leader_id: str | None = None,
         expected_size: Decimal | None = None,
+        lifecycle: PositionLifecycle = PositionLifecycle.UNKNOWN,
+        settlement_price: Decimal | None = None,
     ) -> bool:
         """Absolutely set a position size under the per-position advisory lock.
 
@@ -430,6 +544,7 @@ class PositionsRepo(AbstractPositionRepository):
         state. Returns ``True`` when the size was written or the row deleted at
         ~0.
         """
+        PositionClassification(lifecycle, settlement_price)
         if not is_valid_clob_token_id(token_id):
             raise ValueError(f"set_position_size: refusing invalid token_id={token_id!r}")
 
@@ -447,9 +562,8 @@ class PositionsRepo(AbstractPositionRepository):
                     for_update=True,
                 )
                 current_size = current.size_tokens if current is not None else Decimal("0")
-                if (
-                    expected_size is not None
-                    and abs(current_size - expected_size) > Decimal("1e-9")
+                if expected_size is not None and abs(current_size - expected_size) > Decimal(
+                    "1e-9"
                 ):
                     logger.warning(
                         "set_position_size_skipped_concurrent_change user=%s "
@@ -475,6 +589,8 @@ class PositionsRepo(AbstractPositionRepository):
                         leader_id=leader_id,
                         size_tokens=size_tokens,
                         avg_entry_price=avg_entry_price,
+                        lifecycle=lifecycle,
+                        settlement_price=settlement_price,
                     ),
                 )
                 return True
@@ -496,15 +612,14 @@ class PositionsRepo(AbstractPositionRepository):
         # InvalidOperation from Decimal parsing, invalid token_id) from
         # infrastructure failures (everything else), which propagate so
         # the caller sees the rebuild failed.
+        """Rebuild user positions from fills."""
         from decimal import InvalidOperation
 
         fills = await fills_repo.list_fills_for_user(user_id)
         bad_fill_count = 0
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM positions WHERE user_id = $1", user_id
-                )
+                await conn.execute("DELETE FROM positions WHERE user_id = $1", user_id)
                 for fill in fills:
                     try:
                         await self._apply_fill_in_conn(

@@ -12,6 +12,7 @@ eggs/
 .eggs/
 .env
 secrets.env
+secrets.env.bak-*
 secrets.toml
 *.env.bak
 *.env.bak.*
@@ -48,10 +49,9 @@ ENV/
 
 # Environment variables
 .env.local
-config/runtime.local.env
+config/runtime.local.yml
 config/bot.toml
 .kilo
-config/runtime.env
 
 # Generated config-local runtime state
 config/data/
@@ -79,7 +79,7 @@ Thumbs.db
 .codex
 .ruff_cache
 .aider*
-.gitignore
+.firecrawl/
 
 # Useless plans and markdown trash
 bot_audit_export_and_fix_plan.md
@@ -91,5 +91,6 @@ CODEX.md
 KILOCODE.md
 
 pytest_output.txt
-
-config/runtime.env
+.serena
+.mimosa/
+.jez/

@@ -89,6 +89,7 @@ class TestPositionScopeIdentity:
     def test_scope_is_frozen(self) -> None:
         s = _scope()
         import dataclasses
+
         with pytest.raises(dataclasses.FrozenInstanceError):
             s.user_id = "mutated"  # type: ignore[misc]
 
@@ -238,9 +239,7 @@ class TestReservationAggregate:
                 side=IntentSide.BUY,
                 reservation=Reservation(quote_usdc=Decimal(f"{i + 1}.25")),
             )
-            await reg.release_on_cancel_or_fail(
-                rec.intent_id, IntentState.CANCELLED
-            )
+            await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
         assert reg.reserved_for(scope).is_zero()
         assert reg.open_intent_for(scope) is None
 
@@ -255,20 +254,12 @@ class TestReservationAggregate:
                 if side is IntentSide.BUY
                 else Reservation(token_shares=Decimal("7"))
             )
-            rec = await reg.begin_intent(
-                scope=scope, side=side, reservation=res
-            )
-            terminal = (
-                IntentState.DONE if i % 3 == 0 else IntentState.CANCELLED
-            )
+            rec = await reg.begin_intent(scope=scope, side=side, reservation=res)
+            terminal = IntentState.DONE if i % 3 == 0 else IntentState.CANCELLED
             if terminal is IntentState.DONE:
-                await reg.finalize_intent(
-                    rec.intent_id, terminal, by_reconciler=True
-                )
+                await reg.finalize_intent(rec.intent_id, terminal, by_reconciler=True)
             else:
-                await reg.release_on_cancel_or_fail(
-                    rec.intent_id, IntentState.CANCELLED
-                )
+                await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
         assert reg.reserved_for(scope).is_zero()
         assert reg.open_intent_count() == 0
 
@@ -281,12 +272,8 @@ class TestReservationAggregate:
             side=IntentSide.BUY,
             reservation=Reservation(quote_usdc=Decimal("10")),
         )
-        first = await reg.release_on_cancel_or_fail(
-            rec.intent_id, IntentState.CANCELLED
-        )
-        second = await reg.release_on_cancel_or_fail(
-            rec.intent_id, IntentState.CANCELLED
-        )
+        first = await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
+        second = await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
         # Idempotent: second call returns the already-resolved record
         assert first.state is IntentState.CANCELLED
         assert second.state is IntentState.CANCELLED
@@ -321,9 +308,7 @@ class TestRegistryPruning:
                 side=IntentSide.BUY,
                 reservation=Reservation(quote_usdc=Decimal("1")),
             )
-            await reg.release_on_cancel_or_fail(
-                rec.intent_id, IntentState.CANCELLED
-            )
+            await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
             ids.append(rec.intent_id)
 
         # Only the most recent _max_resolved should still be retrievable.
@@ -351,9 +336,7 @@ class TestRegistryPruning:
                 side=IntentSide.BUY,
                 reservation=Reservation(quote_usdc=Decimal("1")),
             )
-            await reg.release_on_cancel_or_fail(
-                rec.intent_id, IntentState.CANCELLED
-            )
+            await reg.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
 
         # Open intent must still be present and queryable by scope.
         still_open = reg.open_intent_for(open_scope)
@@ -391,14 +374,10 @@ class TestReconcilerTerminalOwnership:
 
         async def reconciler_finalize() -> IntentState:
             await asyncio.sleep(0)
-            final = await reg.finalize_intent(
-                rec.intent_id, IntentState.DONE, by_reconciler=True
-            )
+            final = await reg.finalize_intent(rec.intent_id, IntentState.DONE, by_reconciler=True)
             return final.state
 
-        rejection, terminal = await asyncio.gather(
-            submitter_attempt(), reconciler_finalize()
-        )
+        rejection, terminal = await asyncio.gather(submitter_attempt(), reconciler_finalize())
 
         assert isinstance(rejection, IllegalTransitionError)
         assert terminal is IntentState.DONE
@@ -445,9 +424,7 @@ class TestPositionCoordinatorHappyPath:
             await coord.transition(rec.intent_id, IntentState.CONFIRMING)
 
         # Outside the lock, the reconciler finalizes the intent.
-        final = await coord.finalize_intent(
-            rec.intent_id, IntentState.DONE, by_reconciler=True
-        )
+        final = await coord.finalize_intent(rec.intent_id, IntentState.DONE, by_reconciler=True)
         assert final.state is IntentState.DONE
         assert coord.reserved_for(scope).is_zero()
         assert coord.open_intent_for(scope) is None
@@ -471,9 +448,7 @@ class TestPositionCoordinatorHappyPath:
                 reservation=Reservation(token_shares=Decimal("1")),
             )
 
-        await coord.release_on_cancel_or_fail(
-            rec.intent_id, IntentState.CANCELLED
-        )
+        await coord.release_on_cancel_or_fail(rec.intent_id, IntentState.CANCELLED)
 
         # After release, scope is open for a new intent.
         rec2 = await coord.begin_intent(

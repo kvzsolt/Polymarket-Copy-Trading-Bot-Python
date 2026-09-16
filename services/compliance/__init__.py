@@ -1,4 +1,5 @@
 """Compliance services — geoblock checks and regulatory gates."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -11,8 +12,11 @@ logger = get_logger("Compliance")
 
 GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
 
+
 def utcnow() -> datetime:
+    """Return the current timezone-aware UTC time."""
     return datetime.now(timezone.utc)
+
 
 async def check_geoblock() -> ComplianceDecision:
     """Return a ComplianceDecision; fail closed on any error or uncertainty."""
@@ -114,6 +118,7 @@ class GeoblockGate:
 
     @property
     def enabled(self) -> bool:
+        """Return whether compliance enforcement is enabled."""
         return self._enabled
 
     async def ensure_allowed(self) -> ComplianceDecision | None:
@@ -122,18 +127,13 @@ class GeoblockGate:
         if not self._enabled:
             return None
         now = utcnow()
-        if (
-            self._decision is None
-            or self._next_check_at is None
-            or now >= self._next_check_at
-        ):
-            self._decision = await self._check()
-            if self._decision.allowed and self._decision.expires_at is not None:
-                self._next_check_at = self._decision.expires_at
+        if self._decision is None or self._next_check_at is None or now >= self._next_check_at:
+            decision = await self._check()
+            self._decision = decision
+            if decision.allowed and decision.expires_at is not None:
+                self._next_check_at = decision.expires_at
             else:
-                self._next_check_at = now + timedelta(
-                    seconds=self._block_recheck_seconds
-                )
+                self._next_check_at = now + timedelta(seconds=self._block_recheck_seconds)
         return self._decision
 
 

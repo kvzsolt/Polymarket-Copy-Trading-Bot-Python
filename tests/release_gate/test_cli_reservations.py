@@ -5,6 +5,7 @@ one SELL) plus one released reservation, then asserts the CLI summary
 matches the expected per-user totals and that released rows are
 excluded by default.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -117,18 +118,14 @@ async def test_summary_per_user_totals() -> None:
 async def test_user_filter_isolates() -> None:
     async with _pg_pool() as (pool, _dsn):
         await _seed(pool)
-        none_rows = await _list_reservations(
-            pool, user_id="other-user", include_expired=False
-        )
+        none_rows = await _list_reservations(pool, user_id="other-user", include_expired=False)
     assert none_rows == []
 
 
 async def test_resolve_expired_reservations_dry_run() -> None:
     async with _pg_pool() as (pool, _dsn):
         await _seed_expired_candidates(pool)
-        result = await _resolve_expired_reservations(
-            pool, user_id=None, apply=False
-        )
+        result = await _resolve_expired_reservations(pool, user_id=None, apply=False)
         async with pool.acquire() as conn:
             status = await conn.fetchval(
                 "SELECT status FROM order_reservations WHERE id = 'r-expired-orphan'"
@@ -148,9 +145,7 @@ async def test_resolve_expired_reservations_dry_run() -> None:
 async def test_resolve_expired_reservations_apply_releases_only_orphan() -> None:
     async with _pg_pool() as (pool, _dsn):
         await _seed_expired_candidates(pool)
-        result = await _resolve_expired_reservations(
-            pool, user_id=None, apply=True
-        )
+        result = await _resolve_expired_reservations(pool, user_id=None, apply=True)
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """

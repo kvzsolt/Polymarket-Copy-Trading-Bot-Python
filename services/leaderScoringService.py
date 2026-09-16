@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import TYPE_CHECKING
+
+from domain.performance import PerformanceUnits
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
@@ -15,123 +19,127 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 @dataclass(frozen=True)
 class LeaderScore:
+    """Normalized leader quality with explicit missing runtime observations."""
+
     wallet: str
     score: float
-    balance_score: float
-    analytics_score: float
+    roster_score: float
+    runtime_score: float
     activity_score: float
     sample_size: int
-    details: dict[str, Any]
-    discovery_score: float = 0.0
+    details: Mapping[str, float | int | None]
 
 
 class LeaderScoringService:
-    """Live trust score used by CopyDecisionService.
+    """Low-latency runtime score used by CopyDecisionService.
 
-    The public API is intentionally unchanged. Discovery enrichment now comes
-    from a synchronous in-memory trust_store backed by
-    falcon_discovery_evaluations, never from an async DB query in the live path.
+    Discovery rank affects roster membership and sizing before a trading
+    context is built; the hot decision path never reaches back into discovery.
     """
 
     def __init__(
         self,
-        discovery_service=None,
         *,
         config: "AppConfig",
-        trust_store=None,
-    ):
+        roster_score: float | None = None,
+    ) -> None:
         self._config = config
-        self._discovery = discovery_service
-        self._trust_store = trust_store
         self._trust_mult_enabled = config.sizing.enable_trust_size_multipliers
         self._trust_mult_min = config.sizing.trust_size_multiplier_min
         self._trust_mult_max = config.sizing.trust_size_multiplier_max
-        self._score_floor = config.leader.leader_score_floor
+        scoring = config.discovery.scoring
+        self._runtime_config = scoring
+        self._roster_score = _clamp(
+            scoring.runtime_default_roster_score if roster_score is None else float(roster_score)
+        )
 
     def score_leader(
         self,
         wallet: str,
         *,
         leader_balance: float | None = None,
-        analytics: dict[str, Any] | None = None,
+        analytics: Mapping[str, object] | None = None,
         recent_trade_count: int | None = None,
     ) -> LeaderScore:
+        """Score scoped realized PnL and win rate in percentage points.
+
+        Missing evidence uses the configured scoring prior, while details
+        retain ``None``. Invalid supplied observations raise ``ValueError``.
+        """
+        del leader_balance
         analytics = analytics or {}
         wallet_l = str(wallet).lower()
 
-        runtime_pnl = float(analytics.get("net_pnl", 0.0) or 0.0)
-        runtime_wr = float(analytics.get("win_rate", 50.0) or 50.0)
-        runtime_activity = int(recent_trade_count or analytics.get("sample_size", 0) or 0)
+        pnl_observation = PerformanceUnits.finite(analytics.get("net_pnl"))
+        win_fraction = PerformanceUnits.win_rate_percent_to_fraction(analytics.get("win_rate"))
+        runtime_pnl = None if pnl_observation is None else float(pnl_observation)
+        runtime_wr = None if win_fraction is None else float(win_fraction * 100)
+        activity = (
+            recent_trade_count
+            if recent_trade_count is not None
+            else analytics.get("sample_size", 0)
+        )
+        if isinstance(activity, bool) or not isinstance(activity, int) or activity < 0:
+            raise ValueError("Runtime activity must be a non-negative integer")
+        runtime_activity = activity
 
-        runtime_score = self._runtime_score(runtime_pnl, runtime_wr, runtime_activity)
-        discovery_score = 0.0
-        details: dict[str, Any] = {
+        win_rate_score, pnl_score, activity_score = self._runtime_components(
+            0.0 if runtime_pnl is None else runtime_pnl,
+            50.0 if runtime_wr is None else runtime_wr,
+            runtime_activity,
+        )
+        weights = self._runtime_config.runtime_weights
+        final = _clamp(
+            weights.roster_score * self._roster_score
+            + weights.win_rate * win_rate_score
+            + weights.pnl * pnl_score
+            + weights.activity * activity_score
+        )
+        final = max(final, float(self._runtime_config.runtime_score_floor))
+        fresh_weight = weights.win_rate + weights.pnl + weights.activity
+        runtime_score = (
+            (
+                weights.win_rate * win_rate_score
+                + weights.pnl * pnl_score
+                + weights.activity * activity_score
+            )
+            / fresh_weight
+            if fresh_weight > 0
+            else self._roster_score
+        )
+        details: dict[str, float | int | None] = {
+            "roster_score": self._roster_score,
             "runtime_pnl": runtime_pnl,
             "runtime_win_rate": runtime_wr,
             "recent_trade_count": runtime_activity,
+            "runtime_score": runtime_score,
         }
 
-        row = self._trust_store.get_latest(wallet_l) if self._trust_store else None
-        if row is not None:
-            discovery_score = float(row.final_score)
-            details.update(
-                {
-                    "falcon_quality_score": row.falcon_quality_score,
-                    "copyability_score": row.copyability_score,
-                    "copyable_signal_ratio": row.copyable_signal_ratio,
-                    "copyable_notional_ratio": row.copyable_notional_ratio,
-                    "status": row.status,
-                }
-            )
-        elif self._discovery is not None:
-            profile = self._discovery.get_cached_profile(wallet_l)
-            if profile is not None:
-                discovery_score = float(profile.composite_score)
-                details.update(
-                    {
-                        "discovery_pnl": profile.overall_gain,
-                        "discovery_win_rate": profile.win_rate,
-                        "discovery_positions": profile.total_positions,
-                        "discovery_rank": profile.rank,
-                    }
-                )
-
-        score = (
-            0.70 * discovery_score + 0.30 * runtime_score
-            if discovery_score > 0
-            else runtime_score
-        )
-        final = _clamp(max(score, float(self._score_floor)))
-        activity_score = _clamp(
-            runtime_activity
-            / max(int(self._config.leader.leader_score_activity_target), 1)
-        )
         return LeaderScore(
             wallet=wallet_l,
             score=final,
-            balance_score=0.0,
-            analytics_score=runtime_score,
+            roster_score=self._roster_score,
+            runtime_score=runtime_score,
             activity_score=activity_score,
-            discovery_score=discovery_score,
             sample_size=runtime_activity,
-            details=details,
+            details=MappingProxyType(details),
         )
 
-    def _runtime_score(
+    def _runtime_components(
         self, pnl: float, win_rate: float, recent_trade_count: int
-    ) -> float:
-        wr = win_rate / 100.0 if win_rate > 1.0 else win_rate
+    ) -> tuple[float, float, float]:
+        wr = win_rate / 100.0
         wr_score = _clamp(wr)
-        pnl_score = 0.5 + _clamp(pnl / 100.0, -0.5, 0.5)
+        pnl_target = float(self._runtime_config.runtime_pnl_target_usdc)
+        pnl_score = _clamp(0.5 + pnl / (2.0 * pnl_target))
         activity_score = _clamp(
-            recent_trade_count
-            / max(int(self._config.leader.leader_score_activity_target), 1)
+            recent_trade_count / max(int(self._runtime_config.runtime_activity_target), 1)
         )
-        return _clamp(0.50 * wr_score + 0.35 * pnl_score + 0.15 * activity_score)
+        return wr_score, pnl_score, activity_score
 
     def trust_multiplier(self, score: float) -> float:
+        """Return the configured sizing multiplier for a normalized score."""
         if not self._trust_mult_enabled:
             return 1.0
         score = _clamp(score)
         return self._trust_mult_min + (self._trust_mult_max - self._trust_mult_min) * score
-

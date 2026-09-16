@@ -73,9 +73,7 @@ async def test_release_on_cancel_releases_reservation():
         side=IntentSide.BUY,
         reservation=Reservation(quote_usdc=Decimal("75")),
     )
-    released = await reg.release_on_cancel_or_fail(
-        record.intent_id, IntentState.CANCELLED
-    )
+    released = await reg.release_on_cancel_or_fail(record.intent_id, IntentState.CANCELLED)
     assert released.state is IntentState.CANCELLED
     assert reg.reserved_for(scope).is_zero()
     assert reg.open_intent_for(scope) is None
@@ -90,9 +88,7 @@ async def test_release_on_fail_releases_reservation():
         side=IntentSide.SELL,
         reservation=Reservation(token_shares=Decimal("10")),
     )
-    released = await reg.release_on_cancel_or_fail(
-        record.intent_id, IntentState.ERROR
-    )
+    released = await reg.release_on_cancel_or_fail(record.intent_id, IntentState.ERROR)
     assert released.state is IntentState.ERROR
     assert reg.reserved_for(scope).is_zero()
 
@@ -185,9 +181,7 @@ async def test_finalize_requires_by_reconciler_flag():
         reservation=Reservation(quote_usdc=Decimal("1")),
     )
     with pytest.raises(IllegalTransitionError):
-        await reg.finalize_intent(
-            record.intent_id, IntentState.DONE, by_reconciler=False
-        )
+        await reg.finalize_intent(record.intent_id, IntentState.DONE, by_reconciler=False)
 
 
 @pytest.mark.asyncio
@@ -199,9 +193,7 @@ async def test_reconciler_finalizes_to_done_and_releases_reservation():
         side=IntentSide.BUY,
         reservation=Reservation(quote_usdc=Decimal("100")),
     )
-    final = await reg.finalize_intent(
-        record.intent_id, IntentState.DONE, by_reconciler=True
-    )
+    final = await reg.finalize_intent(record.intent_id, IntentState.DONE, by_reconciler=True)
     assert final.state is IntentState.DONE
     assert reg.reserved_for(scope).is_zero()
     assert reg.open_intent_for(scope) is None
@@ -216,9 +208,7 @@ async def test_reconciler_finalizes_to_error():
         side=IntentSide.SELL,
         reservation=Reservation(token_shares=Decimal("3")),
     )
-    final = await reg.finalize_intent(
-        record.intent_id, IntentState.ERROR, by_reconciler=True
-    )
+    final = await reg.finalize_intent(record.intent_id, IntentState.ERROR, by_reconciler=True)
     assert final.state is IntentState.ERROR
     assert reg.reserved_for(scope).is_zero()
 
@@ -233,9 +223,7 @@ async def test_finalize_rejects_non_terminal_state():
         reservation=Reservation(quote_usdc=Decimal("1")),
     )
     with pytest.raises(IllegalTransitionError):
-        await reg.finalize_intent(
-            record.intent_id, IntentState.SUBMITTED, by_reconciler=True
-        )
+        await reg.finalize_intent(record.intent_id, IntentState.SUBMITTED, by_reconciler=True)
 
 
 @pytest.mark.asyncio
@@ -277,9 +265,7 @@ async def test_submitter_can_progress_through_non_terminal_states():
 async def test_finalize_unknown_intent_raises():
     reg = IntentRegistry()
     with pytest.raises(UnknownIntentError):
-        await reg.finalize_intent(
-            "no-such-id", IntentState.DONE, by_reconciler=True
-        )
+        await reg.finalize_intent("no-such-id", IntentState.DONE, by_reconciler=True)
 
 
 @pytest.mark.asyncio
@@ -292,9 +278,7 @@ async def test_finalize_after_cancel_is_idempotent():
         reservation=Reservation(quote_usdc=Decimal("1")),
     )
     await reg.release_on_cancel_or_fail(record.intent_id, IntentState.CANCELLED)
-    final = await reg.finalize_intent(
-        record.intent_id, IntentState.DONE, by_reconciler=True
-    )
+    final = await reg.finalize_intent(record.intent_id, IntentState.DONE, by_reconciler=True)
     assert final.state is IntentState.CANCELLED
     assert reg.reserved_for(scope).is_zero()
 
@@ -385,9 +369,7 @@ async def test_position_coordinator_round_trip_done_via_reconciler():
         await coord.transition(rec.intent_id, IntentState.ACK_LIVE)
         await coord.transition(rec.intent_id, IntentState.FILLED)
 
-    final = await coord.finalize_intent(
-        rec.intent_id, IntentState.DONE, by_reconciler=True
-    )
+    final = await coord.finalize_intent(rec.intent_id, IntentState.DONE, by_reconciler=True)
     assert final.state is IntentState.DONE
     assert coord.reserved_for(scope).is_zero()
     assert coord.open_intent_for(scope) is None

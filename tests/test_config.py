@@ -1,770 +1,1019 @@
-"""Phase 1 tests — strongly-typed AppConfig and load_config factory.
-
-Validates the contract of ``config.app_config``:
-    * Happy-path load from a minimal valid env dict.
-    * Missing / malformed required values produce descriptive errors.
-    * Cross-field semantic invariants are enforced.
-    * Dataclass immutability is enforced.
-    * Multiple problems aggregate into a single bullet-listed error.
-"""
-
 from __future__ import annotations
 
+import logging
 import os
-import re
 from dataclasses import FrozenInstanceError
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
+import yaml
+from pydantic import SecretStr, ValidationError
 
-from config.app_config import (
-    AppConfig,
-    EnvValidationError,
-    load_config,
-)
+from config.app_config import DiscoveryConfig, EnvValidationError, load_config
+from config.env import SignatureType, secret_value
 
-
-# ---------------------------------------------------------------------------
-# Test fixtures
-# ---------------------------------------------------------------------------
-
-_VALID_PRIVATE_KEY = "0x" + "a" * 64
-_VALID_FUNDER = "0x" + "b" * 40
-_VALID_USER = "0x" + "c" * 40
+ROOT = Path(__file__).resolve().parents[1]
+ADDRESS = "0x" + "1" * 40
 
 
-def _minimal_valid_env(**overrides: str) -> dict[str, str]:
-    env = {
-        "PRIVATE_KEY": _VALID_PRIVATE_KEY,
-        "FUNDER_ADDRESS": _VALID_FUNDER,
-        "RPC_URL": "https://polygon-rpc.example.com",
-        "CHAIN_ID": "137",
-        "USER_ADDRESS": _VALID_USER,
+def _overrides() -> dict:
+    """Isolate loader tests from the separately tested task-engine profile."""
+    return {
+        "database": {"dsn": "postgresql://test:test@localhost/test"},
+        "wallet": {
+            "funder_address": ADDRESS,
+            "polygon_rpc_url": "https://rpc.invalid",
+        },
+        "network": {"rpc_url": "https://rpc.invalid"},
+        "copy_trading": {"copy_tasks": {"enabled": False}},
     }
-    env.update(overrides)
-    return env
 
 
-@pytest.fixture(autouse=True)
-def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "config.app_config.sys.version_info",
-        SimpleNamespace(major=3, minor=12),
+def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
+    config = load_config(_overrides())
+    assert config.execution.trading_mode == "paper"
+    assert config.execution.paper_trade_only is True
+    assert config.dry_run is True
+    # Characterizes the shipped deployment value: 250 has been the packaged
+    # trader_discovery.yaml value (and the ShortlistConfig default) since the
+    # discovery-architecture rewrite (93988d4); the previous 150 here was drift.
+    assert config.discovery.shortlist.candidate_pool_size == 250
+    with pytest.raises(FrozenInstanceError):
+        config.database.dsn = "changed"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        config.discovery.scheduler.enabled = True  # type: ignore[misc]
+
+
+def test_checked_in_yaml_keeps_pending_onchain_detection_opt_in() -> None:
+    """Pending/mempool signals are provisional — never on by default.
+
+    ``app.main()`` reads only ``detection.mode``; the deprecated boolean is
+    consulted by ``DetectionModeResolver`` when no layer sets ``mode`` and
+    derives ``on_chain_confirmed``. A checked-in ``true`` would therefore turn
+    on the on-chain source for every operator who configures a WS endpoint,
+    so the base file must keep it ``false`` (see
+    ``test_checked_in_yaml_keeps_detection_mode_polling`` for the mode
+    invariant itself).
+    """
+    config = load_config(_overrides())
+
+    assert config.detection.onchain.enable_onchain_pending_detection is False
+
+
+def test_funder_address_is_required_in_paper_mode() -> None:
+    """Paper has no SDK-resolved wallet, so the funder IS the identity.
+
+    ``create_polymarket_client(authenticated=False)`` returns a public client
+    whose ``wallet_address`` is None, so nothing back-fills the funder later.
+    An empty value would reach ``get_my_balance("")`` and fail readiness with
+    no actionable error, so this must fail closed at config validation.
+    """
+    overrides = _overrides()
+    overrides["wallet"].pop("funder_address")
+
+    with pytest.raises(EnvValidationError, match="FUNDER_ADDRESS is required"):
+        load_config(overrides)
+
+
+def test_funder_address_stays_optional_in_live_mode() -> None:
+    """Live derives the Deposit Wallet from PRIVATE_KEY — one secret, as designed.
+
+    ``create_polymarket_client`` resolves the wallet through the SDK and only
+    cross-checks a configured funder, so requiring one here would break the
+    documented single-secret auth chain.
+    """
+    overrides = _overrides()
+    overrides["wallet"].pop("funder_address")
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    overrides["execution"] = {"trading_mode": "live"}
+
+    config = load_config(overrides)
+
+    assert config.wallet.funder_address == ""
+    assert config.execution.paper_trade_only is False
+
+
+def test_funder_address_still_rejects_malformed_values() -> None:
+    overrides = _overrides()
+    overrides["wallet"]["funder_address"] = "0xnope"
+
+    with pytest.raises(EnvValidationError, match="Invalid FUNDER_ADDRESS"):
+        load_config(overrides)
+
+
+# ---------------------------------------------------------------------------
+# Non-finite numeric rejection. A NaN threshold makes every comparison against
+# it False, silently disabling the limit it encodes; an infinite one pins the
+# limit open. Both must fail closed at load, whatever layer supplied them.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("literal", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("section", "payload", "location"),
+    [
+        # Frozen-dataclass section: inherits the shell's allow_inf_nan.
+        ("sizing", {"percentage": None}, "sizing.percentage"),
+        ("detection", {"fetch_interval": None}, "detection.fetch_interval"),
+        ("risk", {"max_market_exposure_usdc": None}, "risk.max_market_exposure_usdc"),
+        # Pydantic BaseModel section: carries its own model_config, so it only
+        # rejects because _FrozenSettingsModel sets allow_inf_nan=False.
+        (
+            "discovery",
+            {"shortlist": {"min_pnl_15d": None}},
+            "discovery.shortlist.min_pnl_15d",
+        ),
+    ],
+)
+def test_non_finite_numbers_are_rejected_in_every_section(
+    literal: float,
+    section: str,
+    payload: dict,
+    location: str,
+) -> None:
+    def _fill(node: dict) -> dict:
+        return {
+            key: _fill(value) if isinstance(value, dict) else literal for key, value in node.items()
+        }
+
+    overrides = _overrides()
+    overrides[section] = _fill(payload)
+
+    with pytest.raises(EnvValidationError) as excinfo:
+        load_config(overrides)
+
+    message = str(excinfo.value)
+    assert f"{location}: Input should be a finite number" in message
+    # Aggregated + redacted: the rejected input is never echoed back.
+    assert "Invalid application configuration:" in message
+    assert repr(literal) not in message
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+def test_non_finite_numbers_are_rejected_from_environment_strings(
+    raw: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env values arrive as strings and still coerce to non-finite floats."""
+    monkeypatch.setenv("PMCOPY__SIZING__PERCENTAGE", raw)
+
+    with pytest.raises(EnvValidationError, match="Input should be a finite number"):
+        load_config(_overrides())
+
+
+@pytest.mark.parametrize("raw", [".nan", ".inf", "-.inf"])
+def test_non_finite_numbers_are_rejected_from_yaml_literals(
+    raw: str,
+    tmp_path: Path,
+) -> None:
+    """``.nan``/``.inf`` are valid YAML floats, not strings."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    sizing = config_dir / "sizing.yml"
+    sizing.write_text(f"percentage: {raw}\n", encoding="utf-8")
+
+    assert isinstance(yaml.safe_load(sizing.read_text())["percentage"], float)
+
+    with pytest.raises(EnvValidationError, match="Input should be a finite number"):
+        load_config(_overrides(), config_dir=config_dir)
+
+
+def test_finite_numeric_values_still_load() -> None:
+    """Preservation: the constraint must only reject non-finite values."""
+    overrides = _overrides()
+    overrides["sizing"] = {"percentage": 12.5}
+    overrides["discovery"] = {"shortlist": {"min_pnl_15d": -250.0}}
+
+    config = load_config(overrides)
+
+    assert config.sizing.percentage == 12.5
+    assert config.discovery.shortlist.min_pnl_15d == -250.0
+
+
+def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
+    """The YAML layer must not silently re-enable a fail-closed code default."""
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+
+    assert packaged["onchain"]["enable_onchain_pending_detection"] is False
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (0, SignatureType.EOA),
+        (1, SignatureType.POLY_PROXY),
+        (2, SignatureType.GNOSIS_SAFE),
+        (3, SignatureType.DEPOSIT_WALLET),
+    ],
+)
+def test_all_wallet_signature_hints_are_accepted(
+    raw_value: int,
+    expected: SignatureType,
+) -> None:
+    overrides = _overrides()
+    overrides["wallet"]["signature_type"] = raw_value
+
+    config = load_config(overrides)
+
+    assert config.wallet.signature_type == expected
+
+
+def test_legacy_local_shim_overrides_canonical_service_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment = tmp_path / "deployment"
+    (deployment / "config").mkdir(parents=True)
+    (deployment / "config" / "runtime.local.yml").write_text(
+        yaml.safe_dump(
+            {
+                "wallet": {
+                    "funder_address": ADDRESS,
+                    "polygon_rpc_url": "https://local-rpc.invalid",
+                },
+                "network": {"rpc_url": "https://local-rpc.invalid"},
+                "database": {"dsn": "postgresql://test:test@localhost/test"},
+                "sizing": {"percentage": 7.5},
+            }
+        ),
+        encoding="utf-8",
     )
+    monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(deployment))
+
+    config = load_config()
+
+    assert config.sizing.percentage == 7.5
+    assert config.wallet.polygon_rpc_url == "https://local-rpc.invalid"
 
 
-@pytest.fixture
-def valid_env() -> dict[str, str]:
-    return _minimal_valid_env()
+def test_default_local_and_secrets_paths_follow_deployment_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "runtime.local.yml").write_text(
+        yaml.safe_dump({"sizing": {"percentage": 9.5}}),
+        encoding="utf-8",
+    )
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__DISCOVERY__API__TOKEN=deployment-token\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    monkeypatch.chdir(tmp_path)
+    # This test exercises the CWD walk-up itself, so drop the hermetic
+    # deployment-root pin installed by the autouse conftest fixture.
+    monkeypatch.delenv("PMCOPY_DEPLOYMENT_ROOT", raising=False)
+
+    config = load_config(_overrides())
+
+    assert config.sizing.percentage == 9.5
+    assert config.discovery.api.token.get_secret_value() == "deployment-token"
 
 
-# ---------------------------------------------------------------------------
-# Happy path
-# ---------------------------------------------------------------------------
+def test_process_env_beats_mode_0600_secrets_and_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__SIZING__PERCENTAGE=6\nPMCOPY__DISCOVERY__API__TOKEN=top-secret-value\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    monkeypatch.setenv("PMCOPY__SIZING__PERCENTAGE", "8")
+    config = load_config(_overrides(), secrets_path=secrets)
+    assert config.sizing.percentage == 8
+    assert config.discovery.api.has_token is True
+    assert "top-secret-value" not in repr(config.discovery.api.token)
 
 
-class TestHappyPath:
-    def test_load_from_minimal_env(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        assert isinstance(cfg, AppConfig)
+def test_wallet_private_key_is_secret_and_clob_credentials_are_removed() -> None:
+    private_key = "0x" + "a" * 64
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = private_key
 
-    def test_wallet_typed_correctly(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        assert cfg.wallet.private_key == _VALID_PRIVATE_KEY
-        assert cfg.wallet.funder_address == _VALID_FUNDER
-        assert cfg.wallet.chain_id == 137
-        assert cfg.wallet.polygon_rpc_url == "https://polygon-rpc.example.com"
+    config = load_config(overrides)
 
-    def test_defaults_are_applied(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        # Sizing defaults straight from spec.
-        assert cfg.sizing.mode == "proportional"
-        assert cfg.sizing.percentage == pytest.approx(2.0)
-        assert cfg.sizing.max_position_pct == pytest.approx(0.45)
-        # Polling defaults.
-        assert cfg.polling.fetch_interval == pytest.approx(0.25)
-        # Execution defaults.
-        assert cfg.execution.max_retries == 3
-        # Staged TP defaults are profit ratios, not whole-number percentages.
-        assert cfg.risk.staged_tp_levels == "0.30,0.50"
-        assert cfg.risk.staged_tp_fractions == "0.25,0.35"
-        # P0-2: fail-closed default — paper unless LIVE_TRADING is explicitly enabled.
-        assert cfg.execution.paper_trade_only is True
-        assert cfg.execution.reservation_ttl_seconds == 120
-        # Logging default path.
-        assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
-        assert "bot:bot" not in cfg.database.dsn
+    assert isinstance(config.wallet.private_key, SecretStr)
+    assert secret_value(config.wallet.private_key) == private_key
+    assert not hasattr(config, "clob")
+    assert private_key not in repr(config)
 
-    # --- P0-2: LIVE_TRADING master switch (fail-closed) ---
 
-    def test_default_is_paper(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        assert cfg.execution.paper_trade_only is True
-        assert cfg.dry_run is True
+def test_obsolete_clob_credentials_fail_with_migration_error() -> None:
+    overrides = _overrides()
+    overrides["clob"] = {"api_key": "obsolete"}
 
-    @pytest.mark.parametrize("val", ["enabled", "true", "1", "yes", "on", "ENABLED", "True"])
-    def test_explicit_enable_goes_live(self, valid_env: dict[str, str], val: str) -> None:
-        valid_env["LIVE_TRADING"] = val
-        cfg = load_config(valid_env)
-        assert cfg.execution.paper_trade_only is False
-        assert cfg.dry_run is False
+    with pytest.raises(EnvValidationError, match="clob.api_key"):
+        load_config(overrides)
 
-    @pytest.mark.parametrize("val", ["", "off", "disabled", "no", "false", "0", "garbage", "  "])
-    def test_unknown_or_disabled_stays_paper(self, valid_env: dict[str, str], val: str) -> None:
-        valid_env["LIVE_TRADING"] = val
-        cfg = load_config(valid_env)
-        assert cfg.execution.paper_trade_only is True
-        assert cfg.dry_run is True
 
-    def test_paper_trade_only_true_forces_paper_even_with_live_switch(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["LIVE_TRADING"] = "enabled"
-        valid_env["PAPER_TRADE_ONLY"] = "true"
-        cfg = load_config(valid_env)
-        assert cfg.execution.paper_trade_only is True  # explicit paper force wins
+@pytest.mark.parametrize(
+    "key",
+    ["venue_backend", "allow_experimental_ccxt_live", "shadow_ccxt"],
+)
+def test_obsolete_venue_backend_keys_are_rejected(key: str) -> None:
+    """Removed venue selection must fail closed, not silently drop."""
 
-    @pytest.mark.parametrize("raw_value", ["", "auto", "AUTO", "# Profit % comment"])
-    def test_trailing_activation_auto_values(
-        self,
-        valid_env: dict[str, str],
-        raw_value: str,
-    ) -> None:
-        valid_env["TRAILING_ACTIVATION_PCT"] = raw_value
-        cfg = load_config(valid_env)
-        assert cfg.risk.trailing_activation_pct is None
+    overrides = _overrides()
+    overrides["execution"] = {**overrides.get("execution", {}), key: "sdk"}
 
-    def test_trailing_activation_blank_defaults_when_disabled(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "false"
-        valid_env["TRAILING_ACTIVATION_PCT"] = ""
-        cfg = load_config(valid_env)
-        assert cfg.features.enable_trailing_stop is False
-        assert cfg.risk.trailing_activation_mode == "disabled"
-        assert cfg.risk.trailing_activation_pct is None
+    with pytest.raises(EnvValidationError, match=key):
+        load_config(overrides)
 
-    def test_trailing_activation_comment_only_does_not_crash_when_disabled(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "false"
-        valid_env["TRAILING_ACTIVATION_PCT"] = (
-            "# Auto activation; use a number for fixed profit-% activation."
-        )
-        cfg = load_config(valid_env)
-        assert cfg.risk.trailing_activation_mode == "disabled"
-        assert cfg.risk.trailing_activation_pct is None
 
-    def test_trailing_activation_garbage_ignored_when_disabled(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "false"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
-        cfg = load_config(valid_env)
-        assert cfg.risk.trailing_activation_mode == "disabled"
-        assert cfg.risk.trailing_activation_pct is None
+def test_execution_config_no_longer_carries_venue_selection_fields() -> None:
+    """CCXT is the only transport; no selector or experimental gate exists."""
 
-    def test_trailing_activation_auto_is_accepted_when_enabled(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "true"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "auto"
-        cfg = load_config(valid_env)
-        assert cfg.risk.trailing_activation_mode == "auto"
-        assert cfg.risk.trailing_activation_pct is None
+    from config.app_config import ExecutionConfig
 
-    def test_trailing_activation_invalid_raises_when_enabled(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "true"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
-        with pytest.raises(
-            EnvValidationError,
-            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
-        ):
-            load_config(valid_env)
+    config = ExecutionConfig()
+    assert not hasattr(config, "venue_backend")
+    assert not hasattr(config, "allow_experimental_ccxt_live")
+    assert not hasattr(config, "shadow_ccxt")
 
-    def test_trailing_activation_numeric_value(self, valid_env: dict[str, str]) -> None:
-        # Feature-aware parsing: a numeric activation only counts as "fixed"
-        # when the trailing-stop sub-engine is actually enabled.
-        valid_env["ENABLE_TRAILING_STOP"] = "true"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "40"
-        cfg = load_config(valid_env)
-        assert cfg.risk.trailing_activation_mode == "fixed"
-        assert cfg.risk.trailing_activation_pct == pytest.approx(40.0)
 
-    def test_both_exchange_addresses_present_and_distinct(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        cfg = load_config(valid_env)
-        ctf = cfg.network.ctf_exchange_v2_address
-        neg = cfg.network.neg_risk_ctf_exchange_v2_address
-        assert ctf, "CTF Exchange V2 default address missing"
-        assert neg, "Neg Risk CTF Exchange V2 default address missing"
-        assert ctf.lower() != neg.lower()
-        assert neg.lower() == "0xe2222d279d744050d28e00520010520000310f59"
+def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__WALLET__POLYGON_RPC_URL=\n"
+        "PMCOPY__NETWORK__RPC_URL=   \n"
+        "PMCOPY__DISCOVERY__API__TOKEN=\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    overrides = _overrides()
+    overrides["discovery"] = {"api": {"token": "yaml-token"}}
 
-    def test_neg_risk_exchange_address_override(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        override = "0x" + "9" * 40
-        valid_env["NEG_RISK_CTF_EXCHANGE_V2_ADDRESS"] = override
-        cfg = load_config(valid_env)
-        assert cfg.network.neg_risk_ctf_exchange_v2_address == override
+    config = load_config(overrides, secrets_path=secrets)
 
-    def test_order_confirmation_safe_release_defaults(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        cfg = load_config(valid_env)
-        oc = cfg.order_confirmation
-        assert oc.auto_release_require_all_probes_clean is True
-        assert oc.auto_release_max_probe_errors == 0
+    assert config.wallet.polygon_rpc_url == "https://rpc.invalid"
+    assert config.polymarket.rpc_url == "https://rpc.invalid"
+    assert config.discovery.api.token.get_secret_value() == "yaml-token"
 
-    def test_leader_wallets_parsed_from_csv(self, valid_env: dict[str, str]) -> None:
-        valid_env["LEADER_WALLETS"] = f"{_VALID_FUNDER},{_VALID_USER}"
-        cfg = load_config(valid_env)
-        assert cfg.leader.wallets == (_VALID_FUNDER, _VALID_USER)
 
-    def test_auto_leader_empty_wallets_does_not_fallback_to_user_address(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["LEADER_WALLETS"] = ""
-        valid_env["USER_ADDRESS"] = _VALID_USER
-        valid_env["LEADER_SOURCE"] = "auto"
-        cfg = load_config(valid_env)
-        assert cfg.leader.wallets == ()
-        assert cfg.discovery.allow_auto_trader_detection is True
+def test_secrets_file_requires_exact_0600(tmp_path: Path) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY__DISCOVERY__API__TOKEN=secret\n", encoding="utf-8")
+    secrets.chmod(0o640)
+    with pytest.raises(EnvValidationError, match="0600"):
+        load_config(_overrides(), secrets_path=secrets)
 
-    def test_auto_leader_enabled_alias_does_not_fallback_to_user_address(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["LEADER_WALLETS"] = ""
-        valid_env["USER_ADDRESS"] = _VALID_USER
-        valid_env["AUTO_LEADER_ENABLED"] = "true"
-        cfg = load_config(valid_env)
-        assert cfg.leader.wallets == ()
-        assert cfg.discovery.allow_auto_trader_detection is True
 
-    def test_manual_mode_empty_wallets_falls_back_to_user_address(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["LEADER_WALLETS"] = ""
-        valid_env["USER_ADDRESS"] = _VALID_USER
-        valid_env["LEADER_SOURCE"] = "manual"
-        cfg = load_config(valid_env)
-        assert cfg.leader.wallets == (_VALID_USER,)
-        assert cfg.discovery.allow_auto_trader_detection is False
+@pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW hardening")
+def test_secrets_file_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.env"
+    target.write_text("PMCOPY__SIZING__PERCENTAGE=6\n", encoding="utf-8")
+    target.chmod(0o600)
+    secrets = tmp_path / "secrets.env"
+    secrets.symlink_to(target)
 
-    def test_manual_leader_wallets_win_over_auto_mode(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["LEADER_WALLETS"] = _VALID_FUNDER
-        valid_env["USER_ADDRESS"] = _VALID_USER
-        valid_env["LEADER_SOURCE"] = "auto"
-        cfg = load_config(valid_env)
-        assert cfg.leader.wallets == (_VALID_FUNDER,)
-        assert cfg.discovery.allow_auto_trader_detection is True
+    with pytest.raises(EnvValidationError, match="non-symlink"):
+        load_config(_overrides(), secrets_path=secrets)
 
-    def test_invalid_leader_source_rejected(self, valid_env: dict[str, str]) -> None:
-        valid_env["LEADER_SOURCE"] = "database"
-        with pytest.raises(EnvValidationError, match="LEADER_SOURCE"):
-            load_config(valid_env)
 
-    def test_leader_auto_cascade_activates_discovery(self, valid_env: dict[str, str]) -> None:
-        valid_env["LEADER_AUTO"] = "true"
-        cfg = load_config(valid_env)
-        assert cfg.leader.leader_auto is True
-        assert cfg.leader.auto_discover_leaders is True
-        assert cfg.discovery.enable_trader_discovery is True
-        assert cfg.discovery.discovery_promote_to_active is True
+def test_secrets_read_uses_validated_file_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY__SIZING__PERCENTAGE=6\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    replacement = tmp_path / "replacement.env"
+    replacement.write_text("PMCOPY__SIZING__PERCENTAGE=9\n", encoding="utf-8")
+    replacement.chmod(0o600)
+    real_fstat = os.fstat
+    swapped = False
 
-    def test_discovery_defaults_include_min_active_positions(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        assert cfg.discovery.min_active_positions == 1
+    def replace_path_after_open(fd: int) -> os.stat_result:
+        nonlocal swapped
+        info = real_fstat(fd)
+        if not swapped:
+            os.replace(replacement, secrets)
+            swapped = True
+        return info
 
-    def test_auto_trader_detection_config_defaults(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        cfg = load_config(valid_env)
-        assert cfg.discovery.allow_auto_trader_detection is False
-        assert cfg.discovery.max_auto_traders_count == 2
-        assert cfg.discovery.leader_source == "manual"
-        assert cfg.discovery.auto_leader_enabled is False
-        assert cfg.discovery.auto_leader_count == 2
-        assert cfg.discovery.falcon_sort_modes == (
-            "h_score",
-            "pnl",
-            "sharpe",
-            "roi",
-            "win_rate",
-        )
-        assert cfg.discovery.falcon_dedupe_candidates is True
-        assert cfg.discovery.falcon_max_candidates == 250
-        assert cfg.discovery.discovery_candidate_eval_concurrency == 1
-        assert cfg.discovery.leader_score_version == "leader_score_v2"
-        assert cfg.discovery.auto_leader_require_score_version is True
+    monkeypatch.setattr("config.app_config.os.fstat", replace_path_after_open)
 
-    def test_auto_trader_detection_config_loads_env(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
-        valid_env["MAX_AUTO_TRADERS_COUNT"] = "3"
-        cfg = load_config(valid_env)
-        assert cfg.discovery.allow_auto_trader_detection is True
-        assert cfg.discovery.max_auto_traders_count == 3
+    config = load_config(_overrides(), secrets_path=secrets)
 
-    def test_discovery_candidate_eval_concurrency_loads_env(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env["DISCOVERY_CANDIDATE_EVAL_CONCURRENCY"] = "4"
-        cfg = load_config(valid_env)
-        assert cfg.discovery.discovery_candidate_eval_concurrency == 4
+    assert swapped is True
+    assert config.sizing.percentage == 6
 
-    @pytest.mark.parametrize("value", ["0", "-1"])
-    def test_discovery_candidate_eval_concurrency_must_be_positive(
-        self,
-        valid_env: dict[str, str],
-        value: str,
-    ) -> None:
-        valid_env["DISCOVERY_CANDIDATE_EVAL_CONCURRENCY"] = value
-        with pytest.raises(
-            EnvValidationError,
-            match="DISCOVERY_CANDIDATE_EVAL_CONCURRENCY",
-        ):
-            load_config(valid_env)
 
-    def test_auto_leader_count_alias_loads_env(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env["AUTO_LEADER_ENABLED"] = "true"
-        valid_env["AUTO_LEADER_COUNT"] = "4"
-        cfg = load_config(valid_env)
-        assert cfg.discovery.allow_auto_trader_detection is True
-        assert cfg.discovery.max_auto_traders_count == 4
-        assert cfg.discovery.auto_leader_count == 4
+def test_secrets_reject_duplicate_and_non_nested_application_keys(
+    tmp_path: Path,
+) -> None:
+    duplicate = tmp_path / "duplicate.env"
+    duplicate.write_text(
+        "PMCOPY__DISCOVERY__API__TOKEN=one\nPMCOPY__DISCOVERY__API__TOKEN=two\n",
+        encoding="utf-8",
+    )
+    duplicate.chmod(0o600)
+    with pytest.raises(EnvValidationError, match="Duplicate key"):
+        load_config(_overrides(), secrets_path=duplicate)
 
-    def test_auto_trader_detection_config_clamps_to_auto_discover_cap(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
-        valid_env["MAX_AUTO_TRADERS_COUNT"] = "99"
-        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "4"
-        valid_env["AUTO_DISCOVER_TOP_N"] = "4"
-        cfg = load_config(valid_env)
-        assert cfg.discovery.max_auto_traders_count == 4
+    flat = tmp_path / "flat.env"
+    flat.write_text("PRIVATE_KEY=never-accepted\n", encoding="utf-8")
+    flat.chmod(0o600)
+    with pytest.raises(EnvValidationError, match="PMCOPY__SECTION__FIELD"):
+        load_config(_overrides(), secrets_path=flat)
 
-    def test_auto_trader_detection_count_cannot_raise_auto_discover_cap(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env["AUTO_LEADER_ENABLED"] = "true"
-        valid_env["AUTO_LEADER_COUNT"] = "99"
-        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "10"
-        cfg = load_config(valid_env)
-        assert cfg.leader.auto_discover_max_leaders == 10
-        assert cfg.leader.auto_discover_top_n == 10
-        assert cfg.discovery.max_auto_traders_count == 10
 
-    def test_discovery_startup_safety_config_loads_env(
-        self,
-        valid_env: dict[str, str],
-    ) -> None:
-        valid_env.update(
-            {
-                "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO": "0.8",
-                "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS": "false",
-                "DISCOVERY_EVALUATION_TTL_SECONDS": "120",
-                "DISCOVERY_REJECT_STALE_EVALUATIONS": "false",
-                "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS": "3600",
-                "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE": "false",
-            }
+def test_unknown_yaml_key_fails_closed(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    payload = yaml.safe_load((ROOT / "config/execution.yml").read_text())
+    payload["tradeing_mode"] = "live"
+    (config_dir / "execution.yml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(EnvValidationError, match="tradeing_mode"):
+        load_config(
+            _overrides(),
+            config_dir=config_dir,
+            secrets_path=tmp_path / "missing.env",
         )
 
-        cfg = load_config(valid_env)
 
-        assert cfg.discovery.discovery_min_auto_sports_esports_ratio == pytest.approx(0.8)
-        assert cfg.discovery.discovery_auto_prefer_sports_esports is False
-        assert cfg.discovery.discovery_evaluation_ttl_seconds == 120
-        assert cfg.discovery.discovery_reject_stale_evaluations is False
-        assert cfg.discovery.polymarket_history_min_window_seconds == 3600
-        assert cfg.discovery.discovery_require_recent_state_for_live is False
+def test_unknown_nested_process_key_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PMCOPY__EXECUTION__TRADEING_MODE", "live")
+    with pytest.raises(EnvValidationError, match="tradeing_mode"):
+        load_config(_overrides())
 
-    def test_raw_env_preserved_for_transition_excludes_secrets(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        cfg = load_config(valid_env)
-        # PRIVATE_KEY is in the documented sensitive set and must NOT
-        # land in AppConfig.raw — typed accessors (wallet.private_key)
-        # carry the secret instead.
-        assert "PRIVATE_KEY" not in cfg.raw
-        # Public-info keys (wallet addresses, RPC endpoint, etc.) stay
-        # in .raw for legacy callers still transitioning to typed config.
-        assert cfg.raw["FUNDER_ADDRESS"] == _VALID_FUNDER
 
-    def test_network_contract_prefers_collateral_then_pusd(self, valid_env: dict[str, str]) -> None:
-        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
-        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
-        valid_env["COLLATERAL_CONTRACT_ADDRESS"] = "0x" + "3" * 40
-        cfg = load_config(valid_env)
-        assert cfg.network.usdc_contract_address == "0x" + "3" * 40
+def test_nested_process_json_decodes_wallet_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wallet = "0x" + "2" * 40
+    monkeypatch.setenv("PMCOPY__LEADER__WALLETS", f'["{wallet}"]')
+    config = load_config(_overrides())
+    # Legacy env alias routes to the copy_trading owner at the loader boundary.
+    assert config.copy_trading.enabled_wallets() == (wallet,)
 
-    def test_network_contract_falls_back_to_pusd_before_legacy_usdc(self, valid_env: dict[str, str]) -> None:
-        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
-        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
-        cfg = load_config(valid_env)
-        assert cfg.network.usdc_contract_address == "0x" + "2" * 40
 
-    def test_v2_contract_defaults(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        assert (
-            cfg.network.pusd_contract_address
-            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+def test_runtime_polymarket_rpc_url_is_required() -> None:
+    overrides = _overrides()
+    overrides["network"]["rpc_url"] = ""
+    with pytest.raises(EnvValidationError, match="polymarket.rpc_url is required"):
+        load_config(overrides)
+
+
+def test_secrets_template_omits_runtime_derived_clob_auth() -> None:
+    template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
+    assert template.endswith("\n")
+    assert "PMCOPY__WALLET__PRIVATE_KEY=" in template
+    assert "PMCOPY__WALLET__FUNDER_ADDRESS=" not in template
+    assert "PMCOPY__CLOB__API_KEY=" not in template
+    assert "PMCOPY__CLOB__API_SECRET=" not in template
+    assert "PMCOPY__CLOB__API_PASSPHRASE=" not in template
+
+
+def test_secrets_template_lists_both_control_plane_credential_names() -> None:
+    """The template carries names only: the live environment enables the API."""
+
+    template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
+
+    assert "PMCOPY__CONTROL_PLANE__AUTH__TOKEN=\n" in template
+    assert "PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN=\n" in template
+
+
+def test_validation_error_never_echoes_secret(
+    tmp_path: Path,
+) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__DISCOVERY__API__TOKEN=never-print-this\n"
+        "PMCOPY__DISCOVERY__API__MAX_RETRIES=not-an-int\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    with pytest.raises(EnvValidationError) as raised:
+        load_config(_overrides(), secrets_path=secrets)
+    assert "never-print-this" not in str(raised.value)
+
+
+def test_flat_legacy_override_is_rejected() -> None:
+    with pytest.raises(EnvValidationError, match="Flat environment overrides"):
+        load_config({"FUNDER_ADDRESS": ADDRESS})
+
+
+def test_scoring_and_longitudinal_weights_are_validated() -> None:
+    with pytest.raises(ValidationError, match="weights must sum to 1.0"):
+        DiscoveryConfig.model_validate({"scoring": {"weights": {"falcon_quality": 0.99}}})
+
+
+def test_trading_mode_is_single_immutable_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PMCOPY__EXECUTION__TRADING_MODE", "live")
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    config = load_config(overrides)
+    assert config.execution.trading_mode == "live"
+    assert config.execution.paper_trade_only is False
+    assert config.dry_run is False
+
+
+# ---------------------------------------------------------------------------
+# detection.mode selector (Slice 0)
+# ---------------------------------------------------------------------------
+
+
+def _onchain_overrides(mode: str, **onchain: object) -> dict:
+    overrides = _overrides()
+    section: dict = {"mode": mode}
+    if onchain:
+        section["onchain"] = dict(onchain)
+    overrides["detection"] = section
+    return overrides
+
+
+def test_checked_in_yaml_keeps_detection_mode_polling() -> None:
+    """Base YAML must never select an on-chain source; polling is the default."""
+    from domain.detection import DetectionMode
+
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    # The base file must not pin ``mode`` at all: an explicit base value would
+    # shadow the deprecated-boolean derivation in every real deployment (I1).
+    assert packaged.get("mode", "polling") == "polling"
+
+    config = load_config(_overrides())
+    assert config.detection.mode == "polling"
+    assert config.detection.detection_mode is DetectionMode.POLLING
+
+
+def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy ``enable_onchain_pending_detection: true`` above the base layer
+    still derives ``on_chain_confirmed`` (with the deprecation WARN) through the
+    real loader — the base YAML must not shadow the derivation."""
+    import config.app_config as app_config_mod
+    from domain.detection import DetectionMode
+
+    monkeypatch.setattr(
+        app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
+    )
+    overrides = _overrides()
+    overrides["detection"] = {
+        "onchain": {
+            "enable_onchain_pending_detection": True,
+            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="AppConfig"):
+        config = load_config(overrides, environment="paper")
+
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if "detection_legacy_flags_deprecated" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "derived_mode=on_chain_confirmed" in warnings[0]
+    assert "from=enable_onchain_pending_detection" in warnings[0]
+    # Lazy logging: the record carries the template and args, not a pre-rendered string.
+    record = next(
+        r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()
+    )
+    assert "%s" in str(record.msg)
+    assert record.args
+
+
+def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import config.app_config as app_config_mod
+
+    monkeypatch.setattr(
+        app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
+    )
+    overrides = _overrides()
+    overrides["detection"] = {
+        "onchain": {
+            "enable_onchain_pending_detection": True,
+            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="AppConfig"):
+        load_config(overrides, environment="paper")
+        load_config(overrides, environment="paper")
+
+    warnings = [r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_detection_mode_env_override_selects_on_chain_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from domain.detection import DetectionMode
+
+    monkeypatch.setenv("PMCOPY__DETECTION__MODE", "on_chain_pending")
+    monkeypatch.setenv(
+        "PMCOPY__DETECTION__ONCHAIN__PENDING_TX_WS_URL",
+        "wss://polygon.example.invalid/v2/redacted",
+    )
+    config = load_config(_overrides())
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
+
+
+def test_on_chain_mode_without_ws_url_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(_onchain_overrides("on_chain_confirmed"))
+
+
+def test_on_chain_mode_with_non_alchemy_provider_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="infura",
+            )
         )
-        assert cfg.network.usdc_contract_address == cfg.network.pusd_contract_address
-        assert (
-            cfg.network.ctf_exchange_v2_address
-            == "0xE111180000d2663C0091e4f400237545B87B996B"
+
+
+def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_hashes_only"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_hashes_only=True,
+            )
         )
 
-    def test_load_without_env_reads_os_environ(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Seed os.environ with the minimal valid set, nuke everything else that might leak in.
-        for key in list(os.environ.keys()):
-            if key in _minimal_valid_env() or key.startswith(
-                (
-                    "LEADER_",
-                    "COPY_",
-                    "TRADE_",
-                    "RISK_",
-                    "BALANCE_",
-                    "DISCOVERY_",
-                    "AUTO_",
-                    "TIER_",
-                    "EXECUTION_",
-                    "NEAR_",
-                    "PROFIT_",
-                    "MAX_",
-                    "MIN_",
-                    "ENABLE_",
-                    "STAGED_",
-                )
-            ):
-                monkeypatch.delenv(key, raising=False)
-        for k, v in _minimal_valid_env().items():
-            monkeypatch.setenv(k, v)
-        cfg = load_config()  # no env arg -> os.environ
-        assert isinstance(cfg, AppConfig)
-        assert cfg.wallet.private_key == _VALID_PRIVATE_KEY
 
+def test_on_chain_pending_rejects_confidence_above_pending_probable() -> None:
+    """A floor above ``pending_probable`` silently drops every pending signal.
 
-# ---------------------------------------------------------------------------
-# Missing required keys
-# ---------------------------------------------------------------------------
-
-
-class TestMissingRequired:
-    def test_missing_private_key(self, valid_env: dict[str, str]) -> None:
-        valid_env.pop("PRIVATE_KEY")
-        with pytest.raises(EnvValidationError, match="PRIVATE_KEY is required"):
-            load_config(valid_env)
-
-    def test_missing_funder_address(self, valid_env: dict[str, str]) -> None:
-        valid_env.pop("FUNDER_ADDRESS")
-        with pytest.raises(EnvValidationError, match="FUNDER_ADDRESS is required"):
-            load_config(valid_env)
-
-    def test_missing_rpc_url(self, valid_env: dict[str, str]) -> None:
-        valid_env["RPC_URL"] = ""
-        with pytest.raises(EnvValidationError, match="RPC_URL is required"):
-            load_config(valid_env)
-
-
-# ---------------------------------------------------------------------------
-# Malformed values
-# ---------------------------------------------------------------------------
-
-
-class TestMalformedValues:
-    def test_invalid_private_key_format(self, valid_env: dict[str, str]) -> None:
-        valid_env["PRIVATE_KEY"] = "not-a-hex-key"
-        with pytest.raises(EnvValidationError, match="PRIVATE_KEY must be a 66-char hex key"):
-            load_config(valid_env)
-
-    def test_private_key_file_requires_exact_0600_permissions(
-        self, tmp_path, monkeypatch, valid_env: dict[str, str]
-    ) -> None:
-        # Path-traversal guard requires the key file to live under $HOME
-        # or cwd; chdir into tmp_path so the test exercises the mode
-        # branch rather than the location branch.
-        monkeypatch.chdir(tmp_path)
-        key_path = tmp_path / "pk.txt"
-        key_path.write_text(_VALID_PRIVATE_KEY, encoding="utf-8")
-        key_path.chmod(0o700)
-        valid_env["PRIVATE_KEY"] = ""
-        valid_env["PRIVATE_KEY_FILE"] = str(key_path)
-        with pytest.raises(EnvValidationError, match="permissions 0600 exactly"):
-            load_config(valid_env)
-
-    def test_invalid_funder_address_format(self, valid_env: dict[str, str]) -> None:
-        valid_env["FUNDER_ADDRESS"] = "0xNOT_A_VALID_ADDRESS"
-        with pytest.raises(EnvValidationError, match="Invalid FUNDER_ADDRESS"):
-            load_config(valid_env)
-
-    def test_invalid_leader_wallet_in_csv(self, valid_env: dict[str, str]) -> None:
-        valid_env["LEADER_WALLETS"] = f"{_VALID_FUNDER},0xBADADDR"
-        with pytest.raises(EnvValidationError, match="Invalid leader wallet"):
-            load_config(valid_env)
-
-    def test_inline_comment_rejected(self, valid_env: dict[str, str]) -> None:
-        valid_env["CHAIN_ID"] = "137 # mainnet"
-        with pytest.raises(EnvValidationError, match="inline comment"):
-            load_config(valid_env)
-
-
-    def test_bad_chain_id(self, valid_env: dict[str, str]) -> None:
-        valid_env["CHAIN_ID"] = "1"
-        with pytest.raises(EnvValidationError, match="Unsupported CHAIN_ID"):
-            load_config(valid_env)
-
-    def test_non_numeric_int_field(self, valid_env: dict[str, str]) -> None:
-        valid_env["MAX_OPEN_POSITIONS"] = "not-a-number"
-        with pytest.raises(
-            EnvValidationError,
-            match="MAX_OPEN_POSITIONS must be a valid int",
-        ):
-            load_config(valid_env)
-
-    def test_invalid_trailing_activation_value(self, valid_env: dict[str, str]) -> None:
-        valid_env["ENABLE_TRAILING_STOP"] = "true"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "not-auto"
-        with pytest.raises(
-            EnvValidationError,
-            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
-        ):
-            load_config(valid_env)
-
-    @pytest.mark.parametrize("bad_value", ["0", "-1", "-120"])
-    def test_reservation_ttl_seconds_must_be_positive(
-        self, valid_env: dict[str, str], bad_value: str
-    ) -> None:
-        valid_env["RESERVATION_TTL_SECONDS"] = bad_value
-        with pytest.raises(
-            EnvValidationError,
-            match="RESERVATION_TTL_SECONDS must be > 0",
-        ):
-            load_config(valid_env)
-
-    def test_reservation_ttl_seconds_override_applied(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["RESERVATION_TTL_SECONDS"] = "45"
-        cfg = load_config(valid_env)
-        assert cfg.execution.reservation_ttl_seconds == 45
-
-    # P2-c — NaN/Inf are valid float() inputs but corrupt downstream gates
-    # (slippage, spread). Fail closed: load_config must raise rather than
-    # silently accept a non-finite numeric config value.
-    @pytest.mark.parametrize("bad_value", ["nan", "NaN", "inf", "Inf", "-inf", "infinity"])
-    def test_slippage_tolerance_rejects_non_finite(
-        self, valid_env: dict[str, str], bad_value: str
-    ) -> None:
-        valid_env["SLIPPAGE_TOLERANCE"] = bad_value
-        with pytest.raises(
-            EnvValidationError,
-            match="SLIPPAGE_TOLERANCE must be a finite number",
-        ):
-            load_config(valid_env)
-
-    @pytest.mark.parametrize("bad_value", ["inf", "nan", "-inf"])
-    def test_max_book_spread_bps_rejects_non_finite(
-        self, valid_env: dict[str, str], bad_value: str
-    ) -> None:
-        # MAX_BOOK_SPREAD_BPS is an int field; int("inf") already raises, but
-        # assert the fail-closed contract holds for the spread gate too.
-        valid_env["MAX_BOOK_SPREAD_BPS"] = bad_value
-        with pytest.raises(EnvValidationError):
-            load_config(valid_env)
-
-    def test_float_or_auto_rejects_non_finite(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        # TRAILING_ACTIVATION_PCT uses the float_or_auto path; 'inf' is not
-        # 'auto' and must not slip through as a finite trailing trigger.
-        valid_env["ENABLE_TRAILING_STOP"] = "true"
-        valid_env["TRAILING_ACTIVATION_PCT"] = "inf"
-        with pytest.raises(
-            EnvValidationError,
-            match="TRAILING_ACTIVATION_PCT must be a finite number",
-        ):
-            load_config(valid_env)
-
-
-# ---------------------------------------------------------------------------
-# Semantic / cross-field invariants
-# ---------------------------------------------------------------------------
-
-
-class TestSemanticInvariants:
-    def test_runtime_python_supported_rejects_313_plus(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "config.app_config.sys.version_info",
-            SimpleNamespace(major=3, minor=13),
+    ``PendingTxDetector`` emits at most ``PENDING_PROBABLE`` for a mempool
+    sighting, so requiring ``mined_authoritative``/``confirmed_final`` in
+    ``on_chain_pending`` mode is a mode that detects nothing at all.
+    """
+    with pytest.raises(EnvValidationError) as excinfo:
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_detection_confidence_required="mined_authoritative",
+            )
         )
-        from config.app_config import _runtime_python_supported
-        assert _runtime_python_supported() is False
-
-    def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, valid_env: dict[str, str]) -> None:
-        # PG migration removed DatabaseConfig.enabled / .db_path; the
-        # BOT_STATE_DB_ENABLED env var is no longer wired. Keep the test as a
-        # forward-compat probe: load_config still succeeds with both vars set.
-        valid_env["DB_ENABLED"] = "false"
-        valid_env["BOT_STATE_DB_ENABLED"] = "true"
-        cfg = load_config(valid_env)
-        assert cfg.database.dsn
-
-    def test_max_share_price_must_not_be_below_min_share_price(self, valid_env: dict[str, str]) -> None:
-        valid_env["MIN_SHARE_PRICE"] = "0.4"
-        valid_env["MAX_SHARE_PRICE"] = "0.3"
-        with pytest.raises(EnvValidationError, match="MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE"):
-            load_config(valid_env)
-
-    @pytest.mark.parametrize("bad_value", ["0", "1.5"])
-    def test_max_position_pct_out_of_range(self, valid_env: dict[str, str], bad_value: str) -> None:
-        valid_env["MAX_POSITION_PCT"] = bad_value
-        with pytest.raises(EnvValidationError, match=r"MAX_POSITION_PCT must be in \(0, 1\]"):
-            load_config(valid_env)
-
-    def test_near_max_price_warn_gt_exit(self, valid_env: dict[str, str]) -> None:
-        valid_env["NEAR_MAX_PRICE_WARN"] = "0.98"
-        valid_env["NEAR_MAX_PRICE_EXIT"] = "0.95"
-        with pytest.raises(
-            EnvValidationError,
-            match="NEAR_MAX_PRICE_WARN must be <= NEAR_MAX_PRICE_EXIT",
-        ):
-            load_config(valid_env)
-
-    def test_trust_size_multiplier_min_gt_max(self, valid_env: dict[str, str]) -> None:
-        valid_env["TRUST_SIZE_MULTIPLIER_MIN"] = "2.0"
-        valid_env["TRUST_SIZE_MULTIPLIER_MAX"] = "1.0"
-        with pytest.raises(
-            EnvValidationError,
-            match=r"TRUST_SIZE_MULTIPLIER_MIN must be <= TRUST_SIZE_MULTIPLIER_MAX",
-        ):
-            load_config(valid_env)
-
-    def test_adaptive_basis_invalid(self, valid_env: dict[str, str]) -> None:
-        valid_env["ADAPTIVE_SIZING_BASIS"] = "moonphase"
-        with pytest.raises(
-            EnvValidationError,
-            match="ADAPTIVE_SIZING_BASIS must be one of: trade_size, performance",
-        ):
-            load_config(valid_env)
-
-    def test_leader_score_weights_all_zero(self, valid_env: dict[str, str]) -> None:
-        valid_env["LEADER_SCORE_WEIGHT_BALANCE"] = "0"
-        valid_env["LEADER_SCORE_WEIGHT_ANALYTICS"] = "0"
-        valid_env["LEADER_SCORE_WEIGHT_ACTIVITY"] = "0"
-        with pytest.raises(
-            EnvValidationError, match=r"LEADER_SCORE_WEIGHT_\* values must sum to > 0"
-        ):
-            load_config(valid_env)
-
-    def test_min_active_positions_must_be_positive(self, valid_env: dict[str, str]) -> None:
-        valid_env["MIN_ACTIVE_POSITIONS"] = "0"
-        with pytest.raises(EnvValidationError, match="MIN_ACTIVE_POSITIONS must be > 0"):
-            load_config(valid_env)
-
-    def test_pending_confidence_required_must_be_known(
-        self, valid_env: dict[str, str]
-    ) -> None:
-        valid_env["PENDING_TX_DETECTION_CONFIDENCE_REQUIRED"] = "wishful"
-        with pytest.raises(
-            EnvValidationError,
-            match="PENDING_TX_DETECTION_CONFIDENCE_REQUIRED",
-        ):
-            load_config(valid_env)
+    message = str(excinfo.value)
+    assert (
+        "detection.onchain.pending_tx_detection_confidence_required must be "
+        "market_unattributed or pending_probable when detection.mode=on_chain_pending"
+    ) in message
+    assert "drops every pending signal" in message
 
 
-# ---------------------------------------------------------------------------
-# Aggregation of multiple errors
-# ---------------------------------------------------------------------------
-
-
-class TestAggregatedErrors:
-    def test_multiple_errors_all_reported(self, valid_env: dict[str, str]) -> None:
-        valid_env.pop("PRIVATE_KEY")
-        valid_env["MAX_POSITION_PCT"] = "1.5"
-        valid_env["NEAR_MAX_PRICE_WARN"] = "0.99"
-        valid_env["NEAR_MAX_PRICE_EXIT"] = "0.50"
-        with pytest.raises(EnvValidationError) as exc:
-            load_config(valid_env)
-        message = str(exc.value)
-        assert "PRIVATE_KEY is required" in message
-        assert "MAX_POSITION_PCT" in message
-        assert "NEAR_MAX_PRICE_WARN must be <= NEAR_MAX_PRICE_EXIT" in message
-        # All errors are bullet-listed.
-        assert re.search(r"\n- .+\n- ", message)
-
-
-# ---------------------------------------------------------------------------
-# Immutability
-# ---------------------------------------------------------------------------
-
-
-class TestImmutability:
-    def test_app_config_frozen(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        with pytest.raises(FrozenInstanceError):
-            cfg.sizing.max_position_pct = 0.99  # type: ignore[misc]
-
-    def test_wallet_config_frozen(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        with pytest.raises(FrozenInstanceError):
-            cfg.wallet.private_key = "clobbered"  # type: ignore[misc]
-
-    def test_section_replacement_also_frozen(self, valid_env: dict[str, str]) -> None:
-        cfg = load_config(valid_env)
-        with pytest.raises(FrozenInstanceError):
-            cfg.database = None  # type: ignore[misc]
-
-
-class TestMarketDataFreshnessConfig:
-    """Market-data execution freshness + WSS liveness knobs are env-tunable."""
-
-    def test_defaults(self, valid_env: dict[str, str]) -> None:
-        md = load_config(valid_env).market_data
-        assert md.executable_quote_max_age_seconds == 2.0
-        assert md.executable_book_max_age_seconds == 2.0
-        assert md.executable_tick_max_age_seconds == 300.0
-        assert md.wss_connection_max_silence_seconds == 20.0
-        assert md.rest_bootstrap_max_spread_bps == 300
-
-    def test_overrides(self, valid_env: dict[str, str]) -> None:
-        env = dict(valid_env)
-        env.update(
-            {
-                "MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS": "5.5",
-                "MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS": "6.0",
-                "MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS": "120.0",
-                "MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS": "45.0",
-                "MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS": "800",
-            }
+def test_on_chain_pending_accepts_market_unattributed_confidence() -> None:
+    """The looser floor is still a usable pending configuration."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_pending",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_tx_detection_confidence_required="market_unattributed",
         )
-        md = load_config(env).market_data
-        assert md.executable_quote_max_age_seconds == 5.5
-        assert md.executable_book_max_age_seconds == 6.0
-        assert md.executable_tick_max_age_seconds == 120.0
-        assert md.wss_connection_max_silence_seconds == 45.0
-        assert md.rest_bootstrap_max_spread_bps == 800
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_tx_detection_confidence_required == "market_unattributed"
 
-    def test_rejects_non_positive_silence_window(self, valid_env: dict[str, str]) -> None:
-        env = dict(valid_env)
-        env["MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS"] = "0"
-        with pytest.raises(EnvValidationError):
-            load_config(env)
+
+def test_on_chain_confirmed_allows_confidence_above_pending_probable() -> None:
+    """The confirmed source is receipt-backed; the pending floor does not bind."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_tx_detection_confidence_required="mined_authoritative",
+        )
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_tx_detection_confidence_required == "mined_authoritative"
+
+
+def test_on_chain_pending_requires_positive_confirmation_deadline() -> None:
+    """A non-positive deadline would mark every tracked copy unconfirmed at once."""
+    with pytest.raises(
+        EnvValidationError, match="pending_copy_confirmation_deadline_seconds must be > 0"
+    ):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_copy_confirmation_deadline_seconds=0,
+            )
+        )
+
+
+def test_on_chain_pending_requires_positive_confirmation_max_tracked() -> None:
+    """A non-positive ceiling would drop every tracked pending copy."""
+    with pytest.raises(
+        EnvValidationError, match="pending_copy_confirmation_max_tracked must be > 0"
+    ):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_copy_confirmation_max_tracked=0,
+            )
+        )
+
+
+def test_pending_copy_confirmation_defaults_load_from_packaged_yaml() -> None:
+    """The packaged base file carries the tracker defaults the typed model uses."""
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    onchain_yaml = packaged["onchain"]
+
+    assert onchain_yaml["pending_copy_confirmation_enabled"] is False
+    assert onchain_yaml["pending_copy_confirmation_deadline_seconds"] == 60.0
+    assert onchain_yaml["pending_copy_confirmation_max_tracked"] == 2048
+    assert onchain_yaml["pending_copy_auto_unwind_enabled"] is False
+
+    onchain = load_config(_overrides()).detection.onchain
+    assert onchain.pending_copy_confirmation_enabled is False
+    assert onchain.pending_copy_confirmation_deadline_seconds == 60.0
+    assert onchain.pending_copy_confirmation_max_tracked == 2048
+    assert onchain.pending_copy_auto_unwind_enabled is False
+
+
+def test_pending_copy_confirmation_keys_are_overridable() -> None:
+    """Operators can retune the tracker without touching the base file."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_pending",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            pending_copy_confirmation_enabled=False,
+            pending_copy_confirmation_deadline_seconds=30.5,
+            pending_copy_confirmation_max_tracked=64,
+            pending_copy_auto_unwind_enabled=True,
+        )
+    )
+    onchain = config.detection.onchain
+    assert onchain.pending_copy_confirmation_enabled is False
+    assert onchain.pending_copy_confirmation_deadline_seconds == 30.5
+    assert onchain.pending_copy_confirmation_max_tracked == 64
+    assert onchain.pending_copy_auto_unwind_enabled is True
+
+
+def test_confirmed_source_defaults_to_mempool_reserved() -> None:
+    """The gen-2 mempool-reserved confirmed source stays the typed default."""
+    config = load_config(_overrides())
+    assert config.detection.onchain.confirmed_source == "mempool_reserved"
+
+
+def test_confirmed_source_default_is_pinned_in_the_packaged_base_yaml() -> None:
+    """The base detection.yml carries the knob so operators can discover it."""
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    assert packaged["onchain"]["confirmed_source"] == "mempool_reserved"
+    assert load_config(_overrides()).detection.onchain.confirmed_source == "mempool_reserved"
+
+
+def test_confirmed_source_rejects_unknown_values() -> None:
+    """A typo must fail at load time, not silently select a runtime."""
+    with pytest.raises(EnvValidationError, match="confirmed_source"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                confirmed_source="shadow_logs",
+            )
+        )
+
+
+def test_on_chain_confirmed_logs_only_accepts_generic_provider() -> None:
+    """logs_only runs on any plain eth_subscribe logs endpoint."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            confirmed_source="logs_only",
+            pending_tx_provider="generic",
+        )
+    )
+    assert config.detection.onchain.confirmed_source == "logs_only"
+    assert config.detection.onchain.pending_tx_provider == "generic"
+
+
+def test_on_chain_confirmed_logs_only_accepts_alchemy_provider() -> None:
+    """The operator's Alchemy WSS also serves the logs-only subscriptions."""
+    config = load_config(
+        _onchain_overrides(
+            "on_chain_confirmed",
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            confirmed_source="logs_only",
+        )
+    )
+    assert config.detection.onchain.confirmed_source == "logs_only"
+    assert config.detection.onchain.pending_tx_provider == "alchemy"
+
+
+def test_on_chain_confirmed_logs_only_still_requires_a_wss_url() -> None:
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(_onchain_overrides("on_chain_confirmed", confirmed_source="logs_only"))
+
+
+def test_on_chain_confirmed_mempool_reserved_rejects_generic_provider() -> None:
+    """The gen-2 mempool-reserved runtime needs Alchemy-only subscriptions."""
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="generic",
+            )
+        )
+
+
+def test_on_chain_pending_with_logs_only_fails_closed() -> None:
+    """The pending mode is the Alchemy mempool subscription, full stop."""
+    with pytest.raises(EnvValidationError, match="confirmed_source=mempool_reserved"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                confirmed_source="logs_only",
+            )
+        )
+
+
+def test_on_chain_pending_with_generic_provider_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="generic",
+            )
+        )
+
+
+def test_invalid_detection_mode_rejected() -> None:
+    """``DetectionConfig.mode`` is a ``Literal``: pydantic rejects an unknown
+    mode before semantic validation, so ``detection_mode`` is total."""
+    with pytest.raises(EnvValidationError, match="detection.mode: Input should be 'polling'"):
+        load_config(_onchain_overrides("mempool"))
+
+
+def test_on_chain_mode_with_copy_tasks_enabled_fails_closed() -> None:
+    """I5: the v1 copy-task route has no cross-source dedup yet."""
+    overrides = _onchain_overrides(
+        "on_chain_confirmed",
+        pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+    )
+    overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
+    with pytest.raises(
+        EnvValidationError,
+        match="detection.mode=on_chain_confirmed is not supported with copy_trading.copy_tasks.enabled=true",
+    ):
+        load_config(overrides)
+
+
+def test_polling_mode_with_copy_tasks_enabled_is_allowed() -> None:
+    overrides = _overrides()
+    overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
+    config = load_config(overrides)
+    assert config.copy_trading.copy_tasks.enabled is True
+    assert config.detection.mode == "polling"
+
+
+def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
+    """The checked-in live environment detects at block inclusion, near-zero CU.
+
+    ``on_chain_confirmed`` + ``confirmed_source: logs_only`` subscribes to
+    topic-filtered ``logs`` only (OrderFilled topic0 + the followed leaders),
+    which sits inside the provider free tiers, keeps the Alchemy endpoint the
+    operator already runs, and leaves the mempool path one env var away
+    (``PMCOPY__DETECTION__MODE=on_chain_pending``).
+    """
+    from domain.detection import DetectionMode
+
+    packaged = yaml.safe_load(
+        (ROOT / "config" / "environments" / "live" / "detection.yml").read_text()
+    )
+    assert packaged["mode"] == "on_chain_confirmed"
+    assert packaged["onchain"]["confirmed_source"] == "logs_only"
+
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    overrides["detection"] = {
+        "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
+    }
+    # live/control_plane.yml enables the operator API, which fails closed
+    # without the credential the operator keeps in secrets.env.
+    overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
+    config = load_config(overrides, environment="live")
+
+    assert config.environment == "live"
+    assert config.execution.trading_mode == "live"
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    onchain = config.detection.onchain
+    assert onchain.confirmed_source == "logs_only"
+    assert onchain.pending_tx_provider == "generic"
+    assert onchain.pending_tx_max_signal_age_ms == 700
+    assert onchain.pending_tx_detection_confidence_required == "pending_probable"
+    assert onchain.pending_tx_hashes_only is False
+    assert onchain.pending_copy_confirmation_enabled is True
+    assert onchain.pending_copy_confirmation_deadline_seconds == 60.0
+    assert onchain.pending_copy_confirmation_max_tracked == 2048
+
+
+def test_live_environment_without_ws_url_fails_closed() -> None:
+    """Selecting an on-chain mode in live without a WS endpoint is a startup error."""
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(overrides, environment="live")
+
+
+def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None:
+    """Use a five-percent copy-entry tolerance by default."""
+
+    from config.app_config import ExecutionConfig
+
+    assert ExecutionConfig().max_entry_price_drift_pct == 5.0
+    assert load_config(_overrides()).execution.max_entry_price_drift_pct == 5.0
+
+
+@pytest.mark.parametrize("value", [0.5, 2, 5, 7.5, 10, 12, 25, 100])
+def test_execution_max_entry_price_drift_pct_accepts_supported_tolerance(
+    value: float,
+) -> None:
+    """The copy-entry band is operator-tunable across a wide range.
+
+    How far past a leader's fill price a copy must reach to stay marketable is
+    a property of that leader's behaviour, not a constant: one who sweeps the
+    book leaves the next ask far above their own fill. The former hard 5-10
+    window made the knob unadjustable, so every copy carried the same band.
+    """
+
+    overrides = _overrides()
+    overrides["execution"] = {"max_entry_price_drift_pct": value}
+
+    assert load_config(overrides).execution.max_entry_price_drift_pct == value
+
+
+@pytest.mark.parametrize("value", [-0.1, 0, 100.001, 250])
+def test_execution_max_entry_price_drift_pct_rejects_out_of_range(value: float) -> None:
+    """Reject a band that could never cross, or is far beyond any real book."""
+
+    overrides = _overrides()
+    overrides["execution"] = {"max_entry_price_drift_pct": value}
+
+    with pytest.raises(EnvValidationError, match="MAX_ENTRY_PRICE_DRIFT_PCT"):
+        load_config(overrides)
+
+
+def test_cli_explains_copy_entry_tolerance_is_per_leader() -> None:
+    """Operator guidance must point at the per-leader knob, not a fixed range.
+
+    The help text previously advertised a hard 5-10% window; quoting a range
+    that validation no longer enforces would send an operator looking for a
+    limit that is not there.
+    """
+    from bot_cli.commands.config import _CONFIG_EXPLANATIONS
+
+    explanation = _CONFIG_EXPLANATIONS["MAX_ENTRY_PRICE_DRIFT_PCT"]
+
+    assert "config/traders/" in explanation
+    assert "5-10%" not in explanation
+    assert "0 disables" not in explanation
+
+
+def test_market_data_config_has_no_copy_snapshot_switch() -> None:
+    """No operator setting can restore book-derived copy pricing."""
+
+    from config.app_config import MarketDataConfig
+
+    assert not hasattr(MarketDataConfig(), "copy_entry_requires_rest_snapshot")
+    assert not hasattr(load_config(_overrides()).market_data, "copy_entry_requires_rest_snapshot")
+
+
+def test_packaged_market_data_yaml_pins_the_relaxed_rest_snapshot_budgets() -> None:
+    """The shipped REST fallback must be able to deliver its own round trip.
+
+    A ~520-570 ms live REST round trip was rejected by the 500 ms age budget.
+    Copy entries no longer consume this snapshot or its spread cap.
+    """
+
+    payload = yaml.safe_load((ROOT / "config" / "market_data.yml").read_text(encoding="utf-8"))
+
+    assert "copy_entry_requires_rest_snapshot" not in payload
+    assert payload["rest_snapshot_max_age_ms"] == 1500
+    assert payload["rest_snapshot_request_timeout_ms"] == 1250
+    assert payload["rest_snapshot_total_budget_ms"] == 2000
+    assert payload["rest_snapshot_max_spread_bps"] == 0
+    # The bootstrap knobs are a separate gate and must stay untouched.
+    assert payload["rest_bootstrap_max_age_ms"] == 500
+    assert payload["rest_bootstrap_total_budget_ms"] == 1000
+    assert payload["rest_bootstrap_max_spread_bps"] == 300

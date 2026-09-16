@@ -1,8 +1,39 @@
 """Risk management services — engine, exit policy, monitoring."""
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 # Eagerly import lightweight modules
 from services.risk.exit_policy import ExitDecision, evaluate_exit
+
+if TYPE_CHECKING:
+    from services.risk.risk_engine import (
+        AccountCapPolicy,
+        PortfolioSnapshot,
+        ProposedTrade,
+        RiskDecision,
+        RiskEngine,
+        RiskHeadroom,
+        RiskPolicy,
+        active_policy,
+        get_active_policy,
+        get_policy,
+        headroom_for_buy,
+        init_risk_engine,
+        policy_from_config,
+        policy_name_for_equity,
+    )
+    from services.risk.risk_monitor import (
+        CachedRiskPrice,
+        RiskPriceCache,
+        VenueCircuitBreaker,
+        reconcile_unconfirmed_risk_orders,
+        rehydrate_position_manager,
+        risk_monitor_loop_for_contexts,
+        run_risk_check_for_context,
+    )
+
 
 # Lazy imports for modules that depend on Web3 or venue clients.
 def __getattr__(name: str):
@@ -21,7 +52,6 @@ def __getattr__(name: str):
         "headroom_for_buy": "services.risk.risk_engine",
         "init_risk_engine": "services.risk.risk_engine",
         "policy_from_config": "services.risk.risk_engine",
-        "policy_from_env": "services.risk.risk_engine",
         "policy_name_for_equity": "services.risk.risk_engine",
         # risk_monitor
         "CachedRiskPrice": "services.risk.risk_monitor",
@@ -34,6 +64,7 @@ def __getattr__(name: str):
     }
     if name in _lazy_map:
         import importlib
+
         mod = importlib.import_module(_lazy_map[name])
         value = getattr(mod, name)
         globals()[name] = value
@@ -60,7 +91,6 @@ __all__ = [
     "headroom_for_buy",
     "init_risk_engine",
     "policy_from_config",
-    "policy_from_env",
     "policy_name_for_equity",
     "reconcile_unconfirmed_risk_orders",
     "rehydrate_position_manager",

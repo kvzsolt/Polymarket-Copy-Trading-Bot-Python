@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/mined_fill_deduplicator.py`` (PR2 / Phase 9)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -113,3 +114,95 @@ def test_isolated_event_loops_do_not_share_state() -> None:
     asyncio.run(_fill_b())
     assert dedupe_a.mined_seen_snapshot() == {("0xabc", 0)}
     assert dedupe_b.mined_seen_snapshot() == {("0xabc", 0)}
+
+
+# ---------------------------------------------------------------------------
+# Bounded state (Phase B: on_chain_pending as the live detection source).
+# ---------------------------------------------------------------------------
+
+
+def test_default_bounds_are_the_documented_ceilings() -> None:
+    """The unbounded sets were an unbounded-memory leak in a long-lived run."""
+    dedupe = MinedFillDeduplicator()
+
+    assert (dedupe.max_pending, dedupe.max_mined) == (10_000, 50_000)
+
+
+def test_bounds_are_keyword_only() -> None:
+    """Positional bounds would be trivially swappable at the call site."""
+    with pytest.raises(TypeError):
+        MinedFillDeduplicator(10, 20)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("kwargs", [{"max_pending": 0}, {"max_mined": 0}, {"max_pending": -1}])
+def test_non_positive_bounds_are_rejected(kwargs: dict[str, int]) -> None:
+    """A zero ceiling would evict every key immediately: dedup off, silently."""
+    with pytest.raises(ValueError):
+        MinedFillDeduplicator(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_mined_seen_evicts_oldest_first() -> None:
+    dedupe = MinedFillDeduplicator(max_mined=3)
+    tx = "0x" + "22" * 32
+    for log_index in range(3):
+        assert await dedupe.is_duplicate_mined(tx, log_index) is False
+    assert len(dedupe.mined_seen_snapshot()) == 3
+
+    # The fourth key evicts the oldest one, keeping the ceiling exact.
+    assert await dedupe.is_duplicate_mined(tx, 3) is False
+    assert dedupe.mined_seen_snapshot() == {(tx, 1), (tx, 2), (tx, 3)}
+    # Surviving keys still dedupe...
+    assert await dedupe.is_duplicate_mined(tx, 3) is True
+    # ...and a hit does not refresh position (FIFO, not LRU): the next insert
+    # still evicts (tx, 1), the oldest by insertion.
+    assert await dedupe.is_duplicate_mined(tx, 4) is False
+    assert dedupe.mined_seen_snapshot() == {(tx, 2), (tx, 3), (tx, 4)}
+
+
+@pytest.mark.asyncio
+async def test_pending_seen_evicts_oldest_first() -> None:
+    dedupe = MinedFillDeduplicator(max_pending=2)
+    tx = "0x" + "33" * 32
+    assert await dedupe.record_pending(tx, "0xleader1") is True
+    assert await dedupe.record_pending(tx, "0xleader2") is True
+    assert await dedupe.record_pending(tx, "0xleader3") is True
+
+    assert dedupe.pending_seen_snapshot() == {(tx, "0xleader2"), (tx, "0xleader3")}
+    assert await dedupe.pending_known(tx, "0xleader1") is False
+    # The survivors keep their supersede semantics.
+    assert await dedupe.supersede_pending(tx, "0xleader3") is True
+    assert await dedupe.pending_known(tx, "0xleader3") is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_record_mined_respects_the_bound() -> None:
+    dedupe = MinedFillDeduplicator(max_mined=2)
+    tx = "0x" + "44" * 32
+
+    flags = await dedupe.bulk_record_mined([(tx, 0), (tx, 1), (tx, 2)])
+
+    assert flags == [False, False, False]
+    assert dedupe.mined_seen_snapshot() == {(tx, 1), (tx, 2)}
+
+
+@pytest.mark.asyncio
+async def test_bounds_do_not_change_the_public_api_shape() -> None:
+    """Callers keep the argument-free construction and the snapshot types."""
+    dedupe = MinedFillDeduplicator()
+
+    assert await dedupe.is_duplicate_mined("0xabc", 0) is False
+    assert await dedupe.record_pending("0xabc", "0xLEADER") is True
+    assert isinstance(dedupe.mined_seen_snapshot(), set)
+    assert isinstance(dedupe.pending_seen_snapshot(), set)
+    dedupe.reset()
+    assert dedupe.mined_seen_snapshot() == set()
+    assert dedupe.pending_seen_snapshot() == set()
+
+    # Insert again after the reset: clearing must leave the ordered containers
+    # in place. Rebinding them to plain sets would still read back empty here
+    # but break the very next insert's eviction bookkeeping.
+    assert await dedupe.is_duplicate_mined("0xdef", 7) is False
+    assert await dedupe.record_pending("0xdef", "0xLEADER") is True
+    assert dedupe.mined_seen_snapshot() == {("0xdef", 7)}
+    assert dedupe.pending_seen_snapshot() == {("0xdef", "0xleader")}

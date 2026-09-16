@@ -20,6 +20,10 @@ Run standalone (``python scripts/check_requirements_drift.py``) or import
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import pathlib
 import re
 import sys
@@ -73,8 +77,10 @@ def main() -> int:
 
     missing = find_missing(pyproject, requirements)
     if missing:
-        print("requirements.txt drift — runtime deps in pyproject.toml but not "
-              "requirements.txt (Docker / documented installs would break):")
+        print(
+            "requirements.txt drift — runtime deps in pyproject.toml but not "
+            "requirements.txt (Docker / documented installs would break):"
+        )
         for dep in missing:
             print(f"  - {dep}")
         print("Add the missing dependency(ies) to requirements.txt.")

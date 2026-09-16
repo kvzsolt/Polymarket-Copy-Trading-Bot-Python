@@ -1,4 +1,5 @@
 """Risk decision types — result of evaluating a proposed trade against risk policy."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -12,6 +12,7 @@ event landed.
 Post-fix: method exists and clears tick_size + min_order_size on the
 token state, marks stale+dirty with a documented reason.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

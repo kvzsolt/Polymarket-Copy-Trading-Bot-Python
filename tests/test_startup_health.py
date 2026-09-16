@@ -4,6 +4,7 @@ Behavioural tests run against a per-test asyncpg testcontainer pool.
 Pure-config tests (log payload shape, print_startup_summary) keep their
 in-memory shape assertions without DB access.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -69,7 +70,7 @@ def _summary_env() -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
+async def test_startup_retains_stale_rows_for_canonical_synchronization():
     async with _pg_pool() as pool:
         repo = PositionsRepo(pool)
         await repo.upsert_position(
@@ -107,15 +108,14 @@ async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
         )
 
         assert sync.persisted_before == 2
-        assert sync.persisted_after == 1
-        assert sync.pruned_positions == 1
+        assert sync.persisted_after == 2
+        assert sync.pruned_positions == 0
+        assert sync.deferred_positions == 1
         assert (
-            await repo.get_position("u1", "cond-live", token_id="11111111111111111111")
-            is not None
+            await repo.get_position("u1", "cond-live", token_id="11111111111111111111") is not None
         )
         assert (
-            await repo.get_position("u1", "cond-stale", token_id="22222222222222222222")
-            is None
+            await repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is not None
         )
 
 
@@ -157,8 +157,7 @@ async def test_normalize_startup_order_statuses_preserves_order_id_rows():
         assert cleanup.purged_failed == 1  # only the normalized (no-order_id) pending row
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT status, COUNT(*) AS count FROM orders "
-                "WHERE user_id = $1 GROUP BY status",
+                "SELECT status, COUNT(*) AS count FROM orders WHERE user_id = $1 GROUP BY status",
                 "u1",
             )
         counts = {str(row["status"]): int(row["count"]) for row in rows}
@@ -230,9 +229,9 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
         "config.app_config.sys.version_info",
         SimpleNamespace(major=3, minor=12),
     )
-    from config.app_config import load_config
+    from tests.config_helpers import load_test_config
 
-    _config = load_config(env)
+    _config = load_test_config(env)
     app = SimpleNamespace(config=_config)
     report = StartupHealthReport(
         healthy=True,
@@ -270,9 +269,10 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
         ),
     )
 
-    with patch("orchestrators.runtime_summary.console.print"), patch(
-        "orchestrators.runtime_summary.logger.info"
-    ) as log_info:
+    with (
+        patch("orchestrators.runtime_summary.console.print"),
+        patch("orchestrators.runtime_summary.logger.info") as log_info,
+    ):
         print_startup_summary(
             wallet=env["FUNDER_ADDRESS"],
             available_cash=12.34,
@@ -299,6 +299,8 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
     assert extra["health"]["orderCleanup"]["purged_failed"] == 1
     assert extra["openPositionCount"] == 1
     assert extra["activeLeadersCount"] == 1
+    # The active leader-detection source is part of the summary payload.
+    assert extra["engineConfig"]["leader_discovery_and_polling"]["detection_mode"] == "polling"
 
 
 @pytest.mark.asyncio
@@ -352,7 +354,8 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
 
         assert report.healthy is True
         assert report.status == "warning"
-        assert report.position_sync.pruned_positions == 1
+        assert report.position_sync.pruned_positions == 0
+        assert report.position_sync.deferred_positions == 1
         assert report.checks["positionSync"].status == "warning"
         assert report.checks["balance"].status == "warning"
         assert report.checks["orders"].status == "warning"
@@ -403,10 +406,13 @@ async def test_perform_startup_health_check_fails_when_orders_repo_missing(monke
         assert report.checks["atomicLock"].status == "error"
         assert report.status == "error"
         assert report.healthy is False
-        assert (
-            await positions_repo.get_position("u1", "cond-stale", token_id="22222222222222222222")
-            is None
+        retained = await positions_repo.get_position(
+            "u1", "cond-stale", token_id="22222222222222222222"
         )
+        assert retained is not None
+        assert retained.size_tokens == Decimal("7")
+        assert report.position_sync.deferred_positions == 1
+        assert report.position_sync.pruned_positions == 0
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +429,7 @@ class _FakePositionsRepo:
         self._records = list(records)
         self.deleted: list[tuple[str, str, str | None]] = []
 
-    async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
+    async def list_held_positions(self, user_id: str) -> list[PositionRecord]:
         return [r for r in self._records if r.user_id == user_id]
 
     async def delete_position(self, user_id, condition_id, token_id=None):
@@ -444,12 +450,11 @@ def _rec(condition_id: str, token_id: str) -> PositionRecord:
 @pytest.mark.asyncio
 async def test_reconcile_skips_prune_when_live_snapshot_fetch_failed():
     """live_positions=None (fetch failed) → fail closed: no prune, no deletes."""
-    repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111"),
-                               _rec("cond-b", "22222222222222222222")])
-
-    sync = await reconcile_persisted_positions_to_live(
-        repo, user_id="u1", live_positions=None
+    repo = _FakePositionsRepo(
+        [_rec("cond-a", "11111111111111111111"), _rec("cond-b", "22222222222222222222")]
     )
+
+    sync = await reconcile_persisted_positions_to_live(repo, user_id="u1", live_positions=None)
 
     assert sync.fetch_failed is True
     assert sync.pruned_positions == 0
@@ -459,17 +464,16 @@ async def test_reconcile_skips_prune_when_live_snapshot_fetch_failed():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_still_prunes_on_genuinely_empty_snapshot():
-    """live_positions=[] (genuinely empty, fetch OK) → prune proceeds as before."""
+async def test_early_empty_snapshot_defers_pruning_until_canonical_synchronization():
+    """Even a successful early empty snapshot cannot predate a safe local baseline."""
     repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111")])
 
-    sync = await reconcile_persisted_positions_to_live(
-        repo, user_id="u1", live_positions=[]
-    )
+    sync = await reconcile_persisted_positions_to_live(repo, user_id="u1", live_positions=[])
 
     assert sync.fetch_failed is False
-    assert sync.pruned_positions == 1
-    assert repo.deleted == [("u1", "cond-a", "11111111111111111111")]
+    assert sync.pruned_positions == 0
+    assert sync.deferred_positions == 1
+    assert repo.deleted == []
 
 
 def test_position_sync_check_fetch_failed_reports_error():

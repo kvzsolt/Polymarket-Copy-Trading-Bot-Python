@@ -7,11 +7,17 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
   "python-dotenv==1.2.2",
   "aiohttp==3.14.3",
+  "httpx[http2]>=0.28.1,<1",
+  "orjson>=3.11.0,<4",
+  "pydantic>=2.13,<3",
+  "pydantic-settings>=2.12,<3",
+  "PyYAML>=6.0.2,<7",
+  "uvloop>=0.22.0,<1; platform_system != 'Windows'",
   "web3==7.15.0",
   "eth-account==0.13.7",
-  # Exact beta pin: the unified SDK is intentionally upgraded only after its
-  # adapter contract suite and paper-trading soak pass.
-  "polymarket-client==0.1.0b18",
+  # CCXT prediction namespace is the only Polymarket venue transport.
+  # Keep the exact behavior-verified release synchronized with install exports.
+  "ccxt==4.5.78",
   "rich==14.3.3",
   "websockets>=13.0",
   "asyncpg>=0.30.0",
@@ -34,12 +40,22 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["app", "bootstrap", "bot"]
 
+[tool.setuptools.package-data]
+"storage.postgres" = ["migrations/*.sql"]
+config = [
+  "*.yml",
+  "*.yaml",
+  "traders/*.yml",
+  "environments/*/*.yml",
+]
+
 [tool.setuptools.packages.find]
 include = [
   "cache*",
   "clients*",
   "config*",
   "interfaces*",
+  "ports*",
   "models*",
   "services*",
   "utils*",
@@ -48,9 +64,48 @@ include = [
   "storage*",
   "integrations*",
   "bot_cli*",
+  "adapters*",
+  "application*",
+  "orchestration*",
 ]
 exclude = ["tests*", "legacy*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.pyright]
+# LSP/type-check config: resolve imports against the project venv (Python 3.12).
+# "basic" during the stabilization phase — the codebase has never been
+# pyright-clean, and "standard" would flood LSP diagnostics with churn.
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+# Match the existing production-only mypy boundary. Test doubles are verified
+# by pytest and intentionally excluded from static compatibility checks.
+exclude = [".venv", "legacy", "tests", "build", "dist", "polymarket_copy_trading_bot.egg-info"]
+
+[tool.ruff]
+# Stabilization-phase config: formatting plus correctness-focused linting only.
+# Style-opinion rule families are intentionally not enabled to avoid mass churn.
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "polymarket_copy_trading_bot.egg-info"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle errors/warnings, F: pyflakes, B: bugbear correctness,
+# ASYNC: flake8-async (this is an asyncio-heavy codebase), PLE: pylint errors.
+select = ["E", "F", "W", "B", "ASYNC", "PLE"]
+
+[tool.ruff.lint.pycodestyle]
+# The formatter wraps to 100 where it can; E501 is only a backstop for lines
+# the formatter cannot break (long literals), so it flags at 120.
+max-line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally use asserts, fixtures, and long literal lines.
+"tests/**" = ["E501"]
+# Operational scripts bootstrap sys.path/dotenv before imports (E402) and are
+# allowed simple blocking pathlib IO in their one-shot async mains (ASYNC240).
+"scripts/**" = ["E402", "ASYNC240"]

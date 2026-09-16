@@ -90,13 +90,7 @@ class CopyDecisionService:
         self.trade_scorer = trade_scorer or TradeScoringService(config=config)
 
         self._decision_gate_enabled = config.execution.enable_copy_decision_gate
-        self._min_decision_score = config.leader.copy_decision_min_score
-        # Round-trip through ``Decimal(str(...))`` so a Decimal-typed config
-        # value never enters a float division (the previous ``/ 100.0`` cast
-        # silently demoted Decimal back to float and burned precision).
-        # Kept as Decimal so downstream size_buy_order receives it without
-        # another lossy conversion.
-        self._slippage_ratio = Decimal(str(config.execution.slippage_tolerance)) / Decimal("100")
+        self._min_decision_score = config.copy_trading.copy_decision_min_score
 
     def decide_buy(
         self,
@@ -215,7 +209,7 @@ class CopyDecisionService:
             max_notional_usdc=max_notional_usdc,
             market_min_size=market_min_size,
             tick_size=tick_size,
-            slippage_ratio=self._slippage_ratio,
+            slippage_ratio=Decimal("0"),
         )
 
         if not sizing.accept:

@@ -17,6 +17,7 @@ Test pins the contract by passing a record whose in-memory response is
 empty while the mocked orders_repo returns a prior matched value, and
 asserting the computed delta uses the DB value.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,9 +30,7 @@ from services.execution.reconciliation_service import ReconciliationService
 def test_previous_matched_sourced_from_orders_repo_not_record():
     svc = ReconciliationService.__new__(ReconciliationService)
     orders_repo = MagicMock()
-    orders_repo.get_by_order_id = AsyncMock(
-        return_value={"response": {"size_matched": "5"}}
-    )
+    orders_repo.get_by_order_id = AsyncMock(return_value={"response": {"size_matched": "5"}})
     svc.orders_repo = orders_repo
 
     matched = asyncio.run(
@@ -47,14 +46,10 @@ def test_db_lookup_safe_when_response_missing_in_memory():
     when the DB has a prior cumulative value — protects against the
     restart-double-fill regression."""
     orders_repo = MagicMock()
-    orders_repo.get_by_order_id = AsyncMock(
-        return_value={"response": {"size_matched": "3.5"}}
-    )
+    orders_repo.get_by_order_id = AsyncMock(return_value={"response": {"size_matched": "3.5"}})
 
     record_in_memory = {"order_id": "venue-X"}  # NO "response" key
-    matched = asyncio.run(
-        ReconciliationService._previous_matched_for_order(orders_repo, "venue-X")
-    )
+    matched = asyncio.run(ReconciliationService._previous_matched_for_order(orders_repo, "venue-X"))
     assert matched == Decimal("3.5"), (
         "DB-sourced previous_matched must survive missing in-memory response; "
         f"got {matched!r} (record was {record_in_memory!r})"

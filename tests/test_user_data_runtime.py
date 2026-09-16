@@ -11,6 +11,7 @@ Covers:
   - status(): returns snapshot copy, not live reference
   - _update_readiness: swallows readiness errors gracefully
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +25,9 @@ from services.healthServer import ReadinessTracker
 
 
 VALID_CREDS = {
-    "api_key": "key-abc",
-    "api_secret": "secret-xyz",
-    "api_passphrase": "pass-123",
+    "api_key": "ck1",
+    "api_secret": "ck2",
+    "api_passphrase": "ck3",
 }
 
 USER_ID = "user-test-001"
@@ -49,6 +50,7 @@ def _make_runtime(
 # ---------------------------------------------------------------------------
 # _api_creds_valid (static, pure)
 # ---------------------------------------------------------------------------
+
 
 class TestApiCredsValid:
     def test_accepts_full_credentials(self) -> None:
@@ -85,6 +87,7 @@ class TestApiCredsValid:
 # ---------------------------------------------------------------------------
 # start() — invalid credentials
 # ---------------------------------------------------------------------------
+
 
 class TestStartInvalidCreds:
     @pytest.mark.asyncio
@@ -124,6 +127,7 @@ class TestStartInvalidCreds:
 # ---------------------------------------------------------------------------
 # start() — valid credentials
 # ---------------------------------------------------------------------------
+
 
 class TestStartValidCreds:
     @pytest.mark.asyncio
@@ -192,6 +196,7 @@ class TestStartValidCreds:
 # _on_authenticated
 # ---------------------------------------------------------------------------
 
+
 class TestOnAuthenticated:
     @pytest.mark.asyncio
     async def test_on_authenticated_sets_status_authenticated(self) -> None:
@@ -226,6 +231,7 @@ class TestOnAuthenticated:
 # _on_disconnected
 # ---------------------------------------------------------------------------
 
+
 class TestOnDisconnected:
     @pytest.mark.asyncio
     async def test_on_disconnected_clears_authenticated(self) -> None:
@@ -255,6 +261,7 @@ class TestOnDisconnected:
 # _on_fill and _on_order_update (future PR stubs — must not raise)
 # ---------------------------------------------------------------------------
 
+
 class TestEventCallbacks:
     @pytest.mark.asyncio
     async def test_on_fill_does_not_raise(self) -> None:
@@ -281,6 +288,7 @@ class TestEventCallbacks:
 # _run_ws exception path
 # ---------------------------------------------------------------------------
 
+
 class TestRunWsException:
     @pytest.mark.asyncio
     async def test_run_ws_exception_sets_last_error(self) -> None:
@@ -289,11 +297,11 @@ class TestRunWsException:
         mock_ws.connect = AsyncMock(side_effect=RuntimeError("connect boom"))
         rt._ws_client = mock_ws
 
-        with pytest.raises(RuntimeError, match="connect boom"):
+        with pytest.raises(RuntimeError, match="User websocket task failed"):
             await rt._run_ws()
 
         assert rt._status.last_error is not None
-        assert "connect boom" in rt._status.last_error
+        assert rt._status.last_error == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_run_ws_exception_clears_authenticated(self) -> None:
@@ -303,7 +311,7 @@ class TestRunWsException:
         mock_ws.connect = AsyncMock(side_effect=OSError("net fail"))
         rt._ws_client = mock_ws
 
-        with pytest.raises(OSError):
+        with pytest.raises(RuntimeError, match="User websocket task failed"):
             await rt._run_ws()
 
         assert rt._status.authenticated is False
@@ -336,6 +344,7 @@ class TestRunWsException:
 # ---------------------------------------------------------------------------
 # stop()
 # ---------------------------------------------------------------------------
+
 
 class TestStop:
     @pytest.mark.asyncio
@@ -414,6 +423,7 @@ class TestStop:
 # status()
 # ---------------------------------------------------------------------------
 
+
 class TestStatus:
     def test_status_returns_copy(self) -> None:
         rt = _make_runtime()
@@ -448,6 +458,7 @@ class TestStatus:
 # _update_readiness — error resilience
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateReadiness:
     def test_update_readiness_swallows_exception(self) -> None:
         rt = _make_runtime()
@@ -463,6 +474,7 @@ class TestUpdateReadiness:
         snap = readiness.snapshot()
         assert snap["wss_user_ok"] is True
         assert snap["wss_user_connecting"] is False
+
 
 # ---------------------------------------------------------------------------
 # Wake-reconciler (PR 4)
@@ -555,3 +567,95 @@ class TestMarketTokenSubscriptionWake:
         await rt._on_fill({"asset": " 67890 ", "side": "SELL"})
 
         callback.assert_awaited_once_with("67890")
+
+
+# ---------------------------------------------------------------------------
+# C4 — WSS lifecycle telemetry
+# ---------------------------------------------------------------------------
+
+
+class TestWssTelemetry:
+    """The runtime owns the user stream's operator lifecycle events.
+
+    Authentication success is the user stream's "connected" moment, so the
+    first authentication reports ``connected`` and every later one reports
+    ``reconnected``. ``clients/user_ws.py`` stays transport-only.
+    """
+
+    def _runtime(self, telemetry) -> UserDataRuntime:
+        return UserDataRuntime(
+            market_store=MarketStateStore(),
+            readiness=ReadinessTracker(),
+            api_creds=dict(VALID_CREDS),
+            user_id=USER_ID,
+            telemetry=telemetry,
+        )
+
+    @pytest.mark.asyncio
+    async def test_first_authentication_reports_connected_then_reconnected(self) -> None:
+        from services.telemetry import TelemetryProducer, WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_authenticated()
+        await runtime._on_disconnected()
+        await runtime._on_authenticated()
+
+        events = service.payloads(WssEvent)
+        assert [event.outcome for event in events] == [
+            WssOutcome.CONNECTED,
+            WssOutcome.DISCONNECTED,
+            WssOutcome.RECONNECTED,
+        ]
+        assert {event.stream for event in events} == {"user"}
+        assert {call.producer for call in service.calls} == {TelemetryProducer.WSS}
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_without_telemetry_is_unchanged(self) -> None:
+        runtime = self._runtime(None)
+
+        await runtime._on_authenticated()
+        assert runtime.status().authenticated is True
+
+        await runtime._on_disconnected()
+        assert runtime.status().authenticated is False
+
+    @pytest.mark.asyncio
+    async def test_raising_telemetry_backend_never_breaks_the_callbacks(self) -> None:
+        from tests.telemetry_helpers import raising_emitters
+
+        emitters, service = raising_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_authenticated()
+        await runtime._on_disconnected()
+
+        assert service.calls == 2
+        assert runtime.status().authenticated is False
+
+    @pytest.mark.asyncio
+    async def test_failed_reconnect_storm_does_not_raise_or_fake_a_connect(self) -> None:
+        """``UserWebSocket`` fires ``on_disconnected`` from its connect
+        ``finally``, so a run of failed reconnect attempts emits DISCONNECTED
+        with no preceding CONNECTED. That must never raise, and must never make
+        the first real authentication report RECONNECTED.
+        """
+        from services.telemetry import WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        for _ in range(3):
+            await runtime._on_disconnected()
+
+        assert [event.outcome for event in service.payloads(WssEvent)] == [
+            WssOutcome.DISCONNECTED
+        ] * 3
+        assert runtime._ever_connected is False
+
+        await runtime._on_authenticated()
+
+        assert service.payloads(WssEvent)[-1].outcome is WssOutcome.CONNECTED

@@ -5,6 +5,7 @@ user_id. A SELL from one user must not touch another user's open
 positions. This pins that scoping invariant via the canonical
 ``orchestrators.trade_pipeline.execute_trades`` entry point.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -14,7 +15,8 @@ from decimal import Decimal
 import pytest
 
 from config.app_config import load_config
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -61,7 +63,7 @@ class _FakeExecutionService:
             order_id=f"ord-{req.user_id}-{req.side}",
             status="filled",
             requested_amount=Decimal(str(req.amount)),
-            filled_amount=Decimal(str(req.amount)),
+            filled_amount=req.amount / Decimal("0.5") if req.side == "BUY" else req.amount,
             avg_price=Decimal("0.5"),
             fees_paid=Decimal("0"),
             error=None,
@@ -89,18 +91,64 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
     from services.market_data_service import MarketDataBundle, MarketDataSource
 
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        cfg = load_config()
+        cfg = load_config(
+            {
+                "database": {"dsn": "postgresql://test:test@localhost/test"},
+                "wallet": {
+                    "funder_address": "0x" + "b" * 40,
+                    "polygon_rpc_url": "https://polygon-rpc.example.com",
+                },
+                "network": {"rpc_url": "https://polygon-rpc.example.com"},
+                "leader": {
+                    "wallets": ["0x" + "c" * 40],
+                    "copy_decision_min_score": 0.01,
+                    "copy_max_signal_age_seconds": 999999,
+                    "copy_max_price_drift_pct": 100,
+                    "copy_max_edge_decay_pct": 100,
+                },
+            }
+        )
 
     now = time.monotonic()
     bundle = MarketDataBundle(
         token_id=FAKE_TOKEN_ID,
-        quote=QuoteSnapshot(token_id=FAKE_TOKEN_ID, best_bid=_D("0.49"), best_ask=_D("0.51"), last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=FAKE_TOKEN_ID, bids={_D("0.49"): _D("100")}, asks={_D("0.51"): _D("100")}, best_bid=_D("0.49"), best_ask=_D("0.51"), source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=FAKE_TOKEN_ID, tick_size=_D("0.01"), min_order_size=_D("0.001"), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            best_bid=_D("0.49"),
+            best_ask=_D("0.51"),
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            bids={_D("0.49"): _D("100")},
+            asks={_D("0.51"): _D("100")},
+            best_bid=_D("0.49"),
+            best_ask=_D("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=_D("0.01"),
+            min_order_size=_D("0.001"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()
     mds.require_fresh_data = AsyncMock(return_value=bundle)
+    mds.require_execution_metadata = AsyncMock(
+        return_value=ExecutionMetadata(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("0.001"),
+            neg_risk=False,
+        )
+    )
 
     ctx = TradingContext(
         user_id=user_id,
@@ -137,7 +185,7 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
                 leader_id=intent.leader_wallet or "",
                 token_id=intent.token_id,
                 side=intent.side,
-                amount=intent.size,
+                amount=intent.notional_usdc if intent.side == "BUY" else intent.size,
                 max_slippage_bps=intent.max_slippage_bps,
                 reason=intent.reason or intent.source,
                 signal_id=intent.signal_id,
@@ -159,18 +207,8 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 
 @pytest.mark.asyncio
 async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
-    monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
-    monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
-    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "100")
-    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "100")
-    monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
-    monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
-    monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
-    monkeypatch.setenv("CHAIN_ID", "137")
-    monkeypatch.setenv("LEADER_WALLETS", "0x" + "c" * 40)
-    monkeypatch.setenv("SIGNATURE_TYPE", "0")
-    from config.env import rehydrate_env
-    rehydrate_env()
+    # ``_build_context`` passes an explicit override dict to ``load_config``,
+    # so this test never reads process env for its config.
     import orchestrators.trade_pipeline as trade_pipeline
 
     async def _fake_balance(_wallet: str):
@@ -180,9 +218,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
         return Decimal("20")
 
     monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
-    monkeypatch.setattr(
-        trade_pipeline, "_fetch_live_position_size", _fake_live_position_size
-    )
+    monkeypatch.setattr(trade_pipeline, "_fetch_live_position_size", _fake_live_position_size)
 
     async with _pg_pool() as pool:
         leader_id = "0xleader"

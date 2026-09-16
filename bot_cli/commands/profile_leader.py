@@ -1,4 +1,5 @@
 """``bot.py profile-leader`` — profile a leader wallet and emit a JSON profile (PR3)."""
+
 from __future__ import annotations
 
 import argparse
@@ -47,9 +48,7 @@ def _validate_writable_path(raw: str) -> Path | None:
                 return resolved
             except ValueError:
                 pass
-    raise ValueError(
-        f"--output must resolve under {_REPO_ROOT} or /tmp; got {resolved}"
-    )
+    raise ValueError(f"--output must resolve under {_REPO_ROOT} or /tmp; got {resolved}")
 
 
 def register_profile_leader_command(subparsers: argparse._SubParsersAction) -> None:
@@ -88,9 +87,7 @@ async def _run_profile_leader_async(args: argparse.Namespace) -> int:
         "copyable": profile.copyable,
         "computed_at": profile.computed_at,
         "notes": profile.notes,
-        "features": {
-            k: (v if v is not None else None) for k, v in profile.features.items()
-        },
+        "features": {k: (v if v is not None else None) for k, v in profile.features.items()},
         "history_counts": {
             "activity": len(history.activity),
             "trades": len(history.trades),

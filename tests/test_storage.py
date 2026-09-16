@@ -26,10 +26,11 @@ from domain.ports import (
     AbstractOrderRepository,
     AbstractPositionRepository,
 )
+from services.discovery.models import Candidate
 from storage.postgres.cursors_repo import CursorsRepo, TradeCursor
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.leaders_repo import LeaderCandidateRecord, LeadersRepo
+from storage.postgres.leaders_repo import LeaderRosterRecord, LeadersRepo
 from storage.postgres.orders_repo import OrdersRepo, OrderSubmissionRecord
 from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
@@ -101,14 +102,10 @@ class TestOrdersRepo:
     async def test_acquire_then_is_locked(self) -> None:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            assert await repo.try_acquire_submission_lock(
-                "k1", "u1", "l1", {"a": 1}
-            ) is True
+            assert await repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is True
             assert await repo.is_submission_locked("k1") is True
             # Re-acquiring must fail deterministically.
-            assert await repo.try_acquire_submission_lock(
-                "k1", "u1", "l1", {"a": 1}
-            ) is False
+            assert await repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is False
 
     @pytest.mark.asyncio
     async def test_save_submission_readback(self) -> None:
@@ -213,30 +210,91 @@ class TestFillsRepo:
 
 class TestLeadersRepo:
     @pytest.mark.asyncio
-    async def test_upsert_candidates_and_list_active(self) -> None:
+    async def test_save_roster_and_list_active(self) -> None:
         async with _pg_pool() as pool:
             repo = LeadersRepo(pool)
-            await repo.upsert_candidates(
+            await repo.save_roster(
                 [
-                    LeaderCandidateRecord(
-                        leader_id="0xaaa",
+                    LeaderRosterRecord(
+                        wallet="0xaaa",
+                        tier="active",
                         score=1.0,
-                        recent_trades=5,
-                        active=True,
-                        source="test",
+                        base_score=1.0,
+                        longitudinal_score=1.0,
+                        cycles_in_tier=3,
+                        promote_streak=0,
+                        demote_streak=0,
+                        tier_changed_at=1.0,
+                        first_promoted_at=1.0,
+                        last_seen_at=1.0,
+                        config_hash="test",
                     ),
-                    LeaderCandidateRecord(
-                        leader_id="0xbbb",
+                    LeaderRosterRecord(
+                        wallet="0xbbb",
+                        tier="watchlist",
                         score=0.5,
-                        recent_trades=1,
-                        active=False,
-                        source="test",
+                        base_score=0.5,
+                        longitudinal_score=0.5,
+                        cycles_in_tier=1,
+                        promote_streak=1,
+                        demote_streak=0,
+                        tier_changed_at=1.0,
+                        first_promoted_at=None,
+                        last_seen_at=1.0,
+                        config_hash="test",
                     ),
                 ]
             )
             actives = await repo.list_active()
+            matching = await repo.list_active(config_hash="test")
+            stale = await repo.list_active(config_hash="different")
         assert "0xaaa" in actives
         assert "0xbbb" not in actives
+        assert matching == ["0xaaa"]
+        assert stale == []
+
+
+class TestDiscoveryRepo:
+    @pytest.mark.asyncio
+    async def test_latest_candidates_scopes_to_the_requested_config_hash(self) -> None:
+        """A base_score is only meaningful under the config that produced it.
+
+        ``DiscoveryFunnel.rescore`` reuses the stored base_score and re-stamps
+        the row with the *current* hash, so an old-hash snapshot must not be
+        readable through the current roster.
+        """
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+
+            async def _cycle(config_hash: str, wallet: str) -> None:
+                cycle_id = await repo.begin_cycle(config_hash)
+                candidate = Candidate(wallet=wallet, hscore={})
+                candidate.base_score = 1.0
+                candidate.score = 1.0
+                await repo.persist_cycle(cycle_id, [candidate], config_hash)
+                await repo.complete_cycle(
+                    cycle_id,
+                    status="completed",
+                    candidate_count=1,
+                    kept_count=1,
+                )
+
+            await _cycle("old-hash", "0xold")
+            await _cycle("current-hash", "0xcurrent")
+
+            scoped = await repo.latest_candidates(config_hash="current-hash")
+            stale = await repo.latest_candidates(config_hash="old-hash")
+            unknown = await repo.latest_candidates(config_hash="never-used")
+            unscoped = await repo.latest_candidates()
+
+        assert [candidate.wallet for candidate in scoped] == ["0xcurrent"]
+        # An older cycle is still readable when explicitly asked for by hash.
+        assert [candidate.wallet for candidate in stale] == ["0xold"]
+        # A hash no cycle ever ran under yields nothing — never a silent
+        # fallback to the newest cycle.
+        assert unknown == []
+        # None keeps the unscoped latest-completed-cycle read.
+        assert [candidate.wallet for candidate in unscoped] == ["0xcurrent"]
 
 
 class TestCursorsRepo:

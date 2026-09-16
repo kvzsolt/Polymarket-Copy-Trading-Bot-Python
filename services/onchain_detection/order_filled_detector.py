@@ -32,12 +32,14 @@ The watched wallet appears in the ``maker`` indexed topic for maker-emitted
 fills and in the ``taker`` indexed topic for the taker-emitted fill, so both
 topics are checked.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
-from eth_utils import keccak
+from eth_utils.crypto import keccak
 
 from config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
@@ -51,6 +53,7 @@ from services.onchain_detection.trade_detection_models import (
     price_from_fill,
     watched_side_from_maker_side,
 )
+from utils.logger import get_logger
 
 ORDER_FILLED_TOPIC0: bytes = keccak(
     text="OrderFilled(bytes32,address,address,uint8,uint256,uint256,"
@@ -112,7 +115,49 @@ class DecodedOrderFilledLog:
     tx_hash: str
     log_index: int
     block_number: int | None
+    block_hash: str
     exchange: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MinedLogIdentity:
+    """Identify a canonical included log without guessing missing coordinates."""
+
+    transaction_hash: str
+    log_index: int
+
+    @classmethod
+    def parse(cls, log: dict[str, object]) -> "_MinedLogIdentity | None":
+        """Reject removal notifications, pending identities, and malformed fields."""
+        if log.get("removed", False) is not False:
+            return None
+        transaction_hash = log.get("transactionHash", log.get("transaction_hash"))
+        if (
+            not isinstance(transaction_hash, str)
+            or len(transaction_hash) != 66
+            or not transaction_hash.lower().startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in transaction_hash[2:])
+        ):
+            return None
+        raw_index = log.get("logIndex", log.get("log_index"))
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (str, int)):
+            return None
+        try:
+            if isinstance(raw_index, str):
+                if (
+                    not raw_index.lower().startswith("0x")
+                    or not raw_index[2:]
+                    or any(character not in "0123456789abcdefABCDEF" for character in raw_index[2:])
+                ):
+                    return None
+                index = int(raw_index, 16)
+            else:
+                index = raw_index
+        except ValueError:
+            return None
+        if index < 0:
+            return None
+        return cls(transaction_hash.lower(), index)
 
 
 def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
@@ -126,6 +171,9 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     exchange, or if the data block is malformed. Never raises.
     """
     if not isinstance(log, dict):
+        return None
+    identity = _MinedLogIdentity.parse(log)
+    if identity is None:
         return None
     address = str(log.get("address") or "").lower()
     if address not in ONCHAIN_EXCHANGE_ADDRESSES:
@@ -147,18 +195,14 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     if len(data) < _ORDER_FILLED_DATA_BYTES:
         return None
 
-    tx_hash = str(
-        log.get("transactionHash") or log.get("transaction_hash") or ""
-    ).lower()
-    log_index_raw = log.get("logIndex", log.get("log_index", 0))
-    try:
-        log_index = int(log_index_raw, 16) if isinstance(log_index_raw, str) else int(log_index_raw)
-    except (TypeError, ValueError):
-        log_index = 0
     block_raw = log.get("blockNumber", log.get("block_number"))
     try:
         block_number = (
-            int(block_raw, 16) if isinstance(block_raw, str) else int(block_raw)
+            int(block_raw, 16)
+            if isinstance(block_raw, str)
+            else int(block_raw)
+            if isinstance(block_raw, int)
+            else None
         )
     except (TypeError, ValueError):
         block_number = None
@@ -174,14 +218,17 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         fee=_word_to_int(data, 4),
         builder=bytes.fromhex(format(_word_to_int(data, 5), "064x")),
         metadata=bytes.fromhex(format(_word_to_int(data, 6), "064x")),
-        tx_hash=tx_hash,
-        log_index=log_index,
+        tx_hash=identity.transaction_hash,
+        log_index=identity.log_index,
         block_number=block_number,
+        block_hash=str(log.get("blockHash") or log.get("block_hash") or "").lower(),
         exchange=address,
     )
 
 
-def _amounts_to_size_usdc(maker_side: int, maker_filled: int, taker_filled: int) -> tuple[Decimal, Decimal, Decimal]:
+def _amounts_to_size_usdc(
+    maker_side: int, maker_filled: int, taker_filled: int
+) -> tuple[Decimal, Decimal, Decimal]:
     """Return ``(size_tokens, price, usdc_size)`` from a mined fill.
 
     CTF outcome tokens are 6-decimal (matching USDC.e). ``size_tokens`` is the
@@ -213,7 +260,7 @@ def _amounts_to_size_usdc(maker_side: int, maker_filled: int, taker_filled: int)
 def build_signal_from_log(
     log: DecodedOrderFilledLog,
     watched_wallets: set[str],
-    event_ts: int,
+    event_ts: int | None,
     condition_id: str = "",
 ) -> OnchainTradeSignal | None:
     """Build a ``MINED_AUTHORITATIVE`` signal if the log references a watched wallet.
@@ -256,6 +303,8 @@ def build_signal_from_log(
         provisional=False,
         exchange=log.exchange,
         order_hash=order_hash_hex,
+        block_number=log.block_number,
+        block_hash=log.block_hash,
     )
 
 
@@ -274,3 +323,74 @@ def log_subscription_params(exchange_addresses: tuple[str, ...] | None = None) -
         "topics": ["0x" + ORDER_FILLED_TOPIC0.hex()],
     }
     return ["logs", filter_obj]
+
+
+#: Maximum watched wallets embedded per ``logs`` topic filter. A filter that
+#: lists every followed leader keeps provider cost near zero; beyond this the
+#: WARN (counts only) names the truncation and the REST-polling fallback
+#: covers the leaders that no longer fit.
+WATCHED_TOPIC_FILTER_CAP = 100
+
+logger = get_logger("OrderFilledDetector")
+
+
+def _address_to_topic(address: str) -> str:
+    """Return the 32-byte topic word for an address (lowercase, left-padded)."""
+    body = str(address).strip().lower()
+    if body.startswith("0x"):
+        body = body[2:]
+    return "0x" + body.rjust(64, "0")
+
+
+def log_subscription_params_for_watched(
+    exchange_addresses: tuple[str, ...] | None = None,
+    watched_wallets: Iterable[str] | None = None,
+) -> tuple[list, ...]:
+    """Build the leader-filtered ``logs`` subscriptions (maker role, taker role).
+
+    ``OrderFilled`` indexes the maker as topic2 and the taker as topic3, and a
+    single ``logs`` filter cannot OR two topic positions, so the caller opens
+    one subscription per role:
+
+    * maker role: ``topics = [[topic0], null, [<leader topics>]]``
+    * taker role: ``topics = [[topic0], null, null, [<leader topics>]]``
+
+    (``null`` is the positional wildcard; an array is OR-at-that-position —
+    the standard ``eth_getLogs``/``eth_subscribe`` filter format every WSS
+    provider implements.) The client-side maker/taker match in
+    :func:`build_signal_from_log` stays as the second guard.
+
+    Args:
+        exchange_addresses: CTF exchange contracts to filter on; defaults to
+            both Polymarket exchanges.
+        watched_wallets: Followed leader wallets, any case. Truncated to
+            :data:`WATCHED_TOPIC_FILTER_CAP` per filter (deterministic
+            lexicographic prefix, WARN with counts only). ``None`` or empty
+            returns ``()`` — an empty roster opens **no** subscription rather
+            than re-opening the unfiltered feed, whose ~40k CU/min cost is
+            exactly what the leader filter exists to avoid; the runtime idles
+            until the roster delivers a leader again.
+
+    Returns:
+        A tuple with one ``eth_subscribe`` params list per subscription to
+        open: two role filters with a watched set, none without.
+    """
+    watched = {
+        str(wallet).strip().lower() for wallet in (watched_wallets or ()) if str(wallet).strip()
+    }
+    if not watched:
+        return ()
+    if len(watched) > WATCHED_TOPIC_FILTER_CAP:
+        logger.warning(
+            "orderfilled_topic_filter_capped | watched=%d cap=%d — leaders beyond the cap "
+            "keep the REST-polling path only",
+            len(watched),
+            WATCHED_TOPIC_FILTER_CAP,
+        )
+        watched = set(sorted(watched)[:WATCHED_TOPIC_FILTER_CAP])
+    leader_topics = sorted(_address_to_topic(wallet) for wallet in watched)
+    addresses = [a.lower() for a in (exchange_addresses or ONCHAIN_EXCHANGE_ADDRESSES)]
+    topic0 = ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    maker_role = ["logs", {"address": addresses, "topics": [topic0, None, leader_topics]}]
+    taker_role = ["logs", {"address": addresses, "topics": [topic0, None, None, leader_topics]}]
+    return (maker_role, taker_role)

@@ -1,4 +1,5 @@
 """Resolve Polymarket condition IDs for CLOB token IDs."""
+
 from __future__ import annotations
 
 import json
@@ -45,16 +46,12 @@ class GammaConditionIdResolver:
         market = _first_market(payload)
         if not market:
             return ""
-        condition_id = str(
-            market.get("conditionId") or market.get("condition_id") or ""
-        ).strip()
+        condition_id = str(market.get("conditionId") or market.get("condition_id") or "").strip()
         if not condition_id:
             return ""
 
         token_ids = _parse_clob_token_ids(
-            market.get("clobTokenIds")
-            or market.get("clob_token_ids")
-            or market.get("tokens")
+            market.get("clobTokenIds") or market.get("clob_token_ids") or market.get("tokens")
         )
         if not token_ids:
             token_ids = [token]

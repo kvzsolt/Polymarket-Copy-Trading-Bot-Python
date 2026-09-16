@@ -1,0 +1,31 @@
+# Configuration guide — live execution overrides.
+# Purpose: explicitly authorize CCXT live writes while retaining reservations,
+# one-shot leader-derived FAK limits, and the execution safety switches.
+# Options: trading_mode paper | live; booleans toggle gates/reservations/stops;
+# spread/depth 0 disables those gates; drift is a percent in (0,100].
+# Trade-offs: reservations reduce double-spend risk but can temporarily block
+# legitimate copies; disabled discretionary gates reduce latency/rejections but
+# rely more heavily on explicit price, sizing, account-risk, and venue safeguards.
+# Live environment override (selected with PMCOPY_ENVIRONMENT=live).
+# Migrated from the operator's untracked config/runtime.local.yml.
+# trading_mode remains the single authoritative live/paper selector.
+# The only live-capital opt-in; credentials alone never activate live orders.
+trading_mode: live
+# Live profile: reservations on (double-spend protection); every discretionary
+# entry gate off. Copied FAK entries derive one tolerance-bounded limit from
+# the leader fill and do not consume book spread/depth data.
+reservations_enabled: true
+# Skip composite copy scoring to avoid its admission latency/rejections.
+enable_copy_decision_gate: false
+# Permit near-resolution signals subject to absolute max price and FAK limits.
+min_balance_headroom_usdc: 0
+enable_near_resolution_gate: false
+# Disable book-spread entry rejection for copied FAKs.
+max_book_spread_bps: 0
+# Disable book-depth entry rejection for copied FAKs.
+min_book_depth_usdc: 0
+# Default one-shot copy/protective price band. Lower protects price; higher
+# crosses more swept books. Trader-specific overrides can take precedence.
+max_entry_price_drift_pct: 5.0
+# Execution BUY stop remains off; app/risk stops and all other gates remain.
+kill_switch: false

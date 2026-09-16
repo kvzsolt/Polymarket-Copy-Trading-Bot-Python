@@ -26,7 +26,7 @@ SQLite idioms swapped to Postgres equivalents:
 
 from __future__ import annotations
 
-import asyncpg
+from storage.postgres.v1_migration_runner import MigrationConnection, apply_v1_migrations
 
 
 # ---------------------------------------------------------------------------
@@ -42,15 +42,15 @@ _CORE_DDL = [
     CREATE TABLE IF NOT EXISTS trading_control (
         singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
         enabled      boolean NOT NULL DEFAULT false,
-        generation   bigint NOT NULL DEFAULT 0,
+        generation   bigint NOT NULL DEFAULT 1,
         reason       text NOT NULL DEFAULT 'initially_paused',
         updated_at   timestamptz NOT NULL DEFAULT now(),
         updated_by   text NOT NULL DEFAULT 'migration'
     )
     """,
     """
-    INSERT INTO trading_control(singleton_id, enabled, reason, updated_by)
-    VALUES (1, false, 'initially_paused', 'migration')
+    INSERT INTO trading_control(singleton_id, enabled, generation, reason, updated_by)
+    VALUES (1, false, 1, 'initially_paused', 'migration')
     ON CONFLICT (singleton_id) DO NOTHING
     """,
     # ----- orders ---------------------------------------------------------
@@ -75,7 +75,6 @@ _CORE_DDL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_id
     ON orders(order_id) WHERE order_id IS NOT NULL
     """,
-
     # ----- fills ----------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS fills (
@@ -134,13 +133,24 @@ _CORE_DDL = [
     """
     CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id)
     """,
+    # ----- source transaction confirmation state ------------------------
+    # One complete immutable JSON image keeps source reservations and
+    # follower-scoped consumption claims crash-safe. The application owns
+    # all mutations behind one asyncio lock and replaces this singleton in
+    # one statement, so no check-then-mutate split exists across services.
+    """
+    CREATE TABLE IF NOT EXISTS source_transaction_state (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        snapshot_json jsonb NOT NULL,
+        updated_at    timestamptz NOT NULL DEFAULT now()
+    )
+    """,
     # DL-03: ``idx_fills_unique`` was byte-identical to ``idx_fills_dedup``
     # above. The duplicate index doubled the per-INSERT index-maintenance
     # cost and made ``ON CONFLICT ON CONSTRAINT`` ambiguous. Drop it on
     # both fresh and redeployed databases. ``idx_fills_dedup`` remains the
     # canonical conflict target referenced by orders_repo.mark_fill.
     """DROP INDEX IF EXISTS idx_fills_unique""",
-
     # ----- positions (canonical 3-col PK) ---------------------------------
     """
     CREATE TABLE IF NOT EXISTS positions (
@@ -158,7 +168,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_positions_user_condition
     ON positions(user_id, condition_id)
     """,
-
     # ----- processed_trades ----------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS processed_trades (
@@ -175,7 +184,43 @@ _CORE_DDL = [
         processed_at  double precision NOT NULL
     )
     """,
-
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_safety_scopes (
+        leader_wallet text NOT NULL,
+        token_id      text NOT NULL,
+        reason        text NOT NULL,
+        updated_at    timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (leader_wallet, token_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_targets (
+        user_id          text NOT NULL,
+        leader_wallet    text NOT NULL,
+        condition_id     text NOT NULL,
+        token_id         text NOT NULL,
+        generation       bigint NOT NULL,
+        source_signal_id text NOT NULL,
+        intent_json      jsonb NOT NULL,
+        updated_at       timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, leader_wallet, condition_id, token_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_sell_target_redrives (
+        user_id                 text NOT NULL,
+        leader_wallet           text NOT NULL,
+        condition_id            text NOT NULL,
+        token_id                text NOT NULL,
+        generation              bigint NOT NULL,
+        released_reservation_id text NOT NULL,
+        claimed_at              timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (
+            user_id, leader_wallet, condition_id, token_id,
+            generation, released_reservation_id
+        )
+    )
+    """,
     # ----- leader_cursors -------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS leader_cursors (
@@ -186,33 +231,6 @@ _CORE_DDL = [
         updated_at       double precision NOT NULL
     )
     """,
-
-    # ----- discovered_leaders --------------------------------------------
-    """
-    CREATE TABLE IF NOT EXISTS discovered_leaders (
-        wallet              text PRIMARY KEY,
-        name                text,
-        overall_gain        text,
-        win_amount          text,
-        loss_amount         text,
-        win_rate            double precision,
-        total_positions     integer,
-        active_positions    integer,
-        event_count         integer,
-        win_count           integer,
-        rank                integer,
-        total_current_value text,
-        tags                text,
-        composite_score     double precision,
-        active              boolean NOT NULL DEFAULT FALSE,
-        rejection_reason    text,
-        source              text,
-        follow_tier         text NOT NULL DEFAULT 'watchlist',
-        tier_changed_at     double precision,
-        updated_at          double precision NOT NULL
-    )
-    """,
-
     # ----- market_structure_events ---------------------------------------
     """
     CREATE TABLE IF NOT EXISTS market_structure_events (
@@ -244,7 +262,6 @@ _CORE_DDL = [
         PRIMARY KEY (user_id, event_id)
     )
     """,
-
     # ----- risk_blocks ----------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS risk_blocks (
@@ -266,7 +283,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_risk_blocks_cleared
     ON risk_blocks(cleared_at)
     """,
-
     # ----- risk_triggers --------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS risk_triggers (
@@ -286,7 +302,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_risk_triggers_position
     ON risk_triggers(user_id, condition_id, token_id)
     """,
-
     # ----- order_reservations --------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS order_reservations (
@@ -320,7 +335,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_order_reservations_user_token
     ON order_reservations(user_id, token_id)
     """,
-
     # ----- legacy / supporting tables -------------------------------------
     # Still actively read/written by accountingService, dayEquity, etc.
     """
@@ -425,404 +439,218 @@ _CORE_DDL = [
 
 
 # ---------------------------------------------------------------------------
-# Discovery tables (translated from storage/sqlite/discovery_migrations.py)
+# Trader discovery — single-generation schema
 # ---------------------------------------------------------------------------
+
+_DISCOVERY_RESET_ID = "trader_discovery_single_generation_20260713"
+
+# Scope documentation for the one-time reset below: only tables produced by
+# the superseded discovery engines are dropped. Trading, order, fill,
+# position, reservation, cursor, and control tables are never touched. The
+# drop statements in ``apply_migrations`` enumerate exactly these names as
+# static literals (identifiers cannot be bound as DDL parameters).
+_LEGACY_DISCOVERY_TABLES = (
+    "leader_discovery_run_candidates",
+    "leader_discovery_runs",
+    "falcon_discovery_evaluations",
+    "discovery_context_buckets",
+    "discovery_episode_events",
+    "discovery_episodes",
+    "discovery_orderbook_snapshots",
+    "discovery_closed_positions",
+    "discovery_position_snapshots",
+    "discovery_trades",
+    "discovery_markets",
+    "discovery_traders",
+    "discovered_leaders",
+)
 
 _DISCOVERY_DDL = [
     """
-    CREATE TABLE IF NOT EXISTS discovery_traders (
-        wallet        text PRIMARY KEY,
-        first_seen_ts bigint NOT NULL,
-        last_seen_ts  bigint NOT NULL,
-        trade_count   integer NOT NULL DEFAULT 0,
-        source        text NOT NULL DEFAULT 'activity_api',
-        meta_json     jsonb NOT NULL DEFAULT '{}'::jsonb
-    )
-    """,
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_markets (
-        condition_id  text PRIMARY KEY,
-        question      text NOT NULL DEFAULT '',
-        slug          text NOT NULL DEFAULT '',
-        event_slug    text NOT NULL DEFAULT '',
-        category      text NOT NULL DEFAULT '',
-        end_date_ts   bigint,
-        active        boolean NOT NULL DEFAULT TRUE,
-        resolved      boolean NOT NULL DEFAULT FALSE,
-        neg_risk      boolean NOT NULL DEFAULT FALSE,
-        yes_token_id  text NOT NULL DEFAULT '',
-        no_token_id   text NOT NULL DEFAULT '',
-        tokens_json   jsonb NOT NULL DEFAULT '[]'::jsonb,
-        meta_json     jsonb NOT NULL DEFAULT '{}'::jsonb,
-        updated_at    bigint NOT NULL
-    )
-    """,
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_trades (
-        id            bigserial PRIMARY KEY,
-        trader_wallet text NOT NULL,
-        condition_id  text NOT NULL,
-        token_id      text NOT NULL,
-        side          text NOT NULL,
-        size          text NOT NULL,
-        price         text NOT NULL,
-        usdc_size     text NOT NULL,
-        tx_hash       text NOT NULL,
-        event_ts      bigint NOT NULL,
-        trade_id      text NOT NULL DEFAULT '',
-        fee           text NOT NULL DEFAULT '0',
-        outcome       text NOT NULL DEFAULT '',
-        title         text NOT NULL DEFAULT '',
-        market_slug   text NOT NULL DEFAULT '',
-        event_slug    text NOT NULL DEFAULT '',
-        raw_json      jsonb NOT NULL DEFAULT '{}'::jsonb,
-        source        text NOT NULL DEFAULT 'activity_api',
-        created_at    double precision NOT NULL,
-        UNIQUE(trader_wallet, token_id, tx_hash, trade_id, side, event_ts)
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_trades_wallet_cond
-       ON discovery_trades(trader_wallet, condition_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_trades_wallet_ts
-       ON discovery_trades(trader_wallet, event_ts)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_trades_cond
-       ON discovery_trades(condition_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_trades_tx
-       ON discovery_trades(tx_hash)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_position_snapshots (
-        id             bigserial PRIMARY KEY,
-        trader_wallet  text NOT NULL,
-        condition_id   text NOT NULL,
-        token_id       text NOT NULL,
-        size           text NOT NULL,
-        avg_price      text NOT NULL,
-        current_value  text NOT NULL DEFAULT '0',
-        current_price  text NOT NULL DEFAULT '0',
-        realized_pnl   text NOT NULL DEFAULT '0',
-        snapshot_ts    bigint NOT NULL,
-        raw_json       jsonb NOT NULL DEFAULT '{}'::jsonb,
-        -- Distinguishes leader-wallet snapshots from the bot's own
-        -- wallet snapshots so the bootup banner + analytics can split
-        -- them cleanly. Both share the same shape so the indexer
-        -- doesn't fork.
-        wallet_role    text NOT NULL DEFAULT 'leader'
-        -- cubic P2: uniqueness intentionally NOT inline. We add a
-        -- ``wallet_role``-aware unique index further down so a
-        -- leader-side snapshot and an own-side snapshot at the same
-        -- (trader_wallet, condition_id, token_id, snapshot_ts) tuple
-        -- can coexist without one silently dropping the other.
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_wallet
-       ON discovery_position_snapshots(trader_wallet)""",
-    # cubic P2: drop the legacy non-role-aware UNIQUE constraint
-    # (autogenerated name from the prior inline ``UNIQUE(...)``).
-    # Idempotent — silently no-ops on fresh DBs where the constraint
-    # was never inlined to begin with.
-    """
-    DO $$
-    DECLARE
-      cname text;
-    BEGIN
-      SELECT conname INTO cname
-      FROM pg_constraint
-      WHERE conrelid = 'discovery_position_snapshots'::regclass
-        AND contype = 'u'
-        AND pg_get_constraintdef(oid) =
-            'UNIQUE (trader_wallet, condition_id, token_id, snapshot_ts)';
-      IF cname IS NOT NULL THEN
-        EXECUTE format(
-          'ALTER TABLE discovery_position_snapshots DROP CONSTRAINT %I', cname
-        );
-      END IF;
-    END$$
-    """,
-    # cubic P1 / audit P1-h: idempotent column-add MUST run before the
-    # role-keyed index. On a DB created before ``wallet_role`` existed,
-    # creating the index first would fail because the column it references
-    # isn't there yet — aborting the single migration transaction so the
-    # bot cannot start. ``ADD COLUMN IF NOT EXISTS`` is a no-op on fresh DBs
-    # where the column was created with the table above.
-    """ALTER TABLE discovery_position_snapshots
-       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
-    # New unique index keyed on the role too so leader/own snapshots
-    # at the same identity tuple don't collide.
-    """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_pos_snap_unique_v2
-       ON discovery_position_snapshots(trader_wallet, condition_id,
-                                       token_id, snapshot_ts, wallet_role)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_role_ts
-       ON discovery_position_snapshots(wallet_role, snapshot_ts DESC)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_closed_positions (
-        id              bigserial PRIMARY KEY,
-        trader_wallet   text NOT NULL,
-        condition_id    text NOT NULL,
-        token_id        text NOT NULL,
-        entry_size      text NOT NULL,
-        entry_avg_price text NOT NULL,
-        exit_avg_price  text NOT NULL,
-        realized_pnl    text NOT NULL,
-        closed_ts       bigint NOT NULL,
-        close_reason    text NOT NULL DEFAULT 'trade',
-        raw_json        jsonb NOT NULL DEFAULT '{}'::jsonb,
-        UNIQUE(trader_wallet, condition_id, closed_ts)
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_closed_wallet
-       ON discovery_closed_positions(trader_wallet)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_orderbook_snapshots (
-        id                   bigserial PRIMARY KEY,
-        token_id             text NOT NULL,
-        condition_id         text NOT NULL,
-        snapshot_ts          bigint NOT NULL,
-        trader_wallet        text NOT NULL DEFAULT '',
-        reference_tx_hash    text NOT NULL DEFAULT '',
-        reference_trade_id   text NOT NULL DEFAULT '',
-        reference_event_ts   bigint NOT NULL DEFAULT 0,
-        bids_json            jsonb NOT NULL DEFAULT '[]'::jsonb,
-        asks_json            jsonb NOT NULL DEFAULT '[]'::jsonb,
-        best_bid             text,
-        best_ask             text,
-        mid_price            text,
-        spread               text,
-        UNIQUE(token_id, snapshot_ts, reference_tx_hash)
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_ob_token
-       ON discovery_orderbook_snapshots(token_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_ob_ref_tx
-       ON discovery_orderbook_snapshots(reference_tx_hash)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_episodes (
-        episode_id            text PRIMARY KEY,
-        trader_wallet         text NOT NULL,
-        condition_id          text NOT NULL,
-        token_id              text NOT NULL,
-        state                 text NOT NULL DEFAULT 'open',
-        direction             text NOT NULL DEFAULT '',
-        entry_size            text NOT NULL DEFAULT '0',
-        entry_avg_price       text NOT NULL DEFAULT '0',
-        exit_size             text NOT NULL DEFAULT '0',
-        exit_avg_price        text NOT NULL DEFAULT '0',
-        realized_pnl          text NOT NULL DEFAULT '0',
-        opened_ts             bigint NOT NULL,
-        closed_ts             bigint,
-        context_buckets_json  jsonb NOT NULL DEFAULT '{}'::jsonb
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_ep_wallet
-       ON discovery_episodes(trader_wallet)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_ep_cond
-       ON discovery_episodes(condition_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_disc_ep_state
-       ON discovery_episodes(state)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_episode_events (
-        id          bigserial PRIMARY KEY,
-        episode_id  text NOT NULL REFERENCES discovery_episodes(episode_id),
-        trade_id    text NOT NULL,
-        side        text NOT NULL,
-        size        text NOT NULL,
-        price       text NOT NULL,
-        usdc_size   text NOT NULL,
-        ts          bigint NOT NULL,
-        event_type  text NOT NULL DEFAULT ''
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_ep_ev_episode
-       ON discovery_episode_events(episode_id)""",
-    # Unique constraint backing ``ON CONFLICT (episode_id, trade_id) DO
-    # NOTHING`` in ``discovery_repo.upsert_episode``. Without it that
-    # clause is a no-op against the table's bigserial PK and duplicates
-    # are silently inserted, skewing leader-event counts.
-    #
-    # Review fix (cubic P1 on PR #110): a redeployed environment that
-    # ran the prior ``ON CONFLICT DO NOTHING`` clause (which silently
-    # inserted duplicates) will already hold duplicate rows. Creating
-    # the unique index without first deduplicating would fail the
-    # migration. Keep the lowest-``id`` row per ``(episode_id, trade_id)``
-    # — that matches the "first event observed" semantic the table was
-    # always intended to hold — then add the unique index. Both
-    # statements are idempotent: the DELETE is a no-op on a clean DB,
-    # and ``CREATE UNIQUE INDEX IF NOT EXISTS`` skips on re-run.
-    """
-    DELETE FROM discovery_episode_events a
-    USING discovery_episode_events b
-    WHERE a.id > b.id
-      AND a.episode_id = b.episode_id
-      AND a.trade_id   = b.trade_id
-    """,
-    """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_ep_ev_unique
-       ON discovery_episode_events(episode_id, trade_id)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS discovery_context_buckets (
-        id          bigserial PRIMARY KEY,
-        entity_type text NOT NULL,
-        entity_id   text NOT NULL,
-        dimension   text NOT NULL,
-        bucket      text NOT NULL,
-        raw_value   text NOT NULL DEFAULT '',
-        UNIQUE(entity_type, entity_id, dimension)
-    )
-    """,
-    """CREATE INDEX IF NOT EXISTS idx_disc_ctx_entity
-       ON discovery_context_buckets(entity_type, entity_id)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS falcon_discovery_evaluations (
-        wallet text PRIMARY KEY,
-        status text NOT NULL DEFAULT 'shadow',
-        final_score double precision NOT NULL DEFAULT 0,
-        falcon_quality_score double precision NOT NULL DEFAULT 0,
-        copyability_score double precision NOT NULL DEFAULT 0,
-        recent_state_score double precision NOT NULL DEFAULT 0,
-        market_fit_score double precision NOT NULL DEFAULT 0,
-        score_version text NOT NULL DEFAULT 'leader_score_v1',
-        score_breakdown_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-
-        h_score double precision,
-        roi_15d double precision,
-        win_rate_15d double precision,
-        sharpe_15d double precision,
-        pnl_15d double precision,
-        total_trades_15d integer,
-        markets_traded_15d integer,
-        leaderboard_rank integer,
-        falcon_tier text,
-        total_volume_15d double precision,
-        source_agent_id integer,
-        source_sort_by text,
-        source_rank integer,
-        all_seen_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb,
-        trajectory text,
-
-        total_grouped_signals integer NOT NULL DEFAULT 0,
-        meaningful_signals integer NOT NULL DEFAULT 0,
-        copyable_signals integer NOT NULL DEFAULT 0,
-        copyable_signal_ratio double precision NOT NULL DEFAULT 0,
-        copyable_notional_ratio double precision NOT NULL DEFAULT 0,
-
-        sports_esports_ratio double precision NOT NULL DEFAULT 0,
-        fast_crypto_signal_ratio double precision NOT NULL DEFAULT 0,
-        fast_crypto_notional_ratio double precision NOT NULL DEFAULT 0,
-
-        pnl_7d text NOT NULL DEFAULT '0',
-        pnl_3d text NOT NULL DEFAULT '0',
-        rejection_reason text,
-        eligible_live boolean NOT NULL DEFAULT false,
-        eligible_shadow boolean NOT NULL DEFAULT false,
-
-        balance_usdc text NOT NULL DEFAULT '0',
-        config_hash text NOT NULL DEFAULT '',
-        evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        falcon_raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        replay_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        updated_at double precision NOT NULL
-    )
-    """,
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS balance_usdc text NOT NULL DEFAULT '0'""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS config_hash text NOT NULL DEFAULT ''""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS score_version text NOT NULL DEFAULT 'leader_score_v1'""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS score_breakdown_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS leaderboard_rank integer""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS falcon_tier text""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS total_volume_15d double precision""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS source_agent_id integer""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS source_sort_by text""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS source_rank integer""",
-    """ALTER TABLE falcon_discovery_evaluations
-       ADD COLUMN IF NOT EXISTS all_seen_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb""",
-    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_status_score
-       ON falcon_discovery_evaluations(status, final_score DESC)""",
-    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_live
-       ON falcon_discovery_evaluations(eligible_live, final_score DESC)""",
-    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_score_version_status_score
-       ON falcon_discovery_evaluations(score_version, status, final_score DESC)""",
-    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_rank
-       ON falcon_discovery_evaluations(leaderboard_rank)
-       WHERE leaderboard_rank IS NOT NULL""",
-    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_volume_score
-       ON falcon_discovery_evaluations(total_volume_15d DESC, final_score DESC)""",
-
-    """
-    CREATE TABLE IF NOT EXISTS leader_discovery_runs (
-        run_id text PRIMARY KEY,
-        started_at double precision NOT NULL,
-        completed_at double precision,
-        config_hash text NOT NULL DEFAULT '',
-        falcon_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb,
+    CREATE TABLE IF NOT EXISTS discovery_cycles (
+        cycle_id        text PRIMARY KEY,
+        started_at      double precision NOT NULL,
+        completed_at    double precision,
+        status          text NOT NULL,
+        config_hash     text NOT NULL,
         candidate_count integer NOT NULL DEFAULT 0,
-        evaluated_count integer NOT NULL DEFAULT 0,
-        error_count integer NOT NULL DEFAULT 0,
-        status text NOT NULL DEFAULT 'running',
-        error_json jsonb NOT NULL DEFAULT '{}'::jsonb
+        kept_count      integer NOT NULL DEFAULT 0,
+        error_detail    text
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS leader_discovery_run_candidates (
-        run_id text NOT NULL,
-        wallet text NOT NULL,
-        source_agent_id integer,
-        source_sort_by text,
-        source_rank integer,
-        leaderboard_rank integer,
-        falcon_tier text,
-        h_score double precision,
-        roi_15d double precision,
-        win_rate_15d double precision,
-        sharpe_15d double precision,
-        pnl_15d double precision,
-        total_trades_15d integer,
-        markets_traded_15d integer,
-        total_volume_15d double precision,
-        trajectory text,
-        final_score double precision,
-        status text,
-        eligible_live boolean NOT NULL DEFAULT false,
-        rejection_reason text,
-        raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        created_at double precision NOT NULL,
-        PRIMARY KEY (run_id, wallet)
+    CREATE TABLE IF NOT EXISTS discovery_candidate_snapshots (
+        cycle_id              text NOT NULL REFERENCES discovery_cycles(cycle_id)
+                              ON DELETE CASCADE,
+        wallet                text NOT NULL,
+        cycle_ts              double precision NOT NULL,
+        hscore_json            jsonb NOT NULL,
+        wallet360_json         jsonb NOT NULL,
+        recent_trades_json     jsonb NOT NULL,
+        market_quality_json    jsonb NOT NULL,
+        social_json            jsonb NOT NULL,
+        base_score             double precision NOT NULL,
+        longitudinal_score     double precision,
+        final_score            double precision NOT NULL,
+        sub_scores_json        jsonb NOT NULL,
+        rejected_reason        text,
+        config_hash            text NOT NULL,
+        PRIMARY KEY (cycle_id, wallet)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_discovery_candidate_wallet_ts
+       ON discovery_candidate_snapshots(wallet, cycle_ts DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_discovery_candidate_score
+       ON discovery_candidate_snapshots(final_score DESC, cycle_ts DESC)
+       WHERE rejected_reason IS NULL""",
+    """
+    CREATE TABLE IF NOT EXISTS discovery_score_history (
+        wallet             text NOT NULL,
+        ts                 double precision NOT NULL,
+        base_score         double precision NOT NULL,
+        longitudinal_score double precision,
+        final_score        double precision NOT NULL,
+        sub_scores_json    jsonb NOT NULL,
+        config_hash        text NOT NULL,
+        PRIMARY KEY (wallet, ts)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_discovery_score_history_ts
+       ON discovery_score_history(ts DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS leader_roster (
+        wallet             text PRIMARY KEY,
+        tier               text NOT NULL DEFAULT 'watchlist'
+                           CHECK (tier IN ('watchlist', 'active')),
+        score              double precision NOT NULL DEFAULT 0,
+        base_score         double precision NOT NULL DEFAULT 0,
+        longitudinal_score double precision,
+        cycles_in_tier     integer NOT NULL DEFAULT 0,
+        promote_streak     integer NOT NULL DEFAULT 0,
+        demote_streak      integer NOT NULL DEFAULT 0,
+        tier_changed_at    double precision NOT NULL,
+        first_promoted_at  double precision,
+        last_seen_at       double precision,
+        config_hash        text NOT NULL DEFAULT '',
+        updated_at         double precision NOT NULL
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_leader_roster_tier_score
+       ON leader_roster(tier, score DESC, wallet ASC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet360_snapshots (
+        wallet       text NOT NULL,
+        ts           double precision NOT NULL,
+        window_days  text NOT NULL CHECK (window_days IN ('1', '3', '7', '15')),
+        payload_json jsonb NOT NULL,
+        config_hash  text NOT NULL,
+        PRIMARY KEY (wallet, ts, window_days)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_wallet360_wallet_ts
+       ON wallet360_snapshots(wallet, ts DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet_pnl_daily (
+        wallet       text NOT NULL,
+        pnl_date     date NOT NULL,
+        realized_pnl numeric NOT NULL,
+        payload_json jsonb NOT NULL,
+        updated_at   double precision NOT NULL,
+        PRIMARY KEY (wallet, pnl_date)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_wallet_pnl_daily_wallet_date
+       ON wallet_pnl_daily(wallet, pnl_date DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet_rank_history (
+        wallet       text NOT NULL,
+        ts           double precision NOT NULL,
+        window_days  integer NOT NULL,
+        rank          integer NOT NULL,
+        score         double precision NOT NULL,
+        payload_json jsonb NOT NULL,
+        PRIMARY KEY (wallet, ts, window_days)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_wallet_rank_wallet_ts
+       ON wallet_rank_history(wallet, ts DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet_metric_timeseries (
+        wallet               text NOT NULL,
+        ts                   double precision NOT NULL,
+        sharpe               double precision NOT NULL,
+        roi                  double precision NOT NULL,
+        win_rate             double precision NOT NULL,
+        rank                 integer NOT NULL,
+        drawdown_pct         double precision NOT NULL,
+        trade_count          integer NOT NULL,
+        metrics_json         jsonb NOT NULL,
+        config_hash          text NOT NULL,
+        PRIMARY KEY (wallet, ts)
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_wallet_metrics_wallet_ts
+       ON wallet_metric_timeseries(wallet, ts DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet_backfill_state (
+        wallet       text PRIMARY KEY,
+        completed_at double precision NOT NULL,
+        config_hash  text NOT NULL
     )
     """,
 ]
 
 
-async def apply_migrations(conn: asyncpg.Connection) -> None:
-    """Apply the full Postgres schema migration atomically.
-
-    All CREATE TABLE / INDEX statements run inside a single asyncpg
-    transaction so a partial-apply on crash is impossible. Mirrors the
-    SQLite BEGIN IMMEDIATE wrap from the audit work.
-
-    Idempotent: every statement is ``CREATE TABLE IF NOT EXISTS`` /
-    ``CREATE INDEX IF NOT EXISTS`` so re-running on a populated DB is
-    a no-op.
-    """
+async def apply_migrations(conn: MigrationConnection) -> None:
+    """Apply core schema and the one-time legacy-discovery reset atomically."""
     async with conn.transaction():
-        for stmt in _CORE_DDL:
-            await conn.execute(stmt)
-        for stmt in _DISCOVERY_DDL:
-            await conn.execute(stmt)
+        for statement in _CORE_DDL:
+            await conn.execute(statement)
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_schema_migrations (
+                migration_id text PRIMARY KEY,
+                applied_at   timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        already_reset = await conn.fetchval(
+            "SELECT 1 FROM app_schema_migrations WHERE migration_id = $1",
+            _DISCOVERY_RESET_ID,
+        )
+        if not already_reset:
+            # Static literals: identifiers cannot be bound as DDL parameters,
+            # and interpolated names would be a SQL-injection finding. The
+            # reset stays scoped to the superseded discovery tables only.
+            await conn.execute("DROP TABLE IF EXISTS leader_discovery_run_candidates CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS leader_discovery_runs CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS falcon_discovery_evaluations CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_context_buckets CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_episode_events CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_episodes CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_orderbook_snapshots CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_closed_positions CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_position_snapshots CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_trades CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_markets CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_traders CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovered_leaders CASCADE")
+            await conn.execute(
+                "INSERT INTO app_schema_migrations (migration_id) VALUES ($1)",
+                _DISCOVERY_RESET_ID,
+            )
+
+        for statement in _DISCOVERY_DDL:
+            await conn.execute(statement)
+
+    # The v1 copy-task migration owns its own transaction (and records its
+    # id in ``app_schema_migrations``), so it runs after the core DDL commits
+    # rather than nested inside it. Both runners are idempotent; running the
+    # v1 slice at every startup keeps deployed schemas complete without a
+    # separate operator step. Referenced via the module global so tests can
+    # observe/patch the seam.
+    await apply_v1_migrations(conn)
+
+
+__all__ = ["apply_migrations", "apply_v1_migrations"]

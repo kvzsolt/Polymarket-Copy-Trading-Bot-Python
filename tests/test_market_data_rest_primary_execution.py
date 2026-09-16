@@ -69,9 +69,7 @@ async def test_rest_primary_execution_blocked_when_rest_snapshot_spread_wide() -
 
 @pytest.mark.asyncio
 async def test_rest_primary_execution_blocked_when_book_empty() -> None:
-    empty = SimpleNamespace(
-        bids=[], asks=[], tick_size="0.01", min_order_size="1", neg_risk=False
-    )
+    empty = SimpleNamespace(bids=[], asks=[], tick_size="0.01", min_order_size="1", neg_risk=False)
     svc = _rest_primary_service(empty)
     with pytest.raises(StaleDataError):
         await svc.require_fresh_data(TEST_TOKEN_ID, side="BUY", condition_id="0xcond")

@@ -12,8 +12,10 @@ Coverage:
   - Debug state in StaleDataError
   - Reconnect lifecycle
 """
+
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import json
@@ -110,6 +112,7 @@ BEST_BID_ASK_EVENT: dict = {
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cache() -> MarketStateStore:
     return MarketStateStore()
@@ -129,6 +132,7 @@ ASSET_IDS = ["0xaaa_yes", "0xbbb_no"]
 # ---------------------------------------------------------------------------
 # Subscription
 # ---------------------------------------------------------------------------
+
 
 class TestSubscription:
     """Verify subscription message format."""
@@ -153,6 +157,7 @@ class TestSubscription:
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------
+
 
 class TestHeartbeat:
     """Verify heartbeat sends PING every 5 seconds."""
@@ -202,6 +207,7 @@ class TestHeartbeat:
 # Message handling — price changes
 # ---------------------------------------------------------------------------
 
+
 class TestPriceChange:
     """Verify price change events update the cache."""
 
@@ -211,15 +217,17 @@ class TestPriceChange:
         cache: MarketStateStore,
     ) -> None:
         """price_change with Polymarket format (per-item asset_id) updates cache."""
-        event = json.dumps({
-            "event_type": "price_change",
-            "market": "0xmarket",
-            "price_changes": [
-                {"asset_id": "0xaaa_yes", "side": "BUY", "price": "0.55", "size": "100"},
-                {"asset_id": "0xaaa_yes", "side": "SELL", "price": "0.60", "size": "100"},
-            ],
-            "timestamp": "1000",
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "0xmarket",
+                "price_changes": [
+                    {"asset_id": "0xaaa_yes", "side": "BUY", "price": "0.55", "size": "100"},
+                    {"asset_id": "0xaaa_yes", "side": "SELL", "price": "0.60", "size": "100"},
+                ],
+                "timestamp": "1000",
+            }
+        )
         market_ws._handle_message(event)
 
         quote = cache.get_quote("0xaaa_yes")
@@ -233,13 +241,15 @@ class TestPriceChange:
         cache: MarketStateStore,
     ) -> None:
         """Book event with bids and asks sets both sides in cache."""
-        event = json.dumps({
-            "event_type": "book",
-            "asset_id": "0xaaa_yes",
-            "market": "0xmarket",
-            "bids": [{"price": "0.48", "size": "100"}],
-            "asks": [{"price": "0.52", "size": "100"}],
-        })
+        event = json.dumps(
+            {
+                "event_type": "book",
+                "asset_id": "0xaaa_yes",
+                "market": "0xmarket",
+                "bids": [{"price": "0.48", "size": "100"}],
+                "asks": [{"price": "0.52", "size": "100"}],
+            }
+        )
         market_ws._handle_message(event)
 
         quote = cache.get_quote("0xaaa_yes")
@@ -272,6 +282,7 @@ class TestPriceChange:
 # Message handling — tick size changes
 # ---------------------------------------------------------------------------
 
+
 class TestTickSizeChange:
     """Verify tick size change events update the cache."""
 
@@ -281,11 +292,13 @@ class TestTickSizeChange:
         cache: MarketStateStore,
     ) -> None:
         """Tick size change event updates cache."""
-        event = json.dumps({
-            "event_type": "tick_size_change",
-            "asset_id": "0xaaa_yes",
-            "tick_size": "0.001",
-        })
+        event = json.dumps(
+            {
+                "event_type": "tick_size_change",
+                "asset_id": "0xaaa_yes",
+                "tick_size": "0.001",
+            }
+        )
         market_ws._handle_message(event)
 
         # A tick-size-only event updates raw state and invalidates sizing, but
@@ -299,6 +312,7 @@ class TestTickSizeChange:
 # ---------------------------------------------------------------------------
 # Reconnect behavior
 # ---------------------------------------------------------------------------
+
 
 class TestReconnect:
     """Verify reconnect lifecycle."""
@@ -416,6 +430,7 @@ class TestReconnect:
 # Tests 1–3: Dispatch routing
 # ---------------------------------------------------------------------------
 
+
 class TestDispatch:
     """_dispatch_event reads actual event_type and routes correctly."""
 
@@ -447,6 +462,7 @@ class TestDispatch:
 # Tests 4–6: _asset_id helper
 # ---------------------------------------------------------------------------
 
+
 class TestAssetId:
     """_asset_id module-level helper."""
 
@@ -461,6 +477,7 @@ class TestAssetId:
 
     def test_asset_id_no_print(self) -> None:
         import clients.market_ws as mws_module
+
         src = inspect.getsource(mws_module._asset_id)
         assert "print(" not in src
 
@@ -468,6 +485,7 @@ class TestAssetId:
 # ---------------------------------------------------------------------------
 # Tests 7–12: Book event handling
 # ---------------------------------------------------------------------------
+
 
 class TestBookHandling:
     """WSS book events update MarketStateStore correctly."""
@@ -523,6 +541,7 @@ class TestBookHandling:
 # ---------------------------------------------------------------------------
 # Tests 13–18: price_change handling
 # ---------------------------------------------------------------------------
+
 
 class TestPriceChangeHandling:
     """price_change events use per-item asset_id from price_changes[]."""
@@ -612,6 +631,7 @@ class TestPriceChangeHandling:
 # Tests 19–21: best_bid_ask handling
 # ---------------------------------------------------------------------------
 
+
 class TestBestBidAskHandling:
     """best_bid_ask updates quote only; does not touch book."""
 
@@ -640,28 +660,33 @@ class TestBestBidAskHandling:
 # Tests 22–23: tick_size_change handling
 # ---------------------------------------------------------------------------
 
+
 class TestTickSizeChangeSafety:
     """tick_size_change updates tick only; does not promote quote/book."""
 
     def test_tick_size_change_updates_tick_source_wss(
         self, market_ws: MarketWebSocket, cache: MarketStateStore
     ) -> None:
-        event = json.dumps({
-            "event_type": "tick_size_change",
-            "asset_id": _ASSET_A,
-            "tick_size": "0.001",
-        })
+        event = json.dumps(
+            {
+                "event_type": "tick_size_change",
+                "asset_id": _ASSET_A,
+                "tick_size": "0.001",
+            }
+        )
         market_ws._handle_message(event)
         assert cache.tick_source_of(_ASSET_A) == "wss"
 
     def test_tick_size_change_alone_not_executable(
         self, market_ws: MarketWebSocket, cache: MarketStateStore
     ) -> None:
-        event = json.dumps({
-            "event_type": "tick_size_change",
-            "asset_id": _ASSET_A,
-            "tick_size": "0.001",
-        })
+        event = json.dumps(
+            {
+                "event_type": "tick_size_change",
+                "asset_id": _ASSET_A,
+                "tick_size": "0.001",
+            }
+        )
         market_ws._handle_message(event)
         # tick_size_change marks dirty → is_dirty must be True
         assert cache.is_dirty(_ASSET_A)
@@ -673,17 +698,20 @@ class TestTickSizeChangeSafety:
 # Test 24: last_trade_price
 # ---------------------------------------------------------------------------
 
+
 class TestLastTradePrice:
     """last_trade_price is observability only; does not affect executability."""
 
     def test_last_trade_price_not_executable(
         self, market_ws: MarketWebSocket, cache: MarketStateStore
     ) -> None:
-        event = json.dumps({
-            "event_type": "last_trade_price",
-            "asset_id": _ASSET_A,
-            "price": "0.55",
-        })
+        event = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "asset_id": _ASSET_A,
+                "price": "0.55",
+            }
+        )
         market_ws._handle_message(event)
         assert cache.get_book(_ASSET_A) is None
         assert cache.book_source_of(_ASSET_A) != "wss"
@@ -692,6 +720,7 @@ class TestLastTradePrice:
 # ---------------------------------------------------------------------------
 # Test 25: market_resolved
 # ---------------------------------------------------------------------------
+
 
 class TestMarketResolvedHandling:
     """market_resolved marks all listed asset_ids non-executable."""
@@ -713,11 +742,13 @@ class TestMarketResolvedHandling:
             {"source": "wss"},
         )
 
-        event = json.dumps({
-            "event_type": "market_resolved",
-            "market": _MARKET,
-            "assets_ids": [_ASSET_A, _ASSET_B],
-        })
+        event = json.dumps(
+            {
+                "event_type": "market_resolved",
+                "market": _MARKET,
+                "assets_ids": [_ASSET_A, _ASSET_B],
+            }
+        )
         market_ws._handle_message(event)
 
         assert cache.is_resolved(_ASSET_A)
@@ -727,6 +758,7 @@ class TestMarketResolvedHandling:
 # ---------------------------------------------------------------------------
 # Test 26: StaleDataError debug state
 # ---------------------------------------------------------------------------
+
 
 class TestStaleErrorDebugState:
     """StaleDataError message includes MarketStateStore debug fields."""
@@ -758,26 +790,27 @@ class TestStaleErrorDebugState:
 # Tests 27–29: No print / no canary
 # ---------------------------------------------------------------------------
 
+
 class TestCodeQuality:
     """Verify no raw print() calls and no canary references remain."""
 
     def test_no_print_in_market_ws(self) -> None:
         import clients.market_ws as mws_module
+
         src = inspect.getsource(mws_module)
         # Allow print only inside string literals (unlikely here); reject bare calls
-        lines = [
-            ln for ln in src.splitlines()
-            if "print(" in ln and not ln.strip().startswith("#")
-        ]
+        lines = [ln for ln in src.splitlines() if "print(" in ln and not ln.strip().startswith("#")]
         assert lines == [], f"Raw print() found in market_ws.py: {lines}"
 
     def test_no_canary_in_market_ws(self) -> None:
         import clients.market_ws as mws_module
+
         src = inspect.getsource(mws_module)
         assert "canary" not in src.lower()
 
     def test_no_canary_in_market_state_store(self) -> None:
         import cache.market_state_store as mss_module
+
         src = inspect.getsource(mss_module)
         assert "canary" not in src.lower()
 
@@ -785,6 +818,7 @@ class TestCodeQuality:
 # ---------------------------------------------------------------------------
 # PR10.2: Fixture-based tests (real observed and docs-shaped payloads)
 # ---------------------------------------------------------------------------
+
 
 class TestFixtureLoading:
     """Load fixture files and verify parsing against MarketStateStore."""
@@ -862,6 +896,7 @@ class TestFixtureLoading:
 # PR10.2: Book event tick_size metadata (test 7, test 8)
 # ---------------------------------------------------------------------------
 
+
 class TestBookTickSizeHandling:
     """Tick_size from book snapshot updates tick metadata without dirtying state."""
 
@@ -907,6 +942,7 @@ class TestBookTickSizeHandling:
 # PR10.2: One-sided book quote derivation (test 6)
 # ---------------------------------------------------------------------------
 
+
 class TestOneSidedBookQuote:
     """One-sided WSS book derives best_ask / best_bid from the populated side."""
 
@@ -933,6 +969,7 @@ class TestOneSidedBookQuote:
 # ---------------------------------------------------------------------------
 # PR10.2: new_market event (test 19)
 # ---------------------------------------------------------------------------
+
 
 class TestNewMarketHandling:
     """new_market events may store metadata but must not create quote/book."""
@@ -964,6 +1001,7 @@ class TestNewMarketHandling:
 # ---------------------------------------------------------------------------
 # PR10.2: End-to-end executability (tests 21, 22)
 # ---------------------------------------------------------------------------
+
 
 class TestTokenExecutability:
     """WSS book + pre-set tick → clean state; quote-only → no book."""
@@ -1004,12 +1042,11 @@ class TestTokenExecutability:
 # PR10.2: get_debug_state includes tick_size (Part E)
 # ---------------------------------------------------------------------------
 
+
 class TestDebugStateTick:
     """get_debug_state returns tick_size field."""
 
-    def test_debug_state_has_tick_size_when_set(
-        self, cache: MarketStateStore
-    ) -> None:
+    def test_debug_state_has_tick_size_when_set(self, cache: MarketStateStore) -> None:
         cache.set_tick(
             _ASSET_A,
             tick_size=Decimal("0.01"),
@@ -1020,9 +1057,7 @@ class TestDebugStateTick:
         assert "tick_size" in debug
         assert debug["tick_size"] == "0.01"
 
-    def test_debug_state_tick_size_none_when_not_set(
-        self, cache: MarketStateStore
-    ) -> None:
+    def test_debug_state_tick_size_none_when_not_set(self, cache: MarketStateStore) -> None:
         cache.ensure_state(_ASSET_A)
         debug = cache.get_debug_state(_ASSET_A)
         assert "tick_size" in debug
@@ -1032,6 +1067,7 @@ class TestDebugStateTick:
 # ---------------------------------------------------------------------------
 # PR10.2: canonical mark_resolved in market_resolved handler
 # ---------------------------------------------------------------------------
+
 
 class TestMarketResolvedCanonical:
     """_handle_market_resolved stores condition_id via mark_resolved."""
@@ -1054,6 +1090,7 @@ class TestMarketResolvedCanonical:
 # ---------------------------------------------------------------------------
 # PR10.2: tick_size_change prefers new_tick_size field
 # ---------------------------------------------------------------------------
+
 
 class TestTickSizeChangePriority:
     """_handle_tick_size_change prefers new_tick_size over tick_size."""
@@ -1090,6 +1127,7 @@ class TestTickSizeChangePriority:
 # PR10.2: capture script quality checks (test 24)
 # ---------------------------------------------------------------------------
 
+
 class TestCaptureScriptQuality:
     """capture_market_wss_events.py is a safe read-only diagnostic script."""
 
@@ -1113,11 +1151,15 @@ class TestCaptureScriptQuality:
             assert forbidden not in src, f"Forbidden import '{forbidden}' found in capture script"
 
     def test_capture_script_print_goes_to_stderr(self) -> None:
-        src = self._src()
+        tree = ast.parse(self._src())
         offending = [
-            ln for ln in src.splitlines()
-            if "print(" in ln
-            and "sys.stderr" not in ln
-            and not ln.strip().startswith("#")
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and not any(
+                kw.arg == "file" and ast.unparse(kw.value) == "sys.stderr" for kw in node.keywords
+            )
         ]
-        assert offending == [], f"print() without stderr= in capture script: {offending}"
+        assert offending == [], f"print() without file=sys.stderr at lines: {offending}"

@@ -1,4 +1,5 @@
 """Phase 9 — book quality gate: reject executions when bid/ask spread is too wide."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
 from utils.createClobClient import _top_of_book_from_levels
 
@@ -64,17 +66,15 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
     from services.executionService import ExecutionService
 
     clob = AsyncMock()
-    clob.get_price = AsyncMock(return_value={"price": quote_price})
-    clob.create_market_order = AsyncMock(return_value={"signed": True})
-    clob.post_signed_order = AsyncMock(
-        return_value={"success": True, "orderID": "ord-book", "status": "submitted"}
-    )
-    clob.client = SimpleNamespace(
-        get_order=lambda _order_id: {
-            "status": "filled",
-            "size_matched": "10",
-            "avg_price": quote_price,
-        }
+    gateway = SimpleNamespace(
+        submit_marketable_order=AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-book",
+                status="submitted",
+            )
+        ),
+        get_execution_metadata=AsyncMock(),
     )
 
     order_repo = MagicMock()
@@ -120,6 +120,7 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,
+        clob_gateway=gateway,
         market_data_service=_mock_mds(bid, ask),
     )
 
@@ -135,6 +136,9 @@ def _req(amount: str = "10", side: str = "BUY", **overrides):
         amount=Decimal(amount),
         max_slippage_bps=200,
         reason="copy_trade",
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("1"),
+        neg_risk=False,
     )
     data.update(overrides)
     return ExecutionRequest(
@@ -149,6 +153,7 @@ def _req(amount: str = "10", side: str = "BUY", **overrides):
 def _reset_circuit():
     """Reset circuit breaker so it doesn't interfere."""
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -162,7 +167,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -172,7 +177,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", "0.51")  # 2% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_no_bid_rejected_for_sell(self):
@@ -180,7 +185,7 @@ class TestBookQualityGate:
         svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -189,7 +194,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -198,7 +203,7 @@ class TestBookQualityGate:
         svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
         assert result.status != "book_no_liquidity"
 
@@ -207,7 +212,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
         assert result.status != "book_no_liquidity"
 
@@ -216,7 +221,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0", "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_gate_disabled_when_zero(self):
@@ -224,7 +229,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.10", "0.90")  # 800% spread
         svc._config.execution.max_book_spread_bps = 0
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_stop_loss_sell_bypasses_spread_gate_and_uses_fak(self):
@@ -239,202 +244,199 @@ class TestBookQualityGate:
             recovery_metadata={"source": "risk_exit"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "submitted_unconfirmed"
-        svc.clob_client.create_market_order.assert_awaited_once()
-        assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
-        assert svc.clob_client.post_signed_order.await_args.kwargs["order_type"] == "FAK"
+        svc.clob_gateway.submit_marketable_order.assert_awaited_once()
+        submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
+        assert submitted.order_type == "FAK"
 
-    def test_copy_trade_fak_uses_fresh_snapshot_without_spread_gate(self):
-        """Copy FAKs read current top-of-book but do not reject on wide spread."""
+    def test_copy_trade_fak_uses_copied_price_without_book_snapshot(self):
+        """Copy FAKs use prefetched metadata and ignore the local wide book."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
         )
-        svc.clob_client.post_signed_order = AsyncMock(
-            return_value={
-                "success": True,
-                "orderID": "ord-fak",
-                "status": "matched",
-                "size_matched": "4",
-                "avg_price": "0.25",
-            }
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-fak",
+                status="matched",
+                raw={"size_matched": "4", "avg_price": "0.25"},
+            )
         )
         req = _req(
             amount="1",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "filled"
         assert result.filled_amount == Decimal("4")
-        svc._market_data_service.require_fresh_data.assert_awaited_once()
-        _, snapshot_kwargs = svc._market_data_service.require_fresh_data.await_args
-        assert snapshot_kwargs["side"] == "BUY"
-        assert snapshot_kwargs["policy"].rest_snapshot_max_spread_bps == 1_000_000
-        assert snapshot_kwargs["policy"].require_book_depth is False
-        svc.clob_client.create_market_order.assert_awaited_once()
-        assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
-        assert svc.clob_client.create_market_order.await_args.kwargs["max_price"] == Decimal("0.92")
+        svc._market_data_service.require_fresh_data.assert_not_awaited()
+        svc.clob_gateway.submit_marketable_order.assert_awaited_once()
+        submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
+        assert submitted.order_type == "FAK"
+        assert submitted.price_limit == Decimal("0.95")
 
-    def test_copy_trade_fak_reposts_remaining_partial_fill(self):
-        """Partial FAK fills refresh the book before bounded FAK reposts."""
+    def test_copy_trade_fak_partial_fill_never_chases_the_remainder(self):
+        """Partial FAK accounting uses only the first order's matched amount."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
         )
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": True,
-                    "orderID": "ord-fak-1",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
-                {
-                    "success": True,
-                    "orderID": "ord-fak-2",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-1",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-2",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
             ]
         )
         req = _req(
             amount="2",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # The copied limit is independent of the local book; this case
+            # characterizes partial-fill accounting and single-POST behavior.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
-        assert result.status == "filled"
-        assert result.filled_amount == Decimal("8")
-        assert result.order_id == "ord-fak-1,ord-fak-2"
-        assert svc.clob_client.create_market_order.await_count == 2
-        for call in svc.clob_client.post_signed_order.await_args_list:
-            assert call.kwargs["order_type"] == "FAK"
-        assert svc._market_data_service.require_fresh_data.await_count == 2
+        assert result.status == "partially_filled"
+        assert result.filled_amount == Decimal("4")
+        assert result.order_id == "ord-fak-1"
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc.clob_gateway.submit_marketable_order.await_args.args[0].order_type == "FAK"
+        assert svc._market_data_service.require_fresh_data.await_count == 0
 
-    def test_copy_trade_fak_zero_fill_retries_then_fills(self):
-        """A zero-fill FAK should refresh the book and repost within bounds."""
+    def test_copy_trade_fak_zero_fill_never_reposts(self):
+        """A zero-fill FAK is terminal for this copy intent."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": False,
-                    "orderID": "ord-fak-0",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": True,
-                    "orderID": "ord-fak-1",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-0",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-1",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
             ]
         )
         req = _req(
             amount="1",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # The copied limit is independent of the local book; this case
+            # characterizes terminal zero-fill handling.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
-        assert result.accepted is True
-        assert result.status == "filled"
-        assert result.filled_amount == Decimal("4")
-        assert result.order_id == "ord-fak-1"
-        assert svc.clob_client.create_market_order.await_count == 2
-        assert svc.clob_client.post_signed_order.await_count == 2
-        assert svc._market_data_service.require_fresh_data.await_count == 2
+        assert result.accepted is False
+        assert result.status == "cancelled"
+        assert result.filled_amount == Decimal("0")
+        assert result.error == "fak_no_match"
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
         assert svc.circuit_breaker.allow_request() is True
 
     def test_copy_trade_fak_delayed_ack_is_not_reposted(self):
         """Delayed FAK acks are reconciliation-owned, not zero-fill cancels."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
-            return_value={
-                "success": True,
-                "orderID": "ord-fak-delayed",
-                "status": "delayed",
-            }
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-fak-delayed",
+                status="delayed",
+            )
         )
         req = _req(
             amount="5",
             order_type="FAK",
-            price_limit=Decimal("0.85"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.85"},
+            # The copied limit is independent of the local book; this case is
+            # about delayed acknowledgements.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "submitted_unconfirmed"
         assert result.order_id == "ord-fak-delayed"
         assert result.filled_amount == Decimal("0")
         assert result.error is None
-        assert svc.clob_client.create_market_order.await_count == 1
-        assert svc.clob_client.post_signed_order.await_count == 1
-        assert svc._market_data_service.require_fresh_data.await_count == 1
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
 
-    def test_copy_trade_fak_no_match_retries_bounded_without_tripping_circuit(self):
-        """Repeated FAK no-match cancellations should exhaust bounded retries."""
+    def test_copy_trade_fak_no_match_does_not_trip_circuit_or_retry(self):
+        """A normal no-match cancellation consumes one request only."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": False,
-                    "orderID": "ord-fak-0",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": False,
-                    "orderID": "ord-fak-1",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": False,
-                    "orderID": "ord-fak-2",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-0",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-1",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-2",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
             ]
         )
         req = _req(
             amount="2",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            # The copied limit is independent of the local book; this case
+            # characterizes terminal no-match handling.
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is False
         assert result.status == "cancelled"
         assert result.error == "fak_no_match"
-        assert svc.clob_client.post_signed_order.await_count == 3
-        assert svc.clob_client.create_market_order.await_count == 3
-        assert svc._market_data_service.require_fresh_data.await_count == 3
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 0
         assert svc.circuit_breaker.allow_request() is True
 
     def test_custom_threshold(self):
@@ -443,7 +445,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -454,7 +456,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "absolute_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_low_price_one_cent_spread_rejects_in_relative_mode(self):
@@ -463,7 +465,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 1000
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
 
@@ -472,15 +474,17 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.execution_require_fresh_book = True
         req = _req()
-        asyncio.new_event_loop().run_until_complete(svc.execute(req))
-        svc._market_data_service.require_fresh_data.assert_awaited_once_with("0xabc", side="BUY", condition_id=None)
+        asyncio.run(svc.execute(req))
+        svc._market_data_service.require_fresh_data.assert_awaited_once_with(
+            "0xabc", side="BUY", condition_id=None
+        )
 
     def test_sell_side_also_gated(self):
         """Spread gate applies to SELL orders too."""
         svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -491,7 +495,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert "2000 bps" in result.error
         assert "500 bps max" in result.error
 
@@ -500,7 +504,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.01", "0.99")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -509,7 +513,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.02", "0.98")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -518,7 +522,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.04", "0.96")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
 
@@ -528,6 +532,7 @@ class TestSpreadMetrics:
 
     def test_spread_metrics_include_absolute_relative_and_ticks(self):
         from services.executionService import _calculate_book_spread_metrics
+
         metrics = _calculate_book_spread_metrics(
             best_bid=Decimal("0.50"),
             best_ask=Decimal("0.51"),

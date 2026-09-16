@@ -8,6 +8,7 @@ Pins:
     restart).
   * Risk triggers recorded for full close + rejection.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -15,7 +16,8 @@ from decimal import Decimal
 
 import pytest
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
+from integrations.polymarket.models import VenueFill
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -35,8 +37,18 @@ FAKE_TOKEN_ID = "713210456792522125946263855327069127503327285719425322235357647
 TOKEN_B = "61321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 _FILL_RESPONSES = {
-    "venue-risk-no-fill-1": {"status": "cancelled", "size_matched": "0", "avg_price": None, "orderID": "venue-risk-no-fill-1"},
-    "venue-risk-dup-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-dup-1"},
+    "venue-risk-no-fill-1": {
+        "status": "cancelled",
+        "size_matched": "0",
+        "avg_price": None,
+        "orderID": "venue-risk-no-fill-1",
+    },
+    "venue-risk-dup-1": {
+        "status": "filled",
+        "size_matched": "10",
+        "avg_price": "0.30",
+        "orderID": "venue-risk-dup-1",
+    },
 }
 
 
@@ -69,7 +81,8 @@ async def _pg_pool():
 
 
 class _FakeClobGateway:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, confirmed_fills=()):
+        self._fills = tuple(confirmed_fills)
         self._responses = responses or dict(_FILL_RESPONSES)
 
     async def get_order(self, order_id: str):
@@ -87,14 +100,22 @@ class _FakeClobGateway:
     async def submit_limit_order(self, request):
         return None
 
-    async def get_fills(self, market=None):
-        return []
+    async def get_fills(self, market=None, *, order_id=None, trade_id=None):
+        return [fill for fill in self._fills if order_id is None or fill.order_id == order_id]
+
+    async def list_open_orders(self, *, order_id=None, market=None):
+        return [
+            response
+            for identifier, response in self._responses.items()
+            if (order_id is None or identifier == order_id)
+            and response["status"] == "partially_filled"
+        ]
 
     async def cancel_order(self, order_id: str):
         return None
 
     async def check_compatibility(self):
-        return {"sdk_available": True}
+        return {"available": True, "authenticated": True, "live_execution_ready": True}
 
 
 class _FakeClient:
@@ -176,7 +197,24 @@ def _make_context(pool, *, execution_service=None, risk_triggers_repo=None, clob
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=execution_service or _FakeExecutionService(),
-        extra={"slippage_tolerance_bps": 50, "clob_gateway": clob_gateway or _FakeClobGateway()},
+        extra={
+            "slippage_tolerance_bps": 50,
+            "clob_gateway": clob_gateway
+            or _FakeClobGateway(
+                confirmed_fills=(
+                    VenueFill(
+                        fill_id="confirmed-risk-dup",
+                        order_id="venue-risk-dup-1",
+                        token_id=FAKE_TOKEN_ID,
+                        side="SELL",
+                        size=Decimal(10),
+                        price=Decimal("0.30"),
+                        fee=Decimal(0),
+                        status="CONFIRMED",
+                    ),
+                )
+            ),
+        },
     )
 
 
@@ -240,10 +278,14 @@ async def test_risk_block_is_token_scoped_not_condition_scoped():
 
         risk_blocks_repo = context.risk_blocks_repo
         block_a = await risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         block_b = await risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=TOKEN_B,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=TOKEN_B,
         )
 
         assert block_a is not None, "block should exist for token A (full close)"
@@ -290,7 +332,10 @@ async def test_reconciliation_rejected_risk_sell_no_block():
                         "trigger_size_tokens": 10.0,
                     },
                 },
-                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-no-fill-1"},
+                response_payload={
+                    "status": "submitted_unconfirmed",
+                    "orderID": "venue-risk-no-fill-1",
+                },
             )
         )
 
@@ -302,9 +347,14 @@ async def test_reconciliation_rejected_risk_sell_no_block():
         result = await startup_reconcile_unconfirmed([context])
 
         assert result == {"u1": 1}
-        assert await context.risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await context.risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
         pos = await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
         assert pos is not None, "position should remain when SELL was cancelled/rejected"
@@ -359,7 +409,9 @@ async def test_restart_full_close_then_risk_recheck_no_duplicate_block():
         await startup_reconcile_unconfirmed([context])
 
         block = await context.risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert block is not None, "block should exist after reconciliation full close"
 
@@ -404,7 +456,9 @@ async def test_risk_trigger_recorded_on_full_close():
         await run_risk_check_for_context(context)
 
         triggers = await risk_triggers_repo.list_triggers_for_position(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert len(triggers) >= 1, "at least one trigger should be recorded on full close"
         trigger = triggers[0]
@@ -449,7 +503,9 @@ async def test_risk_trigger_recorded_on_rejection():
         await run_risk_check_for_context(context)
 
         triggers = await risk_triggers_repo.list_triggers_for_position(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert len(triggers) >= 1, "at least one trigger should be recorded on rejection"
         trigger = triggers[0]

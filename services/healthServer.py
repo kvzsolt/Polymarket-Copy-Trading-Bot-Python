@@ -1,12 +1,16 @@
+"""Expose the shared readiness and Prometheus metrics endpoints."""
+
 from __future__ import annotations
 
 import time
+import re
+import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
 
-from config.env import get_metrics_bind_host
 from services.metrics import metrics
 
 
@@ -51,6 +55,23 @@ _HEARTBEAT_KEYS: tuple[tuple[str, str], ...] = (
     ("last_risk_check_ts", "risk_check_stale"),
 )
 
+_SAFE_CHECK_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessCheck:
+    """Immutable keyed readiness state safe for operator snapshots."""
+
+    key: str
+    ready: bool
+    required: bool
+    reason: str | None = None
+
+
+def _validate_check_code(name: str, value: str) -> None:
+    if not _SAFE_CHECK_CODE_RE.fullmatch(value):
+        raise ValueError(f"{name} must be a bounded lowercase code")
+
 
 class ReadinessTracker:
     """Injectable readiness state — one instance per Application.
@@ -70,6 +91,7 @@ class ReadinessTracker:
         *,
         heartbeat_staleness_seconds: float | None = None,
     ):
+        self._lock = threading.RLock()
         # Per-loop heartbeat staleness budget used by the strict readiness
         # check. The composition root derives this from the trade-poll /
         # risk-loop intervals (``configure_heartbeat_budget``); absent that it
@@ -117,9 +139,106 @@ class ReadinessTracker:
         }
         if initial:
             self._state.update(initial)
+        self._checks: dict[str, ReadinessCheck] = {}
+        self._account_drift: dict[str, bool] = {}
 
     def update(self, **kwargs: Any) -> None:
-        self._state.update(kwargs)
+        """Update one readiness component without replacing the shared truth."""
+        with self._lock:
+            self._state.update(kwargs)
+
+    def register_drift_account(self, user_id: str) -> None:
+        """Require an account inventory result before aggregate drift readiness."""
+        with self._lock:
+            self._account_drift.setdefault(user_id, False)
+            self._state["drift_ok"] = all(self._account_drift.values())
+
+    def update_account_drift(self, user_id: str, clean: bool) -> None:
+        """Publish drift readiness without clearing another account's failure."""
+        with self._lock:
+            self._account_drift[user_id] = clean
+            self._state["drift_ok"] = all(self._account_drift.values())
+
+    def register_check(
+        self,
+        key: str,
+        *,
+        required: bool,
+        ready: bool = False,
+        reason: str | None = None,
+    ) -> ReadinessCheck:
+        """Register one uniquely keyed readiness producer.
+
+        Args:
+            key: Stable low-cardinality subsystem key.
+            required: Whether a false state blocks strict readiness.
+            ready: Initial readiness state.
+            reason: Optional bounded machine-readable reason code.
+
+        Returns:
+            The immutable registered state.
+
+        Raises:
+            ValueError: If the key exists or a code is unsafe/unbounded.
+        """
+        _validate_check_code("key", key)
+        if reason is not None:
+            _validate_check_code("reason", reason)
+        with self._lock:
+            if key in self._checks:
+                raise ValueError(f"readiness check {key} is already registered")
+            check = ReadinessCheck(
+                key=key,
+                ready=ready,
+                required=required,
+                reason=reason,
+            )
+            self._checks[key] = check
+            return check
+
+    def set_check(
+        self,
+        key: str,
+        *,
+        ready: bool,
+        reason: str | None = None,
+    ) -> ReadinessCheck:
+        """Replace one registered check while preserving its required flag.
+
+        Args:
+            key: Previously registered subsystem key.
+            ready: New readiness state.
+            reason: Optional bounded machine-readable reason code.
+
+        Returns:
+            The immutable replacement state.
+
+        Raises:
+            KeyError: If the key was not registered.
+            ValueError: If a reason is unsafe or unbounded.
+        """
+        if reason is not None:
+            _validate_check_code("reason", reason)
+        with self._lock:
+            current = self._checks.get(key)
+            if current is None:
+                raise KeyError(f"readiness check {key} is not registered")
+            check = ReadinessCheck(
+                key=key,
+                ready=ready,
+                required=current.required,
+                reason=reason,
+            )
+            self._checks[key] = check
+            return check
+
+    def remove_check(self, key: str) -> ReadinessCheck:
+        """Remove and return one keyed check during deterministic shutdown."""
+        with self._lock:
+            try:
+                return self._checks.pop(key)
+            except KeyError as exc:
+                raise KeyError(f"readiness check {key} is not registered") from exc
 
     def configure_heartbeat_budget(self, *, staleness_seconds: float) -> None:
         """Set the strict-readiness heartbeat staleness budget (seconds).
@@ -129,10 +248,11 @@ class ReadinessTracker:
         ``_MIN_HEARTBEAT_STALENESS_SECONDS`` so a sub-second poll interval
         cannot wedge readiness into a flappy knife-edge budget.
         """
-        self._heartbeat_staleness_seconds = max(
-            _MIN_HEARTBEAT_STALENESS_SECONDS,
-            float(staleness_seconds),
-        )
+        with self._lock:
+            self._heartbeat_staleness_seconds = max(
+                _MIN_HEARTBEAT_STALENESS_SECONDS,
+                float(staleness_seconds),
+            )
 
     def _stale_heartbeats(self, snapshot: dict[str, Any], now: int) -> list[str]:
         """Return failure tokens for heartbeats that ticked then went stale.
@@ -159,9 +279,21 @@ class ReadinessTracker:
         return stale
 
     def snapshot(self) -> dict[str, Any]:
-        return deepcopy(self._state)
+        """Return a point-in-time readiness snapshot."""
+        with self._lock:
+            snapshot = deepcopy(self._state)
+            snapshot["checks"] = {
+                key: {
+                    "ready": check.ready,
+                    "required": check.required,
+                    "reason": check.reason,
+                }
+                for key, check in sorted(self._checks.items())
+            }
+            return snapshot
 
     def get_all(self) -> dict[str, Any]:
+        """Return all registered readiness component states."""
         return self.snapshot()
 
     def is_ready(self, *, strict: bool = False) -> tuple[bool, list[str]]:
@@ -176,7 +308,9 @@ class ReadinessTracker:
           NOT-ready when a trade-poll / risk loop silently dies and its
           timestamp stops advancing.
         """
-        snapshot = self._state
+        with self._lock:
+            snapshot = deepcopy(self._state)
+            checks = tuple(self._checks.values())
         if not strict:
             ok = bool(snapshot.get("db_ok", False)) and bool(snapshot.get("api_ok", False))
             failed_legacy = [k for k in ("db_ok", "api_ok") if not snapshot.get(k)]
@@ -193,10 +327,16 @@ class ReadinessTracker:
         # above stays True (they were set once at startup). Catch that by
         # asserting the loop heartbeats are still advancing.
         failed.extend(self._stale_heartbeats(snapshot, int(time.time())))
+        failed.extend(
+            check.key
+            for check in sorted(checks, key=lambda check: check.key)
+            if check.required and not check.ready
+        )
         return (len(failed) == 0), failed
 
 
 async def metrics_handler(_request: web.Request) -> web.Response:
+    """Render the shared Prometheus registry for aiohttp."""
     body = metrics.render_prometheus()
     return web.Response(text=body, content_type="text/plain; version=0.0.4")
 
@@ -208,8 +348,12 @@ def _readiness_payload(tracker: ReadinessTracker | None) -> dict[str, Any]:
 
 
 async def start_health_server(
-    port: int = 9102, *, tracker: ReadinessTracker | None = None
+    port: int = 9102,
+    *,
+    tracker: ReadinessTracker | None = None,
+    host: str = "127.0.0.1",
 ) -> web.AppRunner:
+    """Start the injected health server without joining the trading path."""
     if tracker is not None:
         tracker.update(started_ts=int(time.time()))
     app = web.Application()
@@ -237,12 +381,17 @@ async def start_health_server(
             status=200 if ok else 503,
         )
 
+    async def live_handler(_request: web.Request) -> web.Response:
+        # Reaching this handler proves the process event loop and HTTP server
+        # are alive. Dependency state belongs exclusively to readiness.
+        return web.json_response({"ok": True, "status": "alive"})
+
     app.router.add_get("/health", health_handler)
     app.router.add_get("/health/ready", ready_handler)
+    app.router.add_get("/health/live", live_handler)
     app.router.add_get("/metrics", metrics_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    host = get_metrics_bind_host()
     site = web.TCPSite(runner, host=host, port=port)
     await site.start()
     return runner

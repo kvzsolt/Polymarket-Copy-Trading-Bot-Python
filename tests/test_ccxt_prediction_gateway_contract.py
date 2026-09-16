@@ -1,0 +1,886 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+from integrations.polymarket.ccxt_compat.tick_size import PolymarketTickSizeResolver
+from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from integrations.polymarket.errors import VenueInvalidOrderError
+from integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
+
+TOKEN = "123"
+
+
+class FakeExchange:
+    def __init__(self) -> None:
+        self.has = {
+            "prediction": True,
+            "createOrder": True,
+            "fetchOrderBook": True,
+            "fetchOrder": True,
+            "fetchOpenOrders": True,
+            "fetchMyTrades": True,
+            "cancelOrder": True,
+        }
+        self.options = {"chainId": 137, "signatureType": 3}
+        self.privateKey = "secret"
+        self.walletAddress = "0xwallet"
+        self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v2"
+        self.created: list[tuple] = []
+        self.fetch_order_book_calls = 0
+        self.metadata_market_calls = 0
+        self.neg_risk_calls = 0
+        # Real CCXT parsed books carry only levels and identity fields: the raw
+        # CLOB response's tick_size/min_order_size/neg_risk are dropped by
+        # parse_order_book + safe_prediction_order_book and there is no "info".
+        self.book = {
+            "outcome": "market-slug:YES",
+            "outcomeId": TOKEN,
+            "market": "0xcondition",
+            "timestamp": 1_750_000_000_000,
+            "datetime": None,
+            "nonce": None,
+            "bids": [["0.40", "20"]],
+            "asks": [["0.42", "10"]],
+        }
+        # Real CCXT outcome objects carry precision.price (the tick), negRisk,
+        # and info = the raw gamma market, where min size is spelled
+        # orderMinSize and the tick orderPriceMinTickSize/minimumTickSize.
+        self.outcome_value = {
+            "outcome": "market-slug:YES",
+            "outcomeId": TOKEN,
+            "market": "0xcondition",
+            "precision": {"amount": "0.0025", "price": "0.0025"},
+            "negRisk": True,
+            "info": {
+                "orderMinSize": "5",
+                "orderPriceMinTickSize": "0.0025",
+                "negRisk": True,
+            },
+        }
+        self.create_response = {
+            "id": "order-1",
+            "status": "open",
+            "info": {"success": True},
+        }
+        self.order = {
+            "id": "order-1",
+            "status": "LIVE",
+            "side": "BUY",
+            "price": "0.42",
+            "amount": "10",
+            "filled": "2",
+            "average": "0.415",
+            "timestamp": 1_750_000_000_000,
+        }
+        self.open_orders = [self.order]
+        self.trades = []
+        self.cancel_response = {"canceled": ["order-1"]}
+        self.clob_market = {
+            "condition_id": "condition",
+            "t": [{"token_id": TOKEN}],
+            "mos": "5",
+            "mts": "0.0025",
+        }
+        self.neg_risk_response = {"neg_risk": True}
+
+    async def load_outcome(self, token_id):
+        assert token_id == TOKEN
+        return self.outcome_value
+
+    async def fetch_order_book(self, token_id):
+        assert token_id == TOKEN
+        self.fetch_order_book_calls += 1
+        return self.book
+
+    async def clobPublicGetClobMarketsConditionId(self, params):  # noqa: N802
+        """Return current V2 market metadata without returning book levels."""
+
+        assert params == {"condition_id": "condition"}
+        self.metadata_market_calls += 1
+        return self.clob_market
+
+    async def clobPublicGetNegRiskTokenId(self, params):  # noqa: N802
+        """Return the token's explicit current negative-risk flag."""
+
+        assert params == {"token_id": TOKEN}
+        self.neg_risk_calls += 1
+        return self.neg_risk_response
+
+    async def create_order(self, *args):
+        self.created.append(args)
+        return self.create_response
+
+    async def fetch_order(self, order_id):
+        assert order_id == "order-1"
+        return self.order
+
+    async def clob_private_get_data_orders(self, params):
+        return {"data": self.open_orders, "next_cursor": ""}
+
+    async def clob_private_get_data_trades(self, params):
+        return {"data": self.trades, "next_cursor": "LTE="}
+
+    async def fetch_open_orders(self, outcome, since, limit, params):
+        assert outcome is since is limit is None
+        return self.open_orders
+
+    async def fetch_my_trades(self, outcome, since, limit, params):
+        assert outcome is since is limit is None
+        return self.trades
+
+    async def cancel_order(self, order_id):
+        assert order_id == "order-1"
+        return self.cancel_response
+
+
+@pytest.mark.asyncio
+async def test_orderbook_maps_arbitrary_tick_and_quality_fields() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    book = await gateway.get_orderbook(TOKEN)
+
+    assert book.token_id == TOKEN
+    assert book.tick_size == Decimal("0.0025")
+    assert book.min_order_size == Decimal("5")
+    assert book.neg_risk is True
+    assert book.best_bid == Decimal("0.40")
+    assert book.best_ask == Decimal("0.42")
+    assert book.spread_bps == 487
+    assert book.timestamp == datetime.fromtimestamp(1_750_000_000, tz=timezone.utc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "expected"),
+    (("BUY", "0.42"), ("SELL", "0.40")),
+)
+async def test_gateway_price_compatibility_uses_executable_book_side(
+    side: str,
+    expected: str,
+) -> None:
+    """Price risk reads from the same authoritative CCXT gateway book."""
+
+    gateway = CcxtPredictionGateway(FakeExchange())
+
+    price = await gateway.get_price(TOKEN, side)
+
+    assert price == {"price": expected}
+
+
+@pytest.mark.asyncio
+async def test_missing_execution_metadata_fails_closed() -> None:
+    exchange = FakeExchange()
+    exchange.outcome_value = {}
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="omitted"):
+        await gateway.get_orderbook(TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_marketable_order_refreshes_metadata_without_fetching_a_book() -> None:
+    """Use V2 metadata endpoints before one FAK POST and never call `/book`."""
+
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    metadata = await gateway.get_execution_metadata(TOKEN, condition_id="condition")
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("3.50"),
+            price_limit=Decimal("0.70"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert metadata.tick_size == Decimal("0.0025")
+    assert metadata.min_order_size == Decimal("5")
+    assert metadata.neg_risk is True
+    assert result.success is True
+    assert exchange.fetch_order_book_calls == 0
+    assert exchange.metadata_market_calls == 2
+    assert exchange.neg_risk_calls == 2
+    assert len(exchange.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_marketable_order_fails_closed_when_neg_risk_metadata_is_missing() -> None:
+    """Do not sign when the metadata-only endpoint omits negative risk."""
+
+    exchange = FakeExchange()
+    exchange.neg_risk_response = {}
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="neg_risk"):
+        await gateway.submit_marketable_order(
+            MarketableOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                size=Decimal("3.50"),
+                price_limit=Decimal("0.70"),
+                condition_id="condition",
+                order_type="FAK",
+            )
+        )
+
+    assert exchange.fetch_order_book_calls == 0
+    assert exchange.created == []
+
+
+@pytest.mark.asyncio
+async def test_limit_order_carries_exact_metadata_and_quantized_price() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.411"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+
+    assert result.success is True
+    outcome, kind, side, amount, price, params = exchange.created[0]
+    assert (outcome, kind, side) == (TOKEN, "limit", "buy")
+    assert Decimal(str(amount)) == Decimal("5")
+    assert Decimal(str(price)) == Decimal("0.4100")
+    assert params["tickSize"] == "0.0025"
+    assert params["negRisk"] is True
+    assert params["orderType"] == "GTC"
+
+
+@pytest.mark.asyncio
+async def test_order_submission_preserves_decimal_values_at_ccxt_boundary() -> None:
+    """Keep exact money values out of binary floating-point conversion.
+
+    Size and cost cross the boundary as exact decimal *strings* rather than
+    ``Decimal`` objects, because CCXT's ``safe_string`` ignores ``Decimal``.
+    The string is still lossless: no float ever touches the value.
+    """
+
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5.12"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    assert amount == "5.12"
+    assert Decimal(amount) == Decimal("5.12")
+    # Marketable BUY: 0.411 snaps up to tick 165 of 0.0025, toward the book.
+    assert price == Decimal("0.4125")
+    assert params["cost"] == "5.12"
+    assert Decimal(params["cost"]) == Decimal("5.12")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_status", ["matched", "live", "delayed"])
+async def test_submission_prefers_raw_clob_status_over_unified_status(
+    raw_status: str,
+) -> None:
+    """Preserve the CLOB lifecycle vocabulary used by reservation logic."""
+
+    exchange = FakeExchange()
+    exchange.create_response = {
+        "id": "order-1",
+        "status": "closed" if raw_status == "matched" else "open",
+        "info": {"success": True, "orderID": "order-1", "status": raw_status},
+    }
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5.12"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert result.status == raw_status
+
+
+@pytest.mark.asyncio
+async def test_market_buy_uses_cost_and_explicit_price_not_cached_outcome_price() -> None:
+    exchange = FakeExchange()
+    exchange.outcome_value["price"] = "0.99"
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5.12"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FOK",
+        )
+    )
+
+    _, kind, side, amount, price, params = exchange.created[0]
+    assert (kind, side) == ("market", "buy")
+    assert Decimal(str(amount)) == Decimal("5.12")
+    assert Decimal(str(price)) == Decimal("0.4125")
+    assert Decimal(str(params["cost"])) == Decimal("5.12")
+    assert params["orderType"] == "FOK"
+
+
+@pytest.mark.asyncio
+async def test_market_sell_uses_shares_and_fak() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="SELL",
+            size=Decimal("7"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, kind, side, amount, price, params = exchange.created[0]
+    assert (kind, side) == ("market", "sell")
+    assert Decimal(str(amount)) == Decimal("7")
+    # Marketable SELL: the floor snaps down to tick 164, toward the bid.
+    assert Decimal(str(price)) == Decimal("0.4100")
+    assert "cost" not in params
+    assert params["orderType"] == "FAK"
+    assert params["timeInForce"] == "IOC"
+    assert result.effective_price == Decimal("0.4100")
+
+
+def _tick_of(exchange: FakeExchange, tick: str) -> None:
+    """Pin the fake outcome's tick so real-CCXT precision config is unambiguous."""
+    exchange.outcome_value["precision"] = {"amount": tick, "price": tick}
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = tick
+
+
+@pytest.fixture(scope="module")
+def real_exchange():
+    """Yield a credential-less real CCXT exchange, then unload CCXT.
+
+    The fake exchange proves what the gateway *sends*; only the vendor itself
+    proves how those values are *read*. Constructing the exchange performs no
+    network I/O.
+
+    ``tests/test_service_config_loader.py`` asserts no venue client is present
+    in ``sys.modules`` — a session-global check — so the CCXT modules this
+    import introduces are removed again on teardown.
+    """
+    import sys
+
+    before = set(sys.modules)
+    from ccxt.prediction import polymarket
+
+    try:
+        yield polymarket()
+    finally:
+        for name in set(sys.modules) - before:
+            if name == "ccxt" or name.startswith("ccxt."):
+                del sys.modules[name]
+
+
+@pytest.mark.asyncio
+async def test_market_buy_cost_survives_the_real_ccxt_amount_builder(real_exchange) -> None:
+    """The BUY ``cost`` must reach CCXT as a type ``safe_number`` accepts.
+
+    ``Exchange.safe_string`` deliberately ignores ``Decimal`` (see the
+    ``# or t is Decimal`` comment in the installed
+    ``ccxt/base/exchange.py``), so a ``Decimal`` cost makes
+    ``safe_number(params, 'cost')`` return ``None``. ``build_clob_order_body``
+    then calls ``polymarket_order_raw_amounts`` with ``cost=None``, which
+    takes the plain BUY branch and treats the USDC spend as SHARES — the live
+    CLOB rejection this test locks out.
+    """
+    exchange = FakeExchange()
+    _tick_of(exchange, "0.01")
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("2.9945"),
+            price_limit=Decimal("0.45"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    cost = real_exchange.safe_number(params, "cost")
+    assert cost is not None, "CCXT dropped the cost: the BUY would be sized in shares"
+
+    amounts = real_exchange.polymarket_order_raw_amounts(
+        "BUY", amount, price, params["tickSize"], cost
+    )
+
+    # 2.9945 USDC truncated to the tick's 2dp size precision = 2.99 spent;
+    # shares = truncate(2.99 / 0.45, 4) = 6.6444. Both scaled by 1e6.
+    assert amounts == {"makerAmount": "2990000", "takerAmount": "6644400"}
+
+
+@pytest.mark.asyncio
+async def test_market_sell_amount_survives_the_real_ccxt_amount_builder(real_exchange) -> None:
+    """A SELL still sizes by shares: maker pays shares, no ``cost`` is sent."""
+    exchange = FakeExchange()
+    _tick_of(exchange, "0.01")
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="SELL",
+            size=Decimal("7.5"),
+            price_limit=Decimal("0.45"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    assert real_exchange.safe_number(params, "cost") is None
+    assert real_exchange.number_to_string(amount) == "7.5"
+
+    amounts = real_exchange.polymarket_order_raw_amounts(
+        "SELL", amount, price, params["tickSize"], None
+    )
+
+    # SELL maker leg is the 7.5 shares given up; taker leg is 7.5 * 0.45 USDC.
+    assert amounts == {"makerAmount": "7500000", "takerAmount": "3375000"}
+
+
+@pytest.mark.asyncio
+async def test_market_order_without_price_limit_never_reaches_ccxt() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="price_limit"):
+        await gateway.submit_marketable_order(
+            MarketableOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                size=Decimal("5"),
+                price_limit=None,
+                condition_id="condition",
+            )
+        )
+    assert exchange.created == []
+
+
+@pytest.mark.asyncio
+async def test_order_state_uses_real_average_and_never_substitutes_limit_price() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    order = await gateway.get_order("order-1")
+    assert order.avg_fill_price == Decimal("0.415")
+
+    exchange.order = {**exchange.order, "average": None}
+    order_without_average = await gateway.get_order("order-1")
+    assert order_without_average.avg_fill_price == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_open_order_filters_are_exact() -> None:
+    exchange = FakeExchange()
+    exchange.open_orders = [
+        exchange.order,
+        {**exchange.order, "id": "other", "info": {"market": "other-market"}},
+    ]
+    gateway = CcxtPredictionGateway(exchange)
+
+    orders = await gateway.list_open_orders(order_id="order-1", market="market-1")
+    assert [order.order_id for order in orders] == ["order-1"]
+    assert orders[0].status == "open"
+
+
+@pytest.mark.asyncio
+async def test_maker_fill_attribution_and_page_duplicate_elimination() -> None:
+    exchange = FakeExchange()
+    raw_trade = {
+        "id": "trade-1",
+        "timestamp": 1_750_000_000_000,
+        "fee": {"cost": "0.01"},
+        "info": {
+            "trader_side": "MAKER",
+            "status": "CONFIRMED",
+            "bucket_index": 7,
+            "transaction_hash": "0xsettled",
+            "maker_orders": [
+                {
+                    "order_id": "maker-order",
+                    "token_id": "maker-token",
+                    "side": "SELL",
+                    "matched_amount": "4",
+                    "price": "0.41",
+                }
+            ],
+        },
+    }
+    exchange.trades = [raw_trade, raw_trade]
+    gateway = CcxtPredictionGateway(exchange)
+
+    fills = await gateway.get_fills(
+        market="market-1",
+        trade_id="trade-1",
+        order_id="maker-order",
+    )
+
+    assert len(fills) == 1
+    fill = fills[0]
+    assert fill.order_id == "maker-order"
+    assert fill.token_id == "maker-token"
+    assert fill.size == Decimal("4")
+    assert fill.price == Decimal("0.41")
+    assert fill.fee == Decimal("0.01")
+    assert fill.trader_side == "MAKER"
+    assert fill.bucket_index == 7
+
+
+@pytest.mark.asyncio
+async def test_cancel_maps_success() -> None:
+    gateway = CcxtPredictionGateway(FakeExchange())
+    result = await gateway.cancel_order("order-1")
+    assert result.success is True
+    assert result.status == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_compatibility_probe_reports_prediction_and_patch() -> None:
+    report = await CcxtPredictionGateway(FakeExchange()).check_compatibility()
+    assert report["available"] is True
+    assert report["transport"] == "ccxt.prediction.polymarket"
+    assert report["prediction"] is True
+    assert report["signature_type"] == 3
+    assert report["precision_patch"] == "pmcopy-arbitrary-tick-v2"
+    assert report["capabilities"]["create_order"] is True
+    assert "sdk_available" not in report
+
+
+@pytest.mark.asyncio
+async def test_resolved_arbitrary_tick_is_passed_to_ccxt() -> None:
+    """The tick-size resolver is the authority reaching the CCXT parameters."""
+
+    exchange = FakeExchange()
+    resolver = PolymarketTickSizeResolver()
+    gateway = CcxtPredictionGateway(exchange, tick_size_resolver=resolver)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+        )
+    )
+
+    assert result.success is True
+    _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
+    assert price == Decimal("0.4125")
+    assert params["tickSize"] == "0.0025"
+    assert await resolver.resolve(TOKEN) == Decimal("0.0025")
+
+
+@pytest.mark.asyncio
+async def test_resolved_arbitrary_tick_is_passed_to_ccxt_for_sells() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange, tick_size_resolver=PolymarketTickSizeResolver())
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="SELL",
+            size=Decimal("5"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+        )
+    )
+
+    assert result.success is True
+    _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
+    assert price == Decimal("0.4100")
+    assert params["tickSize"] == "0.0025"
+    assert "cost" not in params
+
+
+@pytest.mark.asyncio
+async def test_market_buy_minimum_is_checked_in_shares_not_usdc_cost() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    accepted = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("2.05"),  # 5 shares at a 0.41 max price
+            price_limit=Decimal("0.41"),
+            condition_id="condition",
+        )
+    )
+    assert accepted.success is True
+
+    with pytest.raises(VenueInvalidOrderError, match="below minimum"):
+        await gateway.submit_marketable_order(
+            MarketableOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                size=Decimal("2.04"),
+                price_limit=Decimal("0.41"),
+                condition_id="condition",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_execution_metadata_refreshes_before_each_signed_order() -> None:
+    exchange = FakeExchange()
+    exchange.outcome_value["precision"]["price"] = "0.01"
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = "0.01"
+    gateway = CcxtPredictionGateway(exchange)
+
+    # Seed the adapter with the old rule, then simulate Polymarket's runtime
+    # tick-size transition before the next order is signed.
+    await gateway.get_orderbook(TOKEN)
+    exchange.outcome_value["precision"]["price"] = "0.0025"
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = "0.0025"
+
+    await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.413"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+
+    _, _, _, _, price, params = exchange.created[-1]
+    assert exchange.fetch_order_book_calls >= 2
+    assert Decimal(str(price)) == Decimal("0.4125")
+    assert params["tickSize"] == "0.0025"
+
+
+class RawClobBookFakeExchange(FakeExchange):
+    """Fake exposing CCXT's generated implicit raw CLOB book endpoint.
+
+    The raw response mirrors the live venue shape verified against
+    ``GET https://clob.polymarket.com/book?token_id=...``: top-level
+    ``tick_size``, ``min_order_size``, ``neg_risk``, ``hash``, and dict levels.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clob_book_calls = 0
+        # The outcome cache deliberately disagrees with the raw book so the
+        # tests can prove the fresh CLOB book is the execution authority.
+        self.outcome_value = {
+            "outcome": "market-slug:YES",
+            "outcomeId": TOKEN,
+            "market": "0xcondition",
+            "precision": {"amount": "0.01", "price": "0.01"},
+            "negRisk": False,
+            "info": {
+                "orderMinSize": "5",
+                "orderPriceMinTickSize": "0.01",
+                "negRisk": False,
+            },
+        }
+        self.raw_clob_book = {
+            "market": "0xcondition",
+            "asset_id": TOKEN,
+            "timestamp": "1777541385018",
+            "hash": "bfb61f58dab4055d956eb5e758dbc9101c9a4e6c",
+            "bids": [{"price": "0.40", "size": "20"}],
+            "asks": [{"price": "0.42", "size": "10"}],
+            "min_order_size": "5",
+            "tick_size": "0.01",
+            "neg_risk": False,
+            "last_trade_price": "0.41",
+        }
+
+    async def clobPublicGetBook(self, params):  # noqa: N802 - CCXT generated name
+        assert params == {"token_id": TOKEN}
+        self.clob_book_calls += 1
+        return self.raw_clob_book
+
+
+@pytest.mark.asyncio
+async def test_metadata_resolves_from_realistic_gamma_outcome_when_parsed_book_has_no_info() -> (
+    None
+):
+    exchange = FakeExchange()
+    exchange.outcome_value = {
+        "outcomeId": TOKEN,
+        "precision": {"price": "0.005"},
+        "negRisk": False,
+        "info": {"orderMinSize": "5"},
+    }
+    gateway = CcxtPredictionGateway(exchange)
+
+    book = await gateway.get_orderbook(TOKEN)
+
+    assert book.tick_size == Decimal("0.005")
+    assert book.min_order_size == Decimal("5")
+    assert book.neg_risk is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_sources_metadata_from_raw_clob_book_and_picks_up_tick_change() -> None:
+    exchange = RawClobBookFakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    first = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.415"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+    assert first.success is True
+    _, _, _, _, price, params = exchange.created[-1]
+    assert params["tickSize"] == "0.01"
+    assert Decimal(str(price)) == Decimal("0.41")
+
+    # The venue changes the tick rule while the market is live. The stale
+    # cached metadata and the stale outcome cache both still say 0.01; only
+    # the fresh raw CLOB book carries the new rule and it must win.
+    exchange.raw_clob_book["tick_size"] = "0.005"
+    second = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.412"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+    assert second.success is True
+    _, _, _, _, price, params = exchange.created[-1]
+    assert params["tickSize"] == "0.005"
+    assert Decimal(str(price)) == Decimal("0.41")
+    assert exchange.clob_book_calls >= 2
+    # Metadata must come from the raw CLOB book, not the metadata-free parsed book.
+    assert exchange.fetch_order_book_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_fails_closed_when_raw_book_and_outcome_omit_a_field() -> None:
+    exchange = RawClobBookFakeExchange()
+    del exchange.raw_clob_book["neg_risk"]
+    exchange.outcome_value = {}
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="omitted"):
+        await gateway.submit_limit_order(
+            LimitOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                price=Decimal("0.41"),
+                size=Decimal("5"),
+                condition_id="condition",
+            )
+        )
+    assert exchange.created == []
+
+
+@pytest.mark.asyncio
+async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_is_missing() -> (
+    None
+):
+    exchange = FakeExchange()
+    exchange.has["fetchOrder"] = False
+    report = await CcxtPredictionGateway(exchange).check_compatibility()
+    assert report["available"] is False
+    assert "fetchOrder" in report["missing_methods"]
+
+    exchange = FakeExchange()
+    exchange.options["signatureType"] = 0
+    report = await CcxtPredictionGateway(exchange).check_compatibility()
+    assert report["available"] is False
+    assert report["error"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "price_limit", "expected"),
+    [
+        # 0.6846 / 0.0025 = 273.84 ticks -> a marketable BUY takes tick 274.
+        ("BUY", "0.6846", "0.6850"),
+        # 0.5225 / 0.0025 = 209.0 ticks -> already on the grid, unchanged.
+        ("SELL", "0.5225", "0.5225"),
+        # A marketable SELL floor rounds down toward crossing.
+        ("SELL", "0.5230", "0.5225"),
+    ],
+)
+async def test_marketable_order_quantizes_toward_crossing(
+    side: str, price_limit: str, expected: str
+) -> None:
+    """A FAK price must round toward the book, never away from it.
+
+    Rounding a BUY down to the tick shaves the band that makes the order
+    marketable; the venue answers an uncrossable FAK with
+    ``no orders found to match with FAK order`` rather than resting it.
+    """
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side=side,
+            size=Decimal("30.00"),
+            price_limit=Decimal(price_limit),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert result.effective_price == Decimal(expected)
+    signed_price = exchange.created[0][4]
+    assert Decimal(str(signed_price)) == Decimal(expected)
+
+
+@pytest.mark.asyncio
+async def test_limit_order_still_quantizes_conservatively() -> None:
+    """A resting GTC limit keeps cap-preserving rounding."""
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("30.00"),
+            price=Decimal("0.6846"),
+            condition_id="condition",
+        )
+    )
+
+    assert Decimal(str(exchange.created[0][4])) == Decimal("0.6825")

@@ -1,18 +1,20 @@
 """bot reconcile — trigger reconciliation of all unconfirmed orders."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
 
 
 def register_reconcile_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the reconciliation command with the CLI parser."""
     parser = subparsers.add_parser("reconcile", help="Trigger reconciliation of unconfirmed orders")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be reconciled without acting")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be reconciled without acting"
+    )
     parser.add_argument("--user-id", default=None, help="Reconcile orders for a specific user only")
 
 
@@ -56,8 +58,6 @@ async def _fetch_unconfirmed_pg(pool, user_id: str | None) -> list[dict]:
 
 async def _run_reconcile_async(args: argparse.Namespace) -> int:
     try:
-        load_runtime_env()
-        rehydrate_env()
         config = load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))
@@ -72,7 +72,6 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
     # raise on DSN-change guard or silently return a stale pool if the
     # interleaved ``shutdown_pool`` failed.
     from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.orders_repo import OrdersRepo
 
     pool = await init_pool(
         config.database.dsn,
@@ -99,27 +98,12 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
 
         if unconfirmed:
             try:
-                from integrations.polymarket.clob_v2_gateway import PolymarketGateway
-                from integrations.polymarket.sdk_client import create_polymarket_client
-                from services.reconciliation import ReconciliationService
+                from orchestration.reconciliation_command import ReconciliationCommandService
 
-                wallet = config.wallet
-                client = await create_polymarket_client(wallet_config=wallet, config=config)
-                gateway = PolymarketGateway(client, config)
-                try:
-                    orders_repo = OrdersRepo(pool)
-
-                    svc = ReconciliationService(
-                        clob_client=gateway,
-                        orders_repo=orders_repo,
-                        config=config,
-                    )
-                    result = await svc.reconcile()
-                    reconciled = result.stale_orders_cancelled
-                    if result.errors:
-                        errors = result.errors
-                finally:
-                    await gateway.close()
+                result = await ReconciliationCommandService(config=config, pool=pool).run()
+                reconciled = result.stale_orders_cancelled
+                if result.errors:
+                    errors = result.errors
             except Exception as exc:
                 errors.append(str(exc))
     finally:
@@ -136,4 +120,5 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
 
 
 def run_reconcile(args: argparse.Namespace) -> int:
+    """Run the requested reconciliation operation."""
     return asyncio.run(_run_reconcile_async(args))

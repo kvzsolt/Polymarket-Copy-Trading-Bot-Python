@@ -1,3 +1,5 @@
+"""Run fail-closed startup checks before trading begins."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from decimal import Decimal  # noqa: F401 — used in stringified type hints
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
@@ -38,6 +40,8 @@ _SUCCESS_ORDER_STATUSES = {
 
 @dataclass(frozen=True)
 class StartupHealthCheckItem:
+    """Describe one sanitized startup health check result."""
+
     status: str
     message: str
     details: dict[str, Any] = field(default_factory=dict)
@@ -45,6 +49,8 @@ class StartupHealthCheckItem:
 
 @dataclass(frozen=True)
 class PositionSyncResult:
+    """Describe startup position synchronization counts."""
+
     persisted_before: int
     persisted_after: int
     live_count: int
@@ -55,10 +61,13 @@ class PositionSyncResult:
     # pruning is SKIPPED (a transient venue/data-API failure must never be
     # read as "the wallet holds nothing" and delete the local ledger).
     fetch_failed: bool = False
+    deferred_positions: int = 0
 
 
 @dataclass(frozen=True)
 class OrderStartupCleanupResult:
+    """Describe startup normalization of persisted order states."""
+
     normalized_pending: int
     normalized_delayed: int
     normalized_retry_pending: int
@@ -68,6 +77,8 @@ class OrderStartupCleanupResult:
 
 @dataclass(frozen=True)
 class StartupHealthReport:
+    """Aggregate fail-closed startup health results."""
+
     healthy: bool
     status: str
     timestamp: int
@@ -79,16 +90,14 @@ class StartupHealthReport:
     order_cleanup: OrderStartupCleanupResult
 
     def as_log_payload(self) -> dict[str, Any]:
+        """Return a secret-safe structured logging payload."""
         return {
             "type": "startup_health_check",
             "healthy": self.healthy,
             "status": self.status,
             "timestamp": self.timestamp,
             "wallet": self.wallet,
-            "checks": {
-                name: asdict(item)
-                for name, item in self.checks.items()
-            },
+            "checks": {name: asdict(item) for name, item in self.checks.items()},
             "positionSync": asdict(self.position_sync),
             "orderStatusCounts": dict(self.order_status_counts),
             "orderSummary": dict(self.order_summary),
@@ -107,7 +116,7 @@ async def _check_rpc(rpc_url: str) -> StartupHealthCheckItem:
                     "params": [],
                     "id": 1,
                 },
-                timeout=5,
+                timeout=ClientTimeout(total=5),
             ) as response:
                 if response.status != 200:
                     return StartupHealthCheckItem(
@@ -137,10 +146,12 @@ async def _check_rpc(rpc_url: str) -> StartupHealthCheckItem:
 
 
 async def _check_polymarket_api() -> StartupHealthCheckItem:
-    url = "https://data-api.polymarket.com/positions?user=0x0000000000000000000000000000000000000000"
+    url = (
+        "https://data-api.polymarket.com/positions?user=0x0000000000000000000000000000000000000000"
+    )
     try:
         async with ClientSession() as session:
-            async with session.get(url, timeout=5) as response:
+            async with session.get(url, timeout=ClientTimeout(total=5)) as response:
                 if response.status != 200:
                     return StartupHealthCheckItem(
                         status="error",
@@ -206,7 +217,9 @@ def _live_position_keys(live_positions: list[dict[str, Any]]) -> set[tuple[str, 
     keys: set[tuple[str, str]] = set()
     for position in live_positions:
         condition_id = str(position.get("conditionId") or position.get("condition_id") or "")
-        token_id = str(position.get("tokenID") or position.get("token_id") or position.get("asset") or "")
+        token_id = str(
+            position.get("tokenID") or position.get("token_id") or position.get("asset") or ""
+        )
         keys.update(_position_key_variants(condition_id, token_id))
     return keys
 
@@ -217,7 +230,14 @@ async def reconcile_persisted_positions_to_live(
     user_id: str,
     live_positions: list[dict[str, Any]] | None,
 ) -> PositionSyncResult:
-    persisted = await positions_repo.list_open_positions(user_id)
+    """Inspect inventory while leaving mutations to post-recovery canonical sync.
+
+    The supplied venue snapshot predates this local read, so it cannot prove
+    whether a fill committed during that interval. Retain the SELL cost basis
+    until recovery finishes and manual synchronization captures fresh evidence
+    in the correct order for a guarded mutation.
+    """
+    persisted = await positions_repo.list_held_positions(user_id)
 
     # Fail closed: a None snapshot means the live-position fetch failed. We must
     # not prune — deleting every persisted position because a transient API
@@ -242,31 +262,28 @@ async def reconcile_persisted_positions_to_live(
         if not record_keys.intersection(live_keys):
             stale.append(record)
 
-    for record in stale:
-        await positions_repo.delete_position(
-            user_id,
-            record.condition_id,
-            token_id=record.token_id,
-        )
-
     return PositionSyncResult(
         persisted_before=len(persisted),
-        persisted_after=len(persisted) - len(stale),
+        persisted_after=len(persisted),
         live_count=len(live_positions),
-        pruned_positions=len(stale),
-        pruned_condition_ids=tuple(record.condition_id for record in stale[:12]),
-        pruned_token_ids=tuple(record.token_id for record in stale[:12]),
+        pruned_positions=0,
+        pruned_condition_ids=(),
+        pruned_token_ids=(),
+        deferred_positions=len(stale),
     )
 
 
 async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartupCleanupResult:
+    """Normalize nonterminal persisted orders before trading starts."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
-                    COALESCE(SUM(CASE WHEN status = 'delayed' AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock')
+                                       AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed'
+                                       AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
                     COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
                 FROM orders
                 WHERE user_id = $1
@@ -450,9 +467,7 @@ def _orders_check(
     if order_cleanup.purged_failed > 0 or order_cleanup.normalized_total > 0:
         return StartupHealthCheckItem(
             status="warning",
-            message=(
-                f"{message} | startup_purged_failed={order_cleanup.purged_failed}"
-            ),
+            message=(f"{message} | startup_purged_failed={order_cleanup.purged_failed}"),
             details=details,
         )
     if summary["failed"] > 0:
@@ -475,6 +490,15 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
             message=(
                 f"live position snapshot fetch failed; skipped pruning "
                 f"{sync.persisted_before} persisted position(s) (fail-closed)"
+            ),
+            details=asdict(sync),
+        )
+    if sync.deferred_positions > 0:
+        return StartupHealthCheckItem(
+            status="warning",
+            message=(
+                f"preserved {sync.deferred_positions} position(s) for canonical "
+                "synchronization after fill recovery"
             ),
             details=asdict(sync),
         )
@@ -527,22 +551,22 @@ async def _check_clob_gateway(
             status="error",
             message=f"CLOB gateway compatibility probe raised: {exc!s}",
         )
-    sdk_ok = bool(report.get("sdk_available"))
-    if not sdk_ok:
+    transport_ok = bool(report.get("available"))
+    if not transport_ok:
         return StartupHealthCheckItem(
             status="error",
-            message=str(report.get("error") or "CLOB SDK not available"),
+            message=str(report.get("error") or "CCXT Polymarket transport is not available"),
             details=report,
         )
     if require_authenticated and not bool(report.get("authenticated")):
         return StartupHealthCheckItem(
             status="error",
-            message="Unified Polymarket SDK is public-only; live authentication is required",
+            message="CCXT Polymarket transport is public-only; live authentication is required",
             details=report,
         )
     return StartupHealthCheckItem(
         status="ok",
-        message="Unified Polymarket gateway ready",
+        message="CCXT Polymarket gateway ready",
         details=report,
     )
 
@@ -561,6 +585,7 @@ async def perform_startup_health_check(
     clob_gateway: ClobGateway | None = None,
     require_live_clob: bool = False,
 ) -> StartupHealthReport:
+    """Run the fail-closed startup health sequence."""
     rpc_check, polymarket_check, clob_check = await asyncio.gather(
         _check_rpc(rpc_url),
         _check_polymarket_api(),

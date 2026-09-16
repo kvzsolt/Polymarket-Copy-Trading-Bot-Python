@@ -6,11 +6,13 @@ authoritative, and even then a single settlement transaction can emit multiple
 fill logs, so the final dedupe key is ``(tx_hash, log_index)`` — never
 ``tx_hash`` alone.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from domain.source_time import TransportReceipt
 
 
 class DetectionConfidence(StrEnum):
@@ -63,26 +65,30 @@ class OnchainTradeSignal:
     confidence: DetectionConfidence
     maker_side: int
     watched_role: str
-    event_ts: int
+    event_ts: int | None
     log_index: int | None
     condition_id: str
     provisional: bool
     exchange: str
     order_hash: str | None
+    block_number: int | None = None
+    block_hash: str = ""
+    leader_sell_fraction: Decimal | None = None
+    sell_fraction_resolution: str = ""
+    source_receipt: TransportReceipt | None = None
 
     def as_raw_signal_dict(self) -> dict[str, object]:
-        """Render as a raw signal dict shaped for ``normalize_trade_signal``.
+        """Render as a raw signal dict shaped for the copy pipeline.
 
-        ``normalize_trade_signal`` (services/copy/signal_normalizer.py) reads
+        ``orchestrators.trade_pipeline.execute_trades`` consumes
         ``leader_id``/``leader_wallet``, ``condition_id``, ``token_id``,
         ``side`` in {BUY,SELL}, ``size``/``size_tokens``, ``price``,
         ``usdc_size``/``notional``, ``tx_hash``, ``event_ts``/``timestamp``.
-        A blank ``condition_id`` makes the normalizer return ``None`` (signal
-        dropped) — acceptable for an inert-by-default feature; the runtime
-        enriches condition_id where it can (pending: from calldata; mined:
-        via Gamma lookup).
+        A blank ``condition_id`` drops the signal downstream — acceptable for
+        an inert-by-default feature; the runtime enriches condition_id where
+        it can (pending: from calldata; mined: via Gamma lookup).
         """
-        return {
+        raw: dict[str, object] = {
             "leader_id": self.leader_wallet,
             "leader_wallet": self.leader_wallet,
             "condition_id": self.condition_id,
@@ -95,15 +101,30 @@ class OnchainTradeSignal:
             "usdc_size": str(self.usdc_size),
             "notional": str(self.usdc_size),
             "tx_hash": self.tx_hash,
-            "event_ts": self.event_ts,
-            "timestamp": self.event_ts,
+            "event_ts": None if self.provisional else self.event_ts,
+            "timestamp": None if self.provisional else self.event_ts,
+            "timestamp_unit": "milliseconds",
+            "timestamp_provenance": (
+                "pending_receipt"
+                if self.provisional
+                else "block_timestamp"
+                if self.event_ts is not None
+                else "unknown"
+            ),
+            "_source_receipt": self.source_receipt,
             "detection_confidence": str(self.confidence),
             "log_index": self.log_index,
             "provisional": self.provisional,
             "exchange": self.exchange,
             "watched_role": self.watched_role,
             "order_hash": self.order_hash,
+            "block_number": self.block_number,
+            "block_hash": self.block_hash,
         }
+        if self.leader_sell_fraction is not None:
+            raw["_leader_sell_fraction"] = str(self.leader_sell_fraction)
+            raw["_leader_sell_fraction_resolution"] = self.sell_fraction_resolution
+        return raw
 
 
 def watched_side_from_maker_side(maker_side: int, watched_role: str) -> str:

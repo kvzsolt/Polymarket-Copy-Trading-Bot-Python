@@ -6,6 +6,7 @@ The durable source of in-flight reservation ownership is
 reserved amount accounting match the database instead of relying on fake order
 columns that the submission ``OrdersRepo`` does not own.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 from domain.order_lifecycle import IntentSide as LifecycleIntentSide
 from services.intentRegistry import (
     IntentRegistry,
+    IntentRecord,
     IntentSide as RegistryIntentSide,
     IntentState,
     Reservation as IntentReservation,
@@ -40,59 +42,47 @@ async def recover_intents_from_db(
     Only active rows from ``order_reservations`` are recovered. Released rows
     have already reached a terminal decision and must not re-open an intent.
     """
-    active_reservations = await reservations_repo.list_active()
-    if not active_reservations:
-        logger.info("intent.recovery no active reservations to recover")
-        return 0
+    return await IntentRecoveryService(registry, reservations_repo).restore()
 
-    recovered = 0
-    for res in active_reservations:
-        scope = PositionScope(
-            user_id=res.user_id,
-            condition_id=res.condition_id,
-            token_id=res.token_id,
-        )
-        intent_id = res.order_id or res.id
+
+class IntentRecoveryService:
+    """Rebuild every allocation from durable reservation ownership or fail startup."""
+
+    def __init__(self, registry: IntentRegistry, reservations_repo: ReservationsRepo) -> None:
+        """Inject the process projection and the existing durable reader."""
+        self._registry = registry
+        self._reservations = reservations_repo
+
+    async def restore(self) -> int:
+        """Return the number of restored rows, preserving cancellation and sanitized failures."""
         try:
-            await registry.begin_intent(
-                scope=scope,
-                side=_registry_side(res.side),
-                reservation=IntentReservation(
-                    quote_usdc=res.reserved_usdc,
-                    token_shares=res.reserved_size,
-                ),
-                intent_id=intent_id,
-            )
-            if res.order_id or res.venue_order_id:
-                await registry.transition(
-                    intent_id=intent_id,
-                    new_state=IntentState.CONFIRMING,
-                    venue_order_id=res.venue_order_id,
+            active = await self._reservations.list_active()
+            for reservation in active:
+                await self._registry.restore_intent(
+                    IntentRecord(
+                        intent_id=reservation.order_id or reservation.id,
+                        scope=PositionScope(
+                            user_id=reservation.user_id,
+                            condition_id=reservation.condition_id,
+                            token_id=reservation.token_id,
+                        ),
+                        side=_registry_side(reservation.side),
+                        reservation=IntentReservation(
+                            quote_usdc=reservation.reserved_usdc,
+                            token_shares=reservation.reserved_size,
+                        ),
+                        state=(
+                            IntentState.CONFIRMING
+                            if reservation.order_id or reservation.venue_order_id
+                            else IntentState.INTENT_PENDING
+                        ),
+                        created_at=reservation.created_at.timestamp(),
+                        updated_at=reservation.created_at.timestamp(),
+                        venue_order_id=reservation.venue_order_id,
+                    )
                 )
-            recovered += 1
-            logger.info(
-                "intent.recovery reservation_id=%s intent_id=%s scope=(%s,%s,%s) "
-                "side=%s reserved_usdc=%s reserved_size=%s",
-                res.id,
-                intent_id,
-                res.user_id,
-                res.condition_id,
-                res.token_id,
-                res.side.value,
-                res.reserved_usdc,
-                res.reserved_size,
-            )
         except Exception as exc:
-            logger.warning(
-                "intent.recovery.skip reservation_id=%s intent_id=%s error=%s",
-                res.id,
-                intent_id,
-                exc,
-            )
-
-    logger.info(
-        "intent.recovery recovered=%d total_active=%d",
-        recovered,
-        len(active_reservations),
-    )
-    return recovered
+            logger.error("intent_recovery_failed", extra={"error_type": type(exc).__name__})
+            raise RuntimeError("reservation ownership recovery unavailable") from None
+        logger.info("intent.recovery recovered=%d", len(active))
+        return len(active)

@@ -1,4 +1,5 @@
 """Trading intent types — normalized signals and resolved trading intents."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -17,23 +17,55 @@ from __future__ import annotations
 
 import asyncio
 import time
+import math
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from domain.units import BASIS_POINTS_PER_UNIT
-from typing import Any
+from domain.source_time import TransportReceipt
+from typing import Any, Protocol
 
-from cache.market_state_store import MarketStateStore
+from cache.market_state_store import BookSnapshot, MarketStateStore, QuoteSnapshot
 from clients.market_ws import DEFAULT_MARKET_WS_URL, MarketWebSocket
 from integrations.polymarket.errors import VenueOrderbookNotFoundError
 from interfaces.clob_gateway import ClobGateway
-from services.healthServer import ReadinessTracker
+from interfaces.readiness import ReadinessWriter
+from services.telemetry import WssTelemetryEmitter
+from services.telemetry.latency import PipelineLatency
+from services.metrics import LatencyPhase
 from utils.logger import get_logger
 
 logger = get_logger("MarketDataRuntime")
 
+_WSS_STREAM = "market"
+"""Bounded telemetry stream name owned by this runtime."""
+
+
+class MarketQuoteSink(Protocol):
+    """Receive safe two-sided quote projections without owning market state."""
+
+    def record(
+        self,
+        *,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        source: str,
+    ) -> None:
+        """Record one authoritative quote without blocking the WSS callback."""
+
+        ...
+
+    def discard(self, token_id: str) -> None:
+        """Discard a token after authoritative market resolution."""
+
+        ...
+
 
 @dataclass
 class MarketDataRuntimeStatus:
+    """Describe the current shared market-data runtime state."""
+
     running: bool = False
     subscribed_token_count: int = 0
     stale_token_count: int = 0
@@ -50,16 +82,36 @@ class MarketDataRuntime:
 
     It subscribes to token ids, bootstraps each token with REST snapshots, then
     lets MarketWebSocket keep the MarketStateStore fresh.
+
+    Stream lifecycle events are reported from the callbacks this runtime
+    already owns. DISCONNECTED is not paired one-for-one with CONNECTED: the
+    client fires ``on_disconnected`` from the ``finally`` of its connect
+    attempt (``clients/market_ws.py`` ``_run``), so a failed reconnect
+    attempt emits DISCONNECTED with no preceding CONNECTED, and a reconnect
+    storm emits one per attempt. That is truthful and the hub is bounded and
+    drop-on-overflow, so it is left as-is; ``_ever_connected`` only flips on an
+    actual connection, which is what keeps the first real
+    connection reporting CONNECTED rather than RECONNECTED after such a storm.
     """
 
     market_store: MarketStateStore
     gateway: ClobGateway
-    readiness: ReadinessTracker
+    readiness: ReadinessWriter
     config: Any
     ws_url: str = DEFAULT_MARKET_WS_URL
+    quote_sink: MarketQuoteSink | None = None
+    # Operator WSS lifecycle emitter. ``None`` keeps the runtime free of both
+    # cost and branching; the emitter itself is synchronous, never awaited and
+    # never raises, so a degraded telemetry backend cannot break the stream.
+    telemetry: WssTelemetryEmitter | None = None
+    latency: PipelineLatency | None = None
+    monotonic: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    _recovery_started: TransportReceipt | None = field(default=None, init=False)
 
     _ws_client: MarketWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
+    _freshness_task: asyncio.Task[None] | None = field(default=None, init=False)
     _subscribed_tokens: set[str] = field(default_factory=set, init=False)
     _status: MarketDataRuntimeStatus = field(
         default_factory=MarketDataRuntimeStatus,
@@ -68,6 +120,9 @@ class MarketDataRuntime:
     _last_wss_message_at: float = field(default=0.0, init=False)
     _wss_connected: bool = field(default=False, init=False)
     _wss_degraded_log_last: float = field(default=0.0, init=False)
+    # Distinguishes the first successful connection from every later one, so
+    # an operator sees "connected" once and "reconnected" for each recovery.
+    _ever_connected: bool = field(default=False, init=False)
 
     async def start(self, initial_token_ids: list[str]) -> None:
         """Start market WSS runtime.
@@ -97,6 +152,7 @@ class MarketDataRuntime:
             on_connected=self._on_wss_connected,
             on_disconnected=self._on_wss_disconnected,
             on_state_change=self._on_market_state_change,
+            on_quote_invalidated=self._on_quote_invalidated,
         )
 
         self._ws_task = asyncio.create_task(
@@ -110,6 +166,9 @@ class MarketDataRuntime:
             market_data_ready=False,
             subscribed_token_count=len(self._subscribed_tokens),
         )
+        self._freshness_task = asyncio.create_task(
+            self._run_freshness_checks(), name="market-freshness-runtime"
+        )
 
         logger.info(
             "market_data_runtime_starting | subscribed_tokens=%d",
@@ -121,33 +180,32 @@ class MarketDataRuntime:
         self._status.running = False
         self._wss_connected = False
 
-        if self._ws_client is not None:
-            try:
-                await self._ws_client.stop()
-            except Exception as exc:
-                logger.warning("market_ws_stop_error | error=%r", exc)
-
-        if self._ws_task is not None:
-            self._ws_task.cancel()
-            try:
-                await self._ws_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.warning("market_ws_task_stop_error | error=%r", exc)
-
-        self._ws_client = None
-        self._ws_task = None
-
-        self.market_store.mark_all_stale("market_data_runtime_stopped")
-
-        self._update_readiness(
-            wss_market_ok=False,
-            market_data_ready=False,
-            last_error="stopped",
-        )
-
-        logger.info("market_data_runtime_stopped")
+        try:
+            if self._ws_client is not None:
+                try:
+                    await self._ws_client.stop()
+                except Exception as exc:
+                    logger.warning("market_ws_stop_error | error_type=%s", type(exc).__name__)
+        finally:
+            tasks = tuple(
+                task for task in (self._ws_task, self._freshness_task) if task is not None
+            )
+            for task in tasks:
+                task.cancel()
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, Exception):
+                    logger.warning(
+                        "market_runtime_task_stop_error | error_type=%s", type(outcome).__name__
+                    )
+            self._ws_client = None
+            self._ws_task = None
+            self._freshness_task = None
+            self.market_store.mark_all_stale("market_data_runtime_stopped")
+            self._update_readiness(
+                wss_market_ok=False, market_data_ready=False, last_error="stopped"
+            )
+            logger.info("market_data_runtime_stopped")
 
     async def subscribe_tokens(self, token_ids: list[str]) -> None:
         """Subscribe additional token ids at runtime."""
@@ -184,7 +242,7 @@ class MarketDataRuntime:
         Returns True when the token has executable data (WSS or fresh rest_bootstrap).
         Does NOT mark dirty — rest_bootstrap data is immediately usable if policy allows.
         """
-        t_start = time.monotonic()
+        t_start = self.monotonic()
 
         if self._token_executable(token_id):
             return True
@@ -219,7 +277,7 @@ class MarketDataRuntime:
             )
             return False
 
-        elapsed_ms = (time.monotonic() - t_start) * 1000
+        elapsed_ms = (self.monotonic() - t_start) * 1000
         if elapsed_ms >= cfg["total_budget_ms"]:
             logger.warning(
                 "market_data_bootstrap_timeout | token_id=%s elapsed_ms=%.1f",
@@ -231,7 +289,7 @@ class MarketDataRuntime:
         logger.info(
             "market_data_rest_bootstrap_start | token_id=%s cond=%s", token_id, condition_id
         )
-        fetch_start = time.monotonic()
+        fetch_start = self.monotonic()
 
         try:
             book = await asyncio.wait_for(
@@ -253,13 +311,13 @@ class MarketDataRuntime:
             return False
         except Exception as exc:
             logger.warning(
-                "market_data_rest_bootstrap_rejected | token_id=%s reason=fetch_error error=%r",
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=fetch_error error_type=%s",
                 token_id,
-                exc,
+                type(exc).__name__,
             )
             return False
 
-        request_ms = (time.monotonic() - fetch_start) * 1000
+        request_ms = (self.monotonic() - fetch_start) * 1000
 
         bids: dict[Decimal, Decimal] = {}
         asks: dict[Decimal, Decimal] = {}
@@ -300,9 +358,7 @@ class MarketDataRuntime:
                 token_id,
             )
             return False
-        spread_bps = int(
-            ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
-        )
+        spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
         if cfg["max_spread_bps"] > 0 and spread_bps > cfg["max_spread_bps"]:
             logger.warning(
                 "market_data_rest_bootstrap_rejected | token_id=%s reason=wide_spread"
@@ -320,7 +376,7 @@ class MarketDataRuntime:
             raw_event={"source": "rest_bootstrap", "condition_id": condition_id},
         )
 
-        prefetch_elapsed_ms = (time.monotonic() - t_start) * 1000
+        prefetch_elapsed_ms = (self.monotonic() - t_start) * 1000
         tick = self.market_store.get_tick(token_id)
         if tick is None:
             remaining_ms = cfg["total_budget_ms"] - prefetch_elapsed_ms
@@ -333,9 +389,7 @@ class MarketDataRuntime:
                             cfg["request_timeout_ms"] / 1000.0,
                         ),
                     )
-                    tick_size = _to_decimal(
-                        info.get("tick_size") or info.get("minimum_tick_size")
-                    )
+                    tick_size = _to_decimal(info.get("tick_size") or info.get("minimum_tick_size"))
                     min_order_size = _to_decimal(
                         info.get("min_order_size")
                         or info.get("minimum_order_size")
@@ -362,12 +416,12 @@ class MarketDataRuntime:
                     # operators see chronic tick-fetch failures (e.g. SDK
                     # auth issue, network partition) instead of silent drop.
                     logger.debug(
-                        "market_data_bootstrap_tick_fetch_failed | token_id=%s error=%r",
+                        "market_data_bootstrap_tick_fetch_failed | token_id=%s error_type=%s",
                         token_id,
-                        exc,
+                        type(exc).__name__,
                     )
 
-        prefetch_elapsed_ms = (time.monotonic() - t_start) * 1000
+        prefetch_elapsed_ms = (self.monotonic() - t_start) * 1000
 
         if prefetch_elapsed_ms > cfg["total_budget_ms"]:
             logger.warning(
@@ -400,15 +454,9 @@ class MarketDataRuntime:
         return {
             "enable": bool(getattr(cfg_obj, "enable_rest_bootstrap", True)),
             "max_age_ms": int(getattr(cfg_obj, "rest_bootstrap_max_age_ms", 500)),
-            "request_timeout_ms": int(
-                getattr(cfg_obj, "rest_bootstrap_request_timeout_ms", 750)
-            ),
-            "total_budget_ms": int(
-                getattr(cfg_obj, "rest_bootstrap_total_budget_ms", 1000)
-            ),
-            "max_spread_bps": int(
-                getattr(cfg_obj, "rest_bootstrap_max_spread_bps", 300)
-            ),
+            "request_timeout_ms": int(getattr(cfg_obj, "rest_bootstrap_request_timeout_ms", 750)),
+            "total_budget_ms": int(getattr(cfg_obj, "rest_bootstrap_total_budget_ms", 1000)),
+            "max_spread_bps": int(getattr(cfg_obj, "rest_bootstrap_max_spread_bps", 300)),
             "require_wss_connected": bool(
                 getattr(cfg_obj, "rest_bootstrap_require_wss_connected", True)
             ),
@@ -463,17 +511,18 @@ class MarketDataRuntime:
                 )
             except Exception as exc:
                 self.market_store.mark_dirty(token_id, "rest_bootstrap_failed")
-                self._status.last_error = repr(exc)
+                self._status.last_error = type(exc).__name__
                 logger.warning(
-                    "market_data_bootstrap_failed | token_id=%s error=%r",
+                    "market_data_bootstrap_failed | token_id=%s error_type=%s",
                     token_id,
-                    exc,
+                    type(exc).__name__,
                 )
 
         self._refresh_counts()
         self._update_readiness_from_store()
 
     def status(self) -> MarketDataRuntimeStatus:
+        """Return an immutable market-data runtime status snapshot."""
         self._refresh_counts()
         return MarketDataRuntimeStatus(
             running=self._status.running,
@@ -491,19 +540,31 @@ class MarketDataRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._status.last_error = repr(exc)
+            self._status.last_error = type(exc).__name__
             self.market_store.mark_all_stale("market_ws_task_failed")
             self._update_readiness(
                 wss_market_ok=False,
                 market_data_ready=False,
-                last_error=repr(exc),
+                last_error=type(exc).__name__,
             )
-            logger.exception("market_ws_task_failed")
-            raise
+            self._status.running = False
+            logger.error("market_ws_task_failed | error_type=%s", type(exc).__name__)
+            raise RuntimeError("Market websocket task failed") from None
+
+    def _emit_wss_connected(self) -> None:
+        """Publish the first connection as CONNECTED, later ones as RECONNECTED."""
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        if self._ever_connected:
+            telemetry.reconnected(_WSS_STREAM)
+            return
+        self._ever_connected = True
+        telemetry.connected(_WSS_STREAM)
 
     async def _on_wss_connected(self) -> None:
         self._wss_connected = True
-        self._last_wss_message_at = time.monotonic()
+        self._last_wss_message_at = self.monotonic()
         self._status.last_error = None
         self._update_readiness(
             wss_market_ok=True,
@@ -515,10 +576,16 @@ class MarketDataRuntime:
             "market_wss_connected",
             extra={"subscribed_token_count": len(self._subscribed_tokens)},
         )
+        self._emit_wss_connected()
 
     async def _on_wss_disconnected(self) -> None:
+        if self.latency is not None and self._recovery_started is None:
+            self._recovery_started = self.latency.capture()
         self._wss_connected = False
         self.market_store.mark_all_stale("market_wss_disconnected")
+        if self.quote_sink is not None:
+            for token_id in self._subscribed_tokens:
+                self.quote_sink.discard(token_id)
         self._update_readiness(
             wss_market_ok=False,
             wss_market_connecting=False,
@@ -526,6 +593,8 @@ class MarketDataRuntime:
             last_error="market websocket disconnected",
         )
         logger.warning("market_wss_disconnected")
+        if self.telemetry is not None:
+            self.telemetry.disconnected(_WSS_STREAM)
 
     async def _bootstrap_one_token(self, token_id: str) -> None:
         book = await self.gateway.get_orderbook(token_id)
@@ -558,10 +627,7 @@ class MarketDataRuntime:
 
         info = await self.gateway.get_market_info(token_id)
 
-        tick_size = _to_decimal(
-            info.get("tick_size")
-            or info.get("minimum_tick_size")
-        )
+        tick_size = _to_decimal(info.get("tick_size") or info.get("minimum_tick_size"))
         min_order_size = _to_decimal(
             info.get("min_order_size")
             or info.get("minimum_order_size")
@@ -598,7 +664,9 @@ class MarketDataRuntime:
         dirty = 0
 
         for token_id in self._subscribed_tokens:
-            if self.market_store.is_stale(token_id):
+            if self.market_store.is_stale(token_id) or not self._prices_fresh(
+                self.market_store.get_quote(token_id), self.market_store.get_book(token_id)
+            ):
                 stale += 1
             if self.market_store.is_dirty(token_id):
                 dirty += 1
@@ -628,18 +696,55 @@ class MarketDataRuntime:
         tick = store.get_tick(token_id)
         if quote is None or book is None or tick is None:
             return False
+        if not self._prices_fresh(quote, book):
+            return False
         if (quote.source or "unknown") != "wss":
             return False
         if (book.source or "unknown") != "wss":
             return False
         return True
 
+    def _freshness_limits(self) -> tuple[float, float]:
+        market_config = getattr(self.config, "market_data", None)
+        quote_limit = float(getattr(market_config, "executable_quote_max_age_seconds", 2.0))
+        book_limit = float(getattr(market_config, "executable_book_max_age_seconds", 2.0))
+        if any(not math.isfinite(value) or value <= 0 for value in (quote_limit, book_limit)):
+            raise ValueError("Market freshness limits must be finite and positive")
+        return quote_limit, book_limit
+
+    def _prices_fresh(self, quote: QuoteSnapshot | None, book: BookSnapshot | None) -> bool:
+        if quote is None or book is None:
+            return False
+        quote_limit, book_limit = self._freshness_limits()
+        now = self.monotonic()
+        return (
+            quote.valid
+            and math.isfinite(now)
+            and 0 <= now - quote.monotonic_ts <= quote_limit
+            and 0 <= now - book.monotonic_ts <= book_limit
+        )
+
+    async def _run_freshness_checks(self) -> None:
+        try:
+            interval = min(self._freshness_limits()) / 2
+            while self._status.running:
+                self._update_readiness_from_store()
+                await self.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._status.running = False
+            self._status.last_error = type(exc).__name__
+            self._update_readiness(
+                market_data_ready=False, last_error="Market freshness check failed"
+            )
+            logger.error("market_freshness_check_failed | error_type=%s", type(exc).__name__)
+
     def _update_readiness_from_store(self) -> None:
         self._refresh_counts()
 
         all_executable = bool(self._subscribed_tokens) and all(
-            self._token_executable(token_id)
-            for token_id in self._subscribed_tokens
+            self._token_executable(token_id) for token_id in self._subscribed_tokens
         )
 
         market_ready = (
@@ -649,6 +754,15 @@ class MarketDataRuntime:
             and self._status.dirty_token_count == 0
             and all_executable
         )
+
+        if (
+            market_ready
+            and self._wss_connected
+            and self.latency is not None
+            and self._recovery_started is not None
+        ):
+            self.latency.observe(LatencyPhase.MARKET_RECONNECT_RECOVERY, self._recovery_started)
+            self._recovery_started = None
 
         self._update_readiness(
             market_data_ready=market_ready,
@@ -676,7 +790,7 @@ class MarketDataRuntime:
             return True
         if self._last_wss_message_at == 0.0:
             return False
-        return (time.monotonic() - self._last_wss_message_at) > threshold_seconds
+        return (self.monotonic() - self._last_wss_message_at) > threshold_seconds
 
     async def _await_wss_connected(self, timeout_seconds: float) -> bool:
         """Wait up to ``timeout_seconds`` for the market WSS to report connected.
@@ -689,8 +803,8 @@ class MarketDataRuntime:
             return True
         if timeout_seconds <= 0:
             return False
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
+        deadline = self.monotonic() + timeout_seconds
+        while self.monotonic() < deadline:
             if self._wss_connected:
                 return True
             if not self._status.running:
@@ -705,22 +819,66 @@ class MarketDataRuntime:
         tick_size_change / market_resolved events. Cheap; just recomputes the
         readiness gate from the store snapshot.
         """
-        self._last_wss_message_at = time.monotonic()
+        self._last_wss_message_at = self.monotonic()
+        self._project_shared_quote(token_id, event_type)
         try:
             self._update_readiness_from_store()
         except Exception as exc:
             logger.debug(
-                "market_data_state_change_recompute_failed | token=%s event=%s error=%r",
+                "market_data_state_change_recompute_failed | token=%s event=%s error_type=%s",
                 token_id,
                 event_type,
-                exc,
+                type(exc).__name__,
+            )
+
+    def _on_quote_invalidated(self, token_id: str) -> None:
+        """Invalidate the local execution projection before optional notifications.
+
+        This synchronous path only touches local health and quote-cache state;
+        it must never perform transport or database I/O.
+        """
+        self._update_readiness(market_data_ready=False)
+        if self.quote_sink is not None:
+            self.quote_sink.discard(token_id)
+
+    def _project_shared_quote(self, token_id: str, event_type: str) -> None:
+        """Project one safe quote without letting observers affect readiness."""
+
+        sink = self.quote_sink
+        if sink is None:
+            return
+        try:
+            if event_type == "market_resolved":
+                sink.discard(token_id)
+                return
+            quote = self.market_store.get_quote(token_id)
+            if quote is None or not quote.valid:
+                sink.discard(token_id)
+                return
+            if event_type not in {"book", "price_change", "best_bid_ask"}:
+                return
+            if quote.best_bid is None or quote.best_ask is None:
+                sink.discard(token_id)
+                return
+            sink.record(
+                token_id=token_id,
+                best_bid=quote.best_bid,
+                best_ask=quote.best_ask,
+                source=quote.source,
+            )
+        except Exception as exc:
+            logger.debug(
+                "market_data_quote_projection_failed | token=%s event=%s error_type=%s",
+                token_id,
+                event_type,
+                type(exc).__name__,
             )
 
     def _update_readiness(self, **fields: Any) -> None:
         try:
             self.readiness.update(**fields)
         except Exception as exc:
-            logger.debug("market_data_readiness_update_failed | error=%r", exc)
+            logger.debug("market_data_readiness_update_failed | error_type=%s", type(exc).__name__)
 
 
 def extract_token_ids_from_live_positions(positions: list[dict[str, Any]]) -> list[str]:

@@ -5,6 +5,7 @@ be truthy AND the circuit breaker must be ``closed``. Toggling any single
 flag false flips ``is_ready`` from True to False with the failing key
 identifiable for operator drill-down.
 """
+
 from __future__ import annotations
 
 import pytest

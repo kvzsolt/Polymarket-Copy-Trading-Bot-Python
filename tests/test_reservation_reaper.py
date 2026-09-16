@@ -6,6 +6,7 @@ stuck submitted_unconfirmed order would strand capital/shares until restart.
 ``app._reap_reservations_once`` is the standalone reaper used in that config; it
 delegates to the same vetted per-context reaper the risk loop uses.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

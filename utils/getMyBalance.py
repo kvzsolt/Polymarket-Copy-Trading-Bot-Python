@@ -33,24 +33,23 @@ def configure_from_appconfig(config: Any) -> None:
     path runs entirely off typed AppConfig.
     """
     global _RPC_URL, _COLLATERAL_CONTRACT_ADDRESS, _PUSD_CONTRACT_ADDRESS, _USDC_CONTRACT_ADDRESS
-    _RPC_URL = str(getattr(config.network, "rpc_url", "") or "")
+    _RPC_URL = str(getattr(config.polymarket, "rpc_url", "") or "")
     _COLLATERAL_CONTRACT_ADDRESS = str(
-        getattr(config.network, "collateral_contract_address", "") or ""
+        getattr(config.polymarket, "collateral_contract_address", "") or ""
     )
-    _PUSD_CONTRACT_ADDRESS = str(
-        getattr(config.network, "pusd_contract_address", "") or ""
-    )
-    _USDC_CONTRACT_ADDRESS = str(
-        getattr(config.network, "usdc_contract_address", "") or ""
-    )
+    _PUSD_CONTRACT_ADDRESS = str(getattr(config.polymarket, "pusd_contract_address", "") or "")
+    _USDC_CONTRACT_ADDRESS = str(getattr(config.polymarket, "usdc_contract_address", "") or "")
 
-USDC_ABI = [{
-    "constant": True,
-    "inputs": [{"name": "owner", "type": "address"}],
-    "name": "balanceOf",
-    "outputs": [{"name": "", "type": "uint256"}],
-    "type": "function"
-}]
+
+USDC_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function",
+    }
+]
 
 
 def _masked_address(address: str | None) -> str:
@@ -59,7 +58,6 @@ def _masked_address(address: str | None) -> str:
     if len(address) <= 10:
         return address
     return f"{address[:10]}..."
-
 
 
 def _get_balance_sync(address: str, fallback_rpc_url: str = "") -> Decimal | None:
@@ -78,7 +76,7 @@ def _get_balance_sync(address: str, fallback_rpc_url: str = "") -> Decimal | Non
     seen: set[str] = set()
     candidates: list[str] = []
     for raw in raw_candidates:
-        s = str(raw or '').strip()
+        s = str(raw or "").strip()
         if s and s not in seen:
             seen.add(s)
             candidates.append(s)

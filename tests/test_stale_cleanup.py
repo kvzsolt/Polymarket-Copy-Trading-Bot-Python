@@ -1,4 +1,5 @@
 """Tests for stale-record purge in async PG OrdersRepo + utils.idempotency."""
+
 from __future__ import annotations
 
 import contextlib
@@ -105,5 +106,6 @@ class TestIdempotencyPurge:
             await _insert_processed(pool, "new_trade", 1 * 86400)
 
             import utils.idempotency as idem
+
             total = await idem.purge_stale_records(30 * 86400)
             assert total == 1  # only the old trade

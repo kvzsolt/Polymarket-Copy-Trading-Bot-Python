@@ -76,10 +76,7 @@ def test_normalize_only_resets_pending_rows_without_order_id():
     update_sql = next(s for s in conn.executed if "UPDATE orders" in s)
     # Pending/delayed rows are normalized only when they carry no venue handle.
     assert "order_id IS NULL" in update_sql
-    assert (
-        "status IN ('pending', 'pending_lock', 'delayed') AND order_id IS NULL"
-        in update_sql
-    )
+    assert "status IN ('pending', 'pending_lock', 'delayed') AND order_id IS NULL" in update_sql
 
 
 def test_normalize_counts_order_id_bearing_rows_as_preserved():

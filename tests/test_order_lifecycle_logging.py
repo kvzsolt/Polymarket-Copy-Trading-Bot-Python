@@ -1,7 +1,9 @@
 """PR 5: order lifecycle logging — structured payload, dedup, panel selection."""
+
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -70,13 +72,19 @@ def test_dedup_suppresses_repeat_status(captured_logger, caplog):
 def test_force_bypasses_dedup(captured_logger, caplog):
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
         force=True,
     )
     matching = [r for r in caplog.records if getattr(r, "type", None) == "order_lifecycle"]
@@ -86,13 +94,19 @@ def test_force_bypasses_dedup(captured_logger, caplog):
 def test_status_change_emits_again(captured_logger, caplog):
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     log_order_lifecycle(
         captured_logger,
-        status="confirmed", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="confirmed",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     matching = [r for r in caplog.records if getattr(r, "type", None) == "order_lifecycle"]
     assert len(matching) == 2
@@ -141,3 +155,36 @@ def test_render_uses_correct_panel_color_for_each_status():
 
 def test_order_lifecycle_not_in_jsonl_only_types():
     assert "order_lifecycle" not in RichConsoleHandler._JSONL_ONLY_TYPES
+
+
+def test_render_labels_projected_buy_token_size_as_estimated():
+    """Do not present a BUY cost-derived token count as an exact fill size."""
+    handler = RichConsoleHandler()
+    panels: list = []
+
+    def _capture(*args, **kwargs):
+        for arg in args:
+            if hasattr(arg, "title") and hasattr(arg, "renderable"):
+                panels.append(arg)
+
+    record = SimpleNamespace(
+        status="canceled",
+        side="BUY",
+        conditionId="cond1",
+        asset="0xtok",
+        copyOrderId="ord1",
+        size=Decimal("19.78035113636363636363636364"),
+        sizeEstimated=True,
+        price=Decimal("0.88"),
+        usdcValue=Decimal("17.406709"),
+        venueStatus="canceled",
+        submissionState="canceled",
+        txHash=None,
+    )
+
+    with patch("utils.logger.console.print", side_effect=_capture):
+        handler._render_order_lifecycle(record, ts="12:00:00 AM")
+
+    assert len(panels) == 1
+    assert "Estimated Size:" in str(panels[0].renderable)
+    assert "Size:" not in str(panels[0].renderable).replace("Estimated Size:", "")

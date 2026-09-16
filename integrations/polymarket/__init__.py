@@ -1,11 +1,17 @@
-"""Polymarket integrations backed by the official unified Python SDK."""
+"""Venue-neutral Polymarket CCXT adapter exports.
 
-from integrations.polymarket.clob_v2_gateway import (
-    BUY,
-    ClobV2Gateway,
-    PolymarketGateway,
-    SELL,
+CCXT is the only Polymarket venue transport for this runtime. The official
+``polymarket-client`` SDK has been removed; nothing in this package re-exports
+SDK types.
+"""
+
+from integrations.polymarket.ccxt_prediction_client import (
+    CcxtPredictionClient,
+    CcxtPredictionConfigurationError,
+    CcxtPredictionUnavailable,
+    create_ccxt_prediction_client,
 )
+from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
@@ -25,24 +31,22 @@ from integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
-from integrations.polymarket.sdk_client import (
-    MarketMeta,
-    PolymarketClient,
-    create_polymarket_client,
-)
+
+BUY = "BUY"
+SELL = "SELL"
 
 __all__ = [
     "BUY",
-    "ClobV2Gateway",
-    "PolymarketGateway",
-    "PolymarketClient",
-    "MarketMeta",
-    "create_polymarket_client",
+    "SELL",
+    "CcxtPredictionClient",
+    "CcxtPredictionConfigurationError",
+    "CcxtPredictionGateway",
+    "CcxtPredictionUnavailable",
+    "create_ccxt_prediction_client",
     "LimitOrderRequest",
     "MarketableOrderRequest",
     "OrderBook",
     "OrderBookLevel",
-    "SELL",
     "RetryableVenueError",
     "TerminalVenueError",
     "VenueAuthError",

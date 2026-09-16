@@ -10,6 +10,7 @@ under those roots imports:
 Also asserts the ``legacy`` package directory itself stays gone, and that
 the deleted root probe scripts have not been resurrected.
 """
+
 from __future__ import annotations
 
 import ast
@@ -121,20 +122,14 @@ def test_no_production_imports_of_legacy_or_probes() -> None:
             if _is_forbidden(target):
                 offenders.append((rel, target))
     assert not offenders, (
-        "Production modules must not import legacy or probe targets. "
-        f"Offenders: {offenders}"
+        f"Production modules must not import legacy or probe targets. Offenders: {offenders}"
     )
 
 
 def test_root_probe_scripts_were_deleted() -> None:
     """Issue #77 deleted these — guard against accidental re-introduction."""
-    survivors = [
-        name for name in DELETED_PROBE_FILES if (REPO_ROOT / name).exists()
-    ]
-    assert not survivors, (
-        "Probe scripts must not exist at repo root. "
-        f"Found: {survivors}"
-    )
+    survivors = [name for name in DELETED_PROBE_FILES if (REPO_ROOT / name).exists()]
+    assert not survivors, f"Probe scripts must not exist at repo root. Found: {survivors}"
 
 
 def test_legacy_package_was_deleted() -> None:
@@ -165,9 +160,9 @@ def test_removed_settlement_package_has_no_python_files() -> None:
         "services.redemption",
         "services.redemption.redemption_service",
         "services.autoRedeem",
-        "scripts.test_probe2",          # nested-segment match (issue #77 PR review)
-        "some.pkg.legacy.foo",          # nested-segment match
-        "pkg.subpkg.test_doctor_x",     # nested-segment + wildcard match
+        "scripts.test_probe2",  # nested-segment match (issue #77 PR review)
+        "some.pkg.legacy.foo",  # nested-segment match
+        "pkg.subpkg.test_doctor_x",  # nested-segment + wildcard match
     ],
 )
 def test_is_forbidden_matches_wildcard_and_nested(target: str) -> None:
@@ -179,9 +174,9 @@ def test_is_forbidden_matches_wildcard_and_nested(target: str) -> None:
     [
         "config.app_config",
         "services.executionService",
-        "tests.helpers",                # 'tests' is not 'test_'
-        "polymarket_legacy_tools",      # head doesn't start with 'legacy'
-        "doctor",                        # different prefix
+        "tests.helpers",  # 'tests' is not 'test_'
+        "polymarket_legacy_tools",  # head doesn't start with 'legacy'
+        "doctor",  # different prefix
     ],
 )
 def test_is_forbidden_does_not_overmatch(target: str) -> None:

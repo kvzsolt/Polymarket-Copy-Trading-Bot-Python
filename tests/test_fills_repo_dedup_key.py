@@ -51,7 +51,9 @@ async def _position_size(pool, user_id, condition_id, token_id):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT size_tokens FROM positions WHERE user_id=$1 AND condition_id=$2 AND token_id=$3",
-            user_id, condition_id, token_id,
+            user_id,
+            condition_id,
+            token_id,
         )
     return Decimal(row["size_tokens"]) if row else None
 
@@ -72,8 +74,14 @@ async def test_reapply_same_cumulative_is_deduped_and_applied_once():
 
         def _rec(delta: str, dedup: str) -> FillRecord:
             return FillRecord(
-                user_id=user, leader_id=None, order_id=oid, condition_id=cond,
-                token_id=tok, side="BUY", size_tokens=Decimal(delta), price=Decimal("0.5"),
+                user_id=user,
+                leader_id=None,
+                order_id=oid,
+                condition_id=cond,
+                token_id=tok,
+                side="BUY",
+                size_tokens=Decimal(delta),
+                price=Decimal("0.5"),
                 dedup_key=dedup,
             )
 
@@ -110,8 +118,14 @@ async def test_no_dedup_key_falls_back_to_legacy_behaviour():
         user, cond, tok, oid = "0xUserChecksum", "0xcond2", VALID_TOKEN, "ord-2"
 
         rec = FillRecord(
-            user_id=user, leader_id=None, order_id=oid, condition_id=cond,
-            token_id=tok, side="BUY", size_tokens=Decimal("4"), price=Decimal("0.5"),
+            user_id=user,
+            leader_id=None,
+            order_id=oid,
+            condition_id=cond,
+            token_id=tok,
+            side="BUY",
+            size_tokens=Decimal("4"),
+            price=Decimal("0.5"),
             fill_ts=1000,
         )
         fid, _ = await fills.append_fill_and_apply(rec, positions)

@@ -4,11 +4,15 @@ Canonical dataclasses that decouple the rest of the codebase from the
 unified Polymarket SDK's own types.  All gateway methods return these types;
 callers should never depend on raw SDK shapes directly.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
+
+from domain.execution import ExecutionOrderType
 
 
 class _PriceTokenNotFound:
@@ -42,6 +46,11 @@ class VenueSubmitResult:
     error: str | None = None
     ambiguous_post_failure: bool = False
     non_retryable: bool = False
+    effective_price: Decimal | None = None
+    # The venue's own rejection text, scrubbed and bounded. ``error`` stays a
+    # stable classification token that callers match on by equality, so the
+    # detail that distinguishes two rejections sharing a token lives here.
+    venue_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,8 +78,12 @@ class VenueFill:
     side: str | None = None
     size: Decimal = Decimal("0")
     price: Decimal = Decimal("0")
-    fee: Decimal = Decimal("0")
+    fee: Decimal | None = None
     timestamp: int | None = None
+    status: str | None = None
+    transaction_hash: str | None = None
+    trader_side: str | None = None
+    bucket_index: int | None = None
     raw: dict | None = None
 
 
@@ -129,10 +142,9 @@ class LimitOrderRequest:
 class MarketableOrderRequest:
     """Request to submit a marketable (FOK/IOC) order.
 
-    ``tick_size`` and ``neg_risk`` are optional pre-fetched market metadata.
-    When the caller has already fetched metadata via ``MarketDataService``,
-    passing them avoids a redundant venue round-trip inside the gateway. When
-    ``None`` the gateway fetches metadata itself.
+    ``tick_size`` and ``neg_risk`` preserve the caller's audit observation.
+    The live CCXT adapter still refreshes all execution metadata immediately
+    before signing; it never trusts stale caller values.
     """
 
     token_id: str
@@ -142,4 +154,4 @@ class MarketableOrderRequest:
     condition_id: str | None = None
     tick_size: Decimal | None = None
     neg_risk: bool | None = None
-    order_type: str | None = None
+    order_type: ExecutionOrderType | Literal["FOK"] | None = None

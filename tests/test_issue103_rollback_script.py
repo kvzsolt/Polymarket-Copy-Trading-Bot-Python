@@ -6,6 +6,7 @@ not an operator memory exercise. The CI check this test provides catches
 the script going missing, losing its executable bit, or developing a
 syntax error before the operator needs it under pressure.
 """
+
 from __future__ import annotations
 
 import os
@@ -147,10 +148,7 @@ def test_canary_replaces_caps_when_present(tmp_path):
 
     sandbox = _build_canary_sandbox(
         tmp_path,
-        initial_secrets=(
-            "BUY_MAX_AMOUNT=500\n"
-            "MAX_DAILY_SPEND_USDC=1000\n"
-        ),
+        initial_secrets=("BUY_MAX_AMOUNT=500\nMAX_DAILY_SPEND_USDC=1000\n"),
     )
     subprocess.run(
         ["bash", str(sandbox / "canary.sh"), "25"],

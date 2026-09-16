@@ -8,6 +8,7 @@ terminal order state. This test pins:
 * ``ExecutionService`` does NOT expose a method named ``mark_filled`` or
   ``apply_fill`` (which would let it own terminal state).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -45,6 +46,5 @@ def test_execution_service_does_not_own_terminal_writes() -> None:
     forbidden = ("mark_filled", "apply_fill", "settle_order", "finalize_order")
     leaked = [name for name in forbidden if hasattr(ExecutionService, name)]
     assert not leaked, (
-        f"ExecutionService exposes terminal-write methods that belong to the "
-        f"reconciler: {leaked}"
+        f"ExecutionService exposes terminal-write methods that belong to the reconciler: {leaked}"
     )

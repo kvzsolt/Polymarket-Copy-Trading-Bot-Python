@@ -48,6 +48,7 @@ def _env_int(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+
 _logger = logging.getLogger("MarketStateStore")
 
 
@@ -58,15 +59,19 @@ _logger = logging.getLogger("MarketStateStore")
 
 @dataclass(frozen=True)
 class QuoteSnapshot:
+    """Observed quote with continuity validity separate from observation age."""
+
     token_id: str
     best_bid: Decimal | None
     best_ask: Decimal | None
     last_trade_price: Decimal | None
     source: str
     monotonic_ts: float
+    valid: bool = True
 
     def is_fresh(self, max_age_seconds: float) -> bool:
-        return time.monotonic() - self.monotonic_ts <= max_age_seconds
+        """Return whether continuity and age both permit use of this observation."""
+        return self.valid and 0 <= time.monotonic() - self.monotonic_ts <= max_age_seconds
 
 
 @dataclass(frozen=True)
@@ -181,9 +186,7 @@ class MarketStateStore:
             # PR #105 review: validate explicit overrides. max_tokens=0
             # evicts every insert; negative values crash the eviction loop.
             if not isinstance(max_tokens, int) or max_tokens <= 0:
-                raise ValueError(
-                    f"max_tokens must be a positive int, got {max_tokens!r}"
-                )
+                raise ValueError(f"max_tokens must be a positive int, got {max_tokens!r}")
             self._max_tokens = max_tokens
         else:
             self._max_tokens = _env_int("MARKET_STATE_MAX_TOKENS", 5000)
@@ -218,7 +221,8 @@ class MarketStateStore:
                 evicted_id, _ = self._states.popitem(last=False)
                 _logger.debug(
                     "market_state_store_evicted | token_id=%s reason=max_tokens cap=%d",
-                    evicted_id, self._max_tokens,
+                    evicted_id,
+                    self._max_tokens,
                 )
         else:
             # Touch on access: move to MRU end so eviction targets truly cold
@@ -244,6 +248,11 @@ class MarketStateStore:
                 last_trade_price=state.last_trade_price,
                 source=state.quote_source if state.quote_source != "unknown" else state.source,
                 monotonic_ts=state.last_quote_monotonic or state.last_update_monotonic,
+                valid=not (
+                    state.resolved
+                    or (state.stale and state.stale_reason != "not_initialized")
+                    or (state.dirty and state.dirty_reason != "not_initialized")
+                ),
             )
 
     def get_book(self, token_id: str) -> BookSnapshot | None:
@@ -309,30 +318,24 @@ class MarketStateStore:
         than the write-back instant. WSS deltas omit it and fall back to
         ``time.monotonic()``.
         """
+        try:
+            validated_bids = self._validated_levels(bids)
+            validated_asks = self._validated_levels(asks)
+        except ValueError:
+            self.mark_stale(token_id, "invalid_book_update")
+            raise
         with self._lock:
             state = self._ensure_state_locked(token_id)
 
             prev_book_src = state.book_source
             prev_quote_src = state.quote_source
 
-            state.bids = {
-                Decimal(str(price)): Decimal(str(size))
-                for price, size in bids.items()
-                if Decimal(str(size)) > 0
-            }
-            state.asks = {
-                Decimal(str(price)): Decimal(str(size))
-                for price, size in asks.items()
-                if Decimal(str(size)) > 0
-            }
+            state.bids = validated_bids
+            state.asks = validated_asks
 
             state.recompute_top_of_book()
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_book_monotonic = now
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
@@ -370,6 +373,21 @@ class MarketStateStore:
                     prev_quote_src,
                 )
 
+    def apply_book_deltas(self, updates: tuple[tuple[str, str, Decimal, Decimal], ...]) -> None:
+        """Publish a validated message's level updates under one book-store lock."""
+        try:
+            for _token_id, side, price, size in updates:
+                self._validated_levels({price: size})
+                if self._normalize_side(side) is None:
+                    raise ValueError("Book side is invalid")
+        except ValueError:
+            for token_id, *_rest in updates:
+                self.mark_stale(token_id, "invalid_book_delta_batch")
+            raise
+        with self._lock:
+            for token_id, side, price, size in updates:
+                self.apply_book_delta(token_id, side, price, size)
+
     def apply_book_delta(
         self,
         token_id: str,
@@ -385,6 +403,11 @@ class MarketStateStore:
 
         size <= 0 deletes the level.
         """
+        try:
+            self._validated_levels({price: size})
+        except ValueError:
+            self.mark_stale(token_id, "invalid_book_update")
+            raise
         normalized_side = self._normalize_side(side)
         if normalized_side is None:
             return
@@ -414,9 +437,7 @@ class MarketStateStore:
             state.book_source = "wss"
             state.quote_source = "wss"
 
-            if not state.resolved:
-                state.stale = False
-                state.stale_reason = None
+            if not state.resolved and not state.stale:
                 if (
                     state.bids
                     and state.asks
@@ -434,6 +455,31 @@ class MarketStateStore:
                     prev_book_src,
                     prev_quote_src,
                 )
+
+    @staticmethod
+    def _validated_levels(levels: dict[Decimal, Decimal]) -> dict[Decimal, Decimal]:
+        """Validate all levels before publication; zero shares delete a level."""
+        validated: dict[Decimal, Decimal] = {}
+        for price, size in levels.items():
+            if isinstance(price, bool) or isinstance(size, bool):
+                raise ValueError("Book levels must be numeric")
+            try:
+                parsed_price = Decimal(str(price))
+                parsed_size = Decimal(str(size))
+            except ArithmeticError:
+                raise ValueError("Book levels must be numeric") from None
+            if (
+                not parsed_price.is_finite()
+                or not parsed_size.is_finite()
+                or not Decimal(0) <= parsed_price <= Decimal(1)
+                or parsed_size < 0
+            ):
+                raise ValueError(
+                    "Book levels require finite bounded prices and non-negative shares"
+                )
+            if parsed_size:
+                validated[parsed_price] = parsed_size
+        return validated
 
     # ------------------------------------------------------------------
     # Quote / tick / metadata updates
@@ -458,10 +504,6 @@ class MarketStateStore:
             state.last_update_monotonic = now
             state.source = "wss"
             state.quote_source = "wss"
-
-            if not state.resolved:
-                state.stale = False
-                state.stale_reason = None
 
     def on_best_bid_ask(
         self,
@@ -533,10 +575,6 @@ class MarketStateStore:
             state.dirty = True
             state.dirty_reason = "tick_size_changed"
 
-            if not state.resolved:
-                state.stale = False
-                state.stale_reason = None
-
     def set_tick(
         self,
         token_id: str,
@@ -559,20 +597,12 @@ class MarketStateStore:
             state.min_order_size = Decimal(str(min_order_size))
             state.neg_risk = bool(neg_risk)
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_tick_monotonic = now
             state.last_update_monotonic = now
             state.source = source
             state.tick_source = source
             state.metadata_source = source
-
-            if not state.resolved:
-                state.stale = False
-                state.stale_reason = None
 
     def set_quote(
         self,
@@ -596,11 +626,7 @@ class MarketStateStore:
             if best_ask is not None:
                 state.best_ask = Decimal(str(best_ask))
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = source

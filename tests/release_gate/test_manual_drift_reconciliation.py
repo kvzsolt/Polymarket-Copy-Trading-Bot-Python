@@ -6,6 +6,7 @@ When a SELL fails with ``insufficient_balance`` the reconciler must:
 * shrink it if live size is smaller;
 * emit ``manual_position_drift_reconciled`` so operators can audit drift.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

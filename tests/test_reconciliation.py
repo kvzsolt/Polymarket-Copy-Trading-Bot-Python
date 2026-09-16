@@ -54,6 +54,7 @@ async def _pg_pool():
 # Helper unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestHelpers:
     def test_safe_int_normal(self):
         assert _safe_int(42) == 42
@@ -86,6 +87,7 @@ class TestHelpers:
 # Mock CLOB client
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_clob(orders: list[dict] | None = None, cancel_side_effect=None):
     """Build a mock clob_client with get_orders and cancel_orders."""
     mock = MagicMock()
@@ -99,26 +101,30 @@ def _make_mock_clob(orders: list[dict] | None = None, cancel_side_effect=None):
 # ReconciliationService tests
 # ---------------------------------------------------------------------------
 
-class TestReconciliationService:
 
+class TestReconciliationService:
     @pytest.mark.asyncio
     async def test_typed_async_gateway_surface(self):
         now = datetime.fromtimestamp(time.time() - 7200, tz=timezone.utc)
         gateway = MagicMock()
-        gateway.list_open_orders = AsyncMock(return_value=[
-            VenueOrderState(
+        gateway.list_open_orders = AsyncMock(
+            return_value=[
+                VenueOrderState(
+                    order_id="typed-stale",
+                    status="LIVE",
+                    size=Decimal("10"),
+                    filled_size=Decimal("2"),
+                    created_at=now,
+                )
+            ]
+        )
+        gateway.cancel_order = AsyncMock(
+            return_value=VenueCancelResult(
+                success=True,
                 order_id="typed-stale",
-                status="LIVE",
-                size=Decimal("10"),
-                filled_size=Decimal("2"),
-                created_at=now,
+                status="cancelled",
             )
-        ])
-        gateway.cancel_order = AsyncMock(return_value=VenueCancelResult(
-            success=True,
-            order_id="typed-stale",
-            status="cancelled",
-        ))
+        )
 
         svc = ReconciliationService(
             clob_client=gateway,
@@ -148,8 +154,8 @@ class TestReconciliationService:
         """Orders younger than threshold should not be cancelled."""
         now = time.time()
         orders = [
-            {"id": "o1", "timestamp": now - 60},   # 1 min old
-            {"id": "o2", "timestamp": now - 120},   # 2 min old
+            {"id": "o1", "timestamp": now - 60},  # 1 min old
+            {"id": "o2", "timestamp": now - 120},  # 2 min old
         ]
         clob = _make_mock_clob(orders=orders)
         svc = ReconciliationService(clob_client=clob, stale_threshold_seconds=3600)
@@ -163,8 +169,8 @@ class TestReconciliationService:
         """Orders older than threshold should be flagged."""
         now = time.time()
         orders = [
-            {"id": "o1", "timestamp": now - 7200},   # 2h old → stale
-            {"id": "o2", "timestamp": now - 60},      # 1 min → fresh
+            {"id": "o1", "timestamp": now - 7200},  # 2h old → stale
+            {"id": "o2", "timestamp": now - 60},  # 1 min → fresh
         ]
         clob = _make_mock_clob(orders=orders)
         svc = ReconciliationService(
@@ -311,6 +317,7 @@ class TestReconciliationService:
     async def test_appconfig_defaults(self):
         """Service reads from AppConfig.reconciliation when no explicit values."""
         from types import SimpleNamespace
+
         clob = _make_mock_clob()
         cfg = SimpleNamespace(
             reconciliation=SimpleNamespace(
@@ -355,9 +362,11 @@ class TestOrderIdentityResolution:
         repo_mock.get_by_order_id = AsyncMock(
             return_value={"idempotency_key": "idem-999", "order_id": "venue-999"}
         )
-        repo_mock.get_by_idempotency_key = AsyncMock(side_effect=AssertionError(
-            "reconciliation must not treat venue order_id as idempotency key"
-        ))
+        repo_mock.get_by_idempotency_key = AsyncMock(
+            side_effect=AssertionError(
+                "reconciliation must not treat venue order_id as idempotency key"
+            )
+        )
 
         svc = ReconciliationService(
             clob_client=clob,

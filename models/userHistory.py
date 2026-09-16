@@ -65,11 +65,16 @@ class _UserActivityCollection:
                 row = await conn.fetchrow(
                     "SELECT data_json FROM user_activities "
                     "WHERE id = $1 AND wallet_address = $2 FOR UPDATE",
-                    int(row_id), self.wallet_address,
+                    int(row_id),
+                    self.wallet_address,
                 )
                 if not row:
                     return
-                payload = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else dict(row["data_json"])
+                payload = (
+                    json.loads(row["data_json"])
+                    if isinstance(row["data_json"], str)
+                    else dict(row["data_json"])
+                )
                 payload.update(set_fields)
                 await conn.execute(
                     """

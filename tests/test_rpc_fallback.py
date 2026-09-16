@@ -11,7 +11,6 @@ All tests are pure unit tests — no network I/O.
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,7 +23,6 @@ from clients.network.rpc_fallback import (
     _is_failover_response,
     _mask_url,
 )
-from clients.balance_client import BalanceClient
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +153,11 @@ class TestFailoverHTTPProviderMakeRequest:
 
     def test_primary_failover_code_uses_fallback(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://fallback.example")
-        primary_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error"}}
+        primary_err = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "Internal error"},
+        }
         fallback_ok = {"jsonrpc": "2.0", "id": 1, "result": "0x2"}
 
         provider._primary = MagicMock()
@@ -255,31 +257,6 @@ class TestFallbackWeb3Provider:
 
 
 # ---------------------------------------------------------------------------
-# Integration with BalanceClient
-# ---------------------------------------------------------------------------
-
-
-class TestBalanceClientUsesFallback:
-    def test_balance_client_accepts_fallback_param(self) -> None:
-        """BalanceClient __init__ must accept the new fallback_rpc_url kwarg."""
-        client = BalanceClient(
-            rpc_url="https://primary.example",
-            usdc_contract_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            fallback_rpc_url="https://fallback.example",
-        )
-        assert client._rpc_url == "https://primary.example"
-        assert client._fallback_rpc_url == "https://fallback.example"
-
-    def test_balance_client_omits_fallback_by_default(self) -> None:
-        """Old call sites that don't pass fallback_rpc_url still work."""
-        client = BalanceClient(
-            rpc_url="https://primary.example",
-            usdc_contract_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-        )
-        assert client._fallback_rpc_url == ""
-
-
-# ---------------------------------------------------------------------------
 # Integration with getMyBalance module-level config
 # ---------------------------------------------------------------------------
 
@@ -298,6 +275,7 @@ class TestGetMyBalanceFallback:
         mock_config.network.chain_id = 137
 
         from utils.getMyBalance import configure_from_appconfig
+
         configure_from_appconfig(mock_config)
 
         # After configuration, the module-level state should reflect the
@@ -305,79 +283,6 @@ class TestGetMyBalanceFallback:
         # (We can't easily assert this without a real RPC, but we can at
         # least verify no exception is raised.)
         assert True  # configure_from_appconfig completed without error
-
-
-# ---------------------------------------------------------------------------
-# Integration with collateral_readiness signature
-# ---------------------------------------------------------------------------
-
-
-class TestCollateralReadinessSignature:
-    def test_check_collateral_accepts_fallback_param(self) -> None:
-        import asyncio
-        from services.collateral_readiness import check_collateral_readiness
-        import inspect
-
-        sig = inspect.signature(check_collateral_readiness)
-        params = list(sig.parameters.keys())
-        assert "fallback_rpc_url" in params
-        assert sig.parameters["fallback_rpc_url"].default == ""
-
-    def test_check_collateral_runnable_with_empty_fallback(self) -> None:
-        """Should not crash when fallback_rpc_url is empty (default)."""
-        import asyncio
-        from services.collateral_readiness import check_collateral_readiness
-
-        async def _run() -> None:
-            # We can't assert the result without a real RPC, but we can
-            # assert it doesn't crash on parameter validation.
-            result = await check_collateral_readiness(
-                wallet_address="0xAb5801a7C398e26C8b5C60b0e3F2A5F5c0B2B4a",
-                rpc_url="https://primary.example",
-                fallback_rpc_url="",
-                pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
-                ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            )
-            # With a fake RPC it will fail, but not on signature/type errors.
-            assert result is not None
-
-        # Run it and expect a network-level failure, NOT a TypeError.
-        with pytest.raises(Exception) as exc_info:
-            asyncio.run(_run())
-        assert "TypeError" not in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Integration with wallet_signature_detector
-# ---------------------------------------------------------------------------
-
-
-class TestWalletSignatureDetectorFallback:
-    def test_fetch_contract_code_hex_accepts_fallback(self) -> None:
-        from services.wallet_signature_detector import _fetch_contract_code_hex
-        import inspect
-
-        sig = inspect.signature(_fetch_contract_code_hex)
-        params = list(sig.parameters.keys())
-        assert "fallback_rpc_url" in params
-        assert sig.parameters["fallback_rpc_url"].default == ""
-
-
-# ---------------------------------------------------------------------------
-# Env helper
-# ---------------------------------------------------------------------------
-
-
-class TestEnvFallback:
-    def test_get_fallback_rpc_url_reads_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import env
-        monkeypatch.setenv("FALLBACK_RPC_URL", "https://fallback.example")
-        assert env.get_fallback_rpc_url() == "https://fallback.example"
-
-    def test_get_fallback_rpc_url_default_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import env
-        monkeypatch.delenv("FALLBACK_RPC_URL", raising=False)
-        assert env.get_fallback_rpc_url() == ""
 
 
 # ---------------------------------------------------------------------------

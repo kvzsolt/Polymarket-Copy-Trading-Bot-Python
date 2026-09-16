@@ -1,56 +1,52 @@
+"""CLI adapter for safe Falcon roster rotation and rescore commands."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 
-from config.app_config import load_config
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
 
-
-def register_rotate_traders_command(subparsers: argparse._SubParsersAction) -> None:
+def register_rotate_traders_command(
+    subparsers: argparse._SubParsersAction,
+) -> None:
+    """Register the read-only/controlled discovery rotation subcommand."""
     parser = subparsers.add_parser(
         "rotate-traders",
-        help="Interactively rotate configured LEADER_WALLETS from discovery candidates",
+        help="Run discovery and show the hysteresis-qualified roster",
     )
-    parser.add_argument("--env-file", default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--max-active", type=int, default=None)
+    parser.add_argument(
+        "--rescore-only",
+        action="store_true",
+        help="Use cached snapshots without calling Falcon",
+    )
 
 
 async def _run_rotate_traders_async(args: argparse.Namespace) -> int:
-    load_runtime_env(override_secrets=True)
-    rehydrate_env(load_dotenv_file=False)
-    config = load_config()
+    from bootstrap import build_app
+    from storage.postgres.connection import shutdown_pool
 
-    from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.migrations import apply_migrations
-    from services.discovery.balance_provider import build_wallet_balance_provider
-    from services.discovery.rotation_service import RotationService
-
-    pool = await init_pool(
-        config.database.dsn,
-        min_size=1,
-        max_size=2,
-        command_timeout_seconds=config.database.command_timeout_seconds,
-    )
+    application = await build_app()
     try:
-        async with pool.acquire() as conn:
-            await apply_migrations(conn)
-        svc = RotationService(
-            pool=pool,
-            config=config,
-            balance_provider=build_wallet_balance_provider(config),
-        )
-        await svc.run_interactive(
-            env_file=args.env_file or config.discovery.rotate_traders_env_file,
-            dry_run=bool(args.dry_run),
-            max_active=args.max_active,
-        )
+        if args.rescore_only:
+            await application.registry.rescore([])
+        else:
+            await application.registry.refresh([], force_discovery=True)
+        roster = await application.leaders_repo.list_roster()
+        for entry in roster:
+            print(
+                f"{entry.tier:9} {entry.score:.4f} "
+                f"streak=+{entry.promote_streak}/-{entry.demote_streak} "
+                f"{entry.wallet}"
+            )
     finally:
+        await application.aclose()
         await shutdown_pool()
     return 0
 
 
 def run_rotate_traders(args: argparse.Namespace) -> int:
-    return asyncio.run(_run_rotate_traders_async(args))
+    """Run the async rotation command in an isolated event loop."""
+    from utils.event_loop import new_event_loop
+
+    with asyncio.Runner(loop_factory=new_event_loop) as runner:
+        return runner.run(_run_rotate_traders_async(args))

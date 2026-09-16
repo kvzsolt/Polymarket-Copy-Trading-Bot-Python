@@ -22,6 +22,7 @@ the method were ever wired to a float caller. The test feeds a float-ish value
 through the atomic-ledger position math against a real Postgres and asserts the
 stored size is exact.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,9 +33,7 @@ import pytest
 
 pytestmark = pytest.mark.asyncio
 
-VALID_TOKEN = (
-    "52114319501245915516055106046884209969926127482827954674443846427813813222426"
-)
+VALID_TOKEN = "52114319501245915516055106046884209969926127482827954674443846427813813222426"
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +187,7 @@ async def test_server_side_timeouts_applied_on_live_connection():
             pool = await conn_mod.get_pool()
             async with pool.acquire() as conn:
                 stmt = await conn.fetchval("SHOW statement_timeout")
-                idle = await conn.fetchval(
-                    "SHOW idle_in_transaction_session_timeout"
-                )
+                idle = await conn.fetchval("SHOW idle_in_transaction_session_timeout")
             # Postgres renders 30000ms as "30s" and 60000ms as "1min".
             assert stmt == "30s"
             assert idle == "1min"

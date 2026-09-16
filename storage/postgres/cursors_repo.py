@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
-from domain.ports.repositories import AbstractCursorRepository
+from ports.repositories import AbstractCursorRepository
 
 
 @dataclass(frozen=True)

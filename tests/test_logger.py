@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +22,7 @@ from utils.logger import (
     configure_logging,
     event_link,
     get_logger,
+    get_wallet_type,
     log_api_response,
     log_monitor_heartbeat,
     log_trade_detected,
@@ -64,19 +64,21 @@ from utils.logger import (
 )
 
 
+def _close_and_clear_handlers(logger: logging.Logger) -> None:
+    """Close file/stream handlers before dropping them so no descriptors leak."""
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+
+
 @pytest.fixture(autouse=True)
-def _clean_loggers(monkeypatch):
-    # Strip env vars that override the jsonl path so an upstream test that
-    # set ``APP_LOG_JSONL_FILE`` / ``LOG_DIR`` cannot leak into this module
-    # and redirect log writes away from each test's per-tmp_path log dir.
-    monkeypatch.delenv("APP_LOG_JSONL_FILE", raising=False)
-    monkeypatch.delenv("LOG_DIR", raising=False)
+def _clean_loggers():
     _CONFIGURED_LOGGERS.clear()
     root = logging.getLogger(APP_NAME)
-    root.handlers.clear()
+    _close_and_clear_handlers(root)
     yield
     _CONFIGURED_LOGGERS.clear()
-    root.handlers.clear()
+    _close_and_clear_handlers(root)
     # Restore default APP_NAME logger config so cross-file test ordering
     # doesn't end with subsequent tests inheriting a handler-less /
     # WARNING-level logger. Without this, e.g.
@@ -124,10 +126,9 @@ class TestConfigureLogging:
             assert "level" in parsed
             assert "ts" in parsed
 
-    def test_env_level_override(self, tmp_log_dir):
-        with patch.dict(os.environ, {"POLYMARKET_LOG_LEVEL": "WARNING"}):
-            log = configure_logging(log_dir=tmp_log_dir)
-            assert log.level == logging.WARNING
+    def test_explicit_level(self, tmp_log_dir):
+        log = configure_logging(log_dir=tmp_log_dir, level="WARNING")
+        assert log.level == logging.WARNING
 
     def test_reconfigure_removes_old_handlers(self, tmp_log_dir):
         log1 = configure_logging(log_dir=tmp_log_dir)
@@ -172,8 +173,13 @@ class TestJsonFormatter:
     def test_format_basic(self):
         fmt = JsonFormatter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="hello %s", args=("world",), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hello %s",
+            args=("world",),
+            exc_info=None,
         )
         result = json.loads(fmt.format(record))
         assert result["message"] == "hello world"
@@ -182,8 +188,13 @@ class TestJsonFormatter:
     def test_format_extras(self):
         fmt = JsonFormatter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="trade", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="trade",
+            args=(),
+            exc_info=None,
         )
         record.custom_field = "custom_value"
         result = json.loads(fmt.format(record))
@@ -192,8 +203,13 @@ class TestJsonFormatter:
     def test_format_discovery_candidate_eval_extras(self):
         fmt = JsonFormatter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="candidate_eval_completed", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="candidate_eval_completed",
+            args=(),
+            exc_info=None,
         )
         record.type = "discovery_candidate_eval"
         record.event = "completed"
@@ -210,12 +226,17 @@ class TestJsonFormatter:
     def test_format_exception(self):
         fmt = JsonFormatter()
         try:
-            1 / 0
+            _ = 1 / 0
         except ZeroDivisionError:
             exc_info = sys.exc_info()
         record = logging.LogRecord(
-            name="test", level=logging.ERROR, pathname="", lineno=0,
-            msg="error", args=(), exc_info=exc_info,
+            name="test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="error",
+            args=(),
+            exc_info=exc_info,
         )
         result = json.loads(fmt.format(record))
         assert result["exc_type"] == "ZeroDivisionError"
@@ -223,8 +244,13 @@ class TestJsonFormatter:
     def test_non_serializable_extras_skipped(self):
         fmt = JsonFormatter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="msg", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="msg",
+            args=(),
+            exc_info=None,
         )
         record.bad_field = object()
         result = json.loads(fmt.format(record))
@@ -236,18 +262,34 @@ class TestRichConsoleHandler:
         handler = RichConsoleHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="test message", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test message",
+            args=(),
+            exc_info=None,
         )
         handler.emit(record)
 
     def test_emit_levels(self):
         handler = RichConsoleHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
-        for level in (logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL):
+        for level in (
+            logging.DEBUG,
+            logging.INFO,
+            logging.WARNING,
+            logging.ERROR,
+            logging.CRITICAL,
+        ):
             record = logging.LogRecord(
-                name="test", level=level, pathname="", lineno=0,
-                msg=f"level {level}", args=(), exc_info=None,
+                name="test",
+                level=level,
+                pathname="",
+                lineno=0,
+                msg=f"level {level}",
+                args=(),
+                exc_info=None,
             )
             handler.emit(record)
 
@@ -261,8 +303,13 @@ class TestRichConsoleHandler:
             exc_info = sys.exc_info()
 
         record = logging.LogRecord(
-            name="test", level=logging.ERROR, pathname="", lineno=0,
-            msg="test message", args=(), exc_info=exc_info,
+            name="test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="test message",
+            args=(),
+            exc_info=exc_info,
         )
 
         with patch("utils.logger.console.print") as print_mock:
@@ -275,12 +322,67 @@ class TestRichConsoleHandler:
         assert traceback_renderable.trace.stacks[-1].exc_type == "ValueError"
         assert "record-backed error" in str(traceback_renderable.trace.stacks[-1].exc_value)
 
+    def test_emit_default_includes_extra_fields(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="some_event",
+            args=(),
+            exc_info=None,
+        )
+        record.stage = "startup"
+        record.user = "0xabc"
+        record.private_key = "do-not-show"
+
+        with patch("utils.logger.console.print") as print_mock:
+            handler.emit(record)
+
+        rendered = str(print_mock.call_args.args[0])
+        assert "some_event" in rendered
+        assert "stage=startup" in rendered
+        assert "user=0xabc" in rendered
+        assert "private_key=***REDACTED***" in rendered
+
+    def test_emit_unknown_structured_type_uses_panel(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="coordinator_intent_built",
+            args=(),
+            exc_info=None,
+        )
+        record.type = "coordinator_intent_built"
+        record.user = "0xabc"
+        record.market = "BTC"
+
+        with patch("utils.logger.console.print") as print_mock:
+            handler.emit(record)
+
+        assert print_mock.call_count == 2
+        panel = print_mock.call_args_list[1].args[0]
+        assert "COORDINATOR INTENT BUILT" in panel.title
+        assert "User" in panel.renderable
+        assert "Market" in panel.renderable
+
     def test_emit_discovery_candidate_eval_structured_line(self):
         handler = RichConsoleHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="candidate_eval_completed", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="candidate_eval_completed",
+            args=(),
+            exc_info=None,
         )
         record.type = "discovery_candidate_eval"
         record.event = "completed"
@@ -392,8 +494,8 @@ class TestBuildPanelLines:
     def test_filters_none_values(self):
         lines = _build_panel_lines(Side="BUY", Status=None, Message="test")
         assert len(lines) == 2
-        assert any("Side" in l for l in lines)
-        assert any("Message" in l for l in lines)
+        assert any("Side" in line for line in lines)
+        assert any("Message" in line for line in lines)
 
     def test_all_none(self):
         lines = _build_panel_lines(A=None, B=None)
@@ -420,7 +522,24 @@ class TestRichDisplayHelpers:
     def test_print_clob_client_status(self):
         class DummyClient:
             signature_type = 0
+
         print_clob_client_status(DummyClient())
+
+    def test_sdk_deposit_wallet_type_is_authoritative(self):
+        class InnerClient:
+            wallet_type = "DEPOSIT_WALLET"
+            signature_type = 0
+
+        class DummyClient:
+            client = InnerClient()
+
+        assert get_wallet_type(DummyClient()) == ("DEPOSIT_WALLET", 3)
+
+    def test_legacy_signature_type_three_logs_as_deposit_wallet(self):
+        class DummyClient:
+            signature_type = 3
+
+        assert get_wallet_type(DummyClient()) == ("DEPOSIT_WALLET", 3)
 
     def test_print_service_start(self):
         print_service_start(trader_count=3)
@@ -437,8 +556,20 @@ class TestRichDisplayHelpers:
             available_cash=50.0,
             total_portfolio=150.0,
             positions=[
-                {"title": "Will BTC hit 100k?", "outcome": "Yes", "size": 10.0, "avgPrice": 0.65, "currentValue": 7.5},
-                {"title": "US Election 2024", "outcome": "No", "size": 5.0, "avgPrice": 0.30, "currentValue": 2.0},
+                {
+                    "title": "Will BTC hit 100k?",
+                    "outcome": "Yes",
+                    "size": 10.0,
+                    "avgPrice": 0.65,
+                    "currentValue": 7.5,
+                },
+                {
+                    "title": "US Election 2024",
+                    "outcome": "No",
+                    "size": 5.0,
+                    "avgPrice": 0.30,
+                    "currentValue": 2.0,
+                },
             ],
         )
 
@@ -451,9 +582,15 @@ class TestRichDisplayHelpers:
         )
 
     def test_print_traders_copying(self):
-        print_traders_copying([
-            {"address": "0xdb27abc123def456789012345678901234c56e", "positions": 5, "leader_balance": 10.0},
-        ])
+        print_traders_copying(
+            [
+                {
+                    "address": "0xdb27abc123def456789012345678901234c56e",
+                    "positions": 5,
+                    "leader_balance": 10.0,
+                },
+            ]
+        )
 
     def test_print_traders_copying_empty(self):
         print_traders_copying(None)
@@ -501,9 +638,12 @@ class TestRichDisplayHelpers:
 
     def test_print_trade_result_success(self):
         print_trade_result(
-            success=True, side="BUY",
-            leader_tx="0xabc123", copy_tx="0xdef456",
-            amount=0.84, price=0.014,
+            success=True,
+            side="BUY",
+            leader_tx="0xabc123",
+            copy_tx="0xdef456",
+            amount=0.84,
+            price=0.014,
             title="Hurricanes vs Blackhawks",
             submarket="Moneyline",
             outcome="Blackhawks",
@@ -511,7 +651,8 @@ class TestRichDisplayHelpers:
 
     def test_print_trade_result_failure(self):
         print_trade_result(
-            success=False, side="SELL",
+            success=False,
+            side="SELL",
             reason="proxy has no position in this market",
         )
 
@@ -538,13 +679,24 @@ class TestTradeLogging:
     def test_log_trade_execution(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
         log_trade_execution(
-            log, side="BUY", condition_id="cond123", asset="asset456",
-            size=10.0, price=0.5, usdc_value=5.0, tx_hash="0xtx789", event_slug="test-event",
+            log,
+            side="BUY",
+            condition_id="cond123",
+            asset="asset456",
+            size=10.0,
+            price=0.5,
+            usdc_value=5.0,
+            tx_hash="0xtx789",
+            event_slug="test-event",
         )
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "EXECUTED" in l]
+        trade_lines = [
+            json.loads(line)
+            for line in jsonl.read_text().strip().splitlines()
+            if "EXECUTED" in line
+        ]
         assert len(trade_lines) >= 1
         entry = trade_lines[0]
         assert entry["type"] == "trade_execution"
@@ -555,26 +707,42 @@ class TestTradeLogging:
     def test_log_trade_detected(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
         log_trade_detected(
-            log, side="SELL", condition_id="cond999", asset="asset111",
-            size=5.0, price=0.3, usdc_value=1.5,
+            log,
+            side="SELL",
+            condition_id="cond999",
+            asset="asset111",
+            size=5.0,
+            price=0.3,
+            usdc_value=1.5,
         )
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "DETECTED" in l]
+        trade_lines = [
+            json.loads(line)
+            for line in jsonl.read_text().strip().splitlines()
+            if "DETECTED" in line
+        ]
         assert len(trade_lines) >= 1
         assert trade_lines[0]["type"] == "trade_detected"
 
     def test_log_trade_submitted(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
         log_trade_submitted(
-            log, side="BUY", condition_id="cond555", asset="asset222",
-            size=1.0, price=0.9, usdc_value=0.9,
+            log,
+            side="BUY",
+            condition_id="cond555",
+            asset="asset222",
+            size=1.0,
+            price=0.9,
+            usdc_value=0.9,
         )
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "SUBMIT" in l]
+        trade_lines = [
+            json.loads(line) for line in jsonl.read_text().strip().splitlines() if "SUBMIT" in line
+        ]
         assert len(trade_lines) >= 1
         assert trade_lines[0]["type"] == "trade_submitted"
 
@@ -595,9 +763,11 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines()]
+        lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines()]
         assert any(e.get("type") == "trade_skip" for e in lines)
-        assert not any("EXECUTED" in e.get("message", "") for e in lines if e.get("type") == "trade_skip")
+        assert not any(
+            "EXECUTED" in e.get("message", "") for e in lines if e.get("type") == "trade_skip"
+        )
 
     def test_log_trade_decision(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
@@ -613,7 +783,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        entries = [json.loads(l) for l in jsonl.read_text().strip().splitlines()]
+        entries = [json.loads(line) for line in jsonl.read_text().strip().splitlines()]
         decision_rows = [e for e in entries if e.get("type") == "trade_decision"]
         assert len(decision_rows) >= 1
         assert decision_rows[0]["allow"] is True
@@ -624,7 +794,11 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        hb_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "heartbeat" in l.lower()]
+        hb_lines = [
+            json.loads(line)
+            for line in jsonl.read_text().strip().splitlines()
+            if "heartbeat" in line.lower()
+        ]
         assert len(hb_lines) >= 1
         assert hb_lines[0]["type"] == "monitor_heartbeat"
         assert hb_lines[0]["checkedActivities"] == 42
@@ -632,20 +806,35 @@ class TestTradeLogging:
     def test_log_trade_with_none_values(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
         log_trade_execution(
-            log, side="BUY", condition_id=None, asset=None,
-            size=None, price=None, usdc_value=None,
+            log,
+            side="BUY",
+            condition_id=None,
+            asset=None,
+            size=None,
+            price=None,
+            usdc_value=None,
         )
 
     def test_log_trade_with_meta(self, tmp_log_dir):
         log = self._make_logger(tmp_log_dir)
         log_trade_execution(
-            log, side="BUY", condition_id="cond", asset="asset",
-            size=1.0, price=0.5, usdc_value=0.5, meta={"custom_key": "custom_value"},
+            log,
+            side="BUY",
+            condition_id="cond",
+            asset="asset",
+            size=1.0,
+            price=0.5,
+            usdc_value=0.5,
+            meta={"custom_key": "custom_value"},
         )
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "EXECUTED" in l]
+        trade_lines = [
+            json.loads(line)
+            for line in jsonl.read_text().strip().splitlines()
+            if "EXECUTED" in line
+        ]
         assert trade_lines[0].get("custom_key") == "custom_value"
 
 
@@ -654,8 +843,10 @@ class TestIntegrationFlow:
         configure_logging(log_dir=tmp_path / "logs", level="DEBUG")
         print_startup_banner()
         print_status_checks(rpc_ok=True, balance=2.29, api_ok=True, database_ok=True)
+
         class DummyClient:
             signature_type = 0
+
         print_clob_client_status(DummyClient())
         print_service_start(trader_count=1)
         print_db_status({"0xdb27...c56e": 0})
@@ -669,23 +860,36 @@ class TestIntegrationFlow:
         log = configure_logging(log_dir=tmp_path / "logs", level="DEBUG")
         trade = {
             "proxyWallet": "0xdb27abc123def456789012345678901234c56e",
-            "side": "BUY", "conditionId": "0x951403",
-            "asset": "0x951403abcdef", "usdcSize": 0.84392, "price": 0.014,
-            "title": "Test Market", "eventSlug": "test-market", "transactionHash": "0xa43d5164",
+            "side": "BUY",
+            "conditionId": "0x951403",
+            "asset": "0x951403abcdef",
+            "usdcSize": 0.84392,
+            "price": 0.014,
+            "title": "Test Market",
+            "eventSlug": "test-market",
+            "transactionHash": "0xa43d5164",
         }
         print_new_trade_detected(trade)
         log_trade_detected(
-            log, side="BUY", condition_id=trade["conditionId"], asset=trade["asset"],
+            log,
+            side="BUY",
+            condition_id=trade["conditionId"],
+            asset=trade["asset"],
             size=float(trade["usdcSize"]) / float(trade["price"]),
-            price=trade["price"], usdc_value=trade["usdcSize"],
-            tx_hash=trade["transactionHash"], event_slug=trade["eventSlug"],
+            price=trade["price"],
+            usdc_value=trade["usdcSize"],
+            tx_hash=trade["transactionHash"],
+            event_slug=trade["eventSlug"],
         )
         print_capital_info(my_balance=2.29, leader_balance=145018.70, leader_addr="0xdb27...c56e")
         print_executing_strategy("BUY")
         print_trade_result(
-            success=True, side="BUY",
-            leader_tx="0xa43d5164", copy_tx="0xresult123",
-            amount=0.84, price=0.014,
+            success=True,
+            side="BUY",
+            leader_tx="0xa43d5164",
+            copy_tx="0xresult123",
+            amount=0.84,
+            price=0.014,
         )
         print_balance_update(1.45)
 
@@ -725,14 +929,18 @@ class TestParseApiError:
         assert parsed.get("error_message") == "order too small"
 
     def test_parse_complex_poly_exception(self):
-        parsed = _parse_api_error("PolyApiException[status_code=429, error_message={'error': 'rate limited'}]")
+        parsed = _parse_api_error(
+            "PolyApiException[status_code=429, error_message={'error': 'rate limited'}]"
+        )
         assert parsed["status_code"] == "429"
         assert parsed["error_message"] == "rate limited"
 
 
 class TestErrorRedaction:
     def test_redact_error_detail_status_code(self):
-        value = redact_error_detail("PolyApiException[status_code=429, error_message={'error':'rate limited'}]")
+        value = redact_error_detail(
+            "PolyApiException[status_code=429, error_message={'error':'rate limited'}]"
+        )
         assert value == "rate_limited"
 
     def test_redact_error_detail_timeout(self):
@@ -766,7 +974,10 @@ class TestErrorDisplayHelpers:
         print_api_error(
             side="BUY",
             error="PolyApiException[status_code=400, error_message={'error': 'invalid amount'}]",
-            condition_id="0x785176d4", asset="0x951403ab", retry=3, max_retries=3,
+            condition_id="0x785176d4",
+            asset="0x951403ab",
+            retry=3,
+            max_retries=3,
         )
 
     def test_print_api_error_simple(self):
@@ -796,9 +1007,13 @@ class TestErrorDisplayHelpers:
 
     def test_print_order_skip_full(self):
         print_order_skip(
-            side="BUY", reason="BUY order rejected",
-            condition_id="0x785176d4", asset="0x951403ab",
-            amount=0.1998, price=0.5, detail="min size: $1",
+            side="BUY",
+            reason="BUY order rejected",
+            condition_id="0x785176d4",
+            asset="0x951403ab",
+            amount=0.1998,
+            price=0.5,
+            detail="min size: $1",
         )
 
     def test_print_order_skip_minimal(self):
@@ -808,11 +1023,15 @@ class TestErrorDisplayHelpers:
         print_clob_error(
             operation="post_order",
             error="PolyApiException[status_code=400]",
-            asset="0x951403ab", side="BUY", condition_id="0x785176d4",
+            asset="0x951403ab",
+            side="BUY",
+            condition_id="0x785176d4",
         )
 
     def test_print_clob_error_get_price(self):
-        print_clob_error(operation="get_price", error="HTTP 500 response", asset="0xabc123", side="SELL")
+        print_clob_error(
+            operation="get_price", error="HTTP 500 response", asset="0xabc123", side="SELL"
+        )
 
     def test_print_clob_error_minimal(self):
         print_clob_error(operation="unknown", error="timeout")
@@ -826,14 +1045,22 @@ class TestErrorFlowIntegration:
         poly_err = "PolyApiException[status_code=400, error_message={'error': 'invalid amount, min size: $1'}]"
         for _ in range(3):
             print_clob_error(
-                operation="post_order", error=poly_err,
-                asset="0x951403ab", side="BUY", condition_id="0x785176d4",
+                operation="post_order",
+                error=poly_err,
+                asset="0x951403ab",
+                side="BUY",
+                condition_id="0x785176d4",
             )
         print_api_error(
-            side="BUY", error=poly_err,
-            condition_id="0x785176d4", asset="0x951403ab", retry=3, max_retries=3,
+            side="BUY",
+            error=poly_err,
+            condition_id="0x785176d4",
+            asset="0x951403ab",
+            retry=3,
+            max_retries=3,
         )
         print_api_response(
-            side="BUY", response={"success": False, "error": poly_err},
+            side="BUY",
+            response={"success": False, "error": poly_err},
             condition_id="0x785176d4",
         )

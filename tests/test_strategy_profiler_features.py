@@ -1,4 +1,5 @@
 """Tests for ``services/strategy_profile/strategy_profiler.py`` (PR3)."""
+
 from __future__ import annotations
 
 import time

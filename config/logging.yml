@@ -1,0 +1,16 @@
+# Configuration guide — structured application logging.
+# Purpose: select verbosity, output paths, and rotating-file retention.
+# Options: level is DEBUG/INFO/WARNING/ERROR/CRITICAL; paths may be relative or
+# absolute; max bytes and backup count are non-negative integer limits.
+# Trade-offs: DEBUG and larger retention aid diagnosis but increase disk use and
+# sensitive operational detail; stricter levels/smaller retention reduce both.
+# INFO balances operator visibility with noise; DEBUG should be temporary.
+level: INFO
+# Directory for legacy/service log outputs; ensure the process can write it.
+log_dir: log
+# JSON Lines audit/application log consumed by tooling and dashboards.
+app_log_jsonl_file: log/PolymarketCopyTradingBot.jsonl
+# Rotate after this many bytes. Lower bounds disk bursts but rotates more often.
+log_max_bytes: 5242880
+# Number of rotated files retained. 0 minimizes history; higher preserves audits.
+log_backup_count: 3

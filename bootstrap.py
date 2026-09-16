@@ -1,150 +1,138 @@
-"""Composition root (Phase 5).
-
-Wires the top-level shared graph — config, readiness tracker, DB, shared
-repositories and the leader registry — into a single :class:`Application`
-container. Per-user state (CLOB client + execution service + repos keyed
-on ``user_id``) still requires an async startup path with real network
-resources, so it is assembled in ``app.py::main`` from the shared pieces
-returned here.
-
-This module has **no import-time side effects**. ``build_app`` is the sole
-factory; it reads the supplied env mapping (or ``os.environ`` when ``None``)
-and returns a fresh graph each call. Two invocations produce independent
-objects with no shared mutable state.
-"""
+"""Application composition root with no import-time side effects."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from config.app_config import AppConfig, load_config
-from decimal import Decimal
 from integrations.falcon.client import FalconClient
-from integrations.polymarket.history_client import PolymarketHistoryClient
 from orchestrators.leader_registry import LeaderRegistry
+from orchestrators.discovery_funds import build_discovery_funds_callable
+from services.discovery.falcon_candidate_service import (
+    FalconCandidateService,
+)
+from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryService,
+)
+from services.discovery.policy_config import discovery_policy_from_config
 from services.healthServer import ReadinessTracker
-from services.discovery.candidate_classifier import CandidateClassifier
-from services.discovery.candidate_scoring import CandidateScoringService
-from services.discovery.balance_provider import build_wallet_balance_provider
-from services.discovery.copyability_replay import CopyabilityReplayService
-from services.discovery.falcon_candidate_service import FalconCandidateService
-from services.discovery.falcon_recent_state_service import FalconRecentStateService
-from services.discovery.ingestion_service import IngestionService
-from services.discovery.leader_trust_store import LeaderTrustStore
-from services.discovery.polymarket_history_backfill import PolymarketHistoryBackfill
-from services.discovery.signal_grouper import SignalGrouper
-from services.traderDiscoveryService import TraderDiscoveryService
 from storage.postgres.connection import init_pool
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.leaders_repo import LeadersRepo
-from storage.postgres.migrations import apply_migrations as apply_pg_migrations
+from storage.postgres.migrations import apply_migrations
+from utils.getMyBalance import configure_from_appconfig as configure_balance_from_appconfig
+from utils.getMyBalance import get_my_balance
 from utils.logger import get_logger
 
 __all__ = ["Application", "build_app"]
 
 
-@dataclass
+@dataclass(slots=True)
 class Application:
-    """Shared top-level wiring produced by :func:`build_app`."""
+    """Own the composed runtime services and closeable Falcon client."""
 
     config: AppConfig
     readiness: ReadinessTracker
     leaders_repo: LeadersRepo
     discovery_repo: DiscoveryRepo
-    discovery_service: TraderDiscoveryService
-    trust_store: LeaderTrustStore
+    discovery_service: FalconDiscoveryService
     registry: LeaderRegistry
+    falcon_client: FalconClient | None
+
+    async def aclose(self) -> None:
+        """Close application-owned external clients idempotently."""
+        if self.falcon_client is not None:
+            await self.falcon_client.close()
 
 
-async def build_app(env: Mapping[str, str] | None = None) -> Application:
-    """Construct the shared application graph.
+async def build_app(
+    overrides: Mapping[str, Any] | None = None,
+    *,
+    config: AppConfig | None = None,
+) -> Application:
+    """Build one application object graph from validated configuration.
 
-    Parameters
-    ----------
-    env:
-        Environment mapping. Defaults to ``os.environ`` when ``None`` — the
-        same default used by :func:`config.app_config.load_config`.
+    Args:
+        overrides: Optional configuration overlay used primarily by tests.
+        config: An already validated configuration instance.
 
-    Returns
-    -------
-    Application
-        A freshly wired, fully typed graph. Successive calls yield
-        independent instances (no module-level caching).
+    Returns:
+        A fully composed application with database-backed discovery services.
 
-    Notes
-    -----
-    PG-A5: builds an async ``LeadersRepo`` against the singleton asyncpg
-    pool. The pool is brought online here (``init_pool`` is idempotent —
-    a second caller returns the same pool) and the canonical schema is
-    applied before any repo touches it. Sqlite legacy initialisation
-    continues to run via ``config.db.connect_db()`` at the runtime
-    entrypoint until the remaining sqlite callers migrate.
+    Raises:
+        ValueError: If both ``overrides`` and ``config`` are supplied.
     """
-    config = load_config(env)
-
+    if config is not None and overrides is not None:
+        raise ValueError("provide either config or overrides, not both")
+    if config is None:
+        config = load_config(overrides)
+    configure_balance_from_appconfig(config)
     pool = await init_pool(
         config.database.dsn,
         min_size=config.database.pool_min_size,
         max_size=config.database.pool_max_size,
         command_timeout_seconds=config.database.command_timeout_seconds,
     )
-    async with pool.acquire() as conn:
-        await apply_pg_migrations(conn)
+    async with pool.acquire() as connection:
+        await apply_migrations(connection)
 
     readiness = ReadinessTracker()
     readiness.update(db_ok=True)
-
     leaders_repo = LeadersRepo(pool)
     discovery_repo = DiscoveryRepo(pool)
-    trust_store = LeaderTrustStore()
-    await trust_store.refresh_from_repo(discovery_repo)
-    ingestion = IngestionService(discovery_repo)
-    falcon_client = FalconClient(
-        api_url=config.discovery.falcon_api_url,
-        token=config.discovery.falcon_api_token,
+
+    falcon_cfg = config.discovery.falcon
+    token = config.discovery.api.token.get_secret_value() if falcon_cfg.enabled else ""
+    falcon_client: FalconClient | None = None
+    candidate_service: FalconCandidateService | None
+    discovery_service: FalconDiscoveryService
+    if falcon_cfg.enabled and token:
+        falcon_client = FalconClient(
+            api_key=token,
+            base_url=config.discovery.api.base_url,
+            timeout_seconds=config.discovery.api.timeout_seconds,
+            max_attempts=config.discovery.api.max_retries,
+            max_backoff_seconds=config.discovery.api.retry_max_delay_seconds,
+        )
+        policy = discovery_policy_from_config(config)
+        candidate_service = FalconCandidateService(
+            falcon_client,
+            policy=policy,
+        )
+    else:
+        # Fail closed: a disabled/missing Falcon key yields a discovery
+        # service that returns no candidates rather than silently substituting
+        # a weaker source. The funds callable is read-only and harmless when
+        # uncalled.
+        candidate_service = None
+
+    funder_address = str(getattr(config.wallet, "funder_address", "") or "").strip().lower()
+    get_funds = build_discovery_funds_callable(
+        funder_address,
+        get_balance=get_my_balance,
     )
-    history_client = PolymarketHistoryClient()
-    discovery_service = TraderDiscoveryService(
+    discovery_service = FalconDiscoveryService(
+        service=candidate_service,
+        repository=discovery_repo,
         config=config,
-        falcon_candidates=FalconCandidateService(falcon_client, config),
-        history_backfill=PolymarketHistoryBackfill(
-            client=history_client,
-            ingestion=ingestion,
-            config=config,
-        ),
-        discovery_repo=discovery_repo,
-        evaluation_repo=discovery_repo,
-        grouper=SignalGrouper(
-            window_seconds=config.discovery.discovery_signal_group_window_seconds,
-            max_gap_seconds=config.discovery.discovery_signal_group_max_gap_seconds,
-            min_group_notional_usdc=Decimal(
-                str(config.discovery.discovery_min_group_notional_usdc)
-            ),
-        ),
-        classifier=CandidateClassifier(config),
-        replay_service=CopyabilityReplayService(
-            config=config,
-            balance_provider=build_wallet_balance_provider(config),
-        ),
-        scoring_service=CandidateScoringService(config),
-        recent_state_service=FalconRecentStateService(falcon_client),
-        trust_store=trust_store,
+        get_funds=get_funds,
     )
+
     registry = LeaderRegistry(
         discovery_service=discovery_service,
         leaders_repo=leaders_repo,
-        readiness_tracker=readiness,
         config=config,
+        readiness_tracker=readiness,
         logger_instance=get_logger("LeaderRegistry"),
     )
-
     return Application(
         config=config,
         readiness=readiness,
         leaders_repo=leaders_repo,
         discovery_repo=discovery_repo,
         discovery_service=discovery_service,
-        trust_store=trust_store,
         registry=registry,
+        falcon_client=falcon_client,
     )

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 import os
 
 import pytest
@@ -13,8 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScore
-from services.tradeAnalyticsService import TradeAnalyticsService
-from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
 
 
 def _test_config() -> SimpleNamespace:
@@ -26,15 +25,8 @@ def _test_config() -> SimpleNamespace:
             near_resolution_gate_price=0.95,
             near_resolution_max_age_seconds=300,
         ),
-        leader=SimpleNamespace(
+        copy_trading=SimpleNamespace(
             copy_decision_min_score=0.0,
-            leader_score_balance_target_usdc=500.0,
-            leader_score_pnl_bonus_cap=0.1,
-            leader_score_activity_target=8,
-            leader_score_weight_balance=0.35,
-            leader_score_weight_analytics=0.45,
-            leader_score_weight_activity=0.20,
-            leader_score_floor=0.10,
             copy_max_signal_age_seconds=120.0,
             copy_max_price_drift_pct=6.0,
             copy_max_edge_decay_pct=0.1,
@@ -45,6 +37,20 @@ def _test_config() -> SimpleNamespace:
             trust_size_multiplier_min=0.50,
             trust_size_multiplier_max=1.25,
         ),
+        discovery=SimpleNamespace(
+            scoring=SimpleNamespace(
+                runtime_default_roster_score=0.50,
+                runtime_pnl_target_usdc=100.0,
+                runtime_activity_target=8,
+                runtime_score_floor=0.10,
+                runtime_weights=SimpleNamespace(
+                    roster_score=0.70,
+                    win_rate=0.15,
+                    pnl=0.10,
+                    activity=0.05,
+                ),
+            )
+        ),
     )
 
 
@@ -52,8 +58,8 @@ def _leader(score: float = 0.9) -> LeaderScore:
     return LeaderScore(
         wallet="0x" + ("1" * 40),
         score=score,
-        balance_score=score,
-        analytics_score=score,
+        roster_score=score,
+        runtime_score=score,
         activity_score=score,
         sample_size=20,
         details={},
@@ -92,9 +98,9 @@ class TestCopyDecisionService:
         assert decision.skip_code == "ok"
 
     def test_buy_upsizes_to_venue_min_when_cap_allows(self):
-        """BUY below taker min → upsize to taker min when cap allows."""
-        # live_price=0.20 => taker_min = ceil(1/0.20) = 5 tokens
-        # base_notional=1.00 => desired = 5 tokens => exactly at min, no upsize
+        """BUY below the dynamic share minimum upsizes when cap allows."""
+        # live_price=0.20 => $1 floor is 5 shares, but market minimum is 8.
+        # base_notional=1.00 => desired=5, so the order upsizes to 8 shares.
         svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -103,16 +109,38 @@ class TestCopyDecisionService:
             live_price=0.20,
             base_notional_usdc=1.00,
             max_notional_usdc=10.0,
-            market_min_size=8.0,         # ignored for taker orders
+            market_min_size=8.0,
         )
         assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(5.0)
+        assert decision.target_size_tokens == pytest.approx(8.0)
         assert decision.sizing is not None
         assert decision.sizing.accept is True
-        assert decision.sizing.upsized is False  # exactly at taker min
+        assert decision.sizing.upsized is True
+
+    def test_buy_minimum_uses_copied_price_without_slippage_reserve(self):
+        """Fund exactly five shares when the copied-price cap permits them."""
+
+        svc = CopyDecisionService(config=_test_config())
+        trade = {"price": 0.70, "timestamp": time.time(), "usdcSize": 10}
+
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.70,
+            base_notional_usdc=0.50,
+            max_notional_usdc=3.50,
+            market_min_size=5.0,
+            tick_size=0.01,
+        )
+
+        assert decision.allow is True
+        assert decision.target_size_tokens == pytest.approx(5.0)
+        assert decision.target_notional_usdc == pytest.approx(3.50)
+        assert decision.sizing is not None
+        assert decision.sizing.effective_price == Decimal("0.70")
 
     def test_buy_skips_if_cap_cannot_satisfy_minimum_executable_size(self):
-        """Cap clamps BUY because taker minimum ($1 notional) is smaller than old GTC 5-token minimum."""
+        """Skip when the risk cap cannot cover the dynamic share minimum."""
         svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -120,20 +148,17 @@ class TestCopyDecisionService:
             leader_score=_leader(),
             live_price=0.84,
             base_notional_usdc=10.0,
-            max_notional_usdc=4.25,
+            max_notional_usdc=4.19,
             market_min_size=5.0,
         )
-        # No tick_size passed → worst_price = 0.84 * 1.02 = 0.8568 (no tick rounding)
-        # desired_size = min(10/0.84, 4.25/0.84) = 5.0595
-        # worst_notional = 5.0595 * 0.8568 = 4.335 > cap 4.25 → floored
-        # floored = (4.25 / 0.8568).quantize(0.0001, floor) = 4.9603
-        # taker_min = ceil(1/0.84) = 1.1904; 4.9603 >= 1.1904 → accept
-        assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(4.9603, rel=1e-4)
+        # Five shares cost 4.20 at the copied price, above the 4.19 cap, so
+        # execution must fail closed instead of shrinking below five shares.
+        assert decision.allow is False
+        assert decision.skip_code == "buy_cap_blocks_upsize_to_venue_min"
         assert decision.sizing is not None
-        assert decision.sizing.accept is True
+        assert decision.sizing.accept is False
 
-    def test_buy_returns_worst_case_notional_when_already_above_min_size(self):
+    def test_buy_returns_copied_price_notional_when_already_above_min_size(self):
         svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 5.88}
         decision = svc.decide_buy(
@@ -146,9 +171,9 @@ class TestCopyDecisionService:
         )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(7.0)
-        assert decision.target_notional_usdc == pytest.approx(5.9976, rel=1e-4)
+        assert decision.target_notional_usdc == pytest.approx(5.88, rel=1e-4)
         assert decision.details["live_notional_usdc"] == pytest.approx(5.88)
-        assert decision.details["required_worst_notional_usdc"] == pytest.approx(5.9976, rel=1e-4)
+        assert decision.details["required_worst_notional_usdc"] == pytest.approx(5.88, rel=1e-4)
 
     def test_buy_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService(config=_test_config())
@@ -170,7 +195,7 @@ class TestCopyDecisionService:
         assert decision.details.get("decision_gate_enabled") is False
 
     def test_sell_tiny_order_bumps_to_venue_minimum_when_position_can_cover_it(self):
-        # live_price=0.40 => taker_min = ceil(1/0.40) = 2.5 tokens
+        # live_price=0.40 => $1 floor is 2.5 shares; market minimum is 5.
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
         with patch.dict(
             os.environ,
@@ -186,13 +211,13 @@ class TestCopyDecisionService:
                 trade=trade,
                 sell_tokens=1.0,
                 live_price=0.40,
-                market_min_size=5.0,    # ignored for taker
+                market_min_size=5.0,
                 max_sell_tokens=10.0,
             )
 
         assert decision.allow is True
         assert decision.skip_code == "ok"
-        assert decision.target_size_tokens == pytest.approx(2.5)
+        assert decision.target_size_tokens == pytest.approx(5.0)
         assert decision.reason == "decision gate disabled by config"
 
     def test_sell_skips_when_full_position_cannot_satisfy_venue_minimum(self):
@@ -212,8 +237,8 @@ class TestCopyDecisionService:
                 trade=trade,
                 sell_tokens=1.0,
                 live_price=0.40,
-                market_min_size=5.0,    # ignored for taker
-                max_sell_tokens=2.0,    # held < taker min (3)
+                market_min_size=5.0,  # ignored for taker
+                max_sell_tokens=2.0,  # held < taker min (3)
             )
 
         assert decision.allow is False
@@ -266,85 +291,14 @@ class TestCopyDecisionService:
             trade=trade,
             sell_tokens=2.0,
             live_price=0.40,
-            market_min_size=5.0,    # ignored for taker orders
+            market_min_size=5.0,
             max_sell_tokens=10.0,
         )
-        # live_price=0.40 => taker_min = ceil(1/0.40) = 2.5 tokens
-        # sell_tokens=2.0 < 2.5, held=10 >= 2.5 => upsize to 2.5
+        # The dynamic five-share floor exceeds the $1 (2.5-share) floor.
         assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(2.5)
+        assert decision.target_size_tokens == pytest.approx(5.0)
         assert decision.sizing is not None
         assert decision.sizing.upsized is True
-
-
-class TestTraderDiscoveryService:
-    @pytest.mark.asyncio
-    async def test_unwired_discovery_returns_no_candidates(self):
-        # No-config TraderDiscoveryService is intentionally inert. Discovery
-        # now scores DB candidates only and must not mutate live leaders.
-        svc = TraderDiscoveryService()
-        assert await svc.discover_candidates() == []
-        assert await svc.discover_ranked_leaders() == []
-
-    @pytest.mark.asyncio
-    async def test_discover_ranked_leaders_maps_profiles_without_auto_following(self):
-        svc = TraderDiscoveryService()
-        profiles = [
-            TraderProfile(
-                wallet="0x" + ("2" * 40),
-                composite_score=0.8,
-                total_positions=12,
-                total_current_value=42,
-            )
-        ]
-        with patch.object(
-            svc,
-            "discover_candidates",
-            new=AsyncMock(return_value=profiles),
-        ):
-            ranked = await svc.discover_ranked_leaders(limit=5)
-        assert [r.wallet for r in ranked] == [profiles[0].wallet]
-        assert ranked[0].score == pytest.approx(0.8)
-        assert ranked[0].recent_trade_count == 12
-
-    @pytest.mark.asyncio
-    async def test_cached_profile_lookup_is_lowercase(self):
-        svc = TraderDiscoveryService()
-        profile = TraderProfile(wallet="0x" + ("A" * 40), composite_score=0.7)
-        svc._cache[profile.wallet.lower()] = profile
-        assert svc.get_cached_profile(profile.wallet.upper()) is profile
-
-
-class TestTradeAnalyticsService:
-    @pytest.mark.asyncio
-    async def test_records_decision_and_execution_metrics(self):
-        svc = TradeAnalyticsService()
-        dummy_decision = type(
-            "Decision",
-            (),
-            {
-                "allow": True,
-                "skip_code": "ok",
-                "decision_score": 0.7,
-                "leader_score": 0.8,
-                "trade_score": 0.75,
-            },
-        )()
-        trade = {"side": "BUY", "price": 0.50, "conditionId": "cond1", "asset": "asset1"}
-
-        await svc.record_decision(decision=dummy_decision, trade=trade)
-        await svc.record_execution(
-            decision=dummy_decision,
-            trade=trade,
-            fill_price=0.52,
-            result="executed",
-        )
-        snap = await svc.snapshot()
-        assert snap["total_signals"] == 1
-        assert snap["approved_signals"] == 1
-        assert snap["executed_trades"] == 1
-        assert snap["avg_quality_score"] > 0
-        assert snap["avg_slippage_bps"] > 0
 
 
 class TestCopyDecisionServicePartialHeadroom:
@@ -404,7 +358,10 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
+        assert decision.skip_code in (
+            "buy_cap_blocks_upsize_to_venue_min",
+            "risk_cap_too_low_for_min_order",
+        )
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
@@ -426,24 +383,22 @@ class TestPhase3MetadataSizing:
     """Phase 3: metadata-driven min-executable order sizing (issue #38)."""
 
     def test_buy_upsizes_to_venue_min_when_allowed(self):
-        """BUY below taker min → upsize when balance/headroom allow."""
-        # live_price=0.50 => taker_min = ceil(1/0.50) = 2 tokens
-        # base_notional=1.00 => desired=2 tokens => exactly at min, no upsize
+        """BUY below the five-share market minimum upsizes with headroom."""
         svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_buy(
             trade=trade,
             leader_score=_leader(),
             live_price=0.50,
-            base_notional_usdc=1.00,  # 2 tokens, exactly at taker min
+            base_notional_usdc=1.00,
             max_notional_usdc=10.0,
             market_min_size=5.0,
         )
         assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(2.0, rel=1e-4)
+        assert decision.target_size_tokens == pytest.approx(5.0, rel=1e-4)
         assert decision.sizing is not None
         assert decision.sizing.accept is True
-        assert decision.sizing.upsized is False
+        assert decision.sizing.upsized is True
 
     def test_buy_skips_when_headroom_insufficient(self):
         """BUY below taker min, cap too low → skip."""
@@ -460,7 +415,10 @@ class TestPhase3MetadataSizing:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
+        assert decision.skip_code in (
+            "buy_cap_blocks_upsize_to_venue_min",
+            "risk_cap_too_low_for_min_order",
+        )
 
     def test_sell_skips_when_held_below_venue_min(self):
         """SELL below taker min, held position too small → skip."""
@@ -480,9 +438,7 @@ class TestPhase3MetadataSizing:
         assert decision.sizing.accept is False
 
     def test_sell_upsizes_when_held_supports_min(self):
-        """SELL below taker min, held position >= min → upsize."""
-        # live_price=0.50 => taker_min = ceil(1/0.50) = 2 tokens
-        # sell_tokens=1.0 < 2, max_sell=10 >= 2 => upsize to 2
+        """SELL below the dynamic minimum upsizes when holdings cover it."""
         svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_sell(
@@ -493,7 +449,7 @@ class TestPhase3MetadataSizing:
             max_sell_tokens=10.0,  # enough held
         )
         assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(2.0, rel=1e-4)
+        assert decision.target_size_tokens == pytest.approx(5.0, rel=1e-4)
         assert decision.sizing is not None
         assert decision.sizing.upsized is True
 

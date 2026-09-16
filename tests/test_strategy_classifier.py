@@ -1,4 +1,5 @@
 """Tests for ``services/strategy_profile/strategy_classifier.py`` (PR3)."""
+
 from __future__ import annotations
 
 from models.strategy_profile import StrategyArchetype

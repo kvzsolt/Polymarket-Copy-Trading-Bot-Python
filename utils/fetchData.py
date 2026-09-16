@@ -10,6 +10,13 @@ logger = get_logger("FetchData")
 _session: aiohttp.ClientSession | None = None
 _http_client: AsyncHttpClient | None = None
 
+# aiohttp's default header-size limit is 8190 bytes. Polymarket currently
+# serves a Content-Security-Policy header of ~8.2 KB on endpoints such as
+# https://polymarket.com/api/geoblock, so the default makes aiohttp fail the
+# response as a client-side HTTP 400 before the body is ever read. Keep a
+# generous ceiling for venue responses while still bounding memory per header.
+_AIOHTTP_HEADER_SIZE_LIMIT = 64 * 1024
+
 
 # INF-04: the prior ``atexit.register(_close_session_sync)`` ran
 # ``asyncio.run()`` during interpreter shutdown. Under pytest-asyncio
@@ -21,7 +28,6 @@ _http_client: AsyncHttpClient | None = None
 # silent atexit failure.
 
 
-
 def _get_session() -> aiohttp.ClientSession:
     """Shared aiohttp session for the process."""
     global _session
@@ -30,22 +36,21 @@ def _get_session() -> aiohttp.ClientSession:
             timeout=aiohttp.ClientTimeout(total=15, connect=5, sock_connect=5, sock_read=15),
             connector=aiohttp.TCPConnector(limit=100, keepalive_timeout=30),
             headers={"Accept": "application/json", "User-Agent": "polymarket-copy-bot/2.0"},
+            max_line_size=_AIOHTTP_HEADER_SIZE_LIMIT,
+            max_field_size=_AIOHTTP_HEADER_SIZE_LIMIT,
         )
     return _session
-
 
 
 def _get_http_client() -> AsyncHttpClient:
     global _http_client
     session = _get_session()
-    if (
-        _http_client is None
-        or _http_client.session.closed
-        or _http_client.session is not session
-    ):
+    if _http_client is None or _http_client.session.closed or _http_client.session is not session:
         _http_client = AsyncHttpClient(
             session,
-            retry_policy=HttpRetryPolicy(attempts=4, base_delay=0.25, max_delay=2.5, timeout_seconds=10.0),
+            retry_policy=HttpRetryPolicy(
+                attempts=4, base_delay=0.25, max_delay=2.5, timeout_seconds=10.0
+            ),
             logger=logger,
         )
     return _http_client

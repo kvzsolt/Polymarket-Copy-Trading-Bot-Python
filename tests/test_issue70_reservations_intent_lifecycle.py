@@ -10,6 +10,7 @@ Validates:
 - Startup recovery restores in-flight intents from DB.
 - Operator-visible reservation audit logs.
 """
+
 import contextlib
 import time
 from datetime import datetime, timezone
@@ -46,24 +47,26 @@ async def _pg_pool():
     finally:
         ctr.stop()
 
-from domain.order_lifecycle import (
+
+from domain.order_lifecycle import (  # noqa: E402
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
     Reservation,
 )
-from services.execution.reservation_service import (
+from services.execution.reservation_service import (  # noqa: E402
     ReservationService,
 )
-from services.intentRegistry import (
+from services.intentRegistry import (  # noqa: E402
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
     IntentState,
+    UnknownIntentError,
     Reservation as IntentReservation,
 )
-from services.positionActionCoordinator import PositionScope
+from services.positionActionCoordinator import PositionScope  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +134,7 @@ class TestConcurrentBuyProtection:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("100"), token_shares=Decimal("0"))
-        rec1 = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
+        await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
         await registry.finalize_intent("buy-1", IntentState.DONE, by_reconciler=True)
 
         rec2 = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-2")
@@ -179,7 +182,7 @@ class TestReservationRelease:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("100"), token_shares=Decimal("0"))
-        rec = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
+        await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
 
         released = await registry.release_on_cancel_or_fail("buy-1", IntentState.CANCELLED)
         assert released.state == IntentState.CANCELLED
@@ -194,7 +197,7 @@ class TestReservationRelease:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("0"), token_shares=Decimal("5"))
-        rec = await registry.begin_intent(scope, IntentSide.SELL, reservation, intent_id="sell-1")
+        await registry.begin_intent(scope, IntentSide.SELL, reservation, intent_id="sell-1")
 
         released = await registry.release_on_cancel_or_fail("sell-1", IntentState.ERROR)
         assert released.state == IntentState.ERROR
@@ -387,24 +390,36 @@ class TestStartupRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_duplicate_after_crash(self):
-        """Recovery correctly rejects duplicate scope from two orders."""
+        """Recovery preserves both existing durable allocations on the same scope."""
         from services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
         mock_a = Reservation(
-            id="res-a", user_id="0xUSER", intent_key="intent-a",
-            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
-            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("50"),
-            reserved_size=Decimal("0"), status="active",
+            id="res-a",
+            user_id="0xUSER",
+            intent_key="intent-a",
+            condition_id="0xCOND",
+            token_id="TKN-A",
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            reserved_usdc=Decimal("50"),
+            reserved_size=Decimal("0"),
+            status="active",
             created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
             expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
             order_id="order-a",
         )
         mock_b = Reservation(
-            id="res-b", user_id="0xUSER", intent_key="intent-b",
-            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
-            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("75"),
-            reserved_size=Decimal("0"), status="active",
+            id="res-b",
+            user_id="0xUSER",
+            intent_key="intent-b",
+            condition_id="0xCOND",
+            token_id="TKN-A",
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            reserved_usdc=Decimal("75"),
+            reserved_size=Decimal("0"),
+            status="active",
             created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
             expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
             order_id="order-b",
@@ -414,8 +429,8 @@ class TestStartupRecovery:
         mock_repo.list_active = AsyncMock(return_value=[mock_a, mock_b])
 
         count = await recover_intents_from_db(registry, mock_repo)
-        # First order recovered, second blocked as duplicate
-        assert count == 1
+        assert count == 2
+        assert registry.reserved_for(_scope("TKN-A")).quote_usdc == Decimal("125")
         mock_repo.list_active.assert_awaited_once_with()
 
 
@@ -510,7 +525,7 @@ class TestReservationEdgeCases:
     async def test_unknown_intent_transition_rejected(self):
         """Transition on unknown intent_id raises UnknownIntentError."""
         registry = IntentRegistry()
-        with pytest.raises(Exception):
+        with pytest.raises(UnknownIntentError):
             await registry.transition("nonexistent", IntentState.SUBMITTED)
 
     @pytest.mark.asyncio

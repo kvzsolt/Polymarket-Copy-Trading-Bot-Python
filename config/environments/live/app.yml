@@ -1,0 +1,13 @@
+# Configuration guide — live application overrides.
+# Purpose: enable Prometheus metrics locally for live operations.
+# Options: server true/false, bind host/IP, and TCP port 1..65535.
+# Trade-offs: live metrics improve incident visibility but add a listener;
+# retaining loopback avoids exposing runtime/account telemetry remotely.
+# Live metrics endpoint, migrated from the operator's untracked
+# config/runtime.local.yml (network.enable_metrics_server et al.).
+# true starts the metrics server.
+enable_metrics_server: true
+# Loopback restricts scraping to local processes/tunnels.
+metrics_bind_host: 127.0.0.1
+# Local Prometheus listener port.
+metrics_port: 9102

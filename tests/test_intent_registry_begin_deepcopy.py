@@ -10,6 +10,7 @@ reconciler-owned finalization guard.
 Test pins: the returned record is a deep copy, so caller mutation
 cannot leak into the registry's internal record.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

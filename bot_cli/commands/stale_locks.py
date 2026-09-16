@@ -1,4 +1,5 @@
 """bot stale-locks — list orders held in submission lock past TTL."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,8 +8,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from config.app_config import EnvValidationError, load_config
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
 
 if TYPE_CHECKING:
     import asyncpg
@@ -57,8 +56,6 @@ def register_stale_locks_command(subparsers: argparse._SubParsersAction) -> None
 
 def _load_config_or_fail():
     try:
-        load_runtime_env()
-        rehydrate_env()
         return load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))
@@ -168,9 +165,7 @@ async def _run_list_async(args: argparse.Namespace) -> int:
             command_timeout_seconds=15.0,
         )
         try:
-            rows = await _list_stale_locks(
-                pool, ttl_seconds=int(ttl), user_id=user_id
-            )
+            rows = await _list_stale_locks(pool, ttl_seconds=int(ttl), user_id=user_id)
         finally:
             await shutdown_pool()
     except Exception as exc:

@@ -35,6 +35,7 @@ def _ctx(*, coordinator=None, extra=None, user_id="0xUSER"):
 
 # ── reaper ──────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_reap_releases_expired_via_coordinator_reservation_service():
     reservation_service = MagicMock()
@@ -78,13 +79,14 @@ async def test_reap_swallows_reaper_exceptions():
 
 # ── no-fill prune throttle ───────────────────────────────────────────────────
 
+
 def test_should_attempt_no_fill_prune_throttles_within_interval():
     ctx = _ctx()
     kw = dict(condition_id="cond-1", token_id="tok-1", interval_seconds=30.0)
 
-    assert _should_attempt_no_fill_prune(ctx, now=1000.0, **kw) is True   # first
+    assert _should_attempt_no_fill_prune(ctx, now=1000.0, **kw) is True  # first
     assert _should_attempt_no_fill_prune(ctx, now=1010.0, **kw) is False  # 10s later
-    assert _should_attempt_no_fill_prune(ctx, now=1031.0, **kw) is True   # >30s later
+    assert _should_attempt_no_fill_prune(ctx, now=1031.0, **kw) is True  # >30s later
 
 
 def test_should_attempt_no_fill_prune_is_per_scope():
@@ -100,6 +102,7 @@ def test_should_attempt_no_fill_prune_is_per_scope():
 
 # ── phantom prune ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_attempt_phantom_prune_returns_drift_result(monkeypatch):
     import orchestrators.trade_pipeline as tp
@@ -111,7 +114,10 @@ async def test_attempt_phantom_prune_returns_drift_result(monkeypatch):
     monkeypatch.setattr(tp, "get_reconciliation_service", lambda _ctx: drift_reconciler)
 
     result = await _attempt_phantom_prune_on_no_fill(
-        _ctx(), condition_id="cond-1", token_id="tok-1", leader_id="0xLEAD",
+        _ctx(),
+        condition_id="cond-1",
+        token_id="tok-1",
+        leader_id="0xLEAD",
     )
 
     assert result == {"reconciled": True, "action": "deleted", "live_size": 0}
@@ -128,6 +134,9 @@ async def test_attempt_phantom_prune_empty_on_error(monkeypatch):
     monkeypatch.setattr(tp, "get_reconciliation_service", _boom)
 
     result = await _attempt_phantom_prune_on_no_fill(
-        _ctx(), condition_id="cond-1", token_id="tok-1", leader_id=None,
+        _ctx(),
+        condition_id="cond-1",
+        token_id="tok-1",
+        leader_id=None,
     )
     assert result == {}

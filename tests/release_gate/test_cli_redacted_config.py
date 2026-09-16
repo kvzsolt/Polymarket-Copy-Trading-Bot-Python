@@ -4,6 +4,7 @@ Confirms that even with a populated PRIVATE_KEY in the environment, the
 default ``bot config print`` invocation never echoes it back. Defends the
 operator-facing safety contract that secrets cannot leak through ops tooling.
 """
+
 from __future__ import annotations
 
 import json
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 import config.app_config as app_config_mod
 from bot_cli.commands.config import _config_to_dict, _redact_value, run_config
+from tests.config_helpers import load_test_config
 
 
 _SECRET_KEY = "0x" + "a" * 64
@@ -34,7 +36,7 @@ def _load_cfg():
     runs on any Python the harness happens to provide (dev may be 3.13;
     CI is 3.11/3.12). The redaction contract is version-independent."""
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        return app_config_mod.load_config(_env())
+        return load_test_config(_env())
 
 
 def test_redact_value_masks_private_key() -> None:
@@ -59,15 +61,6 @@ def test_run_config_print_does_not_leak_secret(capsys, monkeypatch) -> None:
         "bot_cli.commands.config.load_config",
         lambda *_args, **_kwargs: cfg,
     )
-    monkeypatch.setattr(
-        "bot_cli.commands.config.load_runtime_env",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "bot_cli.commands.config.rehydrate_env",
-        lambda: None,
-    )
-
     args = SimpleNamespace(
         config_subcommand="print",
         no_redact=False,

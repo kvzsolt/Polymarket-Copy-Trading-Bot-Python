@@ -14,6 +14,7 @@
 Live mode requires every blocker to be clear. Paper mode only runs the
 subset of checks that apply outside live submission.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,18 +22,18 @@ import asyncio
 import json
 import re
 import socket
-from services.wallet_signature_detector import detect_wallet_signature_type
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from config.app_config import (
+    AppConfig,
     EnvValidationError,
     load_config,
 )
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
+from config.env import secret_value
+from orchestrators.trader_startup_policy import TraderStartupPolicy
 
 
 # ---------------------------------------------------------------------------
@@ -55,28 +56,29 @@ class _DoctorContext:
     def ok(self, name: str, detail: str = "", fix: str = "") -> None:
         # ``fix`` is accepted for symmetry with warning/blocked at call sites;
         # for ok records the fix string is always blank.
+        """Return a successful diagnostic result."""
         self._append(name, _STATUS_OK, detail, "")
 
     def warning(self, name: str, detail: str, fix: str = "") -> None:
+        """Return a warning diagnostic result."""
         self._append(name, _STATUS_WARNING, detail, fix)
 
     def blocked(self, name: str, detail: str, fix: str = "") -> None:
+        """Return a blocked diagnostic result."""
         self._append(name, _STATUS_BLOCKED, detail, fix)
 
     def skipped(self, name: str, detail: str = "") -> None:
         # Skipped checks do not affect overall status.
-        self.checks.append(
-            {"name": name, "status": "skipped", "detail": detail, "fix": ""}
-        )
+        """Return a skipped diagnostic result."""
+        self.checks.append({"name": name, "status": "skipped", "detail": detail, "fix": ""})
 
     def _append(self, name: str, status: str, detail: str, fix: str) -> None:
-        self.checks.append(
-            {"name": name, "status": status, "detail": detail, "fix": fix}
-        )
+        self.checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
         if _STATUS_ORDER.get(status, 0) > _STATUS_ORDER.get(self.overall, 0):
             self.overall = status
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation."""
         return {"status": self.overall, "mode": self.mode, "checks": list(self.checks)}
 
 
@@ -91,12 +93,40 @@ def _check_wss_endpoint(host: str, port: int = 443, timeout: float = 3.0) -> tup
         return False, f"{host}:{port} unreachable: {exc}"
 
 
-def _check_gateway_sdk() -> tuple[bool, str]:
+def _check_gateway_ccxt() -> tuple[bool, str]:
+    """Return whether the installed CCXT prediction adapter is importable."""
+
     try:
-        from polymarket import AsyncPublicClient, AsyncSecureClient  # noqa: F401
+        import ccxt
+        from ccxt.prediction import polymarket as prediction_factory  # noqa: F401
     except Exception as exc:
-        return False, f"clob_sdk_import_failed: {exc}"
-    return True, "polymarket-client unified SDK importable"
+        return False, f"ccxt_prediction_import_failed: {type(exc).__name__}"
+    return True, f"ccxt.prediction.polymarket importable (ccxt {ccxt.__version__})"
+
+
+def _wallet_signature_detail(
+    *,
+    detected_signature_type: Any,
+    detected_wallet_type: str,
+    detected_signer: str | None,
+    funder_address: str,
+    configured_signature_type: Any,
+) -> str:
+    """Render preflight diagnostics without treating the config hint as authority."""
+    shortened_signer = (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
+    shortened_funder = funder_address[:10] + "…" if funder_address else "unknown"
+    detail = (
+        f"walletType={detected_wallet_type} "
+        f"signature_type={int(detected_signature_type)} "
+        f"signer={shortened_signer} "
+        f"funder={shortened_funder} "
+        "ccxt_explicit_funder_authoritative=true"
+    )
+    if configured_signature_type is not None and int(configured_signature_type) != int(
+        detected_signature_type
+    ):
+        detail += f" configured_hint={int(configured_signature_type)} (diagnostic-only)"
+    return detail
 
 
 _REQUIRED_DB_TABLES = (
@@ -195,30 +225,42 @@ def _try_port_bind(host: str, port: int) -> tuple[bool, str]:
             pass
 
 
+def _redact_dsn(dsn: str) -> str:
+    """Return ``dsn`` with any ``user:password@`` credential masked.
+
+    Doctor output is printed to the console and pasted into tickets, so the
+    Postgres password must never survive into the ``db_writable`` detail.
+    """
+    if not dsn:
+        return "<database.dsn is empty>"
+    return re.sub(r"(://[^:/@\s]+):[^@\s]*@", r"\1:***@", dsn)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _resolve_log_dir() -> Path:
+def _resolve_log_dir(config=None) -> Path:
+    if config is not None:
+        return Path(config.logging.log_dir)
     from utils.logger import _default_log_dir  # noqa: WPS437
 
     return _default_log_dir()
 
 
-def _resolve_jsonl_path() -> Path:
-    import os
-
+def _resolve_jsonl_path(config=None) -> Path:
     from utils.logger import APP_NAME
 
-    override = (os.getenv("APP_LOG_JSONL_FILE") or "").strip()
-    return Path(override) if override else (_resolve_log_dir() / f"{APP_NAME}.jsonl")
+    if config is not None and str(config.logging.app_log_jsonl_file).strip():
+        return Path(config.logging.app_log_jsonl_file)
+    return _resolve_log_dir(config) / f"{APP_NAME}.jsonl"
 
 
 async def _auto_trader_db_candidate_count(config) -> int:
-    """Probe current DB-backed startup candidates using the production selector."""
-    from services.discovery.auto_trader_selector import AutoTraderSelector
+    """Count hysteresis-qualified active roster entries."""
     from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.discovery_repo import DiscoveryRepo
+    from storage.postgres.leaders_repo import LeadersRepo
+    from services.discovery.models import discovery_config_hash
 
     pool = None
     try:
@@ -228,9 +270,12 @@ async def _auto_trader_db_candidate_count(config) -> int:
             max_size=2,
             command_timeout_seconds=15.0,
         )
-        selector = AutoTraderSelector(DiscoveryRepo(pool), config)
-        selection = await selector.select_from_db()
-        return int(selection.db_candidate_count)
+        return len(
+            await LeadersRepo(pool).list_active(
+                limit=config.discovery.scheduler.max_active_leaders,
+                config_hash=discovery_config_hash(config.discovery),
+            )
+        )
     finally:
         if pool is not None:
             try:
@@ -243,27 +288,41 @@ async def _auto_trader_db_candidate_count(config) -> int:
 # Main entry
 # ---------------------------------------------------------------------------
 def register_doctor_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the diagnostic command with the CLI parser."""
     parser = subparsers.add_parser("doctor", help="Run diagnostic checks")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--live", action="store_true", help="Check readiness for live trading")
     group.add_argument("--paper", action="store_true", help="Check readiness for paper trading")
 
 
-async def run_doctor_checks(mode: str) -> dict[str, Any]:
-    """Structured readiness gate. Returns dict shape documented above."""
+async def run_doctor_checks(
+    mode: str,
+    *,
+    config: AppConfig | None = None,
+    auto_trader: bool = False,
+) -> dict[str, Any]:
+    """Run the structured readiness gate.
+
+    Args:
+        mode: Requested ``paper`` or ``live`` diagnostic mode.
+        config: Optional immutable config snapshot shared with startup.
+        auto_trader: Ignore manual leaders and validate discovery startup.
+
+    Returns:
+        Structured diagnostic result documented by this module.
+    """
     ctx = _DoctorContext(mode=mode)
 
     # ----- config_load --------------------------------------------------
-    try:
-        load_runtime_env()
-        rehydrate_env()
-        config = load_config()
-    except EnvValidationError as exc:
-        ctx.blocked("config_load", "validation_error", str(exc))
-        return ctx.to_dict()
-    except Exception as exc:
-        ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
-        return ctx.to_dict()
+    if config is None:
+        try:
+            config = load_config()
+        except EnvValidationError as exc:
+            ctx.blocked("config_load", "validation_error", str(exc))
+            return ctx.to_dict()
+        except Exception as exc:
+            ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
+            return ctx.to_dict()
     ctx.ok("config_load", "AppConfig loaded")
 
     live = mode == "live"
@@ -278,7 +337,8 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "paper_trade_only_false",
                 "live mode requested but config resolves to PAPER",
-                "set TRADING_MODE=live and restart",
+                "set trading_mode: live in config/environments/live/execution.yml "
+                "(PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
@@ -286,68 +346,76 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "dry_run_false",
                 "dry_run=true (config resolves to paper)",
-                "set TRADING_MODE=live and restart",
+                "set trading_mode: live in config/environments/live/execution.yml "
+                "(PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
     # ----- kill switch --------------------------------------------------
-    if config.risk.kill_switch:
+    # C1 — three kill switches are now enforced at act-time in
+    # ExecutionService.execute: global (master, observe-only), execution
+    # (refuses BUY entries, allows protective SELL exits), and the legacy
+    # risk.kill_switch (kept for backward compatibility). Any one engaged
+    # blocks a live restart.
+    global_kill = bool(getattr(config, "app", None) and config.app.kill_switch)
+    exec_kill = bool(getattr(config.execution, "kill_switch", False))
+    risk_kill = bool(config.risk.kill_switch)
+    if global_kill:
         ctx.blocked(
             "kill_switch_off",
-            "KILL_SWITCH=true",
-            "set KILL_SWITCH=false to enable trading",
+            "global.kill_switch=true (master: observe only, submits nothing)",
+            "set kill_switch: false in config/app.yml",
+        )
+    elif exec_kill:
+        ctx.blocked(
+            "kill_switch_off",
+            "execution.kill_switch=true (refuses BUY entries)",
+            "set kill_switch: false in config/execution.yml",
+        )
+    elif risk_kill:
+        ctx.blocked(
+            "kill_switch_off",
+            "risk.kill_switch=true (legacy)",
+            "set kill_switch: false in config/risk.yml",
         )
     else:
-        ctx.ok("kill_switch_off", "KILL_SWITCH=false")
+        ctx.ok("kill_switch_off", "global/execution/risk kill_switch=false")
 
     # ----- wallet basics ------------------------------------------------
     if live:
-        if not config.wallet.private_key:
+        if not secret_value(config.wallet.private_key):
             ctx.blocked(
                 "wallet_private_key",
-                "missing PRIVATE_KEY",
-                "set PRIVATE_KEY or PRIVATE_KEY_FILE",
+                "wallet.private_key is missing",
+                "set PMCOPY__WALLET__PRIVATE_KEY in secrets.env",
             )
         else:
-            ctx.ok("wallet_private_key", "PRIVATE_KEY present")
+            ctx.ok("wallet_private_key", "wallet.private_key present")
         funder = config.wallet.funder_address or ""
-        if re.match(r"^0x[0-9a-fA-F]{40}$", funder):
-            ctx.ok("wallet_funder_valid", funder)
+        if not funder:
+            ctx.blocked(
+                "wallet_funder_resolution",
+                "verified Deposit Wallet funder_address is missing",
+                "set PMCOPY__WALLET__FUNDER_ADDRESS in secrets.env",
+            )
+        elif re.match(r"^0x[0-9a-fA-F]{40}$", funder):
+            ctx.ok("wallet_funder_valid", f"configured Deposit Wallet: {funder}")
         else:
             ctx.blocked(
                 "wallet_funder_valid",
-                f"invalid FUNDER_ADDRESS: {funder!r}",
-                "set FUNDER_ADDRESS to a 42-char hex address",
+                f"invalid wallet.funder_address: {funder!r}",
+                "remove wallet.funder_address or set a 42-char Deposit Wallet address",
             )
-        try:
-            detected_sig, detected_wallet_type, detected_signer = await detect_wallet_signature_type(
-                config.wallet, fail_closed_on_rpc_error=True
-            )
-        except RuntimeError as exc:
-            ctx.blocked(
-                "wallet_signature_type",
-                f"RPC probe failed: {exc}",
-                "verify RPC_URL connectivity or set SIGNATURE_TYPE explicitly",
-            )
-        else:
-            configured_sig = getattr(config.wallet, "signature_type", None)
-            shortened_signer = (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
-            shortened_funder = (config.wallet.funder_address or "")[:10] + "…" if config.wallet.funder_address else "unknown"
-            detail = (
-                f"walletType={detected_wallet_type} "
-                f"signature_type={int(detected_sig)} "
-                f"signer={shortened_signer} "
-                f"funder={shortened_funder}"
-            )
-            if configured_sig is not None and int(configured_sig) != int(detected_sig):
-                detail += f" runtime_autodetect=override (configured={int(configured_sig)})"
-            ctx.ok("wallet_signature_type", detail)
+        ctx.ok(
+            "wallet_signature_type",
+            "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by CCXT composition",
+        )
 
     # ----- database -----------------------------------------------------
     from storage.postgres.connection import init_pool, shutdown_pool
 
     pool = None
-    db_label = config.database.dsn or config.database.db_path
+    db_label = _redact_dsn(config.database.dsn)
     try:
         pool = await init_pool(
             config.database.dsn,
@@ -390,9 +458,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ttl = config.execution.pending_submission_ttl_seconds
         from storage.postgres.orders_repo import OrdersRepo
 
-        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(
-            ttl_seconds=int(ttl)
-        )
+        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(ttl_seconds=int(ttl))
         count = len(stale_rows)
         if count:
             ctx.warning(
@@ -424,12 +490,12 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
     # ----- RPC ----------------------------------------------------------
     from orchestrators.startup_health import _check_rpc
 
-    rpc = await _check_rpc(config.network.rpc_url)
+    rpc = await _check_rpc(config.polymarket.rpc_url)
     if getattr(rpc, "status", "") == "error":
         ctx.blocked(
             "network_rpc",
             f"rpc unreachable: {getattr(rpc, 'details', '')}",
-            "verify RPC_URL",
+            "verify network.rpc_url",
         )
     else:
         ctx.ok("network_rpc", "RPC reachable")
@@ -448,7 +514,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
 
     # ----- geoblock -----------------------------------------------------
-    if config.network.enforce_geoblock:
+    if config.polymarket.enforce_geoblock:
         from services.compliance import check_geoblock
 
         decision = await check_geoblock()
@@ -463,11 +529,11 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
     else:
         ctx.skipped("geoblock_check", "not enforced")
 
-    # ----- gateway SDK --------------------------------------------------
+    # ----- CCXT prediction gateway --------------------------------------
     if live:
-        ok, detail = _check_gateway_sdk()
+        ok, detail = _check_gateway_ccxt()
         (ctx.ok if ok else ctx.blocked)(
-            "gateway_sdk", detail, "" if ok else "install polymarket-client"
+            "gateway_ccxt", detail, "" if ok else "install the pinned CCXT runtime dependency"
         )
 
     # ----- subsystem wiring (dry import) --------------------------------
@@ -508,7 +574,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- drift wiring -------------------------------------------------
     if live:
-        if config.position_drift.check_on_startup:
+        if config.reconciliation.position_drift.check_on_startup:
             try:
                 from orchestrators.runtime_bootstrap import startup_drift_check  # noqa: F401
 
@@ -572,7 +638,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- log paths ----------------------------------------------------
     try:
-        log_dir = _resolve_log_dir()
+        log_dir = _resolve_log_dir(config)
         log_dir.mkdir(parents=True, exist_ok=True)
         probe = log_dir / ".doctor_probe"
         probe.write_text("ok", encoding="utf-8")
@@ -582,10 +648,10 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "log_directory_writable",
             f"log directory not writable: {exc}",
-            "set APP_LOG_DIR to a writable path",
+            "set log_dir in config/logging.yml",
         )
     try:
-        jsonl = _resolve_jsonl_path()
+        jsonl = _resolve_jsonl_path(config)
         jsonl.parent.mkdir(parents=True, exist_ok=True)
         with jsonl.open("a", encoding="utf-8"):
             pass
@@ -594,7 +660,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "jsonl_log_writable",
             f"jsonl path not writable: {exc}",
-            "set APP_LOG_JSONL_FILE to a writable path",
+            "set app_log_jsonl_file in config/logging.yml",
         )
 
     # ----- log type registration --------------------------------------
@@ -621,39 +687,33 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.warning("logger_inspection", f"could not introspect: {exc}", "")
 
     # ----- metrics port -----------------------------------------------
-    if config.network.enable_metrics_server:
-        ok, detail = _try_port_bind(
-            config.network.metrics_bind_host, int(config.network.metrics_port)
-        )
+    if config.app.enable_metrics_server:
+        ok, detail = _try_port_bind(config.app.metrics_bind_host, int(config.app.metrics_port))
         if ok:
             ctx.ok("metrics_port_bindable", detail)
         else:
             ctx.warning(
                 "metrics_port_bindable",
                 detail,
-                "free the port or change METRICS_PORT",
+                "free the port or change network.metrics_port",
             )
     else:
         ctx.warning(
             "metrics_port_bindable",
             "metrics server disabled",
-            "enable ENABLE_METRICS_SERVER for live observability",
+            "set network.enable_metrics_server: true",
         )
 
     # ----- leaders -----------------------------------------------------
-    if config.leader.wallets:
+    startup_policy = TraderStartupPolicy(auto_trader=auto_trader)
+    if startup_policy.configured_leaders(config):
         ctx.ok("leaders", "leader wallets configured")
-    elif not config.discovery.allow_auto_trader_detection:
+    elif not config.discovery.scheduler.start_from_roster:
         ctx.blocked(
             "leaders",
-            "no leader wallets configured and startup auto detection disabled",
-            "set LEADER_WALLETS, or set LEADER_SOURCE=auto / AUTO_LEADER_ENABLED=true, or run python bot.py rotate-traders after discovery",
-        )
-    elif int(config.discovery.max_auto_traders_count or 0) <= 0:
-        ctx.blocked(
-            "leaders",
-            "startup auto detection enabled but AUTO_LEADER_COUNT <= 0",
-            "set AUTO_LEADER_COUNT > 0 or configure LEADER_WALLETS",
+            "no manual leader wallets and roster startup is disabled",
+            "configure wallets in config/copy_trading.yml (or environments/live) "
+            "or enable discovery.scheduler.start_from_roster",
         )
     else:
         try:
@@ -670,16 +730,17 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
                     "leaders",
                     f"startup auto detection enabled; {db_candidate_count} eligible DB candidates available",
                 )
-            elif config.discovery.falcon_api_token:
+            elif config.discovery.api.has_token and startup_policy.discovery_loop_enabled(config):
                 ctx.ok(
                     "leaders",
-                    "startup auto detection enabled; no eligible DB candidates yet, bootstrap discovery can run before CLOB init",
+                    "no active roster entry yet; startup discovery is configured",
                 )
             else:
                 ctx.blocked(
                     "leaders",
-                    "no leader wallets configured, no eligible DB candidates found, and FALCON_API_TOKEN is missing",
-                    "set LEADER_WALLETS, or set FALCON_API_TOKEN for bootstrap discovery, or run python bot.py rotate-traders after discovery",
+                    "no manual leaders, no active roster entry, or discovery credentials are missing",
+                    "define the leader in config/traders/<name>.yml, or set "
+                    "discovery.api.token in secrets.env and enable the discovery scheduler",
                 )
 
     return ctx.to_dict()
@@ -703,9 +764,7 @@ def _render_console_summary(result: dict[str, Any]) -> str:
     lines.append(f"DOCTOR  {mode}  status={overall}")
     for check in result.get("checks", []):
         icon = _ICON.get(check["status"], "?")
-        lines.append(
-            f"{icon} {check['name']:<32} {check.get('detail', '')}"
-        )
+        lines.append(f"{icon} {check['name']:<32} {check.get('detail', '')}")
         fix = check.get("fix")
         if fix:
             lines.append(f"   fix: {fix}")
@@ -722,4 +781,5 @@ async def _run_doctor_async(args: argparse.Namespace) -> int:
 
 
 def run_doctor(args: argparse.Namespace) -> int:
+    """Run deterministic startup diagnostics and return an exit code."""
     return asyncio.run(_run_doctor_async(args))

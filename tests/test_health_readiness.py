@@ -36,7 +36,7 @@ def _all_subsystems_ready(tracker: ReadinessTracker) -> None:
 async def test_readiness_tracker_logic():
     tracker = ReadinessTracker()
     tracker.update(db_ok=True, api_ok=True, runtime_user_count=2)
-    
+
     snap = tracker.snapshot()
     assert snap["db_ok"] is True
     assert snap["api_ok"] is True
@@ -52,10 +52,10 @@ async def test_health_server_setup():
         site_cls.return_value = site_instance
 
         runner = await start_health_server(port=9102, tracker=tracker)
-        
+
         # Verify started_ts was set
         assert tracker.snapshot().get("started_ts") is not None
-        
+
         await runner.cleanup()
 
 

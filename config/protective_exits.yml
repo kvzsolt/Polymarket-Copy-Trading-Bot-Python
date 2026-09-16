@@ -1,0 +1,59 @@
+# Configuration guide — risk-reducing position exits.
+# Purpose: configure stop loss, near-resolution trim/close, profit lock,
+# trailing stop, staged take-profit, and leader-divergence reactions.
+# Options: prices/fractions are 0..1, gain thresholds use percent or documented
+# ratios, CSV fields pair levels with fractions, and null trailing activation
+# means automatic entry-price-aware activation.
+# Trade-offs: more enabled/tighter exits reduce downside/resolution risk but can
+# realize spread loss or cap upside; grace periods reduce churn but delay safety.
+# risk.enable_risk_mgmt must also be true for these rules to run.
+# Protective-exit feature switches and lifecycle thresholds
+# (formerly features.enable_* + risk.* exit keys).
+# Warning price for one partial near-max trim. Lower banks earlier but trims more
+# positions that may still have meaningful upside.
+near_max_price_warn: 0.95
+# Position fraction sold at warning [0,1]. Higher de-risks more and retains less.
+near_max_price_warn_trim_ratio: 0.6
+# Price for immediate full near-max exit [0,1]. Higher waits for more value but
+# accepts more resolution/liquidity risk.
+near_max_price_exit: 0.99
+# Minimum hold before warning trim; 0 permits immediate trim. Longer avoids
+# entry-spread churn but delays partial de-risking.
+near_max_grace_period_seconds: 30.0
+# Gain percentage that activates profit lock. Lower locks gains earlier; higher
+# permits more upside and retracement.
+profit_lock_trigger_pct: 70.0
+# Position fraction sold by profit lock [0,1]. Higher realizes more immediately.
+profit_lock_sell_fraction: 0.5
+# null/auto derives activation from entry payout multiple; a number is an
+# explicit gain percent. Auto adapts across prices but is less predictable.
+trailing_activation_pct: null
+# Retracement distance as a price fraction. Smaller trails tightly and can churn;
+# larger tolerates noise while giving back more peak value.
+trailing_distance: 0.05
+# Comma-separated gain ratios for staged exits, paired with fractions below.
+# More levels smooth realization but add partial-fill lifecycle complexity.
+staged_tp_levels: 0.30,0.50
+# Fraction sold at each staged level. Larger totals retain less final exposure.
+staged_tp_fractions: 0.25,0.35
+# Absolute price floor, not a drawdown percentage: 0.08 sits below
+# execution.min_share_price 0.10, so no position is born already eligible.
+stop_loss_threshold: 0.08
+# Longer grace than the 180 s default: a fresh copy must not be stopped
+# out by the entry-time quote noise of a thin book.
+stop_loss_grace_period_seconds: 300.0
+# true activates profit-lock threshold/fraction; false makes them inert.
+enable_profit_lock: true
+# true activates one warning trim and full near-max close. The grace protects
+# only the warning trim, never the full close.
+enable_near_max_exit: true
+# Trailing reversal exit. Useful for gains, but sensitive to noisy/wide marks.
+enable_trailing_stop: false
+# Staged take-profit. Predictable realization versus more orders/state.
+enable_staged_tp: false
+# Follow a leader position reduction/exit. Better behavioral alignment versus
+# dependence on complete, timely leader evidence.
+enable_leader_divergence_exit: false
+# Salvage exit for the 350 pUSD profile: one 17.5 copy decaying to zero is
+# 5 % of the bankroll, so the floor above is worth acting on.
+enable_stop_loss: true

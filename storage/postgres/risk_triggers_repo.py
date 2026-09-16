@@ -133,6 +133,40 @@ class RiskTriggersRepo:
             )
         return [_row_to_trigger(r) for r in rows]
 
+    async def has_trigger_for_reason(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        reason: str,
+        exclude_fill_statuses: tuple[str, ...] = ("failed",),
+    ) -> bool:
+        """True when a trigger with *reason* exists for the position scope.
+
+        ``fill_status`` values in *exclude_fill_statuses* do not count — a
+        failed trim never happened at the venue, so it must re-arm.
+        ``pending`` counts: a crash between trigger and status update must
+        not re-arm a sell.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchval(
+                """
+                SELECT 1
+                FROM risk_triggers
+                WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
+                  AND reason = $4
+                  AND fill_status != ALL($5::text[])
+                LIMIT 1
+                """,
+                user_id,
+                condition_id,
+                token_id,
+                reason,
+                list(exclude_fill_statuses),
+            )
+        return row is not None
+
     async def get_trigger(self, trigger_id: int) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(

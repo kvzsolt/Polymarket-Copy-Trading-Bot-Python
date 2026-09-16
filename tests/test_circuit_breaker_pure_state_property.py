@@ -10,6 +10,7 @@ Post-fix: ``.state`` is a pure read. The OPEN → HALF_OPEN transition
 moves to a private ``_advance_state()`` called only by
 ``allow_request()`` — a single explicit decision point.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -35,7 +36,7 @@ def test_reading_state_does_not_consume_probe_budget():
         # Read .state 100 times — pre-fix this would have reset the probe
         # counter 100 times.
         for _ in range(100):
-            cb.state
+            _ = cb.state
 
         # No transition yet — .state must be pure read.
         assert cb._state == CircuitState.OPEN, (

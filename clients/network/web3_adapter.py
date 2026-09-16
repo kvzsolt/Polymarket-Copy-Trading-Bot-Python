@@ -18,6 +18,25 @@ class AsyncWeb3Adapter:
     async def get_transaction_count(self, address: str) -> int:
         return await asyncio.to_thread(self.web3.eth.get_transaction_count, address)
 
+    async def get_transaction_receipt(self, tx_hash: str) -> Any:
+        """Fetch one transaction receipt off the event loop.
+
+        Unlike ``wait_for_receipt`` this does not poll: it is a single
+        ``eth_getTransactionReceipt`` call, so an unmined transaction raises
+        ``web3.exceptions.TransactionNotFound`` immediately instead of
+        blocking for a timeout.
+
+        Args:
+            tx_hash: Transaction hash to look up.
+
+        Returns:
+            The receipt mapping web3 returned.
+
+        Raises:
+            web3.exceptions.TransactionNotFound: If the node has no receipt.
+        """
+        return await asyncio.to_thread(self.web3.eth.get_transaction_receipt, tx_hash)
+
     async def get_gas_price(self) -> int:
         return await asyncio.to_thread(lambda: self.web3.eth.gas_price)
 
@@ -28,7 +47,10 @@ class AsyncWeb3Adapter:
         except Exception:
             return str(tx_hash)
 
-    async def wait_for_receipt(self, tx_hash: str, timeout: int = 120) -> Any:
+    # ASYNC109 suppressed: the timeout parameter is forwarded to web3's
+    # wait_for_transaction_receipt and mirrored in asyncio.wait_for; removing
+    # it would change this adapter's public contract.
+    async def wait_for_receipt(self, tx_hash: str, timeout: int = 120) -> Any:  # noqa: ASYNC109
         return await asyncio.wait_for(
             asyncio.to_thread(self.web3.eth.wait_for_transaction_receipt, tx_hash, timeout),
             timeout=timeout + 5,

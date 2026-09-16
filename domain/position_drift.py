@@ -7,6 +7,7 @@ truth. Any unexplained drift pauses the scope until an operator resolves it.
 
 Position identity is ``(user_id, condition_id, token_id)`` everywhere.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,7 +17,10 @@ from typing import Any
 
 
 class PositionDriftStatus(StrEnum):
+    """Describe inventory agreement or the remaining reconciliation gap."""
+
     CLEAN = "clean"
+    RECONCILED = "reconciled"
     LOCAL_MISSING_VENUE_POSITION = "local_missing_venue_position"
     VENUE_MISSING_LOCAL_POSITION = "venue_missing_local_position"
     SIZE_MISMATCH_POSITIVE = "size_mismatch_positive"  # venue > local
@@ -26,6 +30,8 @@ class PositionDriftStatus(StrEnum):
 
 
 class PositionDriftAction(StrEnum):
+    """Describe the action actually completed or required for a scope."""
+
     NO_ACTION = "no_action"
     UPDATE_LOCAL_READONLY = "update_local_readonly"
     PAUSE_SCOPE = "pause_scope"
@@ -36,6 +42,8 @@ class PositionDriftAction(StrEnum):
 
 @dataclass(frozen=True)
 class PositionDriftRecord:
+    """Preserve observed sizes and the verified outcome of one comparison."""
+
     user_id: str
     condition_id: str
     token_id: str
@@ -50,14 +58,17 @@ class PositionDriftRecord:
 
     @property
     def scope_key(self) -> str:
+        """Return the account and outcome identity used for trading pauses."""
         return f"{self.user_id}|{self.condition_id}|{self.token_id}"
 
     @property
     def is_clean(self) -> bool:
-        return self.status == PositionDriftStatus.CLEAN
+        """Return whether the observation agrees or was durably reconciled."""
+        return self.status in (PositionDriftStatus.CLEAN, PositionDriftStatus.RECONCILED)
 
     @property
     def pauses_scope(self) -> bool:
+        """Return whether the comparison requires trading to remain paused."""
         return self.action in (
             PositionDriftAction.PAUSE_SCOPE,
             PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
@@ -66,6 +77,8 @@ class PositionDriftRecord:
 
 @dataclass(frozen=True)
 class DriftReport:
+    """Collect the latest verified reconciliation results for one account."""
+
     user_id: str
     clean: bool
     records: tuple[PositionDriftRecord, ...]

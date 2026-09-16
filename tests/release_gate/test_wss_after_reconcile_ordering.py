@@ -16,6 +16,7 @@ release-gate.
 Also asserts the related contract: app.py passes ``failures_out`` so
 ``reconciler_ok`` is gated on no failures (review #11).
 """
+
 from __future__ import annotations
 
 import ast

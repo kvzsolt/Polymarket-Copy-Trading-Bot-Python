@@ -1,0 +1,88 @@
+# Configuration guide — order and position convergence with venue truth.
+# Purpose: schedule reconciliation, pace confirmation probes, preserve ambiguous
+# submissions safely, and define startup/runtime position-drift responses.
+# Options: durations/counts are non-negative or positive as described; override
+# maps are token/condition IDs to seconds; booleans select fail-closed actions.
+# Trade-offs: frequent/long probing increases DB/venue load but resolves state
+# faster; auto-cancel/release recovers capacity but is safe only with authoritative
+# clean probes. Never use these settings to blindly resubmit an ambiguous POST.
+# Reconciliation cadence, order-confirmation delay/ambiguous-timeout
+# policy, and position-drift policy.
+# Age at which an open order is stale. Shorter detects leftovers sooner but can
+# classify legitimately slow orders as stale.
+stale_threshold_seconds: 3600.0
+# true requests cancellation of stale orders; false reports/reconciles without
+# mutation. Cancellation is useful cleanup but can race a late fill.
+auto_cancel_stale: false
+# Closed orders re-probed per cycle. Higher catches delayed corrections faster
+# at greater venue/API load.
+max_closed_probes: 10
+# Full reconciliation loop cadence. Lower converges sooner; higher costs less.
+reconcile_interval_seconds: 300
+order_confirmation:
+  # Delay before first order-status probe. Longer avoids premature 404s; shorter
+  # detects fast terminal states sooner.
+  initial_delay_seconds: 2.0
+  # Interval between probes until max wait. Lower is responsive but request-heavy.
+  poll_interval_seconds: 3.0
+  # Normal confirmation wait before ambiguity policy becomes eligible. Longer
+  # tolerates delayed venue state while parking reservations longer.
+  max_wait_seconds: 90.0
+  # Additional first-probe delay when venue explicitly reports delayed.
+  delayed_extra_seconds: 2.0
+  # Per-token initial-delay overrides: {raw_token_id: seconds}. Empty uses global;
+  # precise tuning helps known slow tokens but can become stale metadata.
+  token_delay_overrides: {}
+  # Per-condition initial-delay overrides: {condition_id: seconds}; token wins
+  # when both exist. Empty is simplest and easiest to audit.
+  condition_delay_overrides: {}
+  # true permits release only after grace plus safety probes; false holds every
+  # ambiguous reservation for manual resolution (safest, but can park capital).
+  auto_release_ambiguous: true
+  # Extra age after max_wait before release probes. Longer reduces late-fill race
+  # risk but extends locked capital.
+  auto_release_grace_seconds: 300.0
+  # true requires every authoritative probe clean. false weakens ambiguity safety
+  # and is not recommended for live money.
+  auto_release_require_all_probes_clean: true
+  # Probe errors allowed during release. 0 is fail-closed; higher recovers through
+  # outages but can release while venue state is unknown.
+  auto_release_max_probe_errors: 0
+  # Initial retry delay after a failed auto-release probe set. Lower recovers
+  # faster; higher avoids hammering unhealthy dependencies.
+  auto_release_retry_backoff_seconds: 30.0
+  # Maximum exponential retry delay. Higher reduces sustained load but keeps
+  # reservations stuck longer.
+  auto_release_retry_backoff_max_seconds: 900.0
+  # Seconds after which an order whose ONLY unclean probe is a pre-submit
+  # position baseline that was never captured may still release its
+  # reservation. Every venue probe must still be clean, so this forgives our
+  # own bookkeeping gap and never venue doubt.
+  #
+  # Without it such an order can never reach a terminal state: the venue
+  # permanently 404s it, the sweep never ages it out, and the reservation
+  # parks capital across restarts — shrinking the balance copy sizing is
+  # derived from. 24h is far beyond any legitimate confirmation delay.
+  auto_release_baseline_missing_after_seconds: 86400.0
+position_drift:
+  # Reconcile local positions against venue truth at startup. true catches drift
+  # before trading; false starts faster with weaker state assurance.
+  check_on_startup: true
+  # true blocks operation when drift is unresolved; false continues with possibly
+  # incorrect balances/positions and is unsafe for live execution.
+  fail_closed: true
+  # Automatically remove local positions proven zero at venue after holdoff.
+  # Speeds cleanup but requires trustworthy account data.
+  allow_auto_prune_zero: true
+  # true imports positions created outside the bot; false treats them as drift.
+  # Tracking improves reconciliation but expands ownership/accounting scope.
+  allow_external_position_tracking: false
+  # Pause only affected scope while drift is unresolved. true contains risk;
+  # false permits potentially conflicting actions.
+  pause_scope_on_unresolved: true
+  # Decimal share-size tolerance below which differences are treated equal.
+  # Larger ignores dust/noise but can hide real small drift.
+  max_size_epsilon: '0.000001'
+  # Time a zero venue balance must persist before auto-prune. Longer protects
+  # against transient stale reads; shorter removes stale local state sooner.
+  prune_holdoff_seconds: 60.0

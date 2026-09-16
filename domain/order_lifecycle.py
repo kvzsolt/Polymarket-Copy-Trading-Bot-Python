@@ -139,12 +139,22 @@ class OrderIntentKey:
 
 @dataclass(frozen=True)
 class OrderIntent:
+    """Represent one reservation-shaped order intent."""
+
     key: OrderIntentKey
     size: Decimal
     price: Decimal
     max_slippage_bps: int
     created_at: datetime
     source_signal_id: str | None = None
+    sell_fraction: Decimal | None = None
+    live_position_size: Decimal | None = None
+    min_order_size: Decimal | None = None
+    round_up_to_minimum: bool = False
+    task_id: str | None = None
+    protective_lot_id: str | None = None
+    max_market_notional: Decimal | None = None
+    max_open_markets: int = 0
 
 
 @dataclass(frozen=True)
@@ -163,4 +173,3 @@ class Reservation:
     expires_at: datetime
     order_id: str | None = None
     venue_order_id: str | None = None
-

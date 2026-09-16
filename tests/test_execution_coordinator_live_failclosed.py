@@ -6,10 +6,10 @@ Pins:
   - Live risk dispatch with coordinator=None skips fail-closed.
   - runtime_bootstrap wires execution_coordinator for normal user contexts.
 """
+
 from __future__ import annotations
 
 import contextlib
-import time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -22,6 +22,7 @@ from services.execution.coordinator import is_live_mode
 # ---------------------------------------------------------------------------
 # is_live_mode helper
 # ---------------------------------------------------------------------------
+
 
 def test_is_live_mode_none_config_is_paper():
     assert is_live_mode(None) is False
@@ -45,6 +46,7 @@ def test_is_live_mode_real_config_is_live():
 # ---------------------------------------------------------------------------
 # trade_pipeline copy fallback fail-closed in live mode
 # ---------------------------------------------------------------------------
+
 
 def _live_config() -> SimpleNamespace:
     return SimpleNamespace(
@@ -179,6 +181,7 @@ async def test_no_config_trade_pipeline_falls_back():
 # risk monitor _dispatch_risk_exit fail-closed
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_live_risk_dispatch_skips_when_coordinator_missing():
     from services.risk.risk_monitor import _dispatch_risk_exit
@@ -210,7 +213,9 @@ async def test_live_risk_dispatch_skips_when_coordinator_missing():
 async def test_paper_risk_dispatch_falls_back():
     from services.risk.risk_monitor import _dispatch_risk_exit
 
-    fake = SimpleNamespace(accepted=True, status="submitted_unconfirmed", filled_amount=Decimal("0"))
+    fake = SimpleNamespace(
+        accepted=True, status="submitted_unconfirmed", filled_amount=Decimal("0")
+    )
     exec_svc = MagicMock()
     exec_svc.execute = AsyncMock(return_value=fake)
     exec_svc._config = _paper_config()
@@ -237,6 +242,7 @@ async def test_paper_risk_dispatch_falls_back():
 # ---------------------------------------------------------------------------
 # bootstrap wires coordinator
 # ---------------------------------------------------------------------------
+
 
 @contextlib.asynccontextmanager
 async def _pg_pool():

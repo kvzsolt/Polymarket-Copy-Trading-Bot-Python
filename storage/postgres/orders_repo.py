@@ -1,8 +1,8 @@
 """Async asyncpg port of storage/sqlite/orders_repo.py.
 
 Behaviour invariants preserved verbatim:
-  * ``try_acquire_submission_lock``: single round-trip
-    ``INSERT ... ON CONFLICT DO NOTHING RETURNING idempotency_key``
+  * ``try_acquire_submission_lock``: source-intent advisory locking plus
+    ``INSERT ... ON CONFLICT ... RETURNING idempotency_key``
     is atomic — caller treats a None result as "someone else holds
     the lock, do NOT submit" (Batch 3 race fix).
   * ``update_submission_status``: wraps the SELECT-merge-UPDATE in
@@ -38,12 +38,20 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
 
-from domain.ports.repositories import AbstractOrderRepository
+from ports.repositories import AbstractOrderRepository
+from services.execution.ambiguous_recovery import (
+    AmbiguousRecoveryProgress,
+    AmbiguousSubmission,
+    AuthoritativeRecoveryScan,
+    RecoveryMatchSource,
+    SubmissionSide,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +84,12 @@ _PROCESSED_TRADE_TERMINAL_STATES = [
     "terminal_failed",
 ]
 
+# Status of the order-less tx-level row the on-chain dispatch path inserts to
+# dedup against REST polling (``CrossSourceTradeClaimPolicy``). It records
+# "an on-chain source is copying this tx" — never a submitted bot order — so
+# activity classification (manual-sync) must not read it as bot activity.
+CROSS_SOURCE_CLAIM_STATUS = "cross_source_claimed"
+
 # Order statuses that are *not terminally settled* and therefore still need
 # reconciliation — NOT only "never reached the venue". The set deliberately
 # includes live/matched states: an order that was ``live`` or ``matched`` when
@@ -98,6 +112,8 @@ _UNCONFIRMED_SUBMISSION_STATES = (
     "delayed",
     "order_live",
     "live",
+    "ambiguous_timeout",
+    "reconciliation_required",
 )
 
 _STALE_SUBMISSION_LOCK_STATUSES = (
@@ -131,10 +147,15 @@ COALESCE(
 # almost certainly lost its holder. Kept well above realistic submit durations
 # so a slow-but-alive submitter is never stolen from.
 _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS = 300
+_MAX_AMBIGUOUS_RECOVERY_BATCH_SIZE = 1_000
+_MAX_AMBIGUOUS_EVIDENCE_HISTORY = 100
+_MAX_AMBIGUOUS_REQUIRED_SCANS = 100
 
 
 @dataclass
 class OrderSubmissionRecord:
+    """Describe durable evidence for one order submission."""
+
     idempotency_key: str
     user_id: str
     leader_id: str | None
@@ -171,7 +192,54 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
     return json.loads(value)
 
 
+def _optional_decimal(value: Any) -> Decimal | None:
+    """Parse an optional finite positive decimal without using binary floats."""
+
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not parsed.is_finite() or parsed <= 0:
+        return None
+    return parsed
+
+
+def _utc_datetime(value: Any) -> datetime | None:
+    """Coerce persisted epoch/ISO/datetime values to an aware UTC instant."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _bounded_positive(value: int, *, field: str, maximum: int) -> int:
+    """Validate caller-supplied persistence bounds before issuing SQL."""
+
+    parsed = int(value)
+    if not 1 <= parsed <= maximum:
+        raise ValueError(f"{field} must be between 1 and {maximum}")
+    return parsed
+
+
 class OrdersRepo(AbstractOrderRepository):
+    """Persist order and idempotency state in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
@@ -184,58 +252,94 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         stale_takeover_seconds: int = _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS,
     ) -> bool:
+        """Attempt to acquire submission lock."""
         request_json = _json_str(request_payload) or "{}"
         async with self._pool.acquire() as conn:
-            # RETURNING yields the key when the INSERT happens. P1-g: the
-            # ON CONFLICT was previously DO NOTHING, so a task that died holding
-            # a ``pending_lock`` row (before it ever POSTed — hence
-            # ``order_id IS NULL``) blocked that idempotency key until the next
-            # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
-            # lock self-healing: a fresh acquirer takes it over ONLY when the
-            # existing row is a never-submitted (``order_id IS NULL``)
-            # direct-expirable lock that has been stale longer than the generous
-            # takeover TTL — exactly the ``safe_to_expire`` condition the batch
-            # reaper uses. A live (recent) or already-submitted (``order_id`` set)
-            # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
-            # and acquisition returns False as before.
-            returned = await conn.fetchval(
-                f"""
-                INSERT INTO orders (
-                    idempotency_key, user_id, leader_id, order_id, status,
-                    request_json, response_json, attempt_count, last_error,
-                    created_at, updated_at
-                ) VALUES (
-                    $1, $2, $3, NULL, 'pending_lock',
-                    $4::jsonb, NULL, 0, NULL,
-                    now(), now()
+            async with conn.transaction():
+                signal_id = request_payload.get("signal_id")
+                if isinstance(signal_id, str) and signal_id:
+                    recovery = request_payload.get("recovery_metadata")
+                    recovery = recovery if isinstance(recovery, dict) else {}
+                    promotion_id = recovery.get("source_promotion_id")
+                    if not isinstance(promotion_id, str) or not promotion_id:
+                        promotion_id = signal_id
+                    provisional = recovery.get("source_is_provisional") is True
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        json.dumps([user_id, promotion_id], separators=(",", ":")),
+                    )
+                    existing_intent = await conn.fetchval(
+                        "SELECT 1 FROM orders WHERE user_id = $1 "
+                        "AND (request_json->>'signal_id' = $2 "
+                        "OR request_json->>'signal_id' = $7 "
+                        "OR ($8::boolean AND "
+                        "request_json->'recovery_metadata'->>'source_promotion_id' = $7)) "
+                        "AND request_json->>'token_id' IS NOT DISTINCT FROM $3::text "
+                        "AND request_json->>'condition_id' IS NOT DISTINCT FROM $4::text "
+                        "AND upper(request_json->>'side') = $5 "
+                        "AND idempotency_key <> $6 LIMIT 1",
+                        user_id,
+                        signal_id,
+                        request_payload.get("token_id"),
+                        request_payload.get("condition_id"),
+                        str(request_payload.get("side", "")).upper(),
+                        key,
+                        promotion_id,
+                        provisional,
+                    )
+                    if existing_intent:
+                        return False
+                # RETURNING yields the key when the INSERT happens. P1-g: the
+                # ON CONFLICT was previously DO NOTHING, so a task that died holding
+                # a ``pending_lock`` row (before it ever POSTed — hence
+                # ``order_id IS NULL``) blocked that idempotency key until the next
+                # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
+                # lock self-healing: a fresh acquirer takes it over ONLY when the
+                # existing row is a never-submitted (``order_id IS NULL``)
+                # direct-expirable lock that has been stale longer than the generous
+                # takeover TTL — exactly the ``safe_to_expire`` condition the batch
+                # reaper uses. A live (recent) or already-submitted (``order_id`` set)
+                # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
+                # and acquisition returns False as before.
+                returned = await conn.fetchval(
+                    f"""
+                    INSERT INTO orders (
+                        idempotency_key, user_id, leader_id, order_id, status,
+                        request_json, response_json, attempt_count, last_error,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, NULL, 'pending_lock',
+                        $4::jsonb, NULL, 0, NULL,
+                        now(), now()
+                    )
+                    ON CONFLICT(idempotency_key) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        leader_id = excluded.leader_id,
+                        request_json = excluded.request_json,
+                        response_json = NULL,
+                        status = 'pending_lock',
+                        attempt_count = 0,
+                        last_error = 'stale_lock_taken_over',
+                        created_at = now(),
+                        updated_at = now()
+                    WHERE orders.order_id IS NULL
+                      AND orders.status = ANY($5::text[])
+                      AND (
+                          EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
+                      ) > $6
+                    RETURNING idempotency_key
+                    """,
+                    key,
+                    user_id,
+                    leader_id,
+                    request_json,
+                    list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
+                    int(stale_takeover_seconds),
                 )
-                ON CONFLICT(idempotency_key) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    leader_id = excluded.leader_id,
-                    request_json = excluded.request_json,
-                    response_json = NULL,
-                    status = 'pending_lock',
-                    attempt_count = 0,
-                    last_error = 'stale_lock_taken_over',
-                    created_at = now(),
-                    updated_at = now()
-                WHERE orders.order_id IS NULL
-                  AND orders.status = ANY($5::text[])
-                  AND (
-                      EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
-                  ) > $6
-                RETURNING idempotency_key
-                """,
-                key,
-                user_id,
-                leader_id,
-                request_json,
-                list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
-                int(stale_takeover_seconds),
-            )
         return returned is not None
 
     async def is_submission_locked(self, key: str) -> bool:
+        """Return whether a fresh submission lock blocks this identity."""
         rec = await self.get_by_idempotency_key(key)
         if rec is None:
             return False
@@ -247,10 +351,7 @@ class OrdersRepo(AbstractOrderRepository):
     def _stale_lock_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
         status = str(row["status"] or "").lower()
         order_id = row["order_id"]
-        direct_expire = (
-            not order_id
-            and status in _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES
-        )
+        direct_expire = not order_id and status in _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES
         return {
             "idempotency_key": row["idempotency_key"],
             "user_id": row["user_id"],
@@ -266,9 +367,7 @@ class OrdersRepo(AbstractOrderRepository):
             else None,
             "age_seconds": int(row["age_seconds"] or 0),
             "classification": (
-                "safe_to_expire"
-                if direct_expire
-                else "deferred_reconciliation_required"
+                "safe_to_expire" if direct_expire else "deferred_reconciliation_required"
             ),
             "action": "expire" if direct_expire else "defer",
         }
@@ -279,6 +378,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Return stale submission locks."""
         base = f"""
             SELECT idempotency_key, user_id, leader_id, order_id, status,
                    attempt_count, last_error, created_at, updated_at,
@@ -310,6 +410,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         user_id: str | None = None,
     ) -> int:
+        """Count fresh submission locks."""
         base = f"""
             SELECT COUNT(*) FROM orders
             WHERE status = ANY($1::text[])
@@ -333,6 +434,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         reason: str = "stale_lock_resolve",
     ) -> dict[str, Any] | None:
+        """Expire stale submission lock."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -354,27 +456,21 @@ class OrdersRepo(AbstractOrderRepository):
                 if row is None:
                     return None
                 lock_row = self._stale_lock_row_to_dict(row)
-                if (
-                    lock_row["classification"] != "safe_to_expire"
-                    or lock_row["age_seconds"] <= int(ttl_seconds)
+                if lock_row["classification"] != "safe_to_expire" or lock_row["age_seconds"] <= int(
+                    ttl_seconds
                 ):
                     return None
 
                 pending_since = lock_row["pending_since_ts"]
                 pending_expires_at = (
-                    pending_since + int(ttl_seconds)
-                    if pending_since is not None
-                    else None
+                    pending_since + int(ttl_seconds) if pending_since is not None else None
                 )
                 response = _parse_jsonb(row["response_json"])
                 response.update(
                     {
                         "success": False,
                         "status": "expired",
-                        "error": (
-                            "stale submission lock expired after "
-                            f"{int(ttl_seconds)}s"
-                        ),
+                        "error": (f"stale submission lock expired after {int(ttl_seconds)}s"),
                         "expired_at": time.time(),
                         "pending_ttl_seconds": int(ttl_seconds),
                         "cleanup_reason": reason,
@@ -422,6 +518,7 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str | None = None,
         apply: bool = False,
     ) -> dict[str, Any]:
+        """Resolve stale submission locks."""
         stale_rows = await self.list_stale_submission_locks(
             ttl_seconds=ttl_seconds,
             user_id=user_id,
@@ -430,12 +527,9 @@ class OrdersRepo(AbstractOrderRepository):
             ttl_seconds=ttl_seconds,
             user_id=user_id,
         )
-        safe_rows = [
-            row for row in stale_rows if row["classification"] == "safe_to_expire"
-        ]
+        safe_rows = [row for row in stale_rows if row["classification"] == "safe_to_expire"]
         deferred_rows = [
-            row for row in stale_rows
-            if row["classification"] == "deferred_reconciliation_required"
+            row for row in stale_rows if row["classification"] == "deferred_reconciliation_required"
         ]
         expired_rows: list[dict[str, Any]] = []
         if apply:
@@ -484,6 +578,7 @@ class OrdersRepo(AbstractOrderRepository):
     async def upsert_matched_total(
         self, *, order_id: str, matched: str, committed: bool = True
     ) -> None:
+        """Insert or update matched total."""
         if not order_id:
             return
         async with self._pool.acquire() as conn:
@@ -498,9 +593,8 @@ class OrdersRepo(AbstractOrderRepository):
         # ``committed`` kept for API parity with the SQLite version (caller-driven
         # commit); asyncpg execute auto-commits when no transaction is open.
 
-    async def get_by_idempotency_key(
-        self, key: str
-    ) -> dict[str, Any] | None:
+    async def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
+        """Return by idempotency key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -517,6 +611,7 @@ class OrdersRepo(AbstractOrderRepository):
         return self._row_to_order_record(row)
 
     async def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+        """Return by order id."""
         if not order_id:
             return None
         async with self._pool.acquire() as conn:
@@ -536,6 +631,7 @@ class OrdersRepo(AbstractOrderRepository):
         return self._row_to_order_record(row)
 
     async def get_by_reservation_id(self, reservation_id: str) -> dict[str, Any] | None:
+        """Return by reservation id."""
         if not reservation_id:
             return None
         async with self._pool.acquire() as conn:
@@ -555,7 +651,355 @@ class OrdersRepo(AbstractOrderRepository):
             )
         return self._row_to_order_record(row)
 
+    async def list_no_id_ambiguous_submissions(
+        self,
+        *,
+        limit: int,
+    ) -> list[AmbiguousSubmission]:
+        """Return a bounded oldest-first batch of unresolved lost-POST rows.
+
+        Only ``submitted_unconfirmed`` rows without a venue identity qualify.
+        No age predicate is applied here: the constructor-injected recovery
+        clock owns the grace-period decision, which keeps that behavior fully
+        deterministic in tests.  ``LIMIT`` still bounds the database and
+        in-memory work for every recovery cycle.
+        """
+
+        bounded_limit = _bounded_positive(
+            limit,
+            field="limit",
+            maximum=_MAX_AMBIGUOUS_RECOVERY_BATCH_SIZE,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status,
+                       request_json, response_json, attempt_count, last_error,
+                       created_at, updated_at,
+                       COALESCE(matched_total, '0') AS matched_total
+                FROM orders
+                WHERE status = 'submitted_unconfirmed'
+                  AND order_id IS NULL
+                ORDER BY created_at ASC, idempotency_key ASC
+                LIMIT $1
+                """,
+                bounded_limit,
+            )
+
+        submissions: list[AmbiguousSubmission] = []
+        for row in rows:
+            request = _parse_jsonb(row["request_json"])
+            response = _parse_jsonb(row["response_json"])
+            submitted_at = (
+                _utc_datetime(response.get("pending_since"))
+                or _utc_datetime(row["created_at"])
+                or _utc_datetime(row["updated_at"])
+            )
+            if submitted_at is None:
+                # Fail closed: an undated lost-POST row cannot satisfy a grace
+                # period and must stay duplicate-blocking for operator review.
+                logger.error(
+                    "ambiguous recovery skipped undated order row key=%s",
+                    row["idempotency_key"],
+                )
+                continue
+            raw_side = str(request.get("side") or "").strip().upper()
+            side = (
+                SubmissionSide(raw_side)
+                if raw_side in {SubmissionSide.BUY.value, SubmissionSide.SELL.value}
+                else SubmissionSide.UNKNOWN
+            )
+            submissions.append(
+                AmbiguousSubmission(
+                    idempotency_key=str(row["idempotency_key"]),
+                    user_id=str(row["user_id"]),
+                    leader_id=(str(row["leader_id"]) if row["leader_id"] is not None else None),
+                    token_id=(
+                        str(request["token_id"]) if request.get("token_id") is not None else None
+                    ),
+                    condition_id=(
+                        str(request["condition_id"])
+                        if request.get("condition_id") is not None
+                        else None
+                    ),
+                    side=side,
+                    amount=_optional_decimal(request.get("amount")),
+                    price_limit=_optional_decimal(request.get("price_limit")),
+                    submitted_at=submitted_at,
+                )
+            )
+        return submissions
+
+    async def record_ambiguous_scan_evidence(
+        self,
+        *,
+        idempotency_key: str,
+        scan: AuthoritativeRecoveryScan,
+        observed_at: datetime,
+        required_scan_count: int,
+        evidence_history_limit: int,
+    ) -> AmbiguousRecoveryProgress | None:
+        """Atomically append a bounded evidence summary to an ambiguous row.
+
+        Only consecutive scans that exhaust both private collections and find
+        both account checks consistent with absence advance the proof.  Any
+        incomplete or contradictory scan resets the counter to zero.  The
+        counter saturates at the configured requirement and the retained scan
+        tail is bounded independently, preventing response JSON growth.
+        """
+
+        required = _bounded_positive(
+            required_scan_count,
+            field="required_scan_count",
+            maximum=_MAX_AMBIGUOUS_REQUIRED_SCANS,
+        )
+        history_limit = _bounded_positive(
+            evidence_history_limit,
+            field="evidence_history_limit",
+            maximum=_MAX_AMBIGUOUS_EVIDENCE_HISTORY,
+        )
+        if observed_at.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return None
+
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                recovery = dict(existing_recovery) if isinstance(existing_recovery, dict) else {}
+                existing_scans = recovery.get("scans")
+                scans = (
+                    [dict(item) for item in existing_scans if isinstance(item, dict)]
+                    if isinstance(existing_scans, list)
+                    else []
+                )
+                try:
+                    previous_consecutive = max(
+                        0,
+                        int(recovery.get("consecutive_complete_absence_scans", 0)),
+                    )
+                except (TypeError, ValueError):
+                    previous_consecutive = 0
+
+                qualifies = scan.qualifies_as_complete_absence
+                consecutive = min(previous_consecutive + 1, required) if qualifies else 0
+                evidence = {
+                    "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+                    "private_orders_complete": bool(scan.private_orders_complete),
+                    "private_fills_complete": bool(scan.private_fills_complete),
+                    "position_check": scan.position_check.value,
+                    "balance_check": scan.balance_check.value,
+                    "qualifies_as_complete_absence": qualifies,
+                }
+                if scan.match is not None:
+                    evidence["match_source"] = scan.match.source.value
+                    evidence["venue_order_id"] = scan.match.venue_order_id
+                scans.append(evidence)
+                scans = scans[-history_limit:]
+                recovery.update(
+                    {
+                        "version": 1,
+                        "consecutive_complete_absence_scans": consecutive,
+                        "scans": scans,
+                    }
+                )
+                response["ambiguous_recovery"] = recovery
+                response["status"] = "submitted_unconfirmed"
+                status = await conn.execute(
+                    """
+                    UPDATE orders
+                    SET response_json = $2::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    """,
+                    idempotency_key,
+                    _json_str(response) or "{}",
+                )
+                if _affected(status) != 1:
+                    return None
+
+        return AmbiguousRecoveryProgress(
+            consecutive_complete_absence_scans=consecutive,
+            retained_evidence_entries=len(scans),
+        )
+
+    async def attach_recovered_venue_order_id(
+        self,
+        *,
+        idempotency_key: str,
+        venue_order_id: str,
+        source: RecoveryMatchSource,
+        recovered_at: datetime,
+    ) -> bool:
+        """Atomically attach an authoritative identity without changing state.
+
+        The row remains ``submitted_unconfirmed`` so normal order-id-based
+        reconciliation, rather than this recovery service, determines fills
+        and terminal status.  A concurrent resolution causes a no-op.
+        """
+
+        order_id = str(venue_order_id).strip()
+        if not order_id:
+            raise ValueError("venue_order_id is required")
+        if not isinstance(source, RecoveryMatchSource):
+            raise TypeError("source must be a RecoveryMatchSource")
+        if recovered_at.tzinfo is None:
+            raise ValueError("recovered_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return False
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                recovery = dict(existing_recovery) if isinstance(existing_recovery, dict) else {}
+                recovery.update(
+                    {
+                        "version": 1,
+                        "resolution": "recovered_order_id",
+                        "match_source": source.value,
+                        "recovered_at": recovered_at.astimezone(timezone.utc).isoformat(),
+                    }
+                )
+                response.update(
+                    {
+                        "status": "submitted_unconfirmed",
+                        "order_id": order_id,
+                        "orderID": order_id,
+                        "ambiguous_recovery": recovery,
+                    }
+                )
+                returned = await conn.fetchval(
+                    """
+                    UPDATE orders
+                    SET order_id = $2,
+                        response_json = $3::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    RETURNING idempotency_key
+                    """,
+                    idempotency_key,
+                    order_id,
+                    _json_str(response) or "{}",
+                )
+        return returned is not None
+
+    async def mark_ambiguous_submission_confirmed_absent(
+        self,
+        *,
+        idempotency_key: str,
+        required_scan_count: int,
+        confirmed_at: datetime,
+    ) -> bool:
+        """Resolve a no-ID ambiguity only after its persisted absence proof.
+
+        The threshold and latest qualifying evidence are checked while holding
+        the row lock, so a concurrent scan, recovered venue identity, or status
+        transition cannot race an unsafe ``confirmed_absent`` update.
+        """
+
+        required = _bounded_positive(
+            required_scan_count,
+            field="required_scan_count",
+            maximum=_MAX_AMBIGUOUS_REQUIRED_SCANS,
+        )
+        if confirmed_at.tzinfo is None:
+            raise ValueError("confirmed_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return False
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                if not isinstance(existing_recovery, dict):
+                    return False
+                recovery = dict(existing_recovery)
+                try:
+                    consecutive = int(recovery.get("consecutive_complete_absence_scans", 0))
+                except (TypeError, ValueError):
+                    return False
+                scans = recovery.get("scans")
+                latest = scans[-1] if isinstance(scans, list) and scans else None
+                if (
+                    consecutive < required
+                    or not isinstance(latest, dict)
+                    or latest.get("qualifies_as_complete_absence") is not True
+                ):
+                    return False
+
+                recovery.update(
+                    {
+                        "version": 1,
+                        "resolution": "confirmed_absent",
+                        "confirmed_at": confirmed_at.astimezone(timezone.utc).isoformat(),
+                        "required_scan_count": required,
+                    }
+                )
+                response.update(
+                    {
+                        "success": False,
+                        "status": "confirmed_absent",
+                        "ambiguous_recovery": recovery,
+                    }
+                )
+                returned = await conn.fetchval(
+                    """
+                    UPDATE orders
+                    SET status = 'confirmed_absent',
+                        response_json = $2::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    RETURNING idempotency_key
+                    """,
+                    idempotency_key,
+                    _json_str(response) or "{}",
+                )
+        return returned is not None
+
     async def save_submission(self, record: OrderSubmissionRecord) -> None:
+        """Persist normalized submission evidence idempotently."""
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)
         async with self._pool.acquire() as conn:
@@ -583,14 +1027,18 @@ class OrdersRepo(AbstractOrderRepository):
                     leader_id = COALESCE(excluded.leader_id, orders.leader_id),
                     order_id  = COALESCE(excluded.order_id, orders.order_id),
                     status = CASE
-                        WHEN orders.status IN ('submitted','submitted_unconfirmed','partially_filled','filled','cancelled','rejected','duplicate_ignored')
+                        WHEN orders.status IN ('submitted','submitted_unconfirmed',
+                                               'partially_filled','filled','cancelled',
+                                               'rejected','duplicate_ignored')
                              AND excluded.status IN ('failed','submission_failed','created')
                         THEN orders.status
                         ELSE excluded.status
                     END,
                     request_json = excluded.request_json,
                     response_json = CASE
-                        WHEN orders.status IN ('submitted','submitted_unconfirmed','partially_filled','filled','cancelled','rejected','duplicate_ignored')
+                        WHEN orders.status IN ('submitted','submitted_unconfirmed',
+                                               'partially_filled','filled','cancelled',
+                                               'rejected','duplicate_ignored')
                              AND excluded.status IN ('failed','submission_failed','created')
                         THEN orders.response_json
                         ELSE excluded.response_json
@@ -617,6 +1065,7 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str | None = None,
         leader_id: str | None = None,
     ) -> None:
+        """Mark fill."""
         async with self._pool.acquire() as conn:
             # greptile P1: ON CONFLICT DO NOTHING on the fill identity
             # tuple so a reconciler-triggered second arrival of the same
@@ -645,6 +1094,7 @@ class OrdersRepo(AbstractOrderRepository):
             )
 
     async def has_processed_trade(self, trade_key: str) -> bool:
+        """Return whether the economic trade identity is already claimed."""
         if not trade_key:
             return False
         async with self._pool.acquire() as conn:
@@ -659,16 +1109,21 @@ class OrdersRepo(AbstractOrderRepository):
             return False
         return not any(status.startswith(p) for p in _LEGACY_RETRY_PREFIXES)
 
-    async def get_processed_trade(
-        self, trade_key: str
-    ) -> dict[str, Any] | None:
+    async def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
+        """Return processed trade.
+
+        ``order_id`` is part of the projection because it is the only durable
+        evidence that a copy already reached the venue for this key: the
+        cross-source claim release reads it to tell "the pipeline raised
+        before submitting anything" from "an order is already out there".
+        """
         if not trade_key:
             return None
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT trade_key, user_id, leader_id, tx_hash, side, asset,
-                       condition_id, status, processed_at,
+                       condition_id, status, order_id, processed_at,
                        COALESCE(retry_attempt, 0) AS retry_attempt
                 FROM processed_trades
                 WHERE trade_key = $1
@@ -687,6 +1142,7 @@ class OrdersRepo(AbstractOrderRepository):
             "asset": row["asset"],
             "condition_id": row["condition_id"],
             "status": row["status"],
+            "order_id": row["order_id"],
             "processed_at": row["processed_at"],
             "retry_attempt": row["retry_attempt"],
         }
@@ -710,6 +1166,7 @@ class OrdersRepo(AbstractOrderRepository):
         # tighter or looser window in tests.
         stale_claim_ttl_seconds: float = 30.0,
     ) -> bool:
+        """Attempt to claim processed trade."""
         if not trade_key:
             return False
         now = time.time()
@@ -762,6 +1219,7 @@ class OrdersRepo(AbstractOrderRepository):
         retry_attempt: int = 0,
         order_id: str | None = None,
     ) -> None:
+        """Mark processed trade."""
         if not trade_key:
             return
         async with self._pool.acquire() as conn:
@@ -796,12 +1254,38 @@ class OrdersRepo(AbstractOrderRepository):
             )
 
     async def delete_processed_trade(self, trade_key: str) -> None:
+        """Delete processed trade."""
         if not trade_key:
             return
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM processed_trades WHERE trade_key = $1", trade_key
+            await conn.execute("DELETE FROM processed_trades WHERE trade_key = $1", trade_key)
+
+    async def release_cross_source_claim(self, trade_key: str) -> bool:
+        """Delete a tx-level cross-source claim row, guarded by its status.
+
+        The on-chain dispatch path inserts an order-less ``processed_trades``
+        row carrying ``CROSS_SOURCE_CLAIM_STATUS`` so REST polling cannot copy
+        the same fill, and releases it again when the dispatch turned out to
+        produce nothing. The status predicate keeps that release incapable of
+        removing a row the claim policy no longer owns — a real submission, a
+        settled fill, or a polling claim that replaced the sentinel meanwhile.
+
+        Args:
+            trade_key: Tx-level processed-trade key to release.
+
+        Returns:
+            ``True`` when a sentinel row was removed; ``False`` when no row
+            matched, i.e. it was absent or held under a different status.
+        """
+        if not trade_key:
+            return False
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM processed_trades WHERE trade_key = $1 AND status = $2",
+                trade_key,
+                CROSS_SOURCE_CLAIM_STATUS,
             )
+        return _affected(status) > 0
 
     async def update_submission_status(
         self,
@@ -810,6 +1294,7 @@ class OrdersRepo(AbstractOrderRepository):
         status: str,
         response_patch: dict[str, Any] | None = None,
     ) -> None:
+        """Update submission status."""
         if not order_id:
             return
         response_patch = response_patch or {}
@@ -858,7 +1343,14 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
         side: str | None = None,
+        limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return unconfirmed order submissions."""
+        bounded_limit = _bounded_positive(
+            limit,
+            field="limit",
+            maximum=1000,
+        )
         query = """
             SELECT idempotency_key, user_id, leader_id, order_id, status,
                    request_json, response_json, attempt_count, last_error,
@@ -875,19 +1367,15 @@ class OrdersRepo(AbstractOrderRepository):
         if side is not None:
             # jsonb ->> returns text; pin a parameterised case-insensitive
             # comparison so SQL stays static and the side value is bound.
-            query += (
-                f" AND UPPER(COALESCE(request_json->>'side', '')) = ${len(params) + 1}"
-            )
+            query += f" AND UPPER(COALESCE(request_json->>'side', '')) = ${len(params) + 1}"
             params.append(str(side).upper())
-        query += " ORDER BY updated_at ASC"
+        params.append(bounded_limit)
+        query += f" ORDER BY updated_at ASC LIMIT ${len(params)}"
 
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
-        return [
-            record for row in rows
-            if (record := self._row_to_order_record(row)) is not None
-        ]
+        return [record for row in rows if (record := self._row_to_order_record(row)) is not None]
 
     async def get_unconfirmed_buys(
         self,
@@ -895,6 +1383,7 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
+        """Return unconfirmed buys."""
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
@@ -919,6 +1408,7 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
+        """Return unconfirmed sells."""
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
@@ -954,8 +1444,12 @@ class OrdersRepo(AbstractOrderRepository):
         acted on this scope" signal that closes the manual-sync race window.
 
         Matches ANY status so both in-flight (``submitted_unconfirmed``) and
-        just-settled rows count. ``processed_at`` is a unix-epoch numeric column
-        (same comparison basis as ``get_unconfirmed_buys``).
+        just-settled rows count — except the order-less
+        ``CROSS_SOURCE_CLAIM_STATUS`` sentinel written by the on-chain
+        cross-source dedup, which is not a bot order and would misclassify a
+        genuine manual fill on the same scope. ``processed_at`` is a
+        unix-epoch numeric column (same comparison basis as
+        ``get_unconfirmed_buys``).
         """
         if not user_id or not asset:
             return False
@@ -965,8 +1459,40 @@ class OrdersRepo(AbstractOrderRepository):
             WHERE user_id = $1
               AND asset = $2
               AND processed_at >= $3
+              AND status <> $4
         """
-        params: list[Any] = [user_id, asset, cutoff]
+        params: list[Any] = [user_id, asset, cutoff, CROSS_SOURCE_CLAIM_STATUS]
+        if side is not None:
+            query += f" AND UPPER(side) = ${len(params) + 1}"
+            params.append(str(side).upper())
+        query += " LIMIT 1"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+        return row is not None
+
+    async def has_unconfirmed_processed_trade(
+        self,
+        *,
+        user_id: str,
+        asset: str,
+        side: str | None = None,
+    ) -> bool:
+        """Whether reconciliation still owns a bot trade for this scope.
+
+        Unlike the activity-classification helper above, this probe has no age
+        cutoff. A venue outage can keep a legitimate BUY pending for hours;
+        manual sync must not seed the venue's absolute position and later let
+        reconciliation add the same fill as a delta.
+        """
+        if not user_id or not asset:
+            return False
+        query = """
+            SELECT 1 FROM processed_trades
+            WHERE user_id = $1
+              AND asset = $2
+              AND status = ANY($3::text[])
+        """
+        params: list[Any] = [user_id, asset, list(_UNCONFIRMED_SUBMISSION_STATES)]
         if side is not None:
             query += f" AND UPPER(side) = ${len(params) + 1}"
             params.append(str(side).upper())
@@ -994,6 +1520,7 @@ class OrdersRepo(AbstractOrderRepository):
         asset: str | None,
         trade_status: str,
     ) -> bool:
+        """Persist execution, fill, position, and reservation effects atomically."""
         try:
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
@@ -1060,10 +1587,7 @@ class OrdersRepo(AbstractOrderRepository):
                             new_price = Decimal(str(fill_price))
                             new_size = cur_size + new_fill
                             if new_size > 0:
-                                avg = (
-                                    (cur_size * cur_avg)
-                                    + (new_fill * new_price)
-                                ) / new_size
+                                avg = ((cur_size * cur_avg) + (new_fill * new_price)) / new_size
                             else:
                                 avg = new_price
                             await conn.execute(
@@ -1192,9 +1716,8 @@ class OrdersRepo(AbstractOrderRepository):
             # Duplicate fill — the transaction context manager rolled back.
             return False
 
-    async def purge_old_processed_trades(
-        self, max_age_seconds: float = 30 * 86400
-    ) -> int:
+    async def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
+        """Purge old processed trades."""
         cutoff = time.time() - max_age_seconds
         async with self._pool.acquire() as conn:
             status = await conn.execute(

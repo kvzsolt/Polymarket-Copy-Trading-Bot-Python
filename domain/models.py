@@ -26,7 +26,7 @@ class TradeSignal:
     price: Decimal
     usdc_size: Decimal
     tx_hash: str
-    event_ts: int
+    event_ts: int | None
     title: str = ""
     event_slug: str = ""
     outcome: str = ""

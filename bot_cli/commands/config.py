@@ -1,38 +1,49 @@
 """bot config — print, validate, and explain configuration."""
+
 from __future__ import annotations
 
 import argparse
 import json
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, AppConfig, EnvValidationError
 
 
 # Keys that should be redacted when printing config
-_SECRET_KEYS = frozenset({
-    "PRIVATE_KEY",
-    "private_key",
-    "CLOB_API_KEY",
-    "CLOB_SECRET",
-    "CLOB_PASSPHRASE",
-    "FALCON_API_TOKEN",
-    "DATABASE_URL",
-    "api_key",
-    "api_secret",
-    "api_passphrase",
-    "api_token",
-    "dsn",
-})
+_SECRET_KEYS = frozenset(
+    {
+        "PRIVATE_KEY",
+        "private_key",
+        "CLOB_API_KEY",
+        "CLOB_SECRET",
+        "CLOB_PASSPHRASE",
+        "DATABASE_URL",
+        "api_key",
+        "api_secret",
+        "api_passphrase",
+        "api_token",
+        "token",
+        "dsn",
+    }
+)
 
 _REDACTED = "***REDACTED***"
 
 
 def _redact_value(key: str, value: object) -> object:
-    """Redact secret values for safe display."""
+    """Redact secret values for safe display.
+
+    Matching is exact or on secret-name boundaries (``*_token``), so
+    plural/non-secret fields such as a copy-task ``tokens`` market filter are
+    not mistaken for credentials.
+    """
     key_lower = key.lower()
     for secret in _SECRET_KEYS:
-        if secret.lower() in key_lower:
+        secret_lower = secret.lower()
+        if (
+            key_lower == secret_lower
+            or key_lower.endswith(f"_{secret_lower}")
+            or key_lower.startswith(f"{secret_lower}_")
+        ):
             return _REDACTED
     return value
 
@@ -41,6 +52,7 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
     """Recursively convert an AppConfig to a dict, optionally redacting secrets."""
     import dataclasses
     from decimal import Decimal
+    from pydantic import BaseModel
 
     def _convert(obj: object) -> object:
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -53,6 +65,8 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
                     display_val = _redact_value(display_key, display_val)
                 result[display_key] = display_val
             return result
+        if isinstance(obj, BaseModel):
+            return _convert(obj.model_dump(mode="python"))
         if isinstance(obj, (list, tuple)):
             return [_convert(item) for item in obj]
         if isinstance(obj, dict):
@@ -67,15 +81,25 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
             return str(obj)
         return obj
 
-    return _convert(cfg)
+    converted = _convert(cfg)
+    if not isinstance(converted, dict):
+        raise TypeError("application configuration must serialize to an object")
+    return converted
 
 
 # ── Config key explanations ──────────────────────────────────────────────────
 
 _CONFIG_EXPLANATIONS: dict[str, str] = {
-    "PAPER_TRADE_ONLY": "If true, all trades are paper-only (no real orders submitted). Use for dry-run / staging.",
-    "LEADER_WALLETS": "Comma-separated Ethereum addresses of traders to copy.",
-    "FUNDER_ADDRESS": "Your proxy wallet address on Polymarket (required for signing orders).",
+    "EXECUTION.TRADING_MODE": "Immutable startup selector: paper or live.",
+    "LEADER.WALLETS": (
+        "Legacy projection of the followed-leader addresses from "
+        "config/traders/<name>.yml; discovery roster leaders are added automatically."
+    ),
+    "COPY_TRADING.TRADERS": (
+        "Canonical followed-leader files (config/traders/<name>.yml); each file contains "
+        "the wallet, enabled toggle, per-leader copy gates, and the full copy-task strategy."
+    ),
+    "WALLET.FUNDER_ADDRESS": "Your Polymarket proxy-wallet address.",
     "CHAIN_ID": "Polygon chain ID: 137 (mainnet) or 80002 (testnet).",
     "SIZING_MODE": "Trade sizing strategy: 'proportional' (copy % of leader), 'fixed' (fixed USDC), or 'adaptive'.",
     "PERCENTAGE": "When SIZING_MODE=proportional, the % of leader trade size to copy.",
@@ -92,14 +116,21 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "SLIPPAGE_TOLERANCE": "Max acceptable slippage % before rejecting an order.",
     "MIN_SHARE_PRICE": "Minimum acceptable BUY price (0 disables).",
     "MAX_SHARE_PRICE": "Maximum acceptable BUY price (0 disables).",
+    "MAX_ENTRY_PRICE_DRIFT_PCT": (
+        "Tolerance around the leader fill for one-shot copy FAKs — BUY cap / SELL floor. "
+        "Tunable per leader in config/traders/<name>.yml; a leader who sweeps the book "
+        "needs a wider band than one who posts passively."
+    ),
     "FETCH_INTERVAL": "Seconds between leader trade polling cycles.",
     "RISK_CHECK_INTERVAL": "Seconds between risk monitor evaluations.",
     "RECONCILE_INTERVAL_SECONDS": "Seconds between reconciliation passes.",
     "PENDING_SUBMISSION_TTL_SECONDS": "Seconds before a pending order is considered stale.",
     "ENFORCE_GEOBLOCK": "If true, check geoblock compliance before trading.",
-    "ENABLE_TRADER_DISCOVERY": "If true, run DB-only Falcon + Polymarket candidate discovery. It does not start live monitors.",
-    "AUTO_DISCOVER_LEADERS": "Legacy compatibility flag. Discovery is DB-only; use LEADER_WALLETS or rotate-traders for live leaders.",
-    "AUTO_DISCOVER_TOP_N": "Compatibility count used by discovery/rotation defaults.",
+    "DISCOVERY.SCHEDULER.ENABLED": (
+        "Runs the configured Falcon funnel, longitudinal ranker, and hysteresis roster scheduler."
+    ),
+    "DISCOVERY.HYSTERESIS.PROMOTE_SCORE": "Minimum configured score required for consecutive promotion cycles.",
+    "DISCOVERY.HYSTERESIS.DEMOTE_SCORE": "Score below which an active leader starts a demotion streak.",
     "COPY_DECISION_MIN_SCORE": "Minimum leader score (0–1) required to copy a trade.",
     "ENABLE_COPY_DECISION_GATE": "If true, gate trades on the leader's copy-decision score.",
     "ENABLE_NEAR_RESOLUTION_GATE": "If true, reject BUY signals near market resolution.",
@@ -108,19 +139,23 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "MAX_BOOK_SPREAD_BPS": "Max book spread in basis points (0 = disabled).",
     "CIRCUIT_FAILURE_THRESHOLD": "Consecutive failures before circuit breaker trips.",
     "CIRCUIT_COOLDOWN_SECONDS": "Seconds to wait after circuit breaker trips.",
-    "BOT_STATE_DB": "Path to the SQLite database file for bot state.",
-    "RPC_URL": "Polygon RPC endpoint URL.",
-    "CLOB_HTTP_URL": "Polymarket CLOB HTTP API URL.",
+    "NETWORK.RPC_URL": "Polygon RPC endpoint URL.",
+    "CLOB.HTTP_URL": "Polymarket CLOB HTTP API URL.",
 }
 
 
 def register_config_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the configuration command with the CLI parser."""
     parser = subparsers.add_parser("config", help="Print, validate, and explain configuration")
     config_sub = parser.add_subparsers(dest="config_subcommand", required=True)
 
     print_parser = config_sub.add_parser("print", help="Print current config")
-    print_parser.add_argument("--redacted", action="store_true", default=True, help="Redact secrets (default: True)")
-    print_parser.add_argument("--no-redact", action="store_true", help="Show secrets (DANGEROUS)")
+    print_parser.add_argument(
+        "--redacted",
+        action="store_true",
+        default=True,
+        help="Secrets are always redacted",
+    )
 
     config_sub.add_parser("validate", help="Validate config and report errors")
 
@@ -130,15 +165,12 @@ def register_config_command(subparsers: argparse._SubParsersAction) -> None:
 
 def _run_config_print(args: argparse.Namespace) -> int:
     try:
-        load_runtime_env()
-        rehydrate_env()
         config = load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))
         return 1
 
-    redacted = not getattr(args, "no_redact", False)
-    output = _config_to_dict(config, redacted=redacted)
+    output = _config_to_dict(config, redacted=True)
     # Remove raw env from output (too noisy)
     output.pop("raw", None)
     print(json.dumps(output, indent=2, default=str))
@@ -147,8 +179,6 @@ def _run_config_print(args: argparse.Namespace) -> int:
 
 def _run_config_validate(_args: argparse.Namespace) -> int:
     try:
-        load_runtime_env()
-        rehydrate_env()
         load_config()
     except EnvValidationError as exc:
         errors = str(exc).split("\n")
@@ -166,10 +196,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
     explanation = _CONFIG_EXPLANATIONS.get(key)
     if explanation is None:
         # Try matching case-insensitively on partial key
-        matches = [
-            (k, v) for k, v in _CONFIG_EXPLANATIONS.items()
-            if key in k.upper()
-        ]
+        matches = [(k, v) for k, v in _CONFIG_EXPLANATIONS.items() if key in k.upper()]
         if matches:
             output = {
                 "key": args.key,
@@ -179,7 +206,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
             output = {
                 "key": args.key,
                 "explanation": None,
-                "hint": "No explanation found. Check the project documentation or config/env.py for available keys.",
+                "hint": "No explanation found. Check the config/<service>.yml files.",
             }
     else:
         output = {"key": args.key, "explanation": explanation}
@@ -189,6 +216,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
 
 
 def run_config(args: argparse.Namespace) -> int:
+    """Run the validated configuration CLI command."""
     if args.config_subcommand == "print":
         return _run_config_print(args)
     elif args.config_subcommand == "validate":

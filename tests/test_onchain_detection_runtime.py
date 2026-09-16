@@ -1,4 +1,5 @@
 """Tests for ``orchestrators/onchain_detection_runtime.py`` (PR2)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -50,14 +51,17 @@ def _build_log(
     maker: str = _WATCHED,
     taker: str = _OTHER,
     maker_side: int = 0,
+    maker_amount_filled: int = 2_000_000,
+    taker_amount_filled: int = 1_000_000,
+    order_hash: str = "aa",
     log_index: int = 0,
     tx_hash: str = _TX,
 ) -> dict:
     data = (
         _word(maker_side)
         + _word(12345)
-        + _word(2_000_000)  # makerAmountFilled
-        + _word(1_000_000)  # takerAmountFilled
+        + _word(maker_amount_filled)  # makerAmountFilled
+        + _word(taker_amount_filled)  # takerAmountFilled
         + _word(0)  # fee
         + _word(0)  # builder
         + _word(0)  # metadata
@@ -66,7 +70,7 @@ def _build_log(
         "address": POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
         "topics": [
             "0x" + ORDER_FILLED_TOPIC0.hex(),
-            _pad32("aa"),
+            _pad32(order_hash),
             _pad32(maker),
             _pad32(taker),
         ],
@@ -206,13 +210,48 @@ async def test_same_tx_multiple_logs_each_dispatched() -> None:
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=1))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 2, (
-            "one dispatch per (tx_hash, log_index) — distinct fills must "
-            "not be collapsed"
+            "one dispatch per (tx_hash, log_index) — distinct fills must not be collapsed"
         )
         log_indices = {sig.log_index for sig in dispatched}
         assert log_indices == {0, 1}
     finally:
         await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_mirrored_order_events_enqueue_one_canonical_economic_fill() -> None:
+    """Counterparty and taker-summary events for one trade must not double-copy."""
+
+    dispatched: list[OnchainTradeSignal] = []
+    runtime = _make_runtime(dispatched)
+    maker_order_fill = _build_log(
+        maker=_OTHER,
+        taker=_WATCHED,
+        maker_side=1,
+        maker_amount_filled=8_000_000,
+        taker_amount_filled=7_200_000,
+        order_hash="11",
+        log_index=0x820,
+    )
+    taker_order_summary = _build_log(
+        maker=_WATCHED,
+        taker=POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        maker_side=0,
+        maker_amount_filled=7_200_000,
+        taker_amount_filled=8_000_000,
+        order_hash="22",
+        log_index=0x822,
+    )
+
+    await runtime._on_mined_log(maker_order_fill)
+    await runtime._on_mined_log(taker_order_summary)
+
+    assert runtime._queue.qsize() == 1
+    signal = runtime._queue.get_nowait()
+    assert signal.watched_role == "maker"
+    assert signal.side == "BUY"
+    assert signal.size == Decimal("8")
+    assert signal.usdc_size == Decimal("7.2")
 
 
 @pytest.mark.asyncio
@@ -244,10 +283,16 @@ async def test_pending_then_mined_same_tx_both_dispatched() -> None:
     The pending is provisional (estimated from calldata); the mined is
     authoritative (from the actual ``OrderFilled`` log). The dispatcher's
     job is per-fill uniqueness (keyed on ``(tx_hash, log_index)`` for
-    mined, ``tx_hash`` for pending) — cross-signal dedup is the copy
-    pipeline's responsibility via ``build_trade_key`` (keyed on
-    ``leader|tx_hash|side|asset``, which matches for the same fill
-    regardless of provisional vs authoritative).
+    mined, ``tx_hash`` for pending) — cross-signal dedup is NOT this
+    runtime's job.
+
+    Note the copy keys do *not* match: ``CopyTradeIdentityBuilder`` appends
+    ``log:<index>`` for the mined signal, so ``build_trade_key`` alone would
+    copy the same fill twice. Downstream, ``CrossSourceTradeClaimPolicy``
+    (``orchestrators.onchain_signal_dispatch``) claims the tx-level key
+    before the per-fill dispatch, and ``ProvisionalPendingSourceBuilder``
+    runs this runtime with ``enable_mined=False`` in ``on_chain_pending``
+    mode, so pending + mined never both reach the pipeline in production.
 
     The previous tx_hash-only gate collapsed these to one dispatch,
     which also collapsed distinct multi-fill mined logs — the bug this
@@ -268,13 +313,13 @@ async def test_pending_then_mined_same_tx_both_dispatched() -> None:
         assert len(dispatched) == 1, "pending dispatched"
         assert dispatched[0].confidence == DetectionConfidence.PENDING_PROBABLE
         # Mined for the same tx arrives — dispatches independently
-        # (different idempotency key: (tx_hash, 0) vs tx_hash). The copy
-        # pipeline's build_trade_key catches the duplicate fill.
+        # (different idempotency key: (tx_hash, 0) vs tx_hash). Cross-source
+        # dedup happens downstream (CrossSourceTradeClaimPolicy).
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=0, tx_hash=tx))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 2, (
             "mined dispatches alongside the provisional pending — "
-            "copy pipeline dedupes via build_trade_key"
+            "cross-source dedup is the dispatch adapter's job"
         )
         assert dispatched[1].confidence == DetectionConfidence.MINED_AUTHORITATIVE
     finally:
@@ -301,8 +346,7 @@ async def test_mined_then_pending_same_tx_dispatches_once() -> None:
         await rt._enqueue(_make_pending_signal(tx_hash=tx))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 1, (
-            "pending for already-dispatched tx dropped — "
-            "_enable_pending guard plus _claim_or_drop"
+            "pending for already-dispatched tx dropped — _enable_pending guard plus _claim_or_drop"
         )
     finally:
         await rt.stop()
@@ -417,9 +461,7 @@ async def test_mined_for_one_leader_does_not_suppress_pending_for_another() -> N
         assert await rt._dedupe.record_pending(tx, leader_b) is True
         await rt._enqueue(_make_pending_signal(tx_hash=tx, leader=leader_b))
         # Mined for leaderA arrives — should supersede only leaderA's pending.
-        await rt._on_mined_log(
-            _build_log(maker=leader_a, log_index=0, tx_hash=tx)
-        )
+        await rt._on_mined_log(_build_log(maker=leader_a, log_index=0, tx_hash=tx))
         await asyncio.sleep(0.05)
         # leaderB's pending should still dispatch (not suppressed by leaderA's mined).
         leaders_dispatched = {sig.leader_wallet for sig in dispatched}
@@ -557,3 +599,380 @@ async def test_mined_condition_id_resolver_invoked() -> None:
         assert dispatched[0].condition_id == "resolved-cond"
     finally:
         await rt.stop()
+
+
+async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> None:
+    """The control-plane probe reads composed socket state in constant time."""
+
+    class _ProbeSocket(_NoopWebSocket):
+        def __init__(self, connected: bool) -> None:
+            self._connected = connected
+
+        @property
+        def connected(self) -> bool:
+            return self._connected
+
+    sockets: list[_ProbeSocket] = []
+
+    def factory(**_kwargs) -> _ProbeSocket:
+        socket = _ProbeSocket(connected=len(sockets) == 0)
+        sockets.append(socket)
+        return socket
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        del signal
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://polygon.example.invalid/v2/redacted",
+        signal_sink=sink,
+        enable_pending=True,
+        enable_mined=True,
+        websocket_factory=factory,
+    )
+
+    assert runtime.connected is None
+
+    await runtime.start()
+    try:
+        assert len(sockets) == 2
+        assert runtime.connected is True
+        sockets[0]._connected = False
+        assert runtime.connected is False
+    finally:
+        await runtime.stop()
+
+    assert runtime.connected is None
+
+
+# ---------------------------------------------------------------------------
+# logs_only confirmed mode: watched-topic-filtered mined subscriptions
+# ---------------------------------------------------------------------------
+
+
+class _RecordingWebSocket:
+    """Lifecycle socket double that records constructor kwargs and events."""
+
+    instances: list[_RecordingWebSocket] = []
+    events: list[str] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.started = 0
+        self.stopped = 0
+        self._event_id = f"socket-{len(_RecordingWebSocket.instances)}"
+        _RecordingWebSocket.instances.append(self)
+
+    def start(self) -> None:
+        self.started += 1
+        _RecordingWebSocket.events.append(f"start:{self._event_id}")
+
+    async def stop(self) -> None:
+        self.stopped += 1
+        _RecordingWebSocket.events.append(f"stop:{self._event_id}")
+
+
+def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    return list(
+        log_subscription_params_for_watched(exchange_addresses=_EXCHANGES, watched_wallets=watched)
+    )
+
+
+_EXCHANGES = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+
+
+def _make_logs_only_runtime(
+    sink=None,
+    *,
+    watched: set[str] | None = None,
+    params_factory=None,
+) -> tuple[OnchainDetectionRuntime, type[_RecordingWebSocket]]:
+    _RecordingWebSocket.instances = []
+    _RecordingWebSocket.events = []
+
+    async def _sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+        if sink is not None:
+            sink(signal)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED} if watched is None else watched,
+        ws_url="wss://test.invalid/ws",
+        signal_sink=_sink,
+        enable_pending=False,
+        enable_mined=True,
+        mined_subscription_params_factory=params_factory or _watched_params_factory,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    return runtime, _RecordingWebSocket
+
+
+@pytest.mark.asyncio
+async def test_logs_only_runtime_opens_the_two_watched_subscriptions() -> None:
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    try:
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        pending = [s for s in recording.instances if s.kwargs["name"] == "pendingtx"]
+        assert len(mined) == 2, "maker-role + taker-role topic filters"
+        assert pending == [], "the logs-only runtime opens nothing pending-related"
+
+        maker_params, taker_params = (s.kwargs["subscribe_params"] for s in mined)
+        assert maker_params[1]["topics"] == [
+            [f"0x{ORDER_FILLED_TOPIC0.hex()}"],
+            None,
+            [_pad32(_WATCHED)],
+        ]
+        assert taker_params[1]["topics"] == [
+            [f"0x{ORDER_FILLED_TOPIC0.hex()}"],
+            None,
+            None,
+            [_pad32(_WATCHED)],
+        ]
+        assert maker_params[1]["address"] == ["0x" + "aa" * 20, "0x" + "bb" * 20]
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -> None:
+    """Without a params factory the mined subscription is byte-identical to
+    today's gen-1 behaviour (one address-only filter)."""
+    from services.onchain_detection.order_filled_detector import log_subscription_params
+
+    _RecordingWebSocket.instances = []
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://test.invalid/ws",
+        signal_sink=sink,
+        enable_pending=False,
+        enable_mined=True,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    await runtime.start()
+    try:
+        mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 1
+        assert mined[0].kwargs["subscribe_params"] == log_subscription_params()
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_resubscribes_the_watched_filters() -> None:
+    """A roster change rebuilds the two topic filters off the hot path.
+
+    The replacement sockets open BEFORE the superseded ones stop, so a fill
+    that lands during the switch is never missed (no gap).
+    """
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    try:
+        new_leader = "0x" + "99" * 20
+        runtime.update_watched_wallets({new_leader})
+        await asyncio.sleep(0.05)
+
+        assert new_leader in runtime._watched
+        assert _WATCHED not in runtime._watched
+        for socket in original:
+            assert socket.stopped == 1, "the old filters were unsubscribed"
+        replacement = [
+            s
+            for s in recording.instances
+            if s.kwargs["name"] == "orderfilled" and s not in original
+        ]
+        assert len(replacement) == 2
+        for socket in replacement:
+            assert socket.started == 1
+        maker_params = replacement[0].kwargs["subscribe_params"]
+        assert maker_params[1]["topics"][2] == [_pad32(new_leader)]
+        # Ordering: every replacement socket started before any old socket
+        # was stopped (no detection gap mid-resubscribe).
+        first_new_start = min(recording.events.index(f"start:{s._event_id}") for s in replacement)
+        first_old_stop = min(recording.events.index(f"stop:{s._event_id}") for s in original)
+        assert first_new_start < first_old_stop
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_logs_only_runtime_with_empty_roster_opens_no_subscriptions() -> None:
+    """An empty roster opens nothing (never the unfiltered feed), the runtime
+    idles visibly, and the first non-empty roster update reopens the filters."""
+    import logging
+
+    from orchestrators import onchain_detection_runtime as runtime_module
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.INFO)
+    runtime_module.logger.addHandler(handler)
+    previous_level = runtime_module.logger.level
+    runtime_module.logger.setLevel(logging.INFO)
+    runtime, recording = _make_logs_only_runtime(watched=set())
+    try:
+        await runtime.start()
+        await asyncio.sleep(0.02)
+
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        assert mined == [], "an empty roster must not open any logs subscription"
+        assert runtime.connected is None
+        idle = [
+            r.getMessage() for r in records if "onchain_mined_subscriptions_idle" in r.getMessage()
+        ]
+        assert idle and "watched=0" in idle[0]
+
+        new_leader = "0x" + "88" * 20
+        runtime.update_watched_wallets({new_leader})
+        await asyncio.sleep(0.05)
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 2, "a non-empty roster reopens both role filters"
+        maker_params = mined[0].kwargs["subscribe_params"]
+        assert maker_params[1]["topics"][2] == [_pad32(new_leader)]
+    finally:
+        runtime_module.logger.removeHandler(handler)
+        runtime_module.logger.setLevel(previous_level)
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_resubscribe_failure_is_warned_and_the_next_update_still_processes() -> None:
+    """One failing rebuild warns (redacted) and keeps the loop alive: the old
+    sockets stay subscribed and the next roster update is processed."""
+    import logging
+
+    from orchestrators import onchain_detection_runtime as runtime_module
+
+    calls: list[frozenset[str]] = []
+
+    def _flaky_factory(watched: frozenset[str]) -> list[list[object]]:
+        calls.append(watched)
+        if len(calls) == 2:  # first resubscribe attempt fails
+            raise RuntimeError("subscription params exploded")
+        return _watched_params_factory(watched)
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    runtime_module.logger.addHandler(handler)
+    previous_level = runtime_module.logger.level
+    runtime_module.logger.setLevel(logging.WARNING)
+    runtime, recording = _make_logs_only_runtime(params_factory=_flaky_factory)
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    try:
+        runtime.update_watched_wallets({"0x" + "55" * 20})
+        await asyncio.sleep(0.05)
+
+        failures = [
+            r.getMessage() for r in records if "onchain_mined_resubscribe_failed" in r.getMessage()
+        ]
+        assert failures, "the failed rebuild must WARN"
+        for socket in original:
+            assert socket.stopped == 0, "the old filters survive a failed rebuild"
+
+        runtime.update_watched_wallets({"0x" + "66" * 20})
+        await asyncio.sleep(0.05)
+        replacement = [
+            s
+            for s in recording.instances
+            if s.kwargs["name"] == "orderfilled" and s not in original
+        ]
+        assert len(replacement) == 2, "the next roster update is processed"
+        for socket in original:
+            assert socket.stopped == 1
+    finally:
+        runtime_module.logger.removeHandler(handler)
+        runtime_module.logger.setLevel(previous_level)
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_partial_replacement_batch_is_stopped_when_a_later_socket_fails() -> None:
+    """A raise midway through building the replacement set must not leak the
+    sockets already started in that batch: they are stopped before the error
+    propagates to the guarded loop, and the old sockets stay subscribed."""
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    assert len(original) == 2
+    built: list[_RecordingWebSocket] = []
+
+    def _factory_failing_on_second_replacement(**kwargs: object) -> _RecordingWebSocket:
+        if len(recording.instances) == 3:  # second socket of the replacement batch
+            raise RuntimeError("socket construction exploded")
+        socket = _RecordingWebSocket(**kwargs)
+        built.append(socket)
+        return socket
+
+    runtime._websocket_factory = _factory_failing_on_second_replacement
+    try:
+        runtime.update_watched_wallets({"0x" + "88" * 20})
+        await asyncio.sleep(0.05)
+
+        partial = [s for s in built if s not in original]
+        assert len(partial) == 1, "exactly one replacement socket was started before the raise"
+        assert partial[0].started == 1
+        assert partial[0].stopped == 1, "the partially built replacement socket must be stopped"
+        for socket in original:
+            assert socket.stopped == 0, "the old filters survive a failed rebuild"
+        assert runtime._mined_sockets == original
+    finally:
+        runtime._websocket_factory = lambda **kwargs: _RecordingWebSocket(**kwargs)
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_before_start_updates_the_set_only() -> None:
+    runtime, recording = _make_logs_only_runtime()
+    new_leader = "0x" + "77" * 20
+
+    runtime.update_watched_wallets({new_leader})
+
+    assert runtime._watched == {new_leader}
+    assert recording.instances == []
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_without_factory_keeps_sockets_untouched() -> None:
+    """Legacy modes never resubscribe: the address-only filter has no roster."""
+    _RecordingWebSocket.instances = []
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://test.invalid/ws",
+        signal_sink=sink,
+        enable_pending=False,
+        enable_mined=True,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    await runtime.start()
+    try:
+        runtime.update_watched_wallets({"0x" + "66" * 20})
+        await asyncio.sleep(0.05)
+        mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 1
+        assert mined[0].stopped == 0
+        assert mined[0].started == 1
+    finally:
+        await runtime.stop()

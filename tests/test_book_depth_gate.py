@@ -5,6 +5,7 @@ this module focuses on the depth-only behavior: aggregated side liquidity
 within a percentage band of the mid must be at least ``MIN_BOOK_DEPTH_USDC``
 for the order to be sent.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.execution.book_spread import calculate_book_depth_metrics
 from services.market_data_service import MarketDataBundle, MarketDataSource
 
@@ -128,8 +130,14 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
     mds.require_fresh_data = AsyncMock(return_value=_make_bundle_with_book(bids, asks))
 
     clob = AsyncMock()
-    clob.post_signed_order = AsyncMock(
-        return_value={"success": True, "orderID": "ord-x", "status": "submitted"}
+    gateway = SimpleNamespace(
+        submit_marketable_order=AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-x",
+                status="submitted",
+            )
+        )
     )
 
     order_repo = MagicMock()
@@ -173,6 +181,7 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,
+        clob_gateway=gateway,
         market_data_service=mds,
     )
 
@@ -194,6 +203,7 @@ def _req(side: str = "BUY", amount: str = "5"):
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -206,7 +216,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1")},
             min_depth=0.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req()))
+        result = asyncio.run(svc.execute(_req()))
         assert result.status != "book_thin_depth"
 
     def test_thin_depth_rejected_for_buy(self):
@@ -216,7 +226,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"
         assert "depth too thin" in result.error
@@ -227,7 +237,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1000")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("SELL", "1")))
+        result = asyncio.run(svc.execute(_req("SELL", "1")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"
 
@@ -237,7 +247,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1000")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.status != "book_thin_depth"
 
     def test_outside_band_levels_ignored(self):
@@ -247,6 +257,6 @@ class TestBookDepthGate:
             asks={Decimal("0.65"): Decimal("10_000")},
             min_depth=100.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"

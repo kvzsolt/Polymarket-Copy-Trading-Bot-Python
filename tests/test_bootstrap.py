@@ -17,8 +17,10 @@ from bootstrap import Application, build_app
 from config.app_config import AppConfig
 from domain.ports.repositories import AbstractLeaderRepository
 from orchestrators.leader_registry import LeaderRegistry
+from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryService,
+)
 from services.healthServer import ReadinessTracker
-from services.traderDiscoveryService import TraderDiscoveryService
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.leaders_repo import LeadersRepo
 
@@ -62,17 +64,16 @@ async def _pg_container():
         ctr.stop()
 
 
-def _valid_env(dsn: str, **overrides: str) -> dict[str, str]:
-    env = {
-        "PRIVATE_KEY": _VALID_PRIVATE_KEY,
-        "FUNDER_ADDRESS": _VALID_FUNDER,
-        "USER_ADDRESS": _VALID_USER,
-        "RPC_URL": "https://polygon-rpc.example.com",
-        "CHAIN_ID": "137",
-        "DATABASE_URL": dsn,
+def _valid_env(dsn: str) -> dict:
+    return {
+        "database": {"dsn": dsn},
+        "wallet": {
+            "private_key": _VALID_PRIVATE_KEY,
+            "funder_address": _VALID_FUNDER,
+            "polygon_rpc_url": "https://polygon-rpc.example.com",
+        },
+        "network": {"rpc_url": "https://polygon-rpc.example.com"},
     }
-    env.update(overrides)
-    return env
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +115,7 @@ class TestBuildApp:
         async with _pg_container() as dsn:
             app = await build_app(_valid_env(dsn))
             assert isinstance(app.registry, LeaderRegistry)
-            assert isinstance(app.discovery_service, TraderDiscoveryService)
+            assert isinstance(app.discovery_service, FalconDiscoveryService)
             assert app.registry.leaders_repo is app.leaders_repo
             assert app.registry.config is app.config
             assert app.registry.readiness is app.readiness
@@ -143,6 +144,6 @@ class TestBuildApp:
 
         async with _pg_container() as dsn:
             env = _valid_env(dsn)
-            env.pop("PRIVATE_KEY")
+            env["wallet"]["funder_address"] = "invalid"
             with pytest.raises(EnvValidationError):
                 await build_app(env)

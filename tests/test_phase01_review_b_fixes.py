@@ -19,7 +19,6 @@ only nail down the specific posture asked for in Review B.
 from __future__ import annotations
 
 import asyncio
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -70,8 +69,9 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
 
     reconcile_count = 0
 
-    async def _fake_reconcile_one(_ctx, _rec, _side):
+    async def _fake_reconcile_one(_ctx, _rec, _side, *, startup_recovery=False):
         nonlocal reconcile_count
+        assert startup_recovery is False
         reconcile_count += 1
         return True
 
@@ -145,6 +145,66 @@ async def test_reconcile_submitted_unconfirmed_scopes_queries_to_context_user():
         max_age_seconds=300.0,
         user_id="0xUser",
     )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_includes_orders_table_only_v1_submissions(monkeypatch):
+    """Reconcile v1 orders even when processed_trades has no matching row."""
+
+    from orchestrators import trade_pipeline as tp
+
+    class OrdersWithV1Rows:
+        """Expose both legacy scans and the bounded v1 orders scan."""
+
+        async def get_unconfirmed_buys(self, **_kwargs):
+            """Return no legacy processed-trade BUY rows."""
+
+            return []
+
+        async def get_unconfirmed_sells(self, **_kwargs):
+            """Return no legacy processed-trade SELL rows."""
+
+            return []
+
+        async def get_unconfirmed_order_submissions(self, **kwargs):
+            """Return one v1 order persisted without processed_trades."""
+
+            assert kwargs == {"user_id": "user-a", "limit": 200}
+            return [
+                {
+                    "idempotency_key": "copy-task:abc",
+                    "user_id": "user-a",
+                    "leader_id": "leader-a",
+                    "order_id": "order-a",
+                    "status": "submitted_unconfirmed",
+                    "request": {
+                        "side": "BUY",
+                        "signal_id": "copy-task:abc",
+                        "token_id": "token-a",
+                        "condition_id": "condition-a",
+                    },
+                }
+            ]
+
+    reconciled: list[tuple[str, str]] = []
+
+    async def _fake_reconcile_one(_ctx, record, side, *, startup_recovery=False):
+        assert startup_recovery is False
+        reconciled.append((record["order_id"], side))
+        return True
+
+    monkeypatch.setattr(tp, "_reconcile_one", _fake_reconcile_one)
+    ctx = SimpleNamespace(
+        user_id="user-a",
+        execution_service=MagicMock(),
+        orders_repo=OrdersWithV1Rows(),
+        position_coordinator=PositionActionCoordinator(),
+        extra={},
+        config=None,
+    )
+
+    assert await tp.reconcile_submitted_unconfirmed(ctx) == 1
+    assert reconciled == [("order-a", "BUY")]
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +296,6 @@ def test_runtime_bootstrap_raises_when_coordinator_wiring_blocked():
 
     coord = _FrozenCoord()
 
-    user_state = SimpleNamespace(
-        execution_coordinator=coord,
-        risk_triggers_repo=None,
-        position_drift_service=None,
-    )
     context = SimpleNamespace(
         user_id="u-frozen",
         position_coordinator=pos_coord,
@@ -256,7 +311,8 @@ def test_runtime_bootstrap_raises_when_coordinator_wiring_blocked():
         except Exception as exc:
             rb.logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"), exc,
+                getattr(context, "user_id", "?"),
+                exc,
             )
             raise RuntimeError(
                 "runtime_bootstrap: failed to attach position_coordinator to "

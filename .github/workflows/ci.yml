@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "issue-*", "feat/*"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "issue-*", "feat/*", "feature/hybrid-ccxt-implementation"]
   pull_request:
-    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "feature/hybrid-ccxt-implementation"]
 
 permissions:
   contents: read
@@ -34,15 +34,51 @@ jobs:
             echo "ERROR: xfail markers found — all tests must pass or be deleted"
             exit 1
           fi
-      - name: config smoke (env files + dummy secrets -> load_config)
-        # Critical fast gate (deep-research P0): the shipped runtime env files
-        # must parse through dotenv into a valid AppConfig, and every runtime
-        # key must be typed or allowlisted. Catches a malformed committed
-        # default here rather than at live startup.
-        run: pytest tests/test_config_smoke.py tests/test_env_schema_coverage.py -q
+      - name: config and discovery smoke
+        # Parse the checked-in YAML layers, exercise dotenv/process precedence,
+        # and validate the single discovery pipeline before the broad suite.
+        run: pytest tests/test_config.py tests/discovery -q
       - name: pytest (unit tier)
         run: pytest -m "not integration and not release_gate" --maxfail=5 -q
 
+  ccxt-runtime:
+    # Mandatory-runtime integration matrix: the normal editable install pulls
+    # CCXT from [project].dependencies. Keep the focused suite explicit so the
+    # prediction adapter contract remains visible in CI.
+    name: ccxt-runtime (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [unit]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -c "import ccxt; print(f'ccxt {ccxt.__version__}')"
+      - name: ccxt focused suite
+        run: |
+          pytest -q \
+            tests/test_ccxt_precision.py \
+            tests/test_ccxt_prediction_client.py \
+            tests/test_ccxt_prediction_gateway_contract.py \
+            tests/test_ccxt_prediction_gateway_errors.py \
+            tests/test_ccxt_prediction_gateway_pagination.py \
+            tests/test_ccxt_prediction_market_data.py \
+            tests/test_ccxt_compat_tick_size.py \
+            tests/test_ccxt_compat_credentials.py \
+            tests/test_ccxt_compat_version_and_health.py \
+            tests/test_paper_execution_gateway.py \
+            tests/test_venue_runtime.py \
+            tests/test_ccxt_optional_dependency.py
   release-gate:
     name: release-gate (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -126,15 +162,18 @@ jobs:
         run: |
           pip install mypy
           # Scoped, BLOCKING type-check of the order-signing + HTTP-transport
-          # spine (P2-a). These files are mypy-clean and must stay clean: a new
-          # type error here can mis-sign an order (condition_id / neg-risk
-          # routing) or mishandle a venue error. ``--follow-imports=silent``
+          # spine. These files must stay mypy-clean: a new type error here can
+          # mis-sign an order (condition_id / neg-risk routing) or mishandle a
+          # venue error. ``--follow-imports=silent``
           # restricts reporting to exactly these files; their transitive type
           # debt stays under the soft-fail step below. Expand this allowlist as
           # more money-path modules are cleaned. No ``|| true`` — this gates.
           mypy --install-types --non-interactive --explicit-package-bases \
             --ignore-missing-imports --follow-imports=silent \
-            integrations/polymarket/clob_v2_gateway.py clients/network/http_client.py
+            integrations/polymarket/ccxt_prediction_client.py \
+            integrations/polymarket/ccxt_prediction_gateway.py \
+            integrations/polymarket/venue_runtime.py \
+            clients/network/http_client.py
       - name: mypy (type — soft fail until type debt cleared)
         continue-on-error: true
         run: |
@@ -148,30 +187,66 @@ jobs:
     needs: [unit]
     steps:
       - uses: actions/checkout@v4
+      - name: docker compose config (secrets.env only)
+        run: |
+          install -m 600 secrets.env.example secrets.env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" secrets.env
+          test "$(stat -c '%a' secrets.env)" = "600"
+          env -u POSTGRES_PASSWORD docker compose --env-file secrets.env config >/dev/null
       - name: docker build
         run: docker build -t polymarket-copy-trader:ci .
+      - name: start PostgreSQL
+        run: |
+          docker network create pmct-smoke-net
+          docker run -d --name pmct-postgres --network pmct-smoke-net \
+            -e POSTGRES_USER=bot \
+            -e POSTGRES_PASSWORD=paper-smoke-only \
+            -e POSTGRES_DB=polymarket_copytrading_python \
+            --health-cmd='pg_isready -U bot -d polymarket_copytrading_python' \
+            --health-interval=2s --health-timeout=2s --health-retries=20 \
+            postgres:16-alpine
+          for i in $(seq 1 20); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-postgres)" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pmct-postgres
+          exit 1
       - name: docker run (paper mode)
         run: |
-          docker run -d --name pmct-smoke \
-            -e PAPER_TRADE_ONLY=true \
-            -e PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 \
-            -e FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
-            -e CHAIN_ID=137 \
-            -e RPC_URL=https://polygon-bor-rpc.publicnode.com \
-            -e ENABLE_METRICS_SERVER=true \
-            -e METRICS_PORT=9090 \
-            -p 9090:9090 \
+          docker run -d --name pmct-smoke --network pmct-smoke-net \
+            -e PMCOPY__EXECUTION__TRADING_MODE=paper \
+            -e PMCOPY__DATABASE__DSN=postgresql://bot:paper-smoke-only@pmct-postgres:5432/polymarket_copytrading_python \
+            -e PMCOPY__WALLET__FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
+            -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e PMCOPY__NETWORK__RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
+            -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
+            -e PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true \
+            -e PMCOPY__NETWORK__METRICS_BIND_HOST=0.0.0.0 \
+            -e PMCOPY__NETWORK__METRICS_PORT=9102 \
+            --health-cmd='python -c "import json, urllib.request; payload = json.load(urllib.request.urlopen(\"http://localhost:9102/health\", timeout=3)); raise SystemExit(0 if payload.get(\"ok\") else 1)"' \
+            --health-interval=2s --health-timeout=5s --health-retries=30 \
+            -p 9102:9102 \
             polymarket-copy-trader:ci
       - name: container readiness probe
         run: |
+          # The production image deliberately checks strict /health/ready,
+          # which requires live venue WSS and executable market data. This
+          # hermetic paper smoke uses fake wallets, so docker run overrides
+          # the probe with /health and verifies its db_ok + api_ok payload.
+          # Still require Docker's real health state instead of treating a
+          # merely-running process as a successful startup.
+          sleep 5
           for i in $(seq 1 12); do
-            if [ "$(docker inspect -f '{{.State.Running}}' pmct-smoke 2>/dev/null)" = "true" ]; then
-              echo "container running (attempt $i)"
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-smoke 2>/dev/null)" = "healthy" ]; then
+              echo "container healthy (attempt $i)"
               exit 0
             fi
             sleep 5
           done
-          echo "container failed to stay running"
+          echo "container failed to become healthy"
           docker logs pmct-smoke || true
           exit 1
       - name: cleanup
@@ -180,3 +255,7 @@ jobs:
           docker logs pmct-smoke || true
           docker stop pmct-smoke || true
           docker rm pmct-smoke || true
+          docker logs pmct-postgres || true
+          docker stop pmct-postgres || true
+          docker rm pmct-postgres || true
+          docker network rm pmct-smoke-net || true

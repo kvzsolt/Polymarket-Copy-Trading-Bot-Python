@@ -11,13 +11,13 @@ arithmetic is intentionally isolated in ``_buy_required_cash_with_fees`` so the
 boundary (affordable-on-notional / unaffordable-with-fees) is covered without
 standing up the full Postgres-backed pipeline harness.
 """
+
 from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 
-import pytest
 
 from orchestrators.trade_pipeline import (
     _buy_fee_bps_or_none,
@@ -28,6 +28,7 @@ from orchestrators.trade_pipeline import (
 # ---------------------------------------------------------------------------
 # Required-cash math is Decimal and fee-inclusive.
 # ---------------------------------------------------------------------------
+
 
 def test_required_cash_adds_fees_in_decimal():
     # 100 USDC notional at 20 bps -> 100 * 1.002 = 100.20, exact Decimal.
@@ -73,6 +74,7 @@ def test_buy_fits_with_fees_is_allowed():
 # a usable int otherwise. None disables the fee tightening so the pre-existing
 # no-fee cash gates stay authoritative (no regression of allowed trades).
 # ---------------------------------------------------------------------------
+
 
 def _run(coro):
     return asyncio.run(coro)

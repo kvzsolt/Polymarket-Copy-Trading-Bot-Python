@@ -10,6 +10,7 @@ Covers:
   - Full invalidation for reconnect bootstrap
   - Tick data survives quote invalidation
 """
+
 from __future__ import annotations
 
 import time
@@ -28,6 +29,7 @@ from cache.market_state_store import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cache() -> MarketStateStore:
     """Fresh MarketStateStore."""
@@ -41,6 +43,7 @@ TOKEN_B = "0xbbb_token_no"
 # ---------------------------------------------------------------------------
 # Cache reuse and freshness
 # ---------------------------------------------------------------------------
+
 
 class TestCacheReuse:
     """Verify cache serves data when fresh."""
@@ -87,13 +90,16 @@ class TestCacheReuse:
 # Invalidation triggers
 # ---------------------------------------------------------------------------
 
+
 class TestInvalidation:
     """Verify invalidation triggers clear appropriate cache entries."""
 
     def test_invalidate_on_fill(self, cache: MarketStateStore) -> None:
         """Own fill clears quote and book for the affected token only."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")}
+        )
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
 
         cache.invalidate(TOKEN_A)
@@ -171,6 +177,7 @@ class TestInvalidation:
 # ---------------------------------------------------------------------------
 # Data snapshot immutability
 # ---------------------------------------------------------------------------
+
 
 class TestSnapshots:
     """Verify dataclass snapshot integrity."""

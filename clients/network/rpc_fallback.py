@@ -24,11 +24,11 @@ degenerates to a single-provider pass-through.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from web3 import Web3
 from web3.providers.base import JSONBaseProvider
+from web3.types import RPCResponse
 
 logger = logging.getLogger("rpc_fallback")
 
@@ -38,46 +38,9 @@ logger = logging.getLogger("rpc_fallback")
 # This provider is *read-call only* (see module docstring): every call site is
 # a balance / allowance / code / gas-price probe, none of which legitimately
 # runs for seconds on Polygon, so a bounded default is safe. The default is
-# overridable via ``RPC_REQUEST_TIMEOUT_SECONDS`` for operators on slow or
-# archive endpoints; callers may also pass ``request_timeout_seconds`` directly.
+# Callers on slow or archive endpoints may pass ``request_timeout_seconds``.
 _FALLBACK_REQUEST_TIMEOUT_SECONDS = 8.0
-_RPC_REQUEST_TIMEOUT_ENV = "RPC_REQUEST_TIMEOUT_SECONDS"
-
-
-def _default_request_timeout_seconds() -> float:
-    """Resolve the default RPC read timeout from env, fail-safe to the literal.
-
-    A missing, non-numeric, or non-positive override falls back to the bounded
-    literal rather than disabling the timeout — an unbounded read probe is what
-    this guard exists to prevent.
-    """
-    raw = os.getenv(_RPC_REQUEST_TIMEOUT_ENV, "").strip()
-    if not raw:
-        return _FALLBACK_REQUEST_TIMEOUT_SECONDS
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "Ignoring non-numeric %s=%r; using %.1fs",
-            _RPC_REQUEST_TIMEOUT_ENV,
-            raw,
-            _FALLBACK_REQUEST_TIMEOUT_SECONDS,
-        )
-        return _FALLBACK_REQUEST_TIMEOUT_SECONDS
-    if value <= 0:
-        logger.warning(
-            "Ignoring non-positive %s=%s; using %.1fs",
-            _RPC_REQUEST_TIMEOUT_ENV,
-            value,
-            _FALLBACK_REQUEST_TIMEOUT_SECONDS,
-        )
-        return _FALLBACK_REQUEST_TIMEOUT_SECONDS
-    return value
-
-
-# Backwards-compatible module attribute: existing imports/tests that read
-# ``_DEFAULT_REQUEST_TIMEOUT_SECONDS`` still resolve. Computed once at import.
-_DEFAULT_REQUEST_TIMEOUT_SECONDS = _default_request_timeout_seconds()
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = _FALLBACK_REQUEST_TIMEOUT_SECONDS
 
 # JSON-RPC error codes that justify a failover attempt.
 # -32603 = internal error (generic node failure / overload)
@@ -120,9 +83,10 @@ class _FailoverHTTPProvider(JSONBaseProvider):
         else:
             logger.debug("RPC fallback not configured (single provider)")
 
-    def make_request(self, method: str, params: Any) -> dict[str, Any]:
+    def make_request(self, method: str, params: Any) -> RPCResponse:
+        """Perform an RPC request through the bounded fallback policy."""
         primary_exc: Exception | None = None
-        primary_error_response: dict[str, Any] | None = None
+        primary_error_response: RPCResponse | None = None
 
         # Try primary first.
         try:
@@ -175,7 +139,7 @@ def _mask_url(url: str) -> str:
     return url
 
 
-def _is_failover_response(raw: dict[str, Any]) -> bool:
+def _is_failover_response(raw: RPCResponse) -> bool:
     """Return True if a JSON-RPC response object justifies failover."""
     error = raw.get("error")
     if not isinstance(error, dict):
@@ -218,10 +182,14 @@ class FallbackWeb3Provider:
 
     @property
     def primary_url(self) -> str:
+        """Return the configured primary RPC URL."""
+
         return self._primary_url
 
     @property
     def fallback_url(self) -> str | None:
+        """Return the distinct configured fallback URL, if any."""
+
         # Same-as-primary is treated as no fallback; mirror the logic in
         # _FailoverHTTPProvider.__init__ so callers see a consistent view.
         if not self._fallback_url:
@@ -232,4 +200,6 @@ class FallbackWeb3Provider:
 
     @property
     def request_timeout_seconds(self) -> float:
+        """Return the per-request timeout bound."""
+
         return self._request_timeout_seconds

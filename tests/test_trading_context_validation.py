@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 
 
 def _make_mock_config() -> MagicMock:

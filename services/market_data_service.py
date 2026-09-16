@@ -3,12 +3,11 @@
 Single production entry point for execution/sizing/risk to obtain executable
 market data for one Polymarket token.
 
-Design (PR10.4):
-  - When ``policy.primary_source == "rest_snapshot"`` (default), copy-trade
-    execution calls :meth:`MarketDataService.require_execution_snapshot` which
-    fetches a fresh REST `/book` immediately before sizing, validates it
-    against millisecond budgets and book-quality gates, and writes it into
-    :class:`MarketStateStore` for downstream sizing/execution.
+Design:
+  - Copy-trade sizing calls :meth:`MarketDataService.require_execution_metadata`
+    for dynamic tick/minimum/negative-risk fields and never fetches `/book`.
+  - ``require_execution_snapshot`` remains available to non-copy consumers
+    that explicitly need a gated REST book and cache refresh.
   - When ``policy.primary_source == "wss"``, the legacy WSS-first path is
     used: :meth:`require_fresh_data` validates the WSS-fed cache and falls
     back to REST resync if explicitly allowed.
@@ -28,6 +27,7 @@ from enum import Enum
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from domain.execution import ExecutionMetadata
 from domain.units import BASIS_POINTS_PER_UNIT
 
 from cache.market_state_store import (
@@ -66,6 +66,8 @@ class MarketDataNotReady(MarketDataError):
 
 
 class MarketDataSource(str, Enum):
+    """Identify the bounded source of a market-data observation."""
+
     WSS = "wss"
     REST_SNAPSHOT = "rest_snapshot"
     REST_DEGRADED = "rest_degraded"
@@ -75,6 +77,8 @@ class MarketDataSource(str, Enum):
 
 @dataclass(frozen=True)
 class MarketDataPolicy:
+    """Define freshness and quality limits for market data."""
+
     max_quote_age_seconds: float = 2.0
     max_book_age_seconds: float = 2.0
     max_tick_age_seconds: float = 300.0
@@ -99,6 +103,8 @@ class MarketDataPolicy:
 
 @dataclass(frozen=True)
 class MarketDataBundle:
+    """Hold one immutable normalized market-data snapshot."""
+
     token_id: str
     quote: QuoteSnapshot
     book: BookSnapshot
@@ -127,6 +133,48 @@ class MarketDataService:
         self._policy = policy or MarketDataPolicy()
         self._is_wss_down_fn = is_wss_down_fn
 
+    async def require_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata:
+        """Return validated dynamic order metadata without fetching a book.
+
+        Args:
+            token_id: Raw Polymarket outcome token identifier.
+            condition_id: Condition used by the metadata-only CLOB endpoint.
+
+        Returns:
+            Current tick size, share minimum, and negative-risk flag.
+
+        Raises:
+            StaleDataError: If the gateway cannot provide complete metadata.
+        """
+
+        try:
+            metadata = await self._gateway.get_execution_metadata(
+                token_id,
+                condition_id=condition_id,
+            )
+        except Exception as exc:
+            raise StaleDataError(
+                f"execution metadata unavailable for {token_id}: {type(exc).__name__}",
+                skip_code="market_metadata_unavailable",
+            ) from exc
+        if (
+            not isinstance(metadata, ExecutionMetadata)
+            or metadata.token_id != str(token_id)
+            or metadata.tick_size <= 0
+            or metadata.min_order_size <= 0
+            or not isinstance(metadata.neg_risk, bool)
+        ):
+            raise StaleDataError(
+                f"execution metadata invalid for {token_id}",
+                skip_code="market_metadata_unavailable",
+            )
+        return metadata
+
     async def require_fresh_data(
         self,
         token_id: str,
@@ -135,6 +183,7 @@ class MarketDataService:
         side: str | None = None,
         condition_id: str | None = None,
     ) -> MarketDataBundle:
+        """Return a fresh complete market-data snapshot or fail closed."""
         active_policy = policy or self._policy
 
         if active_policy.primary_source == "rest_snapshot" and side is not None:
@@ -172,15 +221,16 @@ class MarketDataService:
             if callable(get_debug):
                 try:
                     d = get_debug(token_id)
-                    debug = (
-                        f"; quote_source={d.get('quote_source')}"
-                        f" book_source={d.get('book_source')}"
-                        f" has_book={d.get('has_book')}"
-                        f" bid_count={d.get('bid_count')}"
-                        f" ask_count={d.get('ask_count')}"
-                        f" active={d.get('active')}"
-                        f" resolved={d.get('resolved')}"
-                    )
+                    if isinstance(d, dict):
+                        debug = (
+                            f"; quote_source={d.get('quote_source')}"
+                            f" book_source={d.get('book_source')}"
+                            f" has_book={d.get('has_book')}"
+                            f" bid_count={d.get('bid_count')}"
+                            f" ask_count={d.get('ask_count')}"
+                            f" active={d.get('active')}"
+                            f" resolved={d.get('resolved')}"
+                        )
                 except Exception:
                     pass
             raise StaleDataError(
@@ -198,9 +248,7 @@ class MarketDataService:
                 skip_code="market_data_stale",
             )
 
-        logger.warning(
-            "market_data_rest_degraded_enabled | token_id=%s", token_id
-        )
+        logger.warning("market_data_rest_degraded_enabled | token_id=%s", token_id)
 
         await self._rest_resync(token_id)
 
@@ -365,9 +413,7 @@ class MarketDataService:
                     f"REST snapshot invalid spread for {token_id}",
                     skip_code="market_data_stale",
                 )
-            spread_bps = int(
-                ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
-            )
+            spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
             if max_spread_bps > 0 and spread_bps > max_spread_bps:
                 # FAIL CLOSED. Pre-fix this gate logged "allowed" and
                 # let the order proceed — orders could land in 1000bps
@@ -511,27 +557,33 @@ class MarketDataService:
         return "BUY"
 
     async def require_fresh_quote(self, token_id: str) -> QuoteSnapshot:
+        """Return a fresh quote or fail closed."""
         return (await self.require_fresh_data(token_id)).quote
 
     async def require_fresh_book(self, token_id: str) -> BookSnapshot:
+        """Return a fresh order book or fail closed."""
         return (await self.require_fresh_data(token_id)).book
 
     async def require_fresh_tick(self, token_id: str) -> TickSnapshot:
+        """Return a fresh authoritative tick size or fail closed."""
         return (await self.require_fresh_data(token_id)).tick
 
     async def get_quote_or_none(self, token_id: str) -> QuoteSnapshot | None:
+        """Return a fresh quote when available without fabricating a value."""
         try:
             return await self.require_fresh_quote(token_id)
         except MarketDataError:
             return None
 
     async def get_book_or_none(self, token_id: str) -> BookSnapshot | None:
+        """Return a fresh order book when available."""
         try:
             return await self.require_fresh_book(token_id)
         except MarketDataError:
             return None
 
     async def get_tick_or_none(self, token_id: str) -> TickSnapshot | None:
+        """Return a fresh authoritative tick size when available."""
         try:
             return await self.require_fresh_tick(token_id)
         except MarketDataError:
@@ -572,9 +624,7 @@ class MarketDataService:
         book_source = self._coerce_source(book.source)
         tick_source = self._coerce_source(tick.source)
 
-        wss_fresh = (
-            quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
-        )
+        wss_fresh = quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
         rest_bootstrap_ok = False
         rest_snapshot_ok = False
 
@@ -584,8 +634,6 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_BOOTSTRAP
                 and book_source == MarketDataSource.REST_BOOTSTRAP
             ):
-
-
                 quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000
                 book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000
                 within_cap = (
@@ -613,8 +661,6 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_SNAPSHOT
                 and book_source == MarketDataSource.REST_SNAPSHOT
             ):
-
-
                 quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000.0
                 book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000.0
                 if (
@@ -719,7 +765,7 @@ class MarketDataService:
             age = fn()
         except Exception:
             return False
-        if age is None:
+        if isinstance(age, bool) or not isinstance(age, (int, float)):
             return False
         return age <= max_silence_seconds
 
@@ -747,11 +793,15 @@ class MarketDataService:
             except TypeError:
                 return not bool(is_stale())
 
-        for name in ("last_update_monotonic", "updated_monotonic", "created_monotonic", "monotonic_ts"):
+        for name in (
+            "last_update_monotonic",
+            "updated_monotonic",
+            "created_monotonic",
+            "monotonic_ts",
+        ):
             value = getattr(snapshot, name, None)
             if value is not None:
                 try:
-
                     return (time.monotonic() - float(value)) <= max_age_seconds
                 except (TypeError, ValueError):
                     return False
@@ -818,9 +868,7 @@ class MarketDataService:
             )
 
         if not self._replace_book_snapshot(token_id, bids, asks):
-            self._cache.set_book(
-                token_id, bids=bids, asks=asks, source="rest_snapshot"
-            )
+            self._cache.set_book(token_id, bids=bids, asks=asks, source="rest_snapshot")
 
         best_bid = max(bids)
         best_ask = min(asks)
@@ -887,7 +935,6 @@ class MarketDataService:
     def _mark_fresh(self, token_id: str, source: MarketDataSource) -> None:
         method = getattr(self._cache, "mark_fresh", None)
         if callable(method):
-
             method(token_id, source.value, time.monotonic())
 
 

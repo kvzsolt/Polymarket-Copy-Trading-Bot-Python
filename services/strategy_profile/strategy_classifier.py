@@ -1,4 +1,5 @@
 """Classify a feature set into one of six :class:`StrategyArchetype` values (PR3)."""
+
 from __future__ import annotations
 
 from models.strategy_profile import StrategyArchetype
@@ -83,12 +84,7 @@ def classify_profile(
     # BALANCED_SWING: reasonable trade count, mixed prices, decent recent
     # edge. Checked before EVENT_SPECIALIST so a profitable generalist is
     # not misclassified as an event specialist purely on concentration.
-    if (
-        trade_count_30d >= 10
-        and 0.35 <= hhi <= 0.75
-        and win_rate_7d >= 0.45
-        and roi_7d >= -0.05
-    ):
+    if trade_count_30d >= 10 and 0.35 <= hhi <= 0.75 and win_rate_7d >= 0.45 and roi_7d >= -0.05:
         return (
             StrategyArchetype.BALANCED_SWING,
             True,

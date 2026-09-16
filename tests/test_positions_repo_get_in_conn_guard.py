@@ -7,6 +7,7 @@ holds two TrackedPositions sharing ``(user_id, condition_id)`` the wrong
 leg could end up locked under ``apply_fill``. The guard surfaces the
 ambiguity at the caller boundary instead of corrupting state.
 """
+
 from __future__ import annotations
 
 import asyncio

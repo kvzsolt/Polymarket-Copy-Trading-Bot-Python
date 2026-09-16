@@ -14,9 +14,11 @@ Pre-fix the Dockerfile had:
 This test pins the contract by parsing the Dockerfile + .dockerignore
 at the source level so any regression is caught before merge.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -33,6 +35,11 @@ def dockerignore_text() -> str:
     return (REPO_ROOT / ".dockerignore").read_text()
 
 
+@pytest.fixture(scope="module")
+def ci_workflow_text() -> str:
+    return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+
 def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
     # P0-2: the live-trading gate moved to the config layer — the LIVE_TRADING
     # master switch defaults to PAPER when absent/unknown (see
@@ -42,12 +49,8 @@ def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
         stripped = line.strip()
         if not stripped.startswith("ENV "):
             continue
-        assert "LIVE_TRADING" not in stripped, (
-            f"Dockerfile must not set LIVE_TRADING via ENV (live must be an "
-            f"explicit per-deployment opt-in): {stripped!r}"
-        )
-        assert not ("PAPER_TRADE_ONLY" in stripped and "false" in stripped.lower()), (
-            f"Dockerfile must not bake PAPER_TRADE_ONLY=false: {stripped!r}"
+        assert not ("PMCOPY__EXECUTION__TRADING_MODE" in stripped and "live" in stripped.lower()), (
+            f"Dockerfile must not bake execution.trading_mode=live: {stripped!r}"
         )
 
 
@@ -55,27 +58,61 @@ def test_non_root_user_directive(dockerfile_text: str) -> None:
     assert "USER botuser" in dockerfile_text, (
         "Dockerfile must drop privileges to non-root before ENTRYPOINT"
     )
-    assert "groupadd -r botuser" in dockerfile_text, (
-        "non-root botuser must be created in the image"
-    )
+    assert "groupadd -r botuser" in dockerfile_text, "non-root botuser must be created in the image"
 
 
 def test_healthcheck_port_matches_metrics_port(dockerfile_text: str) -> None:
-    # The healthcheck must read METRICS_PORT (default 9102) instead of
+    # The healthcheck must read the nested metrics port (default 9102) instead of
     # hardcoding the historical 9090.
     assert "METRICS_PORT" in dockerfile_text
     assert "EXPOSE 9102" in dockerfile_text or "EXPOSE 9090" not in dockerfile_text
 
 
 def test_metrics_server_enabled_by_default(dockerfile_text: str) -> None:
-    assert "ENV ENABLE_METRICS_SERVER=true" in dockerfile_text, (
+    assert "ENV PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
         "Metrics server must start by default so the HEALTHCHECK has a port"
     )
 
 
+def test_docker_smoke_uses_hermetic_health_contract(
+    ci_workflow_text: str,
+) -> None:
+    """CI cannot satisfy the production probe with fake paper credentials.
+
+    The image keeps strict ``/health/ready`` for real deployments.  The smoke
+    run must override that probe with the local DB/API health payload while
+    still waiting for Docker's health state (not merely ``State.Running``).
+    """
+    smoke_run = ci_workflow_text.split("- name: docker run (paper mode)", maxsplit=1)[1].split(
+        "- name: container readiness probe", maxsplit=1
+    )[0]
+    readiness_probe = ci_workflow_text.split("- name: container readiness probe", maxsplit=1)[
+        1
+    ].split("- name: cleanup", maxsplit=1)[0]
+
+    assert "--health-cmd=" in smoke_run
+    assert "http://localhost:9102/health" in smoke_run
+    assert "/health/ready" not in smoke_run
+    assert 'payload.get(\\"ok\\")' in smoke_run
+    assert ".State.Health.Status" in readiness_probe
+    assert ".State.Running" not in readiness_probe
+
+
+def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    modules = set(project["tool"]["setuptools"]["py-modules"])
+    packages = set(project["tool"]["setuptools"]["packages"]["find"]["include"])
+    assert {"app", "bootstrap"} <= modules, (
+        "pmcopy run imports top-level app/bootstrap modules, so both must be "
+        "packaged for non-editable Docker installs"
+    )
+    assert "cache*" in packages, (
+        "app imports the cache package, so it must be included in the wheel"
+    )
+
+
 def test_dockerignore_excludes_secrets(dockerignore_text: str) -> None:
-    for sensitive in ("secrets.env", ".env", "config/runtime.local.env", ".git/"):
+    for sensitive in ("secrets.env", ".env", "config/runtime.local.yml", ".git/"):
         assert sensitive in dockerignore_text, (
-            f".dockerignore must exclude {sensitive!r} so it never bakes into "
-            f"image layer history"
+            f".dockerignore must exclude {sensitive!r} so it never bakes into image layer history"
         )

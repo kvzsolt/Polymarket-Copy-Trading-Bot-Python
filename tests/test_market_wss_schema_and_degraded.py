@@ -149,12 +149,14 @@ class TestPriceChangeField:
         )
         ws = _make_ws(cache)
 
-        event = json.dumps({
-            "event_type": "price_change",
-            "price_changes": [
-                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.52", "size": "50"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "price_changes": [
+                    {"asset_id": TOKEN_A, "side": "BUY", "price": "0.52", "size": "50"},
+                ],
+            }
+        )
         ws._handle_message(event)
 
         state = cache.get_state(TOKEN_A)
@@ -171,12 +173,14 @@ class TestPriceChangeField:
         )
         ws = _make_ws(cache)
 
-        event = json.dumps({
-            "event_type": "price_change",
-            "changes": [
-                {"asset_id": TOKEN_A, "side": "SELL", "price": "0.57", "size": "30"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "changes": [
+                    {"asset_id": TOKEN_A, "side": "SELL", "price": "0.57", "size": "30"},
+                ],
+            }
+        )
         ws._handle_message(event)
 
         state = cache.get_state(TOKEN_A)
@@ -193,12 +197,14 @@ class TestPriceChangeField:
         )
         ws = _make_ws(cache)
 
-        event = json.dumps({
-            "event_type": "price_change",
-            "price_changes": [
-                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "price_changes": [
+                    {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
+                ],
+            }
+        )
         ws._handle_message(event)
 
         state = cache.get_state(TOKEN_A)
@@ -220,10 +226,12 @@ class TestMarketResolved:
             )
         ws = _make_ws(cache)
 
-        event = json.dumps({
-            "event_type": "market_resolved",
-            "assets_ids": [TOKEN_A, TOKEN_B, TOKEN_C],
-        })
+        event = json.dumps(
+            {
+                "event_type": "market_resolved",
+                "assets_ids": [TOKEN_A, TOKEN_B, TOKEN_C],
+            }
+        )
         ws._handle_message(event)
 
         for t in [TOKEN_A, TOKEN_B, TOKEN_C]:
@@ -240,10 +248,12 @@ class TestMarketResolved:
         )
         ws = _make_ws(cache)
 
-        event = json.dumps({
-            "event_type": "market_resolved",
-            "asset_id": TOKEN_A,
-        })
+        event = json.dumps(
+            {
+                "event_type": "market_resolved",
+                "asset_id": TOKEN_A,
+            }
+        )
         ws._handle_message(event)
 
         assert cache.is_resolved(TOKEN_A)
@@ -259,11 +269,13 @@ class TestMarketResolved:
         ws = _make_ws(cache)
 
         # Both assets_ids and asset_id point to same token — should not double-resolve
-        event = json.dumps({
-            "event_type": "market_resolved",
-            "assets_ids": [TOKEN_A],
-            "asset_id": TOKEN_A,
-        })
+        event = json.dumps(
+            {
+                "event_type": "market_resolved",
+                "assets_ids": [TOKEN_A],
+                "asset_id": TOKEN_A,
+            }
+        )
         ws._handle_message(event)
 
         assert cache.is_resolved(TOKEN_A)
@@ -288,35 +300,42 @@ class TestMarketDataConfig:
 
     def test_market_data_config_defaults(self) -> None:
         from config.app_config import MarketDataConfig
-        cfg = MarketDataConfig()
-        assert cfg.allow_rest_when_wss_down is False
-        assert cfg.wss_down_after_seconds == 15.0
-        assert cfg.rest_degraded_max_age_seconds == 2.0
-        assert cfg.rest_degraded_max_spread_bps == 500
-        assert cfg.rest_degraded_log_every_seconds == 30.0
 
-    def test_market_data_config_allow_rest_default_false(self) -> None:
-        from config.app_config import MarketDataConfig
         cfg = MarketDataConfig()
-        assert cfg.allow_rest_when_wss_down is False
+        assert cfg.primary_source == "rest_snapshot"
+        assert cfg.rest_snapshot_max_age_ms == 500
+        # Phase B config split: the WSS-down/REST-degraded knobs were never
+        # read by the runtime (it hardcodes its own constants), so the fields
+        # were dropped from the typed model rather than shipped as fiction.
+        assert not hasattr(cfg, "allow_rest_when_wss_down")
+        assert not hasattr(cfg, "wss_down_after_seconds")
+        assert not hasattr(cfg, "rest_degraded_max_age_seconds")
+        assert not hasattr(cfg, "rest_degraded_max_spread_bps")
+        assert not hasattr(cfg, "rest_degraded_log_every_seconds")
 
     def test_market_data_config_is_frozen(self) -> None:
         import dataclasses
         from config.app_config import MarketDataConfig
+
         cfg = MarketDataConfig()
         with pytest.raises((dataclasses.FrozenInstanceError, TypeError)):
-            cfg.allow_rest_when_wss_down = True  # type: ignore[misc]
+            cfg.primary_source = "wss"  # type: ignore[misc]
 
     def test_app_config_has_market_data_field(self) -> None:
         from config.app_config import AppConfig
         import dataclasses
+
         field_names = {f.name for f in dataclasses.fields(AppConfig)}
         assert "market_data" in field_names
 
     def test_market_data_config_env_parse(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from types import SimpleNamespace
-        monkeypatch.setattr("config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12))
-        from config.app_config import load_config as build_app_config
+
+        monkeypatch.setattr(
+            "config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12)
+        )
+        from tests.config_helpers import load_test_config
+
         _VALID_KEY = "0x" + "a" * 64
         _VALID_ADDR = "0x" + "a" * 40
         env = {
@@ -325,14 +344,12 @@ class TestMarketDataConfig:
             "RPC_URL": "https://polygon-rpc.example.com",
             "CHAIN_ID": "137",
             "USER_ADDRESS": _VALID_ADDR,
-            "MARKET_DATA_ALLOW_REST_WHEN_WSS_DOWN": "true",
-            "MARKET_DATA_WSS_DOWN_AFTER_SECONDS": "30",
-            "MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS": "200",
+            "MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS": "200",
         }
-        cfg = build_app_config(env)
-        assert cfg.market_data.allow_rest_when_wss_down is True
-        assert cfg.market_data.wss_down_after_seconds == 30.0
-        assert cfg.market_data.rest_degraded_max_spread_bps == 200
+        cfg = load_test_config(env)
+        assert cfg.market_data.rest_snapshot_max_spread_bps == 200
+        # Retired knobs no longer exist on the typed model.
+        assert not hasattr(cfg.market_data, "allow_rest_when_wss_down")
 
 
 # ---------------------------------------------------------------------------
@@ -395,20 +412,20 @@ class TestRESTDegradedFallbackGating:
         book_mock.bids = [MagicMock(price="0.50", size="100")]
         book_mock.asks = [MagicMock(price="0.55", size="80")]
         gateway.get_orderbook = AsyncMock(return_value=book_mock)
-        gateway.get_market_info = AsyncMock(return_value={
-            "tick_size": "0.01",
-            "min_order_size": "5",
-            "neg_risk": False,
-        })
+        gateway.get_market_info = AsyncMock(
+            return_value={
+                "tick_size": "0.01",
+                "min_order_size": "5",
+                "neg_risk": False,
+            }
+        )
 
         policy = MarketDataPolicy(
             allow_rest_fallback=True,
             require_wss_fresh=False,
             allow_rest_snapshot_for_execution=True,
         )
-        mds = MarketDataService(
-            cache, gateway, policy=policy, is_wss_down_fn=lambda: True
-        )
+        mds = MarketDataService(cache, gateway, policy=policy, is_wss_down_fn=lambda: True)
 
         bundle = await mds.require_fresh_data(TOKEN_A)
         assert bundle is not None
@@ -430,6 +447,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_true_when_not_running(self) -> None:
         from orchestrators.market_data_runtime import MarketDataRuntime
+
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
             gateway=MagicMock(),
@@ -440,6 +458,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_true_when_no_messages_received(self) -> None:
         from orchestrators.market_data_runtime import MarketDataRuntime
+
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
             gateway=MagicMock(),
@@ -453,6 +472,7 @@ class TestIsWssDown:
     def test_is_wss_down_false_when_recent_message(self) -> None:
         import time
         from orchestrators.market_data_runtime import MarketDataRuntime
+
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
             gateway=MagicMock(),
@@ -467,6 +487,7 @@ class TestIsWssDown:
     def test_is_wss_down_true_after_threshold(self) -> None:
         import time
         from orchestrators.market_data_runtime import MarketDataRuntime
+
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
             gateway=MagicMock(),
@@ -500,11 +521,13 @@ class TestSafetyInvariants:
 
         # WSS tick_size_change fires
         ws = _make_ws(cache)
-        event = json.dumps({
-            "event_type": "tick_size_change",
-            "asset_id": TOKEN_A,
-            "tick_size": "0.01",
-        })
+        event = json.dumps(
+            {
+                "event_type": "tick_size_change",
+                "asset_id": TOKEN_A,
+                "tick_size": "0.01",
+            }
+        )
         ws._handle_message(event)
 
         # Book source must NOT have been promoted to wss
@@ -518,11 +541,13 @@ class TestSafetyInvariants:
         cache = MarketStateStore()
         cache.mark_dirty(TOKEN_A, "some_reason")
         ws = _make_ws(cache)
-        event = json.dumps({
-            "event_type": "tick_size_change",
-            "asset_id": TOKEN_A,
-            "tick_size": "0.01",
-        })
+        event = json.dumps(
+            {
+                "event_type": "tick_size_change",
+                "asset_id": TOKEN_A,
+                "tick_size": "0.01",
+            }
+        )
         ws._handle_message(event)
         # tick_size_change sets dirty, never clears it
         assert cache.is_dirty(TOKEN_A)
@@ -539,12 +564,14 @@ class TestSafetyInvariants:
         assert cache.book_source_of(TOKEN_A) == "rest_snapshot"
 
         ws = _make_ws(cache)
-        event = json.dumps({
-            "event_type": "best_bid_ask",
-            "asset_id": TOKEN_A,
-            "best_bid": "0.51",
-            "best_ask": "0.54",
-        })
+        event = json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": TOKEN_A,
+                "best_bid": "0.51",
+                "best_ask": "0.54",
+            }
+        )
         ws._handle_message(event)
 
         # Quote source updated by price update
@@ -555,6 +582,7 @@ class TestSafetyInvariants:
     @pytest.mark.asyncio
     async def test_market_resolved_prevents_execution(self) -> None:
         from services.market_data_service import MarketDataNotReady
+
         cache = MarketStateStore()
         _seed_executable_wss(cache, TOKEN_A)
         cache.on_market_resolved(TOKEN_A, {"event_type": "market_resolved"})

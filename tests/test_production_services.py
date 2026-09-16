@@ -13,10 +13,20 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.market_data_service import MarketDataBundle, MarketDataSource
-from config.env import SignatureType, WalletConfig, validate_wallet_config
-from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
-from services.risk.risk_engine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_config  # noqa: F401
+from config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
+from services.executionService import (
+    ExecutionRequest,
+    ExecutionService,
+    _sanitize_submission_response,
+)
+from services.risk.risk_engine import (
+    PortfolioSnapshot,
+    ProposedTrade,
+    RiskEngine,
+    policy_from_config,
+)  # noqa: F401
 
 
 def _make_exec_config(
@@ -99,7 +109,7 @@ class TestWalletValidation:
             funder_address="0x" + ("1" * 40),
             polygon_rpc_url="https://polygon-rpc.com",
         )
-        with pytest.raises(Exception):
+        with pytest.raises(EnvValidationError):
             validate_wallet_config(cfg)
 
 
@@ -120,11 +130,13 @@ class _Repo:
             "response": record.response_payload,
             "order_id": record.order_id,
         }
-        self.history.append({
-            "idempotency_key": record.idempotency_key,
-            "request": record.request_payload,
-            "response": record.response_payload,
-        })
+        self.history.append(
+            {
+                "idempotency_key": record.idempotency_key,
+                "request": record.request_payload,
+                "response": record.response_payload,
+            }
+        )
 
     async def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
@@ -153,6 +165,29 @@ class _FeeSvc:
         return self.fee_bps
 
 
+class _ExecutionGateway:
+    """Deterministic CCXT-gateway test double for execution service tests."""
+
+    def __init__(
+        self,
+        *,
+        order_id: str = "order-test",
+        error: Exception | None = None,
+    ) -> None:
+        """Configure one successful or exceptional submission result."""
+
+        if error is not None:
+            self.submit_marketable_order = AsyncMock(side_effect=error)
+        else:
+            self.submit_marketable_order = AsyncMock(
+                return_value=VenueSubmitResult(
+                    success=True,
+                    order_id=order_id,
+                    status="submitted",
+                )
+            )
+
+
 def _make_mds(
     token_id: str = "t1",
     *,
@@ -163,9 +198,31 @@ def _make_mds(
     now = _time.monotonic()
     bundle = MarketDataBundle(
         token_id=token_id,
-        quote=QuoteSnapshot(token_id=token_id, best_bid=best_bid, best_ask=best_ask, last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=token_id, bids={best_bid: Decimal("100")}, asks={best_ask: Decimal("100")}, best_bid=best_bid, best_ask=best_ask, source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=min_order_size, neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={best_bid: Decimal("100")},
+            asks={best_ask: Decimal("100")},
+            best_bid=best_bid,
+            best_ask=best_ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=min_order_size,
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()
@@ -177,7 +234,14 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_non_positive_amount(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
-        svc = ExecutionService(clob, _FeeSvc(),_Repo(), config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(),
+            clob_gateway=_ExecutionGateway(),
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -195,8 +259,14 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_buy_below_min_share_price(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.3"}))
-        svc = ExecutionService(clob, _FeeSvc(),_Repo(), config=_make_exec_config(min_share_price=0.4),
-                               market_data_service=_make_mds(best_bid=Decimal("0.34"), best_ask=Decimal("0.36")))
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(min_share_price=0.4),
+            clob_gateway=_ExecutionGateway(),
+            market_data_service=_make_mds(best_bid=Decimal("0.34"), best_ask=Decimal("0.36")),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -217,8 +287,14 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_buy_above_max_share_price(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.8"}))
-        svc = ExecutionService(clob, _FeeSvc(),_Repo(), config=_make_exec_config(min_share_price=0, max_share_price=0.7),
-                               market_data_service=_make_mds(best_bid=Decimal("0.78"), best_ask=Decimal("0.80")))
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(min_share_price=0, max_share_price=0.7),
+            clob_gateway=_ExecutionGateway(),
+            market_data_service=_make_mds(best_bid=Decimal("0.78"), best_ask=Decimal("0.80")),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -241,11 +317,26 @@ class TestExecutionService:
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
-            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o1", "status": "submitted"}),
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+            post_signed_order=AsyncMock(
+                return_value={"success": True, "orderID": "o1", "status": "submitted"}
+            ),
+            client=SimpleNamespace(
+                get_order=lambda _order_id: {
+                    "status": "filled",
+                    "size_matched": "5",
+                    "avg_price": "0.5",
+                }
+            ),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(order_id="o1"),
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -272,6 +363,7 @@ class TestExecutionService:
             _FeeSvc(),
             _Repo(),
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=True),
+            clob_gateway=_ExecutionGateway(),
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -296,15 +388,25 @@ class TestExecutionService:
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
-            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o-small", "status": "submitted"}),
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "0.2", "avg_price": "0.5"}),
+            post_signed_order=AsyncMock(
+                return_value={"success": True, "orderID": "o-small", "status": "submitted"}
+            ),
+            client=SimpleNamespace(
+                get_order=lambda _order_id: {
+                    "status": "filled",
+                    "size_matched": "0.2",
+                    "avg_price": "0.5",
+                }
+            ),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(order_id="o-small")
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=False),
+            clob_gateway=gateway,
             market_data_service=_make_mds(min_order_size=Decimal("0.05")),
         )
         req = ExecutionRequest(
@@ -322,7 +424,7 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.order_id == "o-small"
-        clob.create_market_order.assert_awaited_once()
+        gateway.submit_marketable_order.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_persists_sanitized_submission_payload(self):
@@ -333,6 +435,7 @@ class TestExecutionService:
             fee_service=SimpleNamespace(),
             order_repo=repo,
             config=_make_exec_config(),
+            clob_gateway=_ExecutionGateway(),
         )
         idem_key = "persist-sanitized"
         await svc._save_submission(
@@ -369,8 +472,16 @@ class TestExecutionService:
         ExecutionService should not have this method.
         """
         clob = SimpleNamespace()
-        svc = ExecutionService(clob, _FeeSvc(),_Repo(), config=_make_exec_config(min_share_price=0))
-        assert not hasattr(svc, "_confirm_fill"), "_confirm_fill should live in ReconciliationService, not ExecutionService"
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(),
+        )
+        assert not hasattr(svc, "_confirm_fill"), (
+            "_confirm_fill should live in ReconciliationService, not ExecutionService"
+        )
 
     @pytest.mark.asyncio
     async def test_reconciler_has_confirm_fill(self):
@@ -429,7 +540,14 @@ class TestExecutionService:
     async def test_duplicate_idempotency_is_ignored(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(),
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -452,11 +570,27 @@ class TestExecutionService:
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
-            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o2", "status": "submitted"}),
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+            post_signed_order=AsyncMock(
+                return_value={"success": True, "orderID": "o2", "status": "submitted"}
+            ),
+            client=SimpleNamespace(
+                get_order=lambda _order_id: {
+                    "status": "filled",
+                    "size_matched": "5",
+                    "avg_price": "0.5",
+                }
+            ),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
+        gateway = _ExecutionGateway(order_id="o2")
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -481,18 +615,34 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.status != "duplicate_ignored"
-        assert clob.create_market_order.await_count == 1
+        gateway.submit_marketable_order.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_stale_submitted_unconfirmed_without_order_id_expires_and_retries(self):
+    async def test_stale_submitted_unconfirmed_remains_reconciliation_owned(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
-            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o2", "status": "submitted"}),
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+            post_signed_order=AsyncMock(
+                return_value={"success": True, "orderID": "o2", "status": "submitted"}
+            ),
+            client=SimpleNamespace(
+                get_order=lambda _order_id: {
+                    "status": "filled",
+                    "size_matched": "5",
+                    "avg_price": "0.5",
+                }
+            ),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
+        gateway = _ExecutionGateway(order_id="o2")
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -516,19 +666,35 @@ class TestExecutionService:
             res = await svc.execute(req)
 
         assert res.accepted is True
-        assert res.status != "duplicate_ignored"
-        assert clob.create_market_order.await_count == 1
+        assert res.status == "duplicate_ignored"
+        gateway.submit_marketable_order.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pending_submission_captures_timestamps_and_ttl(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
-            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o3", "status": "submitted"}),
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+            post_signed_order=AsyncMock(
+                return_value={"success": True, "orderID": "o3", "status": "submitted"}
+            ),
+            client=SimpleNamespace(
+                get_order=lambda _order_id: {
+                    "status": "filled",
+                    "size_matched": "5",
+                    "avg_price": "0.5",
+                }
+            ),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
+        gateway = _ExecutionGateway(order_id="o3")
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -542,7 +708,9 @@ class TestExecutionService:
 
         await svc.execute(req)
 
-        pending_write = next(item for item in repo.history if item["response"].get("status") == "pending")
+        pending_write = next(
+            item for item in repo.history if item["response"].get("status") == "pending"
+        )
         pending_response = pending_write["response"]
         assert "pending_since" in pending_response
         assert pending_response.get("pending_ttl_seconds") == 120
@@ -578,7 +746,15 @@ class TestExecutionService:
             post_signed_order=AsyncMock(side_effect=RuntimeError("timeout after submit")),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _FeeSvc(),repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
+        gateway = _ExecutionGateway(error=RuntimeError("timeout after submit"))
+        svc = ExecutionService(
+            clob,
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0),
+            clob_gateway=gateway,
+            market_data_service=_make_mds(),
+        )
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -594,23 +770,25 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.status == "submitted_unconfirmed"
-        assert clob.create_market_order.await_count == 1
+        gateway.submit_marketable_order.assert_awaited_once()
 
 
 class TestRiskEngine:
     def test_policy_rejects_over_trade_limit(self):
         engine = RiskEngine()
-        policy = policy_from_config(_make_risk_policy_config(
-            buy_max_amount=100,
-            max_position_pct=0.25,
-            max_market_exposure_usdc=300,
-            max_category_exposure_usdc=600,
-            max_leader_exposure_usdc=500,
-            max_open_positions=20,
-            max_daily_drawdown_pct=20,
-            slippage_tolerance=2.0,
-            kill_switch=False,
-        ))
+        policy = policy_from_config(
+            _make_risk_policy_config(
+                buy_max_amount=100,
+                max_position_pct=0.25,
+                max_market_exposure_usdc=300,
+                max_category_exposure_usdc=600,
+                max_leader_exposure_usdc=500,
+                max_open_positions=20,
+                max_daily_drawdown_pct=20,
+                slippage_tolerance=2.0,
+                kill_switch=False,
+            )
+        )
         portfolio = PortfolioSnapshot(
             equity_usdc=Decimal("1000"),
             daily_drawdown_pct=Decimal("0"),

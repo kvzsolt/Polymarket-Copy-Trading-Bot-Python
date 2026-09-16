@@ -11,6 +11,7 @@ These tests assert:
 2. ``track_buy`` rejects zero / negative money fields with ``ValueError``
    before they corrupt the position store.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
@@ -21,6 +22,7 @@ from services.positionManager import PositionManager, _to_dec
 
 
 # --- _to_dec contract ------------------------------------------------------
+
 
 def test_to_dec_none_returns_default() -> None:
     assert _to_dec(None) == Decimal("0")
@@ -50,6 +52,7 @@ def test_to_dec_raises_on_empty_string() -> None:
 
 
 # --- track_buy positive-value guard ---------------------------------------
+
 
 def test_track_buy_rejects_zero_entry_price() -> None:
     pm = PositionManager()

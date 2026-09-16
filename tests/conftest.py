@@ -10,6 +10,7 @@ The fixtures here are deliberately minimal: they expose just enough surface
 for ``ExecutionService``, ``ReconciliationService``, ``ReservationService``,
 and the WSS clients to function under a paper-trade harness.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,12 +24,39 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from domain.execution import ExecutionMetadata
 from integrations.polymarket.models import (
     VenueCancelResult,
     VenueOrderState,
     VenueSubmitResult,
 )
 from interfaces.clob_gateway import ClobGateway
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_deployment_root(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the config deployment root to an empty per-test directory.
+
+    ``config.app_config._resolve_deployment_root`` walks up from the CWD and
+    would otherwise merge the operator's real ``config/runtime.local.yml``
+    (e.g. ``trading_mode: live``) and ``secrets.env`` into any test that calls
+    ``load_config()`` with default paths, making the suite non-hermetic.
+    Tests that exercise the walk-up/env-var resolution itself delete or
+    override ``PMCOPY_DEPLOYMENT_ROOT`` explicitly via ``monkeypatch``.
+    """
+    root = tmp_path_factory.mktemp("hermetic-deployment-root")
+    monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(root))
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_legacy_equity_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent legacy equity helpers from reading or writing operator state."""
+    import utils.dayEquity as day_equity
+
+    monkeypatch.setattr(day_equity, "_STATE_FILE", tmp_path / "day_equity.json")
 
 
 @pytest.fixture(autouse=True)
@@ -126,18 +154,14 @@ def make_clob_gateway(
     """Build a ``MagicMock(spec=ClobGateway)`` preset with the same awaitable
     surface used in ``tests/test_issue66_gateway_isolation.py``."""
     if submit_result is None:
-        submit_result = VenueSubmitResult(
-            success=True, order_id="ord-mock", status="submitted"
-        )
+        submit_result = VenueSubmitResult(success=True, order_id="ord-mock", status="submitted")
     gateway = MagicMock(spec=ClobGateway)
     if isinstance(submit_result, Exception):
         gateway.submit_marketable_order = AsyncMock(side_effect=submit_result)
     else:
         gateway.submit_marketable_order = AsyncMock(return_value=submit_result)
     gateway.submit_limit_order = AsyncMock(
-        return_value=VenueSubmitResult(
-            success=True, order_id="ord-limit", status="submitted"
-        )
+        return_value=VenueSubmitResult(success=True, order_id="ord-limit", status="submitted")
     )
     gateway.get_order = AsyncMock(
         return_value=VenueOrderState(
@@ -151,12 +175,20 @@ def make_clob_gateway(
     gateway.get_market_info = AsyncMock(
         return_value={"tick_size": "0.01", "neg_risk": False, "min_order_size": "1"}
     )
+    gateway.get_execution_metadata = AsyncMock(
+        return_value=ExecutionMetadata(
+            token_id="0xtest_token",
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+        )
+    )
     gateway.get_orderbook = AsyncMock()
     gateway.cancel_order = AsyncMock(
         return_value=VenueCancelResult(success=True, order_id="ord-mock")
     )
     gateway.check_compatibility = AsyncMock(
-        return_value={"sdk_available": True}
+        return_value={"available": True, "authenticated": False, "live_execution_ready": False}
     )
     return gateway
 

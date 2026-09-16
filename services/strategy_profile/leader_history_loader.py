@@ -18,6 +18,7 @@ walk is bounded by ``POLYMARKET_HISTORY_LOOKBACK_DAYS`` /
 ``POLYMARKET_ACTIVITY_MAX_OFFSET`` (already typed in AppConfig) so a very
 active wallet does not explode the fetch.
 """
+
 from __future__ import annotations
 
 import time

@@ -8,6 +8,7 @@ Asserts that the market WebSocket client:
 * sends a ``type: "market"`` subscription payload that uses the
   ``assets_ids`` key (spec) and not the wrong-cased ``asset_ids``.
 """
+
 from __future__ import annotations
 
 import asyncio

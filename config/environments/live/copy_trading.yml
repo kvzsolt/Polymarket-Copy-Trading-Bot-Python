@@ -1,0 +1,18 @@
+# Configuration guide — live copy-task engine override.
+# Purpose: keep live copies on the account-level pipeline while preserving the
+# trader-file roster as the single source of leader identity.
+# Options: copy_tasks.enabled is true | false.
+# Trade-offs: false is compatible with on-chain/polling cross-source dedup and is
+# simpler; true enables per-task workers/budgets/locks but currently requires
+# detection.mode=polling.
+# Live profile for the global copy-trading engine.
+#
+# Followed leaders are NOT listed here. The live roster is the same single
+# source as every other environment: config/traders/<fantasy-name>.yml.
+# This file only pins engine settings that differ from config/copy_trading.yml.
+#
+# Live profile: the v1 copy-task engine stays off; copies run through the
+# account-level pipeline only.
+copy_tasks:
+  # Disable v1 file-task execution for live; trader files still define the roster.
+  enabled: false

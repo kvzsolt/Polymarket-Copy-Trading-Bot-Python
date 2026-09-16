@@ -1,10 +1,16 @@
-from __future__ import annotations
+"""Compose per-user trading dependencies behind venue-neutral ports."""
 
-import asyncio
-from dataclasses import dataclass
+from __future__ import annotations
+from services.telemetry.latency import PipelineLatency
+
+import inspect
+from dataclasses import dataclass, field
+from urllib.parse import urlencode
+from decimal import Decimal
+from collections.abc import Sized
 from typing import TYPE_CHECKING, Any
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
 from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
@@ -14,6 +20,8 @@ from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.pnlTracker import PnLTracker
+from services.leader_performance import LeaderPerformanceReader
+from storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader
 from services.positionManager import PositionManager
 from services.risk.risk_engine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
@@ -24,17 +32,28 @@ from services.risk.risk_monitor import (
     rehydrate_position_manager,
 )
 from services.trading_permission import TradingPermissionService
+from services.telemetry import TelemetryEmitters
 from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.copy_task_repository import PostgresCopyTaskRepository
+from services.copy_tasks.entry_permission import TaskEntryPermissionService
+from storage.postgres.task_fill_projection import PostgresTaskFillProjection
+from storage.postgres.risk_lot_repository import PostgresRiskLotRepository
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 from storage.postgres.trading_control_repo import TradingControlRepo
-from utils.fetchData import fetch_data
+from utils.fetchData import _get_http_client, fetch_data
+from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
+from orchestrators.account_inventory_startup import InventoryRuntimeRefresh
+from collections.abc import Awaitable, Callable
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from services.manual_sync_service import ManualSyncService
     from config.app_config import AppConfig
+    from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
+    from integrations.polymarket.venue_runtime import PolymarketVenueRuntime
 
 logger = get_logger("RuntimeBootstrap")
 
@@ -50,11 +69,9 @@ async def _release_expired_reservations_for_context(context: TradingContext) -> 
         return 0
     if not callable(release_expired):
         return 0
-    released_ids = await release_expired()
-    try:
-        return len(released_ids or [])
-    except TypeError:
-        return 0
+    release_result = release_expired()
+    released_ids = await release_result if inspect.isawaitable(release_result) else release_result
+    return len(released_ids) if isinstance(released_ids, Sized) else 0
 
 
 async def startup_reconcile_unconfirmed(
@@ -106,8 +123,8 @@ async def startup_reconcile_unconfirmed(
             continue
 
         try:
-            trade_n = await reconcile_submitted_unconfirmed(context)
-            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            trade_n = await reconcile_submitted_unconfirmed(context, startup_recovery=True)
+            risk_n = await reconcile_unconfirmed_risk_orders(context, startup_recovery=True)
             reservation_n = await _release_expired_reservations_for_context(context)
             total_n = trade_n + risk_n + reservation_n
             if total_n > 0:
@@ -148,8 +165,10 @@ async def startup_reconcile_unconfirmed(
 
 @dataclass
 class UserRuntimeState:
+    """Hold the composed runtime state for one follower account."""
+
     user: RuntimeUser
-    client: object
+    client: "CcxtPredictionClient"
     orders_repo: OrdersRepo
     fills_repo: FillsRepo
     positions_repo: PositionsRepo
@@ -173,34 +192,42 @@ class UserRuntimeState:
     # PR7 — manual / off-bot position drift sweep.
     position_drift_service: "object | None" = None
     # Manual sync service — funder activity + position seeder (TS port).
-    manual_sync_service: "object | None" = None
+    manual_sync_service: ManualSyncService | None = None
+    inventory_refresh: InventoryRuntimeRefresh | None = None
+    # Cached durable control state; refreshed off the order hot path.
+    trading_permission: TradingPermissionService | None = None
+    # Part C — operator telemetry emitters shared by every collaborator this
+    # follower owns. Defaults to the disabled null-object bundle so existing
+    # fixtures keep constructing state without telemetry.
+    telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
+    leader_performance: LeaderPerformanceReader | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
-    leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
+    """Return the configured leader wallet set."""
+    leaders = list(config.copy_trading.enabled_wallets())
     if not leaders:
-        if config.discovery.allow_auto_trader_detection:
+        if config.discovery.scheduler.start_from_roster:
             logger.info(
-                "No leader wallets configured. Startup auto trader detection "
-                "is enabled and will select live-eligible DB/discovery "
-                "candidates without writing LEADER_WALLETS."
+                "No manual leader wallets configured. Startup will use the "
+                "hysteresis-qualified leader roster."
             )
-        elif config.discovery.enable_trader_discovery:
+        elif config.discovery.scheduler.enabled:
             logger.info(
-                "No leader wallets configured. Discovery is enabled, so the bot "
-                "will score DB candidates only. Live copying requires "
-                "python bot.py rotate-traders or manual LEADER_WALLETS."
+                "No manual leader wallets configured. Discovery will refresh "
+                "the watchlist, but roster startup is disabled."
             )
         else:
             logger.warning(
-                "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
-                "are empty. Add manual leader wallets or run "
+                "No leader wallets configured. Both config/traders/*.yml and "
+                "the per-user follow list are empty. Add a trader file or run "
                 "python bot.py rotate-traders after discovery has candidates."
             )
     return leaders
 
 
 def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollowConfig:
+    """Build the default follower-to-leader binding."""
     return UserFollowConfig(
         user_id=user_id,
         leader_id=leader_id,
@@ -211,60 +238,56 @@ def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollo
     )
 
 
-def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig) -> None:
+def ensure_runtime_follows(
+    runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig
+) -> None:
+    """Return validated runtime follower bindings."""
     for runtime_user in runtime_users:
         for leader in leaders:
             if leader not in runtime_user.follows:
                 runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
-async def fetch_live_positions(wallet: str) -> list[dict] | None:
-    """Fetch the wallet's live positions from the data API.
-
-    Returns ``None`` when the snapshot could not be fetched (network error,
-    non-list response). Callers MUST distinguish ``None`` (fetch failed →
-    fail closed, do not prune/delete local state) from ``[]`` (the wallet
-    genuinely holds no open positions).
-    """
-    try:
-        positions = await fetch_data(
-            f"https://data-api.polymarket.com/positions?user={wallet}",
-            silent=True,
-        )
-    except Exception:
-        return None
-
-    if not isinstance(positions, list):
-        return None
-
-    live_positions: list[dict] = []
-    for position in positions:
-        try:
-            size = float(position.get("size") or 0)
-            value = float(position.get("currentValue") or 0)
-        except (TypeError, ValueError):
-            continue
-        if abs(size) <= 1e-12 or value <= 0:
-            continue
-        live_positions.append(position)
-    return live_positions
+async def fetch_live_positions(wallet: str) -> list[dict[str, object]] | None:
+    """Read a bounded complete inventory without equating zero marks to disposal."""
+    return await DataApiPositionSizeReader(_get_http_client).positions(wallet)
 
 
 def build_user_state(
     runtime_user: RuntimeUser,
-    client: object,
+    client: "CcxtPredictionClient",
     pool,
     config: AppConfig,
+    clob_gateway: "ClobGateway | None" = None,
+    telemetry: TelemetryEmitters | None = None,
 ) -> UserRuntimeState:
+    """Build one follower runtime from injected configuration and ports.
+
+    Args:
+        runtime_user: Follower runtime identity and wallet settings.
+        client: CCXT prediction client owned by the venue runtime.
+        pool: Database pool backing every repository.
+        config: Validated application configuration.
+        clob_gateway: The single CCXT venue boundary for this follower.
+        telemetry: Operator telemetry emitters; a disabled bundle is used when
+            the telemetry runtime is not composed.
+
+    Returns:
+        The composed runtime state for one follower account.
+    """
     init_risk_engine(config)
+    emitters = telemetry if telemetry is not None else TelemetryEmitters.disabled()
 
     # Same pattern for the balance-lookup module (RPC_URL + collateral
     # contract addresses) so utils/getMyBalance.py drops its ENV reads.
     from utils.getMyBalance import configure_from_appconfig as _configure_balance_module
+
     _configure_balance_module(config)
 
     order_repo = OrdersRepo(pool)
-    fills_repo = FillsRepo(pool)
+    fills_repo = FillsRepo(
+        pool, task_projection=PostgresTaskFillProjection(PostgresRiskLotRepository(pool))
+    )
     positions_repo = PositionsRepo(pool)
     risk_blocks_repo = RiskBlocksRepo(pool)
     risk_triggers_repo = RiskTriggersRepo(pool)
@@ -272,11 +295,14 @@ def build_user_state(
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
     position_manager = PositionManager(config=config)
-    # Single CLOB venue boundary — same instance used by ExecutionService and,
-    # when issue #71 lands, the reconciler / execution coordinator. SDK-shaped
-    # types stay behind the gateway. See issue #66.
-    from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
-    clob_gateway = ClobV2Gateway(client, config)
+    # Single CLOB venue boundary shared by execution, reconciliation, and
+    # market data. The CCXT adapter is the only transport; without an
+    # injected gateway the caller has not built a venue runtime.
+    if clob_gateway is None:
+        raise RuntimeError(
+            "build_user_state requires a CCXT venue gateway; "
+            "build the venue runtime first via build_user_venue_runtime"
+        )
 
     # Freshness-aware market data layer (issue #hardening PR-1).
     # The store is fed by WSS deltas; the MDS falls back to REST via the
@@ -300,49 +326,49 @@ def build_user_state(
             allow_rest_bootstrap_for_execution=bool(
                 getattr(md_cfg, "enable_rest_bootstrap", False)
             ),
-            rest_bootstrap_max_age_ms=int(
-                getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)
-            ),
-            rest_snapshot_max_age_ms=int(
-                getattr(md_cfg, "rest_snapshot_max_age_ms", 500)
-            ),
+            rest_bootstrap_max_age_ms=int(getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)),
+            rest_snapshot_max_age_ms=int(getattr(md_cfg, "rest_snapshot_max_age_ms", 500)),
             rest_snapshot_request_timeout_ms=int(
                 getattr(md_cfg, "rest_snapshot_request_timeout_ms", 750)
             ),
             rest_snapshot_total_budget_ms=int(
                 getattr(md_cfg, "rest_snapshot_total_budget_ms", 1000)
             ),
-            rest_snapshot_max_spread_bps=int(
-                getattr(md_cfg, "rest_snapshot_max_spread_bps", 300)
-            ),
-            max_quote_age_seconds=float(
-                getattr(md_cfg, "executable_quote_max_age_seconds", 2.0)
-            ),
-            max_book_age_seconds=float(
-                getattr(md_cfg, "executable_book_max_age_seconds", 2.0)
-            ),
-            max_tick_age_seconds=float(
-                getattr(md_cfg, "executable_tick_max_age_seconds", 300.0)
-            ),
+            rest_snapshot_max_spread_bps=int(getattr(md_cfg, "rest_snapshot_max_spread_bps", 300)),
+            max_quote_age_seconds=float(getattr(md_cfg, "executable_quote_max_age_seconds", 2.0)),
+            max_book_age_seconds=float(getattr(md_cfg, "executable_book_max_age_seconds", 2.0)),
+            max_tick_age_seconds=float(getattr(md_cfg, "executable_tick_max_age_seconds", 300.0)),
             wss_connection_max_silence_seconds=float(
                 getattr(md_cfg, "wss_connection_max_silence_seconds", 20.0)
             ),
         ),
     )
 
+    trading_permission = TradingPermissionService(
+        TradingControlRepo(pool),
+        live_mode=not config.execution.paper_trade_only,
+    )
     execution_service = ExecutionService(
-        clob_client=client,
-        fee_service=FeeService(client),
+        # ``clob_client`` is retained for backward-compatible construction but
+        # is never read by ExecutionService or FeeService; the venue boundary
+        # is ``clob_gateway``. Pass the gateway so any legacy duck-typed read
+        # still resolves against the CCXT adapter.
+        clob_client=clob_gateway,
+        fee_service=FeeService(clob_gateway),
         order_repo=order_repo,
         config=config,
         clob_gateway=clob_gateway,
         market_data_service=market_data_svc,
         # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
         # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
-        geoblock_gate=GeoblockGate(config.network.enforce_geoblock),
-        trading_permission=TradingPermissionService(
-            TradingControlRepo(pool),
-            live_mode=not config.execution.paper_trade_only,
+        geoblock_gate=GeoblockGate(config.polymarket.enforce_geoblock),
+        trading_permission=trading_permission,
+        telemetry=emitters.execution,
+        latency=emitters.latency,
+        task_entry_permission=TaskEntryPermissionService(
+            PostgresCopyTaskRepository(pool),
+            follower_accounts=(runtime_user.user_id, runtime_user.wallet.funder_address or ""),
+            protective_management_enabled=config.risk.enable_risk_mgmt,
         ),
     )
 
@@ -357,6 +383,7 @@ def build_user_state(
         execution_service=execution_service,
         funder_address=runtime_user.wallet.funder_address,
         config=config,
+        latency=emitters.latency,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
@@ -376,6 +403,13 @@ def build_user_state(
     # Manual sync service — detects off-bot trades on the funder wallet and
     # seeds positions table from venue on startup. Optional so paper-only
     # contexts that lack a funder address skip the service cleanly.
+    inventory_refresh = InventoryRuntimeRefresh(
+        user_id=runtime_user.user_id,
+        wallet=runtime_user.wallet.funder_address,
+        positions=positions_repo,
+        manager=position_manager,
+        drift=position_drift_service,
+    )
     manual_sync_service = _build_manual_sync_service(
         funder_address=runtime_user.wallet.funder_address,
         user_id=runtime_user.user_id,
@@ -385,6 +419,7 @@ def build_user_state(
         orders_repo=order_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
+        on_positions_synced=inventory_refresh.refresh,
     )
 
     return UserRuntimeState(
@@ -406,6 +441,49 @@ def build_user_state(
         execution_coordinator=execution_coordinator,
         position_drift_service=position_drift_service,
         manual_sync_service=manual_sync_service,
+        inventory_refresh=inventory_refresh,
+        trading_permission=trading_permission,
+        telemetry=emitters,
+        leader_performance=PostgresLeaderPerformanceReader(pool),
+    )
+
+
+async def build_user_venue_runtime(
+    runtime_user: RuntimeUser,
+    config: AppConfig,
+    *,
+    exchange_factory: object | None = None,
+    ccxt_version: str | None = None,
+) -> "PolymarketVenueRuntime":
+    """Build the single CCXT-backed venue runtime for one follower wallet.
+
+    Constructs the CCXT exchange directly — no SDK object, no fallback, no
+    selector — and fails closed when the transport is unavailable or live
+    mode lacks live-execution compatibility.
+
+    Args:
+        runtime_user: Follower runtime identity and wallet settings.
+        config: Validated application configuration.
+        exchange_factory: Optional deterministic CCXT factory test seam.
+        ccxt_version: Optional installed-version override for tests.
+
+    Returns:
+        The venue runtime owning the CCXT client and its gateway.
+
+    Raises:
+        TypeError: If ``exchange_factory`` is not callable.
+        CcxtPredictionUnavailable: When CCXT is missing or fails the gate.
+    """
+
+    from integrations.polymarket.venue_runtime import build_polymarket_runtime
+
+    if exchange_factory is not None and not callable(exchange_factory):
+        raise TypeError("exchange_factory must be callable")
+    return await build_polymarket_runtime(
+        runtime_user=runtime_user,
+        config=config,
+        exchange_factory=exchange_factory,  # type: ignore[arg-type]
+        ccxt_version=ccxt_version,
     )
 
 
@@ -419,6 +497,7 @@ def _build_manual_sync_service(
     orders_repo: OrdersRepo | None = None,
     position_drift_service=None,
     reservation_service=None,
+    on_positions_synced: Callable[[], Awaitable[None]] | None = None,
 ):
     """Build the per-user ManualSyncService. Returns None when prerequisites are missing."""
     if not funder_address or market_store is None:
@@ -431,12 +510,14 @@ def _build_manual_sync_service(
     return ManualSyncService(
         funder_address=funder_address,
         user_id=user_id,
+        positions_fetcher=fetch_live_positions,
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
+        on_positions_synced=on_positions_synced,
     )
 
 
@@ -472,7 +553,7 @@ def _build_position_drift_service(
         positions_repo=positions_repo,
         reservations_repo=reservations_repo,
         live_positions_fetcher=_fetcher,
-        config=config.position_drift,
+        config=config.reconciliation.position_drift,
     )
 
 
@@ -485,6 +566,7 @@ def _build_execution_coordinator(
     execution_service: ExecutionService,
     funder_address: str,
     config: "AppConfig | None" = None,
+    latency: PipelineLatency | None = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -507,12 +589,8 @@ def _build_execution_coordinator(
     # Reservations are a typed-config gate (RESERVATIONS_ENABLED), not a
     # hard-coded mode. Configless contexts (partial test state) keep the
     # historical disabled behavior so existing fixtures stay green.
-    reservations_enabled = (
-        config.execution.reservations_enabled if config is not None else False
-    )
-    _reservation_ttl = (
-        config.execution.reservation_ttl_seconds if config is not None else 120
-    )
+    reservations_enabled = config.execution.reservations_enabled if config is not None else False
+    _reservation_ttl = config.execution.reservation_ttl_seconds if config is not None else 120
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
@@ -520,13 +598,10 @@ def _build_execution_coordinator(
         funder_address=funder_address,
         ttl_seconds=_reservation_ttl,
         enabled=reservations_enabled,
-        # sym 5 — break the reservation-release deadlock. A reservation linked
-        # to a FAK order the reconciler can never confirm terminal would
-        # otherwise pin its scope forever (the reason RESERVATIONS_ENABLED was
-        # turned off). Force-release once it has been expired by a full extra
-        # TTL window: a fill-and-kill order cannot rest, so by then it is
-        # definitively not live and the held budget is stranded.
-        force_release_grace_seconds=float(_reservation_ttl),
+        task_market_fraction=Decimal(str(config.sizing.max_position_pct))
+        if config is not None
+        else None,
+        task_max_open_markets=config.sizing.position_threshold if config is not None else 0,
     )
     if not reservations_enabled:
         logger.warning(
@@ -542,6 +617,18 @@ def _build_execution_coordinator(
         fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
+        latency=latency,
+    )
+    from services.execution.leader_sell_target_service import (
+        LeaderSellTargetService,
+        PersistedFollowerPositionReader,
+    )
+    from storage.postgres.leader_sell_target_repo import LeaderSellTargetRepo
+
+    coord.leader_sell_target_service = LeaderSellTargetService(
+        repository=LeaderSellTargetRepo(pool),
+        position_reader=PersistedFollowerPositionReader(positions_repo),
+        coordinator=coord,
     )
     return coord
 
@@ -560,13 +647,15 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     if reservation_service is None:
         return
 
-    reservations_repo = (
-        getattr(coord, "reservations_repo", None)
-        or getattr(reservation_service, "reservations_repo", None)
+    reservations_repo = getattr(coord, "reservations_repo", None) or getattr(
+        reservation_service, "reservations_repo", None
     )
     context.extra["reservation_service"] = reservation_service
     if reservations_repo is not None:
         context.extra["reservations_repo"] = reservations_repo
+    target_service = getattr(coord, "leader_sell_target_service", None)
+    if target_service is not None:
+        context.extra["leader_sell_target_service"] = target_service
 
     def _reservation_attr(reservation: object, name: str) -> Any:
         return getattr(reservation, name, None)
@@ -590,21 +679,23 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if side not in {"BUY", "SELL"}:
             return None
 
-        condition_id = (
-            request.get("condition_id")
-            or _reservation_attr(reservation, "condition_id")
-        )
+        condition_id = request.get("condition_id") or _reservation_attr(reservation, "condition_id")
         token_id = (
             request.get("token_id")
             or request.get("asset")
             or _reservation_attr(reservation, "token_id")
         )
         user_id = (
-            (order_row or {}).get("user_id") if isinstance(order_row, dict) else None
-        ) or request.get("user_id") or _reservation_attr(reservation, "user_id") or context.user_id
+            ((order_row or {}).get("user_id") if isinstance(order_row, dict) else None)
+            or request.get("user_id")
+            or _reservation_attr(reservation, "user_id")
+            or context.user_id
+        )
         leader_id = (
-            (order_row or {}).get("leader_id") if isinstance(order_row, dict) else None
-        ) or request.get("leader_id") or _reservation_attr(reservation, "leader_wallet")
+            ((order_row or {}).get("leader_id") if isinstance(order_row, dict) else None)
+            or request.get("leader_id")
+            or _reservation_attr(reservation, "leader_wallet")
+        )
         trade_key = (
             request.get("signal_id")
             or ((order_row or {}).get("idempotency_key") if isinstance(order_row, dict) else None)
@@ -633,7 +724,8 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if not callable(order_lookup):
             return None
         try:
-            order_row = await order_lookup(reservation_id)
+            lookup_result = order_lookup(reservation_id)
+            order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception:
             return None
         return order_row if isinstance(order_row, dict) else None
@@ -645,7 +737,8 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if not callable(order_lookup):
             return None
         try:
-            order_row = await order_lookup(order_id)
+            lookup_result = order_lookup(order_id)
+            order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception:
             return None
         return order_row if isinstance(order_row, dict) else None
@@ -737,9 +830,7 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
 
         linked_order = getattr(active, "order_id", None) or getattr(active, "venue_order_id", None)
         order_row = await _lookup_order_by_reservation(reservation_id)
-        candidate_order_id = str(
-            linked_order or (order_row or {}).get("order_id") or ""
-        ).strip()
+        candidate_order_id = str(linked_order or (order_row or {}).get("order_id") or "").strip()
         if candidate_order_id:
             if order_row is None:
                 order_row = await _lookup_order_by_order_id(candidate_order_id)
@@ -768,24 +859,56 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     reservation_service.reconciler_callback = _reconcile_expired_reservation
 
 
+def _user_state_telemetry(user_state: object) -> TelemetryEmitters:
+    """Return the follower's emitter bundle, or the disabled null object."""
+    emitters = getattr(user_state, "telemetry", None)
+    if isinstance(emitters, TelemetryEmitters):
+        return emitters
+    return TelemetryEmitters.disabled()
+
+
 async def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
     config: AppConfig,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
-    trust_store=None,
 ) -> TradingContext:
-    leader_scorer = LeaderScoringService(config=config, trust_store=trust_store)
+    """Build the venue-neutral trading context for one follower binding."""
+    rank_multiplier = Decimal("1")
+    roster_score: float | None = None
+    if leaders_repo is not None and hasattr(leaders_repo, "get_roster"):
+        roster_entry = await leaders_repo.get_roster(follow.leader_id)
+        if roster_entry is not None:
+            from services.order_sizing import longitudinal_sizing_multiplier
+
+            longitudinal = config.discovery.longitudinal
+            roster_score = float(roster_entry.score)
+            rank_multiplier = longitudinal_sizing_multiplier(
+                roster_entry.longitudinal_score
+                if roster_entry.longitudinal_score is not None
+                else roster_entry.score,
+                minimum=longitudinal.sizing_multiplier_min,
+                maximum=longitudinal.sizing_multiplier_max,
+                exponent=longitudinal.sizing_multiplier_exponent,
+            )
+    leader_scorer = LeaderScoringService(
+        config=config,
+        roster_score=roster_score,
+    )
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
-        client=user_state.client,
+        # Risk monitor reads ``context.client.get_price(token_id, side)``; the
+        # CCXT gateway exposes exactly that surface, so the venue boundary is
+        # the single read authority. The raw CCXT client does not.
+        client=user_state.clob_gateway,
         positions_repo=user_state.positions_repo,
         fills_repo=user_state.fills_repo,
         orders_repo=user_state.orders_repo,
         risk_blocks_repo=user_state.risk_blocks_repo,
         pnl_tracker=user_state.pnl_tracker,
+        leader_performance=user_state.leader_performance,
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
@@ -798,11 +921,17 @@ async def build_trading_context(
         buy_min_amount=config.sizing.buy_min_amount,
         buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
+        rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
+        market_quotes=getattr(user_state, "market_store", None),
+        holdings_reader=DataApiPositionSizeReader(_get_http_client),
+        telemetry=_user_state_telemetry(user_state),
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
             "clob_gateway": user_state.clob_gateway,
+            "leader_wallet": follow.leader_id,
+            "accounted_fill_reader": user_state.fills_repo,
         },
     )
     if user_state.risk_triggers_repo is not None:
@@ -818,15 +947,16 @@ async def build_trading_context(
             # Surface the wiring failure loudly so ops can fix it.
             logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"), exc,
+                getattr(context, "user_id", "?"),
+                exc,
             )
             raise RuntimeError(
                 "runtime_bootstrap: failed to attach position_coordinator to "
                 f"execution_coordinator for user {getattr(context, 'user_id', '?')}"
             ) from exc
-        assert (
-            getattr(coord, "position_coordinator", None) is context.position_coordinator
-        ), "runtime_bootstrap: position_coordinator attach silently dropped"
+        assert getattr(coord, "position_coordinator", None) is context.position_coordinator, (
+            "runtime_bootstrap: position_coordinator attach silently dropped"
+        )
         context.execution_coordinator = coord
         _bind_reservation_runtime(context, coord)
     # Phase 4 — seed IntentRegistry from durable reservation rows on restart.
@@ -837,6 +967,7 @@ async def build_trading_context(
     if _reservations_repo is not None:
         try:
             from services.execution.intent_recovery import recover_intents_from_db
+
             _recovered = await recover_intents_from_db(
                 registry=context.position_coordinator.intent_registry,
                 reservations_repo=_reservations_repo,
@@ -844,13 +975,20 @@ async def build_trading_context(
             if _recovered:
                 logger.info(
                     "runtime_bootstrap.intent_recovery user_id=%s recovered=%d",
-                    context.user_id, _recovered,
+                    context.user_id,
+                    _recovered,
                 )
         except Exception as _exc:
+            context.readiness.update(reconciler_ok=False)
             logger.warning(
-                "runtime_bootstrap.intent_recovery_failed user_id=%s error=%r",
-                context.user_id, _exc,
+                "runtime_bootstrap.intent_recovery_failed user_id=%s error_type=%s",
+                context.user_id,
+                type(_exc).__name__,
             )
+            raise RuntimeError("reservation ownership recovery unavailable") from None
+    inventory_refresh = getattr(user_state, "inventory_refresh", None)
+    if inventory_refresh is not None:
+        inventory_refresh.bind_readiness(context.readiness)
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)
@@ -881,19 +1019,20 @@ async def startup_drift_check(
     all_clean = True
     per_user: dict[str, bool] = {}
 
-    if not config.position_drift.check_on_startup:
+    if not config.reconciliation.position_drift.check_on_startup:
         readiness.update(drift_ok=True)
         return per_user
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
         if user_state is None:
+            per_user[runtime_user.user_id] = False
+            all_clean = False
             continue
         drift_svc = getattr(user_state, "position_drift_service", None)
         if drift_svc is None:
-            # No drift service wired (e.g. partial test state). Skip
-            # gracefully; in production this is unreachable.
-            per_user[runtime_user.user_id] = True
+            per_user[runtime_user.user_id] = False
+            all_clean = False
             continue
         try:
             report = await drift_svc.scan_user(
@@ -903,7 +1042,8 @@ async def startup_drift_check(
         except Exception as exc:
             logger.warning(
                 "startup_drift_check_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
+                runtime_user.user_id,
+                exc,
             )
             per_user[runtime_user.user_id] = False
             all_clean = False
@@ -913,10 +1053,14 @@ async def startup_drift_check(
             all_clean = False
             logger.warning(
                 "startup_drift_check_unresolved | user=%s paused_scopes=%d",
-                runtime_user.user_id, len(report.paused_scopes),
+                runtime_user.user_id,
+                len(report.paused_scopes),
             )
 
-    readiness.update(drift_ok=all_clean)
+    for user_id, clean in per_user.items():
+        readiness.update_account_drift(user_id, clean)
+    if not per_user:
+        readiness.update(drift_ok=all_clean)
     return per_user
 
 
@@ -946,26 +1090,23 @@ async def hydrate_resolved_market_state(
     idempotent so the count reflects the boot survey, not a delta.
     """
     summary: dict[str, int] = {}
-    loop = asyncio.get_running_loop()
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
         if user_state is None:
             continue
         market_store = getattr(user_state, "market_store", None)
-        client = getattr(user_state, "client", None)
         positions_repo = getattr(user_state, "positions_repo", None)
-        if market_store is None or client is None or positions_repo is None:
+        if market_store is None or positions_repo is None:
             continue
 
         try:
-            positions = list(
-                await positions_repo.list_open_positions(runtime_user.user_id) or []
-            )
+            positions = list(await positions_repo.list_open_positions(runtime_user.user_id) or [])
         except Exception as exc:
             logger.warning(
                 "hydrate_resolved_market_state_list_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
+                runtime_user.user_id,
+                exc,
             )
             continue
 
@@ -978,34 +1119,30 @@ async def hydrate_resolved_market_state(
             tokens_by_condition.setdefault(cond, []).append(token)
 
         resolved_count = 0
-        # Sync SDK call must run in a thread; condition_ids are unique so
-        # this is bounded by len(positions) — cheap and one-shot at boot.
+        # Gamma market metadata via the official public REST API (allowed by
+        # the CCXT-only execution boundary). condition_ids are unique so this
+        # is bounded by len(positions) — cheap and one-shot at boot.
         for cond, tokens in tokens_by_condition.items():
-            try:
-                market = await loop.run_in_executor(None, client.get_market, cond)
-            except Exception as exc:
-                # SDK raises (PolyApiException or similar) when the condition
-                # itself is unknown to Polymarket — typically a 404 on
-                # ``/markets/{cond}``. Treat that as terminal: if the venue
-                # no longer indexes the condition, every token under it is
-                # retired. We mark resolved here so the risk monitor stops
+            lookup = await _lookup_gamma_market(cond)
+            if lookup.unavailable:
+                # Transient outage or unexpected payload shape: missing
+                # evidence must never mark a position resolved — doing so
+                # would disable price probes, stop-loss, and protective exits
+                # for the lifetime of the process. Leave monitoring intact;
+                # the WSS market_resolved event or the next boot retries.
+                continue
+            if lookup.market is None:
+                # Gamma answered and does not index the condition: every token
+                # under it is retired. Mark resolved so the risk monitor stops
                 # probing them.
-                err_text = repr(exc).lower()
-                if "404" in err_text or "not_found" in err_text or "not found" in err_text:
-                    for token in tokens:
-                        try:
-                            market_store.mark_resolved(token, cond)
-                            resolved_count += 1
-                        except Exception:
-                            logger.debug("mark_resolved_failed", exc_info=True)
-                else:
-                    logger.debug(
-                        "hydrate_resolved_get_market_failed | cond=%s error=%r",
-                        cond, exc,
-                    )
+                for token in tokens:
+                    try:
+                        market_store.mark_resolved(token, cond)
+                        resolved_count += 1
+                    except Exception:
+                        logger.debug("mark_resolved_failed", exc_info=True)
                 continue
-            if not isinstance(market, dict):
-                continue
+            market = lookup.market
             # Terminal signals per Polymarket OpenAPI:
             #   - ``closed: true``  → resolved binary outcome decided.
             #   - ``active: false`` → market suspended / not tradeable.
@@ -1026,11 +1163,72 @@ async def hydrate_resolved_market_state(
         if resolved_count:
             logger.info(
                 "hydrate_resolved_market_state | user=%s resolved=%d",
-                runtime_user.user_id, resolved_count,
+                runtime_user.user_id,
+                resolved_count,
             )
         summary[runtime_user.user_id] = resolved_count
 
     return summary
+
+
+_GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+
+
+@dataclass(frozen=True)
+class _GammaLookup:
+    """Result of one Gamma market-metadata lookup.
+
+    Exactly one of three states:
+    * ``market`` set — an authoritative market document;
+    * ``market`` None — Gamma answered and does not index the condition
+      (authoritative terminal signal);
+    * ``unavailable`` True — the lookup itself failed (transport error or
+      unexpected payload shape). Never evidence of anything.
+    """
+
+    market: dict[str, Any] | None = None
+    unavailable: bool = False
+
+
+async def _lookup_gamma_market(condition_id: str) -> _GammaLookup:
+    """Look up one Gamma market document by its 0x condition id.
+
+    Gamma's ``/markets/{id}`` route accepts only the numeric Gamma market id
+    (a condition id there returns 422), so this uses the ``condition_ids``
+    filter, which resolves condition ids directly.
+    """
+
+    cond = str(condition_id or "").strip()
+    if not cond:
+        return _GammaLookup(unavailable=True)
+    query = urlencode((("condition_ids", cond), ("limit", "1")))
+    try:
+        payload = await fetch_data(f"{_GAMMA_MARKETS_URL}?{query}", silent=True)
+    except Exception as exc:
+        logger.debug(
+            "hydrate_resolved_gamma_unavailable | cond=%s error=%r",
+            cond,
+            exc,
+        )
+        return _GammaLookup(unavailable=True)
+    if not isinstance(payload, list):
+        logger.debug(
+            "hydrate_resolved_gamma_unexpected_payload | cond=%s type=%s",
+            cond,
+            type(payload).__name__,
+        )
+        return _GammaLookup(unavailable=True)
+    if not payload:
+        return _GammaLookup(market=None)
+    market = payload[0]
+    if not isinstance(market, dict):
+        logger.debug(
+            "hydrate_resolved_gamma_malformed_row | cond=%s type=%s",
+            cond,
+            type(market).__name__,
+        )
+        return _GammaLookup(unavailable=True)
+    return _GammaLookup(market=market)
 
 
 async def build_context_maps(
@@ -1041,8 +1239,8 @@ async def build_context_maps(
     *,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
-    trust_store=None,
 ) -> tuple[dict[str, list[TradingContext]], dict[str, TradingContext]]:
+    """Index trading contexts by account and leader identity."""
     contexts_by_leader: dict[str, list[TradingContext]] = {leader: [] for leader in active_leaders}
     risk_contexts_by_user: dict[str, TradingContext] = {}
 
@@ -1058,7 +1256,6 @@ async def build_context_maps(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
-                trust_store=trust_store,
             )
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
@@ -1075,15 +1272,12 @@ async def build_context_maps(
     for runtime_user in runtime_users:
         if runtime_user.user_id in risk_contexts_by_user:
             continue
-        user_state = user_states.get(runtime_user.user_id)
-        if user_state is None:
+        risk_user_state = user_states.get(runtime_user.user_id)
+        if risk_user_state is None:
             continue
         try:
             open_positions = (
-                await user_state.positions_repo.list_open_positions(
-                    runtime_user.user_id
-                )
-                or []
+                await risk_user_state.positions_repo.list_open_positions(runtime_user.user_id) or []
             )
         except Exception:
             logger.warning(
@@ -1096,24 +1290,24 @@ async def build_context_maps(
             continue
         follow = next(iter(runtime_user.follows.values()), None)
         if follow is None:
-            logger.warning(
-                "risk_only_context_skipped_no_follow | user=%s open_positions=%d",
-                runtime_user.user_id,
-                len(open_positions),
+            follow = UserFollowConfig(
+                user_id=runtime_user.user_id,
+                leader_id="",
+                enabled=False,
+                allocation_pct=0,
+                max_trade_usdc=0,
+                max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
             )
-            continue
         context = await build_trading_context(
-            user_state,
+            risk_user_state,
             follow,
             config,
             leaders_repo=leaders_repo,
             readiness=readiness,
-            trust_store=trust_store,
         )
         risk_contexts_by_user[runtime_user.user_id] = context
         logger.info(
-            "risk_only_context_built | user=%s open_positions=%d "
-            "(no active-leader follow)",
+            "risk_only_context_built | user=%s open_positions=%d (no active-leader follow)",
             runtime_user.user_id,
             len(open_positions),
         )

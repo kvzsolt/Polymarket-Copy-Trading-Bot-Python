@@ -1,4 +1,5 @@
 """Book spread metrics for the spread quality gate."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,9 +31,7 @@ class BookDepthMetrics:
         return self.ask_notional_usdc if side.upper() == "BUY" else self.bid_notional_usdc
 
     def side_levels(self, side: str) -> int:
-        return (
-            self.ask_levels_in_band if side.upper() == "BUY" else self.bid_levels_in_band
-        )
+        return self.ask_levels_in_band if side.upper() == "BUY" else self.bid_levels_in_band
 
 
 def resolve_book_spread_mode(raw_mode: Any) -> str:
@@ -46,9 +45,7 @@ def calculate_book_spread_metrics(
     *, best_bid: Decimal, best_ask: Decimal, tick_size: Decimal
 ) -> BookSpreadMetrics:
     absolute = best_ask - best_bid
-    absolute_bps = int(
-        (absolute * BASIS_POINTS_PER_UNIT).to_integral_value(rounding=ROUND_CEILING)
-    )
+    absolute_bps = int((absolute * BASIS_POINTS_PER_UNIT).to_integral_value(rounding=ROUND_CEILING))
     relative_bps: int | None = None
     if best_bid > 0:
         relative_bps = int(

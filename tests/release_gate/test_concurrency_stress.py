@@ -4,6 +4,7 @@ Floods the coordinator with 50 concurrent actions targeting the same scope
 to confirm the lock cleanly serializes them and that no two critical
 sections execute simultaneously.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,6 +54,4 @@ async def test_different_scopes_under_stress_run_in_parallel() -> None:
 
     tokens = [f"tok-{i}" for i in range(10)]
     await asyncio.gather(*(worker(t) for t in tokens))
-    assert counter["peak"] >= 2, (
-        "different scopes should run concurrently under stress"
-    )
+    assert counter["peak"] >= 2, "different scopes should run concurrently under stress"

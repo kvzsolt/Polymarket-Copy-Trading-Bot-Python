@@ -8,6 +8,7 @@ Covers:
   - status counts stale/dirty tokens
   - extract_token_ids_from_live_positions deduplicates
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -61,11 +62,13 @@ def _make_gateway(
             best_ask=Decimal("0.55"),
         )
     gw.get_orderbook = AsyncMock(return_value=book)
-    gw.get_market_info = AsyncMock(return_value={
-        "tick_size": None if missing_tick else tick_size,
-        "min_order_size": min_order_size,
-        "neg_risk": False,
-    })
+    gw.get_market_info = AsyncMock(
+        return_value={
+            "tick_size": None if missing_tick else tick_size,
+            "min_order_size": min_order_size,
+            "neg_risk": False,
+        }
+    )
     return gw
 
 
@@ -73,18 +76,46 @@ def _make_runtime(
     store: MarketStateStore | None = None,
     gateway=None,
     readiness: ReadinessTracker | None = None,
+    quote_sink=None,
 ) -> MarketDataRuntime:
     return MarketDataRuntime(
         market_store=store or MarketStateStore(),
         gateway=gateway or _make_gateway(),
         readiness=readiness or ReadinessTracker(),
         config=SimpleNamespace(),
+        quote_sink=quote_sink,
     )
+
+
+class RecordingQuoteSink:
+    """Capture authoritative two-sided quote projections."""
+
+    def __init__(self) -> None:
+        self.quotes: list[tuple[str, Decimal, Decimal, str]] = []
+        self.discarded: list[str] = []
+
+    def record(
+        self,
+        *,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        source: str,
+    ) -> None:
+        """Record one normalized quote."""
+
+        self.quotes.append((token_id, best_bid, best_ask, source))
+
+    def discard(self, token_id: str) -> None:
+        """Record one resolved-token eviction."""
+
+        self.discarded.append(token_id)
 
 
 # ---------------------------------------------------------------------------
 # Start with no tokens
 # ---------------------------------------------------------------------------
+
 
 class _FakeMarketWebSocket:
     """Stand-in for MarketWebSocket that never touches the network."""
@@ -127,9 +158,7 @@ class TestStartNoTokens:
         await rt.stop()
 
     @pytest.mark.asyncio
-    async def test_start_empty_tokens_still_opens_wss_connection(
-        self, monkeypatch
-    ) -> None:
+    async def test_start_empty_tokens_still_opens_wss_connection(self, monkeypatch) -> None:
         """Regression: empty initial token set must NOT skip WSS startup.
 
         Trade detection is HTTP-polled, so the runtime routinely starts with
@@ -162,6 +191,7 @@ class TestStartNoTokens:
         await rt.start([])
         # let the fake connect() callback run
         import asyncio as _asyncio
+
         await _asyncio.sleep(0)
 
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
@@ -252,6 +282,7 @@ class TestWssConnectionState:
 # Bootstrap
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrap:
     @pytest.mark.asyncio
     async def test_bootstrap_calls_gateway_for_each_token(self) -> None:
@@ -334,6 +365,7 @@ class TestBootstrap:
 # Subscribe / unsubscribe
 # ---------------------------------------------------------------------------
 
+
 class TestSubscribeTokens:
     @pytest.mark.asyncio
     async def test_subscribe_adds_tokens_to_set(self) -> None:
@@ -373,6 +405,7 @@ class TestSubscribeTokens:
 # Stop
 # ---------------------------------------------------------------------------
 
+
 class TestStop:
     @pytest.mark.asyncio
     async def test_stop_marks_all_stale(self) -> None:
@@ -404,6 +437,7 @@ class TestStop:
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
+
 
 class TestStatus:
     @pytest.mark.asyncio
@@ -439,6 +473,7 @@ class TestStatus:
 # extract_token_ids_from_live_positions
 # ---------------------------------------------------------------------------
 
+
 class TestReadinessFromWss:
     """``market_data_ready`` must reflect executable WSS state per token."""
 
@@ -469,6 +504,26 @@ class TestReadinessFromWss:
         await rt._on_market_state_change(TOKEN_A, "book")
 
         assert readiness.snapshot().get("market_data_ready") is True
+
+    @pytest.mark.asyncio
+    async def test_wss_state_change_updates_shared_copy_task_quote_sink(self) -> None:
+        """The v1 shared cache receives the same authoritative WSS quote."""
+
+        store = MarketStateStore()
+        sink = RecordingQuoteSink()
+        runtime = _make_runtime(store=store, quote_sink=sink)
+        store.set_book(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            source="wss",
+        )
+
+        await runtime._on_market_state_change(TOKEN_A, "book")
+        await runtime._on_market_state_change(TOKEN_A, "market_resolved")
+
+        assert sink.quotes == [(TOKEN_A, Decimal("0.49"), Decimal("0.51"), "wss")]
+        assert sink.discarded == [TOKEN_A]
 
     @pytest.mark.asyncio
     async def test_market_data_ready_false_when_dirty(self) -> None:
@@ -580,6 +635,7 @@ class TestExtractTokenIds:
 # ensure_token_ready_or_bootstrapped
 # ---------------------------------------------------------------------------
 
+
 def _make_runtime_with_config(
     store: MarketStateStore | None = None,
     gateway=None,
@@ -611,6 +667,7 @@ def _make_runtime_with_config(
 
 def _make_good_book(token_id: str = TOKEN_A):
     from integrations.polymarket.models import OrderBook, OrderBookLevel
+
     return OrderBook(
         token_id=token_id,
         tick_size=Decimal("0.01"),
@@ -626,11 +683,13 @@ def _make_good_book(token_id: str = TOKEN_A):
 def _make_bootstrap_gateway(token_id: str = TOKEN_A) -> AsyncMock:
     gw = AsyncMock()
     gw.get_orderbook = AsyncMock(return_value=_make_good_book(token_id))
-    gw.get_market_info = AsyncMock(return_value={
-        "tick_size": "0.01",
-        "min_order_size": "5",
-        "neg_risk": False,
-    })
+    gw.get_market_info = AsyncMock(
+        return_value={
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": False,
+        }
+    )
     return gw
 
 
@@ -645,7 +704,13 @@ class TestEnsureTokenReadyOrBootstrapped:
             {"source": "wss"},
         )
         store.set_quote(TOKEN_A, best_bid=Decimal("0.49"), best_ask=Decimal("0.51"), source="wss")
-        store.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False, source="wss")
+        store.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            source="wss",
+        )
         gw = _make_bootstrap_gateway()
         rt = _make_runtime_with_config(store=store, gateway=gw)
 
@@ -887,3 +952,97 @@ class TestEnsureTokenReadyOrBootstrapped:
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
 
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# C4 — WSS lifecycle telemetry
+# ---------------------------------------------------------------------------
+
+
+class TestWssTelemetry:
+    """The runtime owns the market stream's operator lifecycle events.
+
+    ``clients/market_ws.py`` stays transport-only; the runtime already owns
+    the connected/disconnected callbacks, so the first connection is reported
+    as ``connected`` and every later one as ``reconnected``.
+    """
+
+    def _runtime(self, telemetry) -> MarketDataRuntime:
+        return MarketDataRuntime(
+            market_store=MarketStateStore(),
+            gateway=_make_gateway(),
+            readiness=ReadinessTracker(),
+            config=SimpleNamespace(),
+            telemetry=telemetry,
+        )
+
+    @pytest.mark.asyncio
+    async def test_first_connect_reports_connected_then_reconnected(self) -> None:
+        from services.telemetry import TelemetryProducer, WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_wss_connected()
+        await runtime._on_wss_disconnected()
+        await runtime._on_wss_connected()
+
+        events = service.payloads(WssEvent)
+        assert [event.outcome for event in events] == [
+            WssOutcome.CONNECTED,
+            WssOutcome.DISCONNECTED,
+            WssOutcome.RECONNECTED,
+        ]
+        assert {event.stream for event in events} == {"market"}
+        assert {call.producer for call in service.calls} == {TelemetryProducer.WSS}
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_without_telemetry_is_unchanged(self) -> None:
+        runtime = self._runtime(None)
+
+        await runtime._on_wss_connected()
+        assert runtime._wss_connected is True
+
+        await runtime._on_wss_disconnected()
+        assert runtime._wss_connected is False
+
+    @pytest.mark.asyncio
+    async def test_raising_telemetry_backend_never_breaks_the_callbacks(self) -> None:
+        from tests.telemetry_helpers import raising_emitters
+
+        emitters, service = raising_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_wss_connected()
+        assert runtime._wss_connected is True
+
+        await runtime._on_wss_disconnected()
+
+        assert service.calls == 2
+        assert runtime._wss_connected is False
+
+    @pytest.mark.asyncio
+    async def test_failed_reconnect_storm_does_not_raise_or_fake_a_connect(self) -> None:
+        """``MarketWebSocket`` fires ``on_disconnected`` from its connect
+        ``finally``, so a run of failed reconnect attempts emits DISCONNECTED
+        with no preceding CONNECTED. That must never raise, and must never make
+        the first real connection report RECONNECTED.
+        """
+        from services.telemetry import WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        for _ in range(3):
+            await runtime._on_wss_disconnected()
+
+        assert [event.outcome for event in service.payloads(WssEvent)] == [
+            WssOutcome.DISCONNECTED
+        ] * 3
+        assert runtime._ever_connected is False
+
+        await runtime._on_wss_connected()
+
+        assert service.payloads(WssEvent)[-1].outcome is WssOutcome.CONNECTED

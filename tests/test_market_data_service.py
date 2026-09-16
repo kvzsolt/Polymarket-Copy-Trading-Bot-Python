@@ -9,6 +9,7 @@ Tests the service against a real MarketStateStore or controlled mocks to verify:
   - valid fresh state returns correct MarketDataBundle
   - bundle quote/book/tick match cache contents
 """
+
 from __future__ import annotations
 
 import time
@@ -364,6 +365,7 @@ class TestValidStateReturnsBundle:
 
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
 
+
 class TestComponentSourceGating:
     """Per-component source split: tick-only WSS must not promote book to WSS."""
 
@@ -435,6 +437,7 @@ class TestComponentSourceGating:
 # REST bootstrap policy
 # ---------------------------------------------------------------------------
 
+
 def _make_rest_bootstrap_cache(token_id: str = TOKEN, *, stale: bool = False) -> MarketStateStore:
     """Return a cache with rest_bootstrap-sourced quote + book (fresh unless stale=True)."""
     import time as _time
@@ -500,7 +503,7 @@ class TestRestBootstrapPolicy:
         )
         svc = _make_service(cache, policy=policy)
 
-        with pytest.raises(Exception):
+        with pytest.raises(StaleDataError):
             await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio
@@ -515,7 +518,7 @@ class TestRestBootstrapPolicy:
         )
         svc = _make_service(cache, policy=policy)
 
-        with pytest.raises(Exception):
+        with pytest.raises(StaleDataError):
             await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio
@@ -711,22 +714,15 @@ import asyncio  # noqa: E402  (kept local to the PR10.4 section)
 from types import SimpleNamespace  # noqa: E402
 
 
-
 def _rest_policy(**overrides) -> MarketDataPolicy:
     return MarketDataPolicy(
         primary_source="rest_snapshot",
         require_wss_fresh=False,
         allow_rest_snapshot_for_execution=True,
         rest_snapshot_max_age_ms=overrides.pop("rest_snapshot_max_age_ms", 500),
-        rest_snapshot_request_timeout_ms=overrides.pop(
-            "rest_snapshot_request_timeout_ms", 750
-        ),
-        rest_snapshot_total_budget_ms=overrides.pop(
-            "rest_snapshot_total_budget_ms", 1000
-        ),
-        rest_snapshot_max_spread_bps=overrides.pop(
-            "rest_snapshot_max_spread_bps", 300
-        ),
+        rest_snapshot_request_timeout_ms=overrides.pop("rest_snapshot_request_timeout_ms", 750),
+        rest_snapshot_total_budget_ms=overrides.pop("rest_snapshot_total_budget_ms", 1000),
+        rest_snapshot_max_spread_bps=overrides.pop("rest_snapshot_max_spread_bps", 300),
     )
 
 
@@ -779,15 +775,19 @@ class TestRequireExecutionSnapshot:
 
         store = MarketStateStore()
         gw = MagicMock()
-        gw.get_orderbook = AsyncMock(return_value=OrderBook(
-            token_id=TOKEN,
-            bids=[OrderBookLevel(price=Decimal("0.495"), size=Decimal("100"))],
-            asks=[OrderBookLevel(price=Decimal("0.505"), size=Decimal("100"))],
-            tick_size=Decimal("0.001"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        ))
-        gw.get_market_info = AsyncMock(side_effect=AssertionError("metadata fetch should not be needed"))
+        gw.get_orderbook = AsyncMock(
+            return_value=OrderBook(
+                token_id=TOKEN,
+                bids=[OrderBookLevel(price=Decimal("0.495"), size=Decimal("100"))],
+                asks=[OrderBookLevel(price=Decimal("0.505"), size=Decimal("100"))],
+                tick_size=Decimal("0.001"),
+                min_order_size=Decimal("5"),
+                neg_risk=False,
+            )
+        )
+        gw.get_market_info = AsyncMock(
+            side_effect=AssertionError("metadata fetch should not be needed")
+        )
         svc = MarketDataService(store, gw, policy=_rest_policy())
 
         bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
@@ -883,9 +883,7 @@ class TestRequireExecutionSnapshot:
                 {Decimal("0.90"): Decimal("100")},
             )
         )
-        svc = MarketDataService(
-            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300)
-        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300))
 
         with pytest.raises(StaleDataError) as exc:
             await svc.require_execution_snapshot(TOKEN, side="BUY")
@@ -900,9 +898,7 @@ class TestRequireExecutionSnapshot:
                 {Decimal("0.95"): Decimal("100")},
             )
         )
-        svc = MarketDataService(
-            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0)
-        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0))
 
         bundle = await svc.require_execution_snapshot(TOKEN, side="SELL")
 
@@ -974,6 +970,104 @@ class TestRequireExecutionSnapshot:
 
         bundle = await svc.require_fresh_data(TOKEN, side="BUY")
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+
+class TestRestSnapshotBudgetsMatchTheRoundTrip:
+    """The freshness budget must be able to contain the fetch it measures.
+
+    ``fetched_at`` anchors on ``fetch_start``, so the REST round trip itself
+    counts against ``rest_snapshot_max_age_ms``. Live round trips measured
+    515-571 ms, which the shipped 500 ms cap rejected outright — the fallback
+    refused every snapshot it was meant to provide.
+    """
+
+    @staticmethod
+    def _clock_and_gateway(elapsed_seconds: float, book) -> tuple[list[float], MagicMock]:
+        """Return a monotonic-clock holder and a gateway that advances it.
+
+        The clock is injected in place of the module's ``time`` reference so
+        the test is deterministic and never sleeps.
+        """
+        now = [1000.0]
+
+        async def _get(_token):
+            now[0] += elapsed_seconds
+            return book
+
+        async def _info(_token):
+            return {"tick_size": "0.01", "min_order_size": "5", "neg_risk": False}
+
+        gw = MagicMock()
+        gw.get_orderbook = _get
+        gw.get_market_info = _info
+        return now, gw
+
+    @pytest.mark.asyncio
+    async def test_seven_hundred_ms_round_trip_is_accepted_under_the_new_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import services.market_data_service as mds_mod
+
+        store = MarketStateStore()
+        now, gw = self._clock_and_gateway(
+            0.7,
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")}),
+        )
+        monkeypatch.setattr(mds_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        svc = MarketDataService(
+            store,
+            gw,
+            policy=_rest_policy(
+                rest_snapshot_max_age_ms=1500,
+                rest_snapshot_total_budget_ms=2000,
+            ),
+        )
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+    @pytest.mark.asyncio
+    async def test_seven_hundred_ms_round_trip_was_rejected_by_the_old_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Characterizes the live failure the new budget fixes."""
+        import services.market_data_service as mds_mod
+
+        store = MarketStateStore()
+        now, gw = self._clock_and_gateway(
+            0.7,
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")}),
+        )
+        monkeypatch.setattr(mds_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        svc = MarketDataService(
+            store,
+            gw,
+            policy=_rest_policy(rest_snapshot_max_age_ms=500),
+        )
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_stale"
+
+    @pytest.mark.asyncio
+    async def test_zero_spread_cap_never_rejects_a_wide_book(self) -> None:
+        """Zero disables the spread gate for remaining snapshot consumers."""
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book(
+                {Decimal("0.50"): Decimal("100")},
+                {Decimal("1.00"): Decimal("100")},
+            )
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0))
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        assert bundle.quote.best_ask == Decimal("1.00")
 
 
 # ---------------------------------------------------------------------------
@@ -1051,9 +1145,7 @@ class TestBundleFromCacheRestSnapshot:
             {Decimal("0.88"): Decimal("50")},
             {"source": "wss"},
         )
-        cache.set_quote(
-            TOKEN, best_bid=Decimal("0.85"), best_ask=Decimal("0.88"), source="wss"
-        )
+        cache.set_quote(TOKEN, best_bid=Decimal("0.85"), best_ask=Decimal("0.88"), source="wss")
         policy = self._rest_snap_policy()
         svc = _make_service(cache, policy=policy)
 

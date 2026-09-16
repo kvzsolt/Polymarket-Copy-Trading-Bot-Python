@@ -1,4 +1,5 @@
 """bot orders — list and reconcile orders."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,27 +7,28 @@ import asyncio
 import json
 
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
 
 
 def register_orders_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the order inspection command with the CLI parser."""
     parser = subparsers.add_parser("orders", help="List and reconcile orders")
     orders_sub = parser.add_subparsers(dest="orders_subcommand", required=True)
 
     pending_parser = orders_sub.add_parser("pending", help="List orders with non-terminal status")
     pending_parser.add_argument("--user-id", default=None, help="Filter by user ID")
 
-    reconcile_parser = orders_sub.add_parser("reconcile", help="Trigger reconciliation for unconfirmed orders")
-    reconcile_parser.add_argument("--dry-run", action="store_true", help="Show what would be reconciled without acting")
+    reconcile_parser = orders_sub.add_parser(
+        "reconcile", help="Trigger reconciliation for unconfirmed orders"
+    )
+    reconcile_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be reconciled without acting"
+    )
 
 
 def _load_config_or_fail():
     """Load config, returning None and printing error on failure."""
     try:
-        load_runtime_env()
-        rehydrate_env()
         return load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))
@@ -110,7 +112,6 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.orders_repo import OrdersRepo
 
     pool = await init_pool(
         config.database.dsn,
@@ -145,26 +146,12 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
         errors: list[str] = []
         if unconfirmed:
             try:
-                from integrations.polymarket.clob_v2_gateway import PolymarketGateway
-                from integrations.polymarket.sdk_client import create_polymarket_client
-                from services.reconciliation import ReconciliationService
+                from orchestration.reconciliation_command import ReconciliationCommandService
 
-                wallet = config.wallet
-                client = await create_polymarket_client(wallet_config=wallet, config=config)
-                gateway = PolymarketGateway(client, config)
-                try:
-                    orders_repo = OrdersRepo(pool)
-                    svc = ReconciliationService(
-                        clob_client=gateway,
-                        orders_repo=orders_repo,
-                        config=config,
-                    )
-                    result = await svc.reconcile()
-                    reconciled = result.stale_orders_cancelled
-                    if result.errors:
-                        errors = result.errors
-                finally:
-                    await gateway.close()
+                result = await ReconciliationCommandService(config=config, pool=pool).run()
+                reconciled = result.stale_orders_cancelled
+                if result.errors:
+                    errors = result.errors
             except Exception as exc:
                 errors.append(str(exc))
     finally:
@@ -189,4 +176,5 @@ async def _run_orders_async(args: argparse.Namespace) -> int:
 
 
 def run_orders(args: argparse.Namespace) -> int:
+    """Query and render orders for the selected follower."""
     return asyncio.run(_run_orders_async(args))

@@ -18,6 +18,7 @@ PG-A5: PG ``PositionsRepo.apply_fill`` holds a per-row advisory lock
 → UPSERT/DELETE chain is serialised against concurrent writers — even
 when the row doesn't exist yet on the first fill.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -95,8 +96,7 @@ async def test_concurrent_sells_no_lost_update():
         final = await repo.get_position("u", "c", token_id="1" * 64)
         assert final is not None
         assert final.size_tokens == Decimal("1"), (
-            f"lost-update race: expected 1 token left after 5 - 2 - 2, "
-            f"got {final.size_tokens}"
+            f"lost-update race: expected 1 token left after 5 - 2 - 2, got {final.size_tokens}"
         )
 
 
@@ -127,6 +127,5 @@ async def test_apply_fill_returns_fresh_record_not_mutated_in_place():
             "invariant)."
         )
         assert pre.size_tokens == Decimal("10"), (
-            f"pre-fill snapshot was mutated under the caller: "
-            f"now {pre.size_tokens}"
+            f"pre-fill snapshot was mutated under the caller: now {pre.size_tokens}"
         )

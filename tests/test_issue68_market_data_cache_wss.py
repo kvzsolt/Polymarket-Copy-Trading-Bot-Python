@@ -11,6 +11,7 @@ Covers all acceptance criteria:
   - MarketDataService fail-closed on stale data
   - MarketDataService REST fallback
 """
+
 from __future__ import annotations
 
 import json
@@ -47,30 +48,34 @@ def cache() -> MarketStateStore:
 @pytest.fixture
 def mock_gateway():
     gw = AsyncMock()
-    gw.get_orderbook = AsyncMock(return_value=OrderBook(
-        token_id=TOKEN_A,
-        tick_size=Decimal("0.01"),
-        min_order_size=Decimal("5"),
-        neg_risk=False,
-        bids=[
-            OrderBookLevel(price=Decimal("0.50"), size=Decimal("100")),
-            OrderBookLevel(price=Decimal("0.48"), size=Decimal("200")),
-        ],
-        asks=[
-            OrderBookLevel(price=Decimal("0.55"), size=Decimal("150")),
-            OrderBookLevel(price=Decimal("0.57"), size=Decimal("80")),
-        ],
-        best_bid=Decimal("0.50"),
-        best_ask=Decimal("0.55"),
-    ))
-    gw.get_market_info = AsyncMock(return_value={
-        "token_id": TOKEN_A,
-        "tick_size": "0.01",
-        "min_order_size": "5",
-        "neg_risk": False,
-        "best_bid": "0.50",
-        "best_ask": "0.55",
-    })
+    gw.get_orderbook = AsyncMock(
+        return_value=OrderBook(
+            token_id=TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            bids=[
+                OrderBookLevel(price=Decimal("0.50"), size=Decimal("100")),
+                OrderBookLevel(price=Decimal("0.48"), size=Decimal("200")),
+            ],
+            asks=[
+                OrderBookLevel(price=Decimal("0.55"), size=Decimal("150")),
+                OrderBookLevel(price=Decimal("0.57"), size=Decimal("80")),
+            ],
+            best_bid=Decimal("0.50"),
+            best_ask=Decimal("0.55"),
+        )
+    )
+    gw.get_market_info = AsyncMock(
+        return_value={
+            "token_id": TOKEN_A,
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": False,
+            "best_bid": "0.50",
+            "best_ask": "0.55",
+        }
+    )
     return gw
 
 
@@ -94,13 +99,18 @@ def user_ws(cache: MarketStateStore) -> UserWebSocket:
 # 2. Cache invalidation on own fill
 # ===================================================================
 
+
 class TestCacheInvalidationOnFill:
     """Verify own fill invalidates both quote and book."""
 
     def test_fill_invalidates_quote_and_book(self, cache: MarketStateStore) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")}
+        )
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
 
         cache.invalidate(TOKEN_A)
 
@@ -123,13 +133,18 @@ class TestCacheInvalidationOnFill:
 # 3. Cache invalidation on tick-size change
 # ===================================================================
 
+
 class TestCacheInvalidationOnTickSizeChange:
     """Verify tick-size change invalidates quote and book."""
 
     def test_tick_size_change_clears_quote_and_book(self, cache: MarketStateStore) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")})
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}
+        )
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
 
         cache.on_tick_size_change(TOKEN_A, Decimal("0.001"))
 
@@ -142,6 +157,7 @@ class TestCacheInvalidationOnTickSizeChange:
 # ===================================================================
 # 4. Subscription payload uses assets_ids
 # ===================================================================
+
 
 class TestSubscriptionPayload:
     """Verify subscription message format uses assets_ids."""
@@ -161,6 +177,7 @@ class TestSubscriptionPayload:
 # ===================================================================
 # 5. Heartbeat sends PING every 5 seconds
 # ===================================================================
+
 
 class TestHeartbeat:
     """Verify heartbeat sends PING every 5 seconds."""
@@ -189,6 +206,7 @@ class TestHeartbeat:
     @pytest.mark.asyncio
     async def test_user_ws_heartbeat_interval(self, user_ws: UserWebSocket) -> None:
         from clients.user_ws import HEARTBEAT_INTERVAL as USER_HB
+
         mock_ws = AsyncMock()
         user_ws._running = True
         call_count = 0
@@ -212,6 +230,7 @@ class TestHeartbeat:
 # ===================================================================
 # 6. Reconnect snapshots before deltas
 # ===================================================================
+
 
 class TestReconnectSnapshots:
     """Verify reconnect fetches REST snapshot before applying deltas."""
@@ -297,6 +316,7 @@ class TestReconnectSnapshots:
 # 7. Size 0 deletes a book level
 # ===================================================================
 
+
 class TestSizeZeroDeletesLevel:
     """Verify price_change with size=0 deletes a book level."""
 
@@ -352,12 +372,14 @@ class TestSizeZeroDeletesLevel:
             asks={Decimal("0.55"): Decimal("80")},
         )
 
-        event = json.dumps({
-            "event_type": "price_change",
-            "price_changes": [
-                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "price_changes": [
+                    {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
+                ],
+            }
+        )
         market_ws._handle_message(event)
 
         book = cache.get_book(TOKEN_A)
@@ -367,13 +389,15 @@ class TestSizeZeroDeletesLevel:
     def test_market_ws_price_change_upsert_with_size(
         self, market_ws: MarketWebSocket, cache: MarketStateStore
     ) -> None:
-        event = json.dumps({
-            "event_type": "price_change",
-            "price_changes": [
-                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "150"},
-                {"asset_id": TOKEN_A, "side": "SELL", "price": "0.55", "size": "80"},
-            ],
-        })
+        event = json.dumps(
+            {
+                "event_type": "price_change",
+                "price_changes": [
+                    {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "150"},
+                    {"asset_id": TOKEN_A, "side": "SELL", "price": "0.55", "size": "80"},
+                ],
+            }
+        )
         market_ws._handle_message(event)
 
         book = cache.get_book(TOKEN_A)
@@ -386,6 +410,7 @@ class TestSizeZeroDeletesLevel:
 # 8. User WS fill invalidation
 # ===================================================================
 
+
 class TestUserWSFillInvalidation:
     """Verify user fill events invalidate cache."""
 
@@ -393,15 +418,19 @@ class TestUserWSFillInvalidation:
         self, user_ws: UserWebSocket, cache: MarketStateStore
     ) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")}
+        )
 
-        event = json.dumps({
-            "event_type": "trade",
-            "asset_id": TOKEN_A,
-            "side": "BUY",
-            "size": "100",
-            "price": "0.55",
-        })
+        event = json.dumps(
+            {
+                "event_type": "trade",
+                "asset_id": TOKEN_A,
+                "side": "BUY",
+                "size": "100",
+                "price": "0.55",
+            }
+        )
         user_ws._handle_message(event)
 
         assert cache.get_quote(TOKEN_A) is None
@@ -412,13 +441,18 @@ class TestUserWSFillInvalidation:
 # 9. Reconcile invalidation
 # ===================================================================
 
+
 class TestReconcileInvalidation:
     """Verify reconciliation clears all cached data for a token."""
 
     def test_reconcile_clears_everything(self, cache: MarketStateStore) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")})
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}
+        )
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
 
         cache.evict(TOKEN_A)
 
@@ -431,13 +465,18 @@ class TestReconcileInvalidation:
 # 10. Full invalidation (reconnect bootstrap)
 # ===================================================================
 
+
 class TestFullInvalidation:
     """Verify invalidate_all clears everything."""
 
     def test_invalidate_all(self, cache: MarketStateStore) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")})
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}
+        )
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
 
         cache.invalidate_all()
@@ -451,6 +490,7 @@ class TestFullInvalidation:
 # ===================================================================
 # 11. MarketDataService — freshness-aware reads
 # ===================================================================
+
 
 class TestMarketDataServiceFreshness:
     """Verify MarketDataService serves fresh data from cache."""
@@ -481,7 +521,9 @@ class TestMarketDataServiceFreshness:
     async def test_serves_fresh_tick_from_cache(
         self, mds: MarketDataService, cache: MarketStateStore
     ) -> None:
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
         tick = await mds.require_fresh_tick(TOKEN_A)
         assert tick.tick_size == Decimal("0.01")
 
@@ -490,8 +532,12 @@ class TestMarketDataServiceFreshness:
         self, mds: MarketDataService, cache: MarketStateStore
     ) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")})
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}
+        )
+        cache.set_tick(
+            TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False
+        )
 
         bundle = await mds.require_fresh_data(TOKEN_A)
         assert bundle.token_id == TOKEN_A
@@ -503,6 +549,7 @@ class TestMarketDataServiceFreshness:
 # ===================================================================
 # 12. MarketDataService — fail-closed on stale data
 # ===================================================================
+
 
 class TestMarketDataServiceFailClosed:
     """Verify MarketDataService fails closed when data is unavailable."""
@@ -537,9 +584,7 @@ class TestMarketDataServiceFailClosed:
             await mds.require_fresh_data(TOKEN_A)
 
     @pytest.mark.asyncio
-    async def test_rest_failure_raises_stale(
-        self, cache: MarketStateStore, mock_gateway
-    ) -> None:
+    async def test_rest_failure_raises_stale(self, cache: MarketStateStore, mock_gateway) -> None:
         mock_gateway.get_orderbook = AsyncMock(side_effect=RuntimeError("network down"))
         mds = MarketDataService(cache, mock_gateway)
 
@@ -547,9 +592,7 @@ class TestMarketDataServiceFailClosed:
             await mds.require_fresh_quote(TOKEN_A)
 
     @pytest.mark.asyncio
-    async def test_get_or_none_returns_none(
-        self, cache: MarketStateStore, mock_gateway
-    ) -> None:
+    async def test_get_or_none_returns_none(self, cache: MarketStateStore, mock_gateway) -> None:
         mock_gateway.get_orderbook = AsyncMock(side_effect=RuntimeError("network down"))
         mock_gateway.get_market_info = AsyncMock(side_effect=RuntimeError("network down"))
         mds = MarketDataService(cache, mock_gateway)
@@ -564,6 +607,7 @@ class TestMarketDataServiceFailClosed:
 # ===================================================================
 # 13. MarketDataService — REST fallback
 # ===================================================================
+
 
 class TestMarketDataServiceRESTFallback:
     """Verify MarketDataService falls back to REST when cache is stale."""
@@ -614,8 +658,19 @@ class TestMarketDataServiceRESTFallback:
         self, mds: MarketDataService, cache: MarketStateStore, mock_gateway
     ) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"), source="wss")
-        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}, source="wss")
-        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False, source="wss")
+        cache.set_book(
+            TOKEN_A,
+            bids={Decimal("0.50"): Decimal("100")},
+            asks={Decimal("0.55"): Decimal("80")},
+            source="wss",
+        )
+        cache.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            source="wss",
+        )
         cache.mark_fresh(TOKEN_A, source="wss")
         quote = await mds.require_fresh_quote(TOKEN_A)
         assert quote.best_bid == Decimal("0.50")
@@ -625,6 +680,7 @@ class TestMarketDataServiceRESTFallback:
 # ===================================================================
 # 14. BookSnapshot helpers
 # ===================================================================
+
 
 class TestBookSnapshot:
     """Verify BookSnapshot best_bid/best_ask fields."""

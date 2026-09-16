@@ -13,6 +13,7 @@ The test pins:
   * metrics() never returns a value with > 2 decimal places of slop
     relative to the exact Decimal sum.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -79,8 +80,8 @@ def test_realized_pnl_preserves_precision(tmp_path):
     metrics = tracker.metrics()
     # Total returned must be exact Decimal even after round to 2dp display.
     assert tracker._total_returned == Decimal("3.10")
-    # net_pnl reported as a number that equals exactly 0.10 (no float slop)
-    assert Decimal(str(metrics["net_pnl"])) == Decimal("0.10")
+    # Gross realized PnL reported as a number that equals exactly 0.10 (no float slop)
+    assert Decimal(str(metrics["gross_realized_pnl"])) == Decimal("0.10")
 
 
 def test_float_inputs_are_coerced_via_str_to_avoid_decimal_float_trap(tmp_path):

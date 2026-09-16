@@ -1,4 +1,5 @@
 """Strategy-profile model for the strategy profiler / env tuner (PR3)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

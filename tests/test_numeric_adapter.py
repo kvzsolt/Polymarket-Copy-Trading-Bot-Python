@@ -11,6 +11,7 @@ the contract the audit demanded:
 * repeating decimals, 0.01 / 0.001 ticks, the min-size boundary and near-1.0
   prices all round-trip to the expected tick multiple.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -26,8 +27,8 @@ class TestExactBoundary:
         [
             ("0.50", "0.01", 0.50),
             ("0.55", "0.01", 0.55),
-            ("0.999", "0.001", 0.999),   # near-1.0 price, fine tick
-            ("1.0", "0.01", 1.0),        # min-size boundary
+            ("0.999", "0.001", 0.999),  # near-1.0 price, fine tick
+            ("1.0", "0.01", 1.0),  # min-size boundary
             ("10", "0.01", 10.0),
             ("0.123", "0.001", 0.123),
         ],
@@ -41,9 +42,7 @@ class TestExactBoundary:
 
     def test_round_half_up_to_nearest_tick(self):
         # 0.505 on a 0.01 tick → 0.51 (ROUND_HALF_UP). Within epsilon, accepted.
-        out = quantize_and_convert_to_float(
-            Decimal("0.505"), "0.01", epsilon=Decimal("0.01")
-        )
+        out = quantize_and_convert_to_float(Decimal("0.505"), "0.01", epsilon=Decimal("0.01"))
         assert out == pytest.approx(0.51)
 
     def test_repeating_decimal_quantizes_to_tick(self):
@@ -66,9 +65,7 @@ class TestRejection:
 
     def test_tiny_within_epsilon_accepted(self):
         # On-grid plus a sub-epsilon perturbation stays accepted.
-        out = quantize_and_convert_to_float(
-            Decimal("0.50") + DEFAULT_EPSILON / 2, "0.01"
-        )
+        out = quantize_and_convert_to_float(Decimal("0.50") + DEFAULT_EPSILON / 2, "0.01")
         assert out == pytest.approx(0.50)
 
     def test_non_positive_tick_raises(self):

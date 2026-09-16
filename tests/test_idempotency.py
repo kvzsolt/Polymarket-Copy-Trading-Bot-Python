@@ -1,4 +1,5 @@
 """Tests for ``utils.idempotency`` (PG-A5 async PG version)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -69,7 +70,6 @@ def test_build_trade_key():
 
 
 class TestIdempotencyStore:
-
     async def test_mark_and_has_processed(self):
         async with _pg_pool():
             import utils.idempotency as idem
@@ -98,9 +98,7 @@ class TestIdempotencyStore:
                 "_txHashes": ["0xOLD1", "0xOLD2"],
             }
 
-            keys = await idem.mark_processed_all_tx_hashes(
-                "0xleader", trade, status="executed"
-            )
+            keys = await idem.mark_processed_all_tx_hashes("0xleader", trade, status="executed")
             assert len(keys) >= 3
 
             for txh in ["0xnew", "0xold1", "0xold2"]:

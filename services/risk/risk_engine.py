@@ -16,6 +16,7 @@ logger = get_logger("RiskEngine")
 # Simplified account-cap policy
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class AccountCapPolicy:
     name: str
@@ -33,15 +34,26 @@ class AccountCapPolicy:
 
 
 def _policy_from_config(config: AppConfig) -> AccountCapPolicy:
-    """Build AccountCapPolicy from the typed AppConfig."""
+    """Build AccountCapPolicy from the typed AppConfig.
+
+    C2 — when ``enable_balance_tiered_policy`` is False the open-positions cap
+    honors ``risk.max_open_positions`` (the non-tiered limit) instead of the
+    tiered ``balance_policy_max_open_positions``. Previously
+    ``risk.max_open_positions`` was dead (the tiered value was always used),
+    so the operator's configured 40-position limit was silently capped at 12.
+    """
     rc = config.risk
+    if getattr(rc, "enable_balance_tiered_policy", False):
+        max_open_positions = rc.balance_policy_max_open_positions
+    else:
+        max_open_positions = rc.max_open_positions
     return AccountCapPolicy(
         name="account_cap",
         reserve_pct=Decimal(str(rc.balance_policy_reserve_pct)),
         reserve_floor=Decimal(str(rc.balance_policy_reserve_floor)),
         hard_cap_pct=Decimal(str(rc.balance_policy_hard_cap_pct)),
         hard_cap_ceiling=Decimal(str(rc.balance_policy_hard_cap_ceiling)),
-        max_open_positions=rc.balance_policy_max_open_positions,
+        max_open_positions=max_open_positions,
         allow_partial_exits=rc.balance_policy_allow_partial_exits,
         allow_pyramiding=rc.balance_policy_allow_pyramiding,
         max_adds_per_position=rc.balance_policy_max_adds_per_position,
@@ -112,7 +124,9 @@ def compute_reserve_cash(equity_usdc: Decimal, policy: AccountCapPolicy) -> Deci
     return max(policy.reserve_floor, equity_usdc * policy.reserve_pct)
 
 
-def compute_hard_cap(equity_usdc: Decimal, tradable_cash: Decimal, policy: AccountCapPolicy) -> Decimal:
+def compute_hard_cap(
+    equity_usdc: Decimal, tradable_cash: Decimal, policy: AccountCapPolicy
+) -> Decimal:
     return min(tradable_cash, equity_usdc * policy.hard_cap_pct, policy.hard_cap_ceiling)
 
 
@@ -129,6 +143,7 @@ def compute_soft_cap(
 # ---------------------------------------------------------------------------
 # Risk headroom for BUY
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class RiskHeadroom:
@@ -210,6 +225,7 @@ def headroom_for_buy(
 # Legacy policy/engine interface (kept for backward compat)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class RiskPolicy:
     max_trade_usdc: Decimal
@@ -261,7 +277,9 @@ class PortfolioSnapshot:
 
 
 class RiskEngine:
-    def evaluate(self, portfolio: PortfolioSnapshot, policy: RiskPolicy, trade: ProposedTrade) -> RiskDecision:
+    def evaluate(
+        self, portfolio: PortfolioSnapshot, policy: RiskPolicy, trade: ProposedTrade
+    ) -> RiskDecision:
         if policy.kill_switch:
             return RiskDecision(False, "kill_switch_enabled")
 
@@ -281,13 +299,22 @@ class RiskEngine:
         if max_notional_from_pct > 0 and trade.notional_usdc > max_notional_from_pct:
             return RiskDecision(False, "max_portfolio_pct_per_trade_exceeded")
 
-        if portfolio.market_exposure_usdc(trade.market_id) + trade.notional_usdc > policy.max_market_exposure_usdc:
+        if (
+            portfolio.market_exposure_usdc(trade.market_id) + trade.notional_usdc
+            > policy.max_market_exposure_usdc
+        ):
             return RiskDecision(False, "max_market_exposure_exceeded")
 
-        if portfolio.category_exposure_usdc(trade.category) + trade.notional_usdc > policy.max_category_exposure_usdc:
+        if (
+            portfolio.category_exposure_usdc(trade.category) + trade.notional_usdc
+            > policy.max_category_exposure_usdc
+        ):
             return RiskDecision(False, "max_category_exposure_exceeded")
 
-        if portfolio.leader_exposure_usdc(trade.leader_id) + trade.notional_usdc > policy.max_leader_exposure_usdc:
+        if (
+            portfolio.leader_exposure_usdc(trade.leader_id) + trade.notional_usdc
+            > policy.max_leader_exposure_usdc
+        ):
             return RiskDecision(False, "max_leader_exposure_exceeded")
 
         return RiskDecision(True, "ok")
@@ -308,23 +335,4 @@ def policy_from_config(config: AppConfig) -> RiskPolicy:
         max_daily_drawdown_pct=Decimal(str(rc.max_daily_drawdown_pct)),
         max_slippage_bps=int(ec.slippage_tolerance * 100),
         kill_switch=rc.kill_switch,
-    )
-
-
-# Legacy alias for backward compat
-def policy_from_env() -> RiskPolicy:
-    """DEPRECATED: Use policy_from_config() instead."""
-    if _cached_config is not None:
-        return policy_from_config(_cached_config)
-    # Bare hardcoded fallback matching production defaults in AppConfig.
-    return RiskPolicy(
-        max_trade_usdc=Decimal("100"),
-        max_portfolio_pct_per_trade=Decimal("0.45"),
-        max_market_exposure_usdc=Decimal("300"),
-        max_category_exposure_usdc=Decimal("600"),
-        max_leader_exposure_usdc=Decimal("500"),
-        max_open_positions=12,
-        max_daily_drawdown_pct=Decimal("20"),
-        max_slippage_bps=200,
-        kill_switch=False,
     )

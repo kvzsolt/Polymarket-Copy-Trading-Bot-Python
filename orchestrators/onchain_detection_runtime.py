@@ -18,9 +18,11 @@ Safety invariants:
     pending flag is on, and they are superseded by the mined signal that
     shares their ``tx_hash`` (no double dispatch).
   * **Per-fill idempotency at the dispatcher** (Greptile P1 #2 re-review):
-    mined signals are keyed by ``(tx_hash, log_index)`` so a single
-    settlement tx that emits multiple ``OrderFilled`` logs produces one
-    dispatch *per fill*, not one per tx. Pending signals (which have no
+    counterparty-order events that identify a watched wallet only as taker
+    are ignored because the exchange also emits the watched wallet's
+    canonical taker-summary event for the same economics. Remaining mined
+    signals are keyed by ``(tx_hash, log_index)``, preserving every distinct
+    watched-maker fill. Pending signals (which have no
     ``log_index``) are keyed by ``tx_hash`` alone. Cross-suppression: if a
     mined fill for a ``tx_hash`` has already been dispatched, any later
     pending signal for that same ``tx_hash`` is dropped (the authoritative
@@ -34,17 +36,22 @@ Safety invariants:
     no on-chain signals are produced and the existing REST-polling leader
     path continues unchanged.
 """
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import time
 from collections import deque
+from dataclasses import replace
 from typing import Any, Callable, Coroutine
 
 from clients.onchain_ws import OnchainWebSocket
+from domain.source_time import TransportReceipt
+from interfaces.source_time import BlockTimestampReader
 from services.onchain_detection.mined_fill_deduplicator import MinedFillDeduplicator
 from services.onchain_detection.order_filled_detector import (
+    DecodedOrderFilledLog,
     decode_order_filled_log,
     build_signal_from_log,
     log_subscription_params,
@@ -66,6 +73,7 @@ logger = get_logger("OnchainDetectionRuntime")
 SignalSink = Callable[[OnchainTradeSignal], Coroutine[Any, Any, None]]
 ConditionIdResolver = Callable[[str], Coroutine[Any, Any, str]]
 WebSocketFactory = Callable[..., OnchainWebSocket]
+MinedSubscriptionParamsFactory = Callable[[frozenset[str]], list[list[Any]]]
 
 _CONFIDENCE_RANK = {
     DetectionConfidence.MARKET_UNATTRIBUTED: 0,
@@ -96,8 +104,10 @@ class OnchainDetectionRuntime:
         pending_config: PendingTxConfig | None = None,
         condition_id_resolver: ConditionIdResolver | None = None,
         websocket_factory: WebSocketFactory = OnchainWebSocket,
+        mined_subscription_params_factory: MinedSubscriptionParamsFactory | None = None,
         queue_maxsize: int = 1000,
         dispatched_cap: int = 10_000,
+        block_timestamp_reader: BlockTimestampReader | None = None,
     ) -> None:
         self._watched = {w.lower() for w in watched_wallets}
         self._ws_url = ws_url
@@ -106,13 +116,20 @@ class OnchainDetectionRuntime:
         self._enable_mined = bool(enable_mined)
         self._pending_config = pending_config or PendingTxConfig()
         self._resolver = condition_id_resolver
+        self._block_timestamp_reader = block_timestamp_reader
         self._websocket_factory = websocket_factory
+        self._mined_params_factory = mined_subscription_params_factory
         self._dedupe = MinedFillDeduplicator()
         self._queue: asyncio.Queue[OnchainTradeSignal] = asyncio.Queue(maxsize=queue_maxsize)
-        self._mined_ws: OnchainWebSocket | None = None
+        self._mined_sockets: list[OnchainWebSocket] = []
         self._pending_ws: OnchainWebSocket | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._running = False
+        # Roster resubscribe (watched-topic-filtered modes only): at most one
+        # background rebuild task exists; ``_resubscribe_requested`` coalesces
+        # multiple roster updates into one rebuild off the signal hot path.
+        self._resubscribe_requested = False
+        self._resubscribe_task: asyncio.Task | None = None
         # Per-fill idempotency state for the dispatcher (Greptile P1 #2
         # re-review). All dispatched keys — mined log keys
         # ``(tx_hash, log_index)``, pending keys ``(tx_hash, leader)``,
@@ -136,6 +153,28 @@ class OnchainDetectionRuntime:
     def deduplicator(self) -> MinedFillDeduplicator:
         return self._dedupe
 
+    @property
+    def connected(self) -> bool | None:
+        """Return whether any composed detection socket is subscribed.
+
+        The operator control plane reads this as a late-bound health probe, so
+        it must stay O(1) and must never claim a state it cannot observe:
+        before ``start`` (and after ``stop``) no socket exists and the answer
+        is ``None``, which the read surface renders as "unknown" rather than
+        "disconnected".
+
+        Returns:
+            ``True`` when at least one composed socket is subscribed, ``False``
+            when every composed socket is down, ``None`` when none exists.
+        """
+
+        sockets = [*self._mined_sockets]
+        if self._pending_ws is not None:
+            sockets.append(self._pending_ws)
+        if not sockets:
+            return None
+        return any(bool(getattr(socket, "connected", False)) for socket in sockets)
+
     async def _resolve_condition_id(self, token_id: str) -> str:
         if self._resolver is None or not token_id:
             return ""
@@ -149,9 +188,36 @@ class OnchainDetectionRuntime:
             )
             return ""
 
+    def _is_counterparty_perspective_event(self, decoded: DecodedOrderFilledLog) -> bool:
+        """Return whether ``decoded`` mirrors a later canonical taker summary.
+
+        The exchange emits one event for every matched maker order and one
+        aggregate event for the taker order. A watched taker therefore appears
+        in each counterparty maker event before appearing as the maker of its
+        own aggregate summary. Dispatching both perspectives doubles the same
+        shares and notional. Events whose maker is watched remain canonical,
+        preserving multiple genuinely additive maker fills in one transaction.
+
+        Args:
+            decoded: One validated Polymarket ``OrderFilled`` event.
+
+        Returns:
+            ``True`` only when a watched wallet appears as taker and the maker
+            is not also watched.
+        """
+
+        return decoded.taker.lower() in self._watched and decoded.maker.lower() not in self._watched
+
     async def _on_mined_log(self, log: dict[str, Any]) -> None:
         decoded = decode_order_filled_log(log)
         if decoded is None:
+            return
+        if self._is_counterparty_perspective_event(decoded):
+            logger.debug(
+                "onchain_mined_counterparty_perspective_dropped | tx=%s log_index=%s",
+                decoded.tx_hash,
+                decoded.log_index,
+            )
             return
         # Dedupe by (tx_hash, log_index) — the authoritative key.
         if await self._dedupe.is_duplicate_mined(decoded.tx_hash, decoded.log_index):
@@ -162,7 +228,11 @@ class OnchainDetectionRuntime:
             )
             return
         condition_id = await self._resolve_condition_id(str(decoded.token_id))
-        event_ts = int(time.time() * 1000)
+        event_ts = (
+            await self._block_timestamp_reader.timestamp_ms(decoded.block_hash)
+            if self._block_timestamp_reader is not None
+            else None
+        )
         signal = build_signal_from_log(
             decoded,
             watched_wallets=self._watched,
@@ -171,20 +241,26 @@ class OnchainDetectionRuntime:
         )
         if signal is None:
             return
+        receipt = log.get("_source_receipt")
+        if isinstance(receipt, TransportReceipt):
+            signal = replace(signal, source_receipt=receipt)
         # If a pending signal for this (tx_hash, leader_wallet) was recorded,
         # mark it superseded so the dispatcher drops the provisional copy in
         # favour of this mined one. Per-leader keying (not tx-wide) ensures a
         # mined fill for leaderA does NOT suppress a pending for leaderB in
         # the same tx (Greptile P1 re-review: "Pending matches are dropped").
-        await self._dedupe.supersede_pending(
-            decoded.tx_hash, signal.leader_wallet
-        )
+        await self._dedupe.supersede_pending(decoded.tx_hash, signal.leader_wallet)
         await self._enqueue(signal)
 
     async def _on_pending_tx(self, tx: dict[str, Any]) -> None:
         if not self._enable_pending:
             return
-        now_ms = int(time.time() * 1000)
+        receipt = tx.get("_source_receipt")
+        now_ms = (
+            receipt.wall_timestamp_ms
+            if isinstance(receipt, TransportReceipt)
+            else int(time.time() * 1000)
+        )
         signals = build_signals_from_pending_tx(
             tx,
             watched_wallets=self._watched,
@@ -192,13 +268,13 @@ class OnchainDetectionRuntime:
             config=self._pending_config,
         )
         for signal in signals:
+            if isinstance(receipt, TransportReceipt):
+                signal = replace(signal, source_receipt=receipt)
             # Record the pending (tx_hash, leader_wallet); if a pending for
             # this leader in this tx was already recorded, drop the duplicate
             # (do not double-dispatch). Per-leader keying allows distinct
             # watched-wallet matches in the same tx to each be recorded.
-            is_new = await self._dedupe.record_pending(
-                signal.tx_hash, signal.leader_wallet
-            )
+            is_new = await self._dedupe.record_pending(signal.tx_hash, signal.leader_wallet)
             if not is_new:
                 logger.debug(
                     "onchain_pending_dup_dropped | tx=%s leader=%s",
@@ -259,7 +335,7 @@ class OnchainDetectionRuntime:
                             "onchain_pending_stale_dropped | tx=%s leader=%s age_ms=%s",
                             signal.tx_hash,
                             signal.leader_wallet,
-                            now_ms - signal.event_ts,
+                            None if signal.event_ts is None else now_ms - signal.event_ts,
                         )
                         continue
                     if not _confidence_meets_required(
@@ -280,9 +356,7 @@ class OnchainDetectionRuntime:
                     # (no double dispatch). Per-leader keying ensures a
                     # mined for leaderA does not suppress a pending for
                     # leaderB in the same tx.
-                    if not await self._dedupe.pending_known(
-                        signal.tx_hash, signal.leader_wallet
-                    ):
+                    if not await self._dedupe.pending_known(signal.tx_hash, signal.leader_wallet):
                         continue
                 # Per-fill idempotency gate (Greptile P1 #2 re-review):
                 # mined signals are keyed by ``(tx_hash, log_index)`` so a
@@ -396,13 +470,21 @@ class OnchainDetectionRuntime:
             return
         self._running = True
         if self._enable_mined:
-            self._mined_ws = self._websocket_factory(
-                ws_url=self._ws_url,
-                subscribe_params=log_subscription_params(),
-                name="orderfilled",
-                on_message=self._on_mined_log,
-            )
-            self._mined_ws.start()
+            for params in self._mined_subscription_params():
+                mined_ws = self._websocket_factory(
+                    ws_url=self._ws_url,
+                    subscribe_params=params,
+                    name="orderfilled",
+                    on_message=self._on_mined_log,
+                )
+                mined_ws.start()
+                self._mined_sockets.append(mined_ws)
+            if not self._mined_sockets and not self._watched:
+                logger.info(
+                    "onchain_mined_subscriptions_idle | watched=%d — no leader filter to open "
+                    "yet; a non-empty roster update reopens them",
+                    len(self._watched),
+                )
         if self._enable_pending:
             self._pending_ws = self._websocket_factory(
                 ws_url=self._ws_url,
@@ -417,17 +499,121 @@ class OnchainDetectionRuntime:
             self._dispatcher_loop(), name="onchain-dispatcher"
         )
         logger.info(
-            "onchain_detection_runtime_started | mined=%s pending=%s watched=%d",
+            "onchain_detection_runtime_started | mined=%s mined_subscriptions=%d pending=%s "
+            "watched=%d",
             self._enable_mined,
+            len(self._mined_sockets),
             self._enable_pending,
             len(self._watched),
         )
 
+    def _mined_subscription_params(self) -> list[list[Any]]:
+        """Return the ``eth_subscribe`` params for every mined subscription.
+
+        With a params factory (logs-only confirmed mode) the filters embed the
+        watched leaders as topic2/topic3 OR-lists; without one the runtime
+        keeps the single address-only subscription of the gen-1/pending shape.
+        """
+        if self._mined_params_factory is None:
+            return [log_subscription_params()]
+        return list(self._mined_params_factory(frozenset(self._watched)))
+
+    def _schedule_mined_resubscribe(self) -> None:
+        """Request one roster-driven rebuild of the mined subscriptions.
+
+        Bounded: at most one background rebuild task exists, and roster
+        updates that arrive while a rebuild is running coalesce into a single
+        follow-up pass that reads the latest watched set.
+        """
+        if not self._running or not self._enable_mined:
+            return
+        self._resubscribe_requested = True
+        if self._resubscribe_task is None or self._resubscribe_task.done():
+            self._resubscribe_task = asyncio.create_task(
+                self._resubscribe_mined_loop(), name="onchain-mined-resubscribe"
+            )
+
+    async def _resubscribe_mined_loop(self) -> None:
+        while self._running and self._resubscribe_requested:
+            self._resubscribe_requested = False
+            try:
+                await self._resubscribe_mined_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A failed rebuild must not kill the loop (the next roster
+                # update re-schedules it) nor leak the failure silently.
+                logger.warning(
+                    "onchain_mined_resubscribe_failed | error=%s",
+                    redact_error_detail(exc),
+                )
+
+    async def _resubscribe_mined_once(self) -> None:
+        """Rebuild the mined subscriptions without a detection gap.
+
+        The replacement sockets open first and only then are the superseded
+        ones stopped, so a fill that lands during the switch is delivered by
+        the new subscription (the per-fill ``(tx_hash, log_index)`` dedupe
+        absorbs any overlap). A raise before the swap leaves the current
+        sockets subscribed.
+        """
+        new_sockets: list[OnchainWebSocket] = []
+        if self._running and self._enable_mined:
+            try:
+                for params in self._mined_subscription_params():
+                    mined_ws = self._websocket_factory(
+                        ws_url=self._ws_url,
+                        subscribe_params=params,
+                        name="orderfilled",
+                        on_message=self._on_mined_log,
+                    )
+                    mined_ws.start()
+                    new_sockets.append(mined_ws)
+            except Exception:
+                # A partial replacement batch must not leak: stop what was
+                # started, keep the current sockets subscribed, and let the
+                # guarded loop report the failure.
+                await self._stop_sockets(new_sockets, "onchain_mined_partial_batch_stop_failed")
+                raise
+        old_sockets, self._mined_sockets = self._mined_sockets, new_sockets
+        await self._stop_sockets(old_sockets, "onchain_mined_socket_stop_failed")
+        if new_sockets:
+            logger.info(
+                "onchain_mined_resubscribed | subscriptions=%d watched=%d",
+                len(self._mined_sockets),
+                len(self._watched),
+            )
+        elif not self._watched:
+            logger.info(
+                "onchain_mined_subscriptions_idle | watched=%d — filters closed; a non-empty "
+                "roster update reopens them",
+                len(self._watched),
+            )
+
+    async def _stop_sockets(self, sockets: list[OnchainWebSocket], event: str) -> None:
+        """Stop each socket, logging (never raising) per-socket stop failures.
+
+        Args:
+            sockets: Sockets to stop; each failure is isolated so one bad
+                socket cannot keep its siblings open.
+            event: Structured log event name used for a failed stop.
+        """
+        for socket in sockets:
+            try:
+                await socket.stop()
+            except Exception as exc:
+                logger.warning("%s | error=%s", event, redact_error_detail(exc))
+
     async def stop(self) -> None:
         self._running = False
-        if self._mined_ws is not None:
-            await self._mined_ws.stop()
-            self._mined_ws = None
+        if self._resubscribe_task is not None:
+            self._resubscribe_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._resubscribe_task
+            self._resubscribe_task = None
+        for mined_ws in self._mined_sockets:
+            await mined_ws.stop()
+        self._mined_sockets = []
         if self._pending_ws is not None:
             await self._pending_ws.stop()
             self._pending_ws = None
@@ -439,5 +625,13 @@ class OnchainDetectionRuntime:
         logger.info("onchain_detection_runtime_stopped")
 
     def update_watched_wallets(self, wallets: set[str]) -> None:
-        """Runtime-update the watched set (lowercased)."""
+        """Runtime-update the watched set (lowercased).
+
+        In watched-topic-filtered modes the provider-side filters embed the
+        roster, so a roster change also schedules a resubscribe (off the
+        signal hot path). In the legacy address-only mode nothing resubscribes
+        — the client-side maker/taker match reads the updated set directly.
+        """
         self._watched = {w.lower() for w in wallets}
+        if self._mined_params_factory is not None:
+            self._schedule_mined_resubscribe()

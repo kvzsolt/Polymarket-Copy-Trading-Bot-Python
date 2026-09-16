@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import orjson
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -31,6 +31,7 @@ from services.metrics import (
     METRIC_WSS_RECONNECT,
     metrics,
 )
+from services.execution.user_order_evidence import UserOrderEvidenceParser
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -179,7 +180,7 @@ class UserWebSocket:
                 "passphrase": self._api_creds.get("api_passphrase", ""),
             },
         }
-        await ws.send(json.dumps(auth_payload))
+        await ws.send(orjson.dumps(auth_payload).decode())
         logger.info("UserWS: authentication sent")
         # Polymarket user WS has no auth-ack response; connection alive = authenticated.
         if not self._authenticated:
@@ -237,7 +238,9 @@ class UserWebSocket:
             if not self._running:
                 break
 
-            msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            msg = (
+                raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            )
             # Any inbound frame proves the pipe is alive; treat as a pong
             # for the missed-pong detector.
             self._last_pong_monotonic = time.monotonic()
@@ -256,9 +259,9 @@ class UserWebSocket:
             return
 
         try:
-            data = json.loads(raw_msg)
-        except (json.JSONDecodeError, TypeError):
-            logger.debug("UserWS: non-JSON message: %s", str(raw_msg)[:100])
+            data = orjson.loads(raw_msg)
+        except (orjson.JSONDecodeError, TypeError):
+            logger.debug("UserWS: non-JSON message rejected")
             return
 
         events = data if isinstance(data, list) else [data]
@@ -426,7 +429,7 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
     canonical = _WSS_TRADE_STATUS_MAP.get(str(raw).strip().upper())
     if canonical is None:
         return
-    order_id = event.get("order_id") or event.get("orderID") or event.get("id")
+    order_id = UserOrderEvidenceParser().order_id_for(event)
     # WSS user 'trade' events carry a stable trade UUID in ``id`` (Context7:
     # Polymarket User Channel trade message). Surface it for correlation across
     # the MATCHED → MINED → CONFIRMED status churn emitted for a single trade.
@@ -485,10 +488,7 @@ def _token_id_from_event(event: dict[str, Any]) -> str | None:
     # cache eviction at the call sites would silently miss (wrong key) —
     # stale book/quote data could survive own-fill events. Drop it.
     raw = (
-        event.get("asset_id")
-        or event.get("asset")
-        or event.get("token_id")
-        or event.get("tokenId")
+        event.get("asset_id") or event.get("asset") or event.get("token_id") or event.get("tokenId")
     )
     if raw is None:
         return None

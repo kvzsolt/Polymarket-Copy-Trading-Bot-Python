@@ -48,6 +48,7 @@ def test_wss_trade_event_surfaces_trade_id_and_has_no_tx_hash(monkeypatch):
 
     assert captured, "lifecycle log should have been emitted for a MATCHED trade"
     assert captured.get("tx_hash") is None, "WSS trade events carry no tx hash"
+    assert captured.get("order_id") == event["taker_order_id"]
     assert (captured.get("meta") or {}).get("trade_id") == event["id"]
 
 

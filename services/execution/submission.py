@@ -1,4 +1,5 @@
 """Submission sanitization and pending-order tracking helpers."""
+
 from __future__ import annotations
 
 import time
@@ -19,23 +20,20 @@ if TYPE_CHECKING:
     from config.app_config import AppConfig
 
 
+_EXPIRABLE_PRE_POST_STATUSES = frozenset({"pending", "pending_lock", "submitting"})
+
+
 def truncate_text(value: Any, *, max_chars: int) -> str:
-    text = (
-        str(value)
-        .replace("\x00", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\t", " ")
-    )
+    """Bound text retained as safe submission evidence."""
+    text = str(value).replace("\x00", " ").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     if len(text) <= max_chars:
         return text
     keep = max(0, max_chars - len(_TRUNCATED_SUFFIX))
     return text[:keep] + _TRUNCATED_SUFFIX
 
 
-def sanitize_submission_value(
-    value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS
-) -> Any:
+def sanitize_submission_value(value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS) -> Any:
+    """Return a bounded secret-safe submission evidence value."""
     if value is None:
         return None
     if isinstance(value, (bool, int, float)):
@@ -59,6 +57,7 @@ def sanitize_submission_value(
 
 
 def sanitize_submission_request(request: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a bounded secret-safe submission request snapshot."""
     if not isinstance(request, dict):
         return {}
     sanitized: dict[str, Any] = {}
@@ -72,6 +71,7 @@ def sanitize_submission_request(request: dict[str, Any] | None) -> dict[str, Any
 
 
 def coerce_bool(value: Any) -> bool:
+    """Coerce a provider value to a strict optional boolean."""
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
@@ -82,6 +82,7 @@ def coerce_bool(value: Any) -> bool:
 
 
 def coerce_timestamp(value: Any) -> float | None:
+    """Coerce a provider value to a timezone-aware UTC timestamp."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -115,6 +116,7 @@ def coerce_timestamp(value: Any) -> float | None:
 
 
 def sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, Any]:
+    """Return a bounded secret-safe submission response snapshot."""
     if not isinstance(response, dict):
         return {
             "success": False,
@@ -133,15 +135,11 @@ def sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, An
         if key in {"pending_since", "pending_expires_at", "expired_at"}:
             ts_value = coerce_timestamp(raw_value)
             sanitized[key] = (
-                ts_value
-                if ts_value is not None
-                else sanitize_submission_value(raw_value)
+                ts_value if ts_value is not None else sanitize_submission_value(raw_value)
             )
             continue
         if key == "error":
-            error_value = sanitize_submission_value(
-                raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS
-            )
+            error_value = sanitize_submission_value(raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS)
             if error_value:
                 sanitized[key] = error_value
             continue
@@ -159,15 +157,16 @@ def sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, An
 
 
 def pending_submission_ttl_seconds(config: "AppConfig | None" = None) -> float:
+    """Return the configured ambiguous-submission reconciliation TTL."""
     if config is not None:
         return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
     return 120.0
 
 
 def pending_since(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
+    """Return when ambiguous submission tracking began."""
+    response_value = existing.get("response")
+    response = response_value if isinstance(response_value, dict) else {}
     for candidate in (
         existing.get("pending_since"),
         response.get("pending_since"),
@@ -181,9 +180,9 @@ def pending_since(existing: dict[str, Any]) -> float | None:
 
 
 def pending_expires_at(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
+    """Return when absence evidence may resolve a submission."""
+    response_value = existing.get("response")
+    response = response_value if isinstance(response_value, dict) else {}
     for candidate in (
         existing.get("pending_expires_at"),
         response.get("pending_expires_at"),
@@ -197,6 +196,7 @@ def pending_expires_at(existing: dict[str, Any]) -> float | None:
 def build_pending_response(
     *, pending_since: float, ttl_seconds: float | None = None, config: "AppConfig | None" = None
 ) -> dict[str, Any]:
+    """Build persisted evidence for an ambiguous submission."""
     ttl = (
         pending_submission_ttl_seconds(config)
         if ttl_seconds is None
@@ -218,14 +218,17 @@ def is_pending_submission_expired(
     pending_ttl_seconds: float | None = None,
     config: "AppConfig | None" = None,
 ) -> bool:
+    """Return whether an ambiguous submission exceeded its reconciliation TTL."""
     if not existing:
         return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
+    status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
     if existing.get("order_id"):
         return False
-    if status not in _RETRY_BLOCKING_STATUSES:
+    # Wall-clock takeover is safe only while the row represents a lock whose
+    # holder never attempted a venue POST. ``submitted_unconfirmed`` means the
+    # request may already be live or filled and therefore remains blocking
+    # until reconciliation or an explicit confirmed-absence transition.
+    if status not in _EXPIRABLE_PRE_POST_STATUSES:
         return False
 
     now_value = time.time() if now_ts is None else float(now_ts)
@@ -255,11 +258,10 @@ def is_retry_blocking_existing(
     pending_ttl_seconds: float | None = None,
     config: "AppConfig | None" = None,
 ) -> bool:
+    """Return whether an existing submission blocks another venue POST."""
     if not existing:
         return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
+    status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
     if existing.get("order_id"):
         return True
     if is_pending_submission_expired(

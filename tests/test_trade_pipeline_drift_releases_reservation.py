@@ -14,6 +14,7 @@ position update AND the reservation release on the deleted path.
 Test pins: when drift_result.action == "deleted" and a reservation_service
 is wired, ``release_terminal`` is invoked for the SELL reservation.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -38,10 +39,12 @@ async def test_drift_deleted_path_releases_sell_reservation():
     svc._audit = lambda *a, **kw: None  # silence audit emission
 
     positions_repo = MagicMock()
-    positions_repo.get_position = AsyncMock(return_value=MagicMock(
-        size_tokens=Decimal("5"),
-        avg_entry_price=Decimal("0.5"),
-    ))
+    positions_repo.get_position = AsyncMock(
+        return_value=MagicMock(
+            size_tokens=Decimal("5"),
+            avg_entry_price=Decimal("0.5"),
+        )
+    )
     positions_repo.delete_position = AsyncMock(return_value=None)
     positions_repo.upsert_position = AsyncMock(return_value=None)
     svc.positions_repo = positions_repo
@@ -79,10 +82,12 @@ async def test_drift_deleted_path_skips_non_sell_reservation():
     svc._audit = lambda *a, **kw: None
 
     positions_repo = MagicMock()
-    positions_repo.get_position = AsyncMock(return_value=MagicMock(
-        size_tokens=Decimal("3"),
-        avg_entry_price=Decimal("0.5"),
-    ))
+    positions_repo.get_position = AsyncMock(
+        return_value=MagicMock(
+            size_tokens=Decimal("3"),
+            avg_entry_price=Decimal("0.5"),
+        )
+    )
     positions_repo.delete_position = AsyncMock(return_value=None)
     positions_repo.upsert_position = AsyncMock(return_value=None)
     svc.positions_repo = positions_repo

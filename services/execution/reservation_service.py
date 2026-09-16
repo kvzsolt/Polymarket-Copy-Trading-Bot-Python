@@ -1,7 +1,9 @@
+"""Reserve collateral or shares atomically before venue submission."""
+
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
@@ -16,37 +18,62 @@ logger = logging.getLogger(__name__)
 
 
 class ReservationConflict(Exception):
+    """Signal a conflicting active reservation for the same intent."""
+
     pass
 
 
 class InsufficientFreeQuote(Exception):
+    """Signal insufficient unreserved quote collateral."""
+
     pass
 
 
 class InsufficientFreeShares(Exception):
+    """Signal insufficient unreserved outcome shares."""
+
     pass
 
 
 class Clock(Protocol):
-    def utcnow_timestamp(self) -> int: ...
+    """Define the Clock port used by application services."""
+
+    def utcnow_timestamp(self) -> int:
+        """Return the current UTC POSIX timestamp."""
+        ...
 
 
 class DefaultClock(Clock):
+    """Provide production UTC timestamps to reservation logic."""
+
     def utcnow_timestamp(self) -> int:
+        """Return the current UTC POSIX timestamp."""
         return int(time.time())
 
 
 class ReconcilerCallback(Protocol):
+    """Define the ReconcilerCallback port used by application services."""
+
     async def __call__(self, reservation_id: str) -> bool | None: ...
 
 
 @dataclass
 class ReservationScopeTotals:
+    """Describe exact active reservation totals for one scope."""
+
     reserved_usdc: Decimal
     reserved_size: Decimal
 
 
 class ReservationService:
+    """Reserve and release trading capacity through an injected repository.
+
+    Reservation release is proof-gated. The legacy
+    ``force_release_grace_seconds`` constructor argument remains accepted for
+    compatibility, but elapsed time alone never authorizes share or quote
+    capacity to be unlocked after an ambiguous submission.
+    """
+
     def __init__(
         self,
         reservations_repo: ReservationsRepo,
@@ -58,6 +85,8 @@ class ReservationService:
         reconciler_callback: ReconcilerCallback | None = None,
         enabled: bool = True,
         force_release_grace_seconds: float | None = None,
+        task_market_fraction: Decimal | None = None,
+        task_max_open_markets: int = 0,
     ):
         self.reservations_repo = reservations_repo
         self.positions_repo = positions_repo
@@ -71,23 +100,24 @@ class ReservationService:
         self.ttl_seconds = ttl_seconds
         self.reconciler_callback = reconciler_callback
         self.enabled = enabled
-        # sym 5 — deadlock breaker. Expiry-release is normally gated on the
-        # reconciler confirming the linked order is terminal. When the
-        # reconciler can NEVER confirm terminal (stuck deferred "matched",
-        # unqueryable order id, etc.) the reservation pins its (user, condition,
-        # token, side) scope forever and every later order on that scope is
-        # rejected with ReservationConflict — which is why the operator had to
-        # set RESERVATIONS_ENABLED=false. Once a reservation has been EXPIRED by
-        # at least this many seconds, force-release it: the held budget belongs
-        # to a fill-and-kill order, and FAK orders do not rest on the book, so
-        # one grace window past expiry the order is definitively not live. Fill
-        # accounting is unaffected — the reconciler still applies any real fill
-        # via the order_id-keyed incremental path, independent of the
-        # reservation. ``None`` disables the force-release (legacy behaviour;
-        # keeps existing fixtures green).
         self.force_release_grace_seconds = force_release_grace_seconds
+        if task_market_fraction is not None and (
+            not isinstance(task_market_fraction, Decimal)
+            or not task_market_fraction.is_finite()
+            or not Decimal("0") < task_market_fraction <= Decimal("1")
+        ):
+            raise ValueError("Task market capacity fraction must be in (0, 1]")
+        if (
+            isinstance(task_max_open_markets, bool)
+            or not isinstance(task_max_open_markets, int)
+            or task_max_open_markets < 0
+        ):
+            raise ValueError("Task open-market limit must be a non-negative integer")
+        self._task_market_fraction = task_market_fraction
+        self._task_max_open_markets = task_max_open_markets
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
+        """Atomically reserve the capacity required by an execution intent."""
         stable_key = intent.key.stable_key()
         if not self.enabled:
             logger.info(
@@ -121,16 +151,15 @@ class ReservationService:
             # once they drain (see OrderIntentKey.stable_key DEPLOYMENT NOTE).
             legacy_key = intent.key.legacy_stable_key()
             if legacy_key != stable_key:
-                existing = await self.reservations_repo.get_active_by_intent_key(
-                    legacy_key
-                )
+                existing = await self.reservations_repo.get_active_by_intent_key(legacy_key)
 
         if existing:
             if existing.expires_at.timestamp() < self.clock.utcnow_timestamp():
                 logger.info(
                     "reservation.acquire.expired_existing key=%s id=%s — "
                     "triggering reconciliation before release",
-                    stable_key, existing.id,
+                    stable_key,
+                    existing.id,
                 )
                 released = await self._expire_with_reconciliation(existing)
                 if not released:
@@ -139,37 +168,44 @@ class ReservationService:
                     )
             else:
                 logger.warning(
-                    "reservation.acquire.blocked key=%s id=%s — "
-                    "active reservation already exists",
-                    stable_key, existing.id,
+                    "reservation.acquire.blocked key=%s id=%s — active reservation already exists",
+                    stable_key,
+                    existing.id,
                 )
-                raise ReservationConflict(
-                    f"active reservation exists for intent={stable_key}"
-                )
+                raise ReservationConflict(f"active reservation exists for intent={stable_key}")
 
         expires_at = self.clock.utcnow_timestamp() + self.ttl_seconds
 
         if intent.key.side == IntentSide.BUY:
             required_usdc = intent.size * intent.price
             balance = await self._get_available_balance(intent.key.user_id, required_usdc)
+            if intent.task_id is not None and self._task_market_fraction is not None:
+                intent = replace(
+                    intent,
+                    max_market_notional=balance * self._task_market_fraction,
+                    max_open_markets=self._task_max_open_markets,
+                )
             logger.info(
-                "reservation.acquire.buy key=%s size=%s price=%s usdc=%s "
-                "expires=%d",
-                stable_key, intent.size, intent.price, required_usdc, expires_at,
+                "reservation.acquire.buy key=%s size=%s price=%s usdc=%s expires=%d",
+                stable_key,
+                intent.size,
+                intent.price,
+                required_usdc,
+                expires_at,
             )
             try:
                 # Atomic intent-key check + capacity check + insert inside
                 # one advisory-lock transaction. Closes the race window the
                 # outer ``get_active_by_intent_key`` fast-path cannot cover
                 # (Greptile finding in PR #108).
-                existing_under_lock, result = (
-                    await self.reservations_repo
-                    .create_buy_reservation_checked_by_intent(
-                        intent=intent,
-                        reserved_usdc=required_usdc,
-                        expires_at=expires_at,
-                        available_balance=balance,
-                    )
+                (
+                    existing_under_lock,
+                    result,
+                ) = await self.reservations_repo.create_buy_reservation_checked_by_intent(
+                    intent=intent,
+                    reserved_usdc=required_usdc,
+                    expires_at=expires_at,
+                    available_balance=balance,
                 )
             except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
@@ -180,45 +216,60 @@ class ReservationService:
                 # committed an active row before we acquired the lock.
                 logger.warning(
                     "reservation.acquire.buy.race_lost key=%s existing_id=%s",
-                    stable_key, existing_under_lock.id,
+                    stable_key,
+                    existing_under_lock.id,
                 )
-                raise ReservationConflict(
-                    f"active reservation exists for intent={stable_key}"
-                )
+                raise ReservationConflict(f"active reservation exists for intent={stable_key}")
             if result is None:
                 raise InsufficientFreeQuote(
                     f"insufficient free USDC after atomic check: need {required_usdc}"
                 )
             logger.info(
                 "reservation.acquire.buy.ok id=%s key=%s usdc=%s",
-                result.id, stable_key, required_usdc,
+                result.id,
+                stable_key,
+                required_usdc,
             )
             return result
 
         if intent.key.side == IntentSide.SELL:
-            held_size = await self._get_held_size(
-                intent.key.user_id,
-                intent.key.condition_id,
-                intent.key.token_id,
-                intent.size,
-            )
+            if intent.sell_fraction is None:
+                held_size = await self._get_held_size(
+                    intent.key.user_id,
+                    intent.key.condition_id,
+                    intent.key.token_id,
+                    intent.size,
+                )
+            else:
+                held_size = await self._get_position_size(
+                    intent.key.user_id,
+                    intent.key.condition_id,
+                    intent.key.token_id,
+                    intent.size,
+                )
             logger.info(
                 "reservation.acquire.sell key=%s size=%s expires=%d",
-                stable_key, intent.size, expires_at,
+                stable_key,
+                intent.size,
+                expires_at,
             )
             try:
                 # Atomic intent-key check + capacity check + insert under
                 # the per-(user, condition, token) advisory lock, closing
                 # the fast-path lookup race that the BUY branch already
                 # covers via ``create_buy_reservation_checked_by_intent``.
-                existing_under_lock, result = (
-                    await self.reservations_repo
-                    .create_sell_reservation_checked_by_intent(
-                        intent=intent,
-                        reserved_size=intent.size,
-                        expires_at=expires_at,
-                        held_size=held_size,
-                    )
+                (
+                    existing_under_lock,
+                    result,
+                ) = await self.reservations_repo.create_sell_reservation_checked_by_intent(
+                    intent=intent,
+                    reserved_size=intent.size,
+                    expires_at=expires_at,
+                    held_size=held_size,
+                    sell_fraction=intent.sell_fraction,
+                    live_position_size=intent.live_position_size,
+                    min_order_size=intent.min_order_size,
+                    round_up_to_minimum=intent.round_up_to_minimum,
                 )
             except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
@@ -227,18 +278,19 @@ class ReservationService:
             if existing_under_lock is not None:
                 logger.warning(
                     "reservation.acquire.sell.race_lost key=%s existing_id=%s",
-                    stable_key, existing_under_lock.id,
+                    stable_key,
+                    existing_under_lock.id,
                 )
-                raise ReservationConflict(
-                    f"active reservation exists for intent={stable_key}"
-                )
+                raise ReservationConflict(f"active reservation exists for intent={stable_key}")
             if result is None:
                 raise InsufficientFreeShares(
                     f"insufficient free shares after atomic check: need {intent.size}"
                 )
             logger.info(
                 "reservation.acquire.sell.ok id=%s key=%s size=%s",
-                result.id, stable_key, intent.size,
+                result.id,
+                stable_key,
+                result.reserved_size,
             )
             return result
 
@@ -256,9 +308,7 @@ class ReservationService:
         # Contract is Decimal | None, but defensively coerce a legacy
         # float caller via Decimal(str(x)) so a stale float-returning
         # adapter cannot leak IEEE-754 representations into the gate.
-        balance = (
-            raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance))
-        )
+        balance = raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance))
         # Quote balance is account/funder-wide. Do not scope BUY reserved
         # USDC by condition/token, or two different markets can collectively
         # over-reserve the same wallet balance.
@@ -266,9 +316,12 @@ class ReservationService:
         free_balance = balance - already_reserved
 
         logger.info(
-            "reservation.check.buy user=%s balance=%s already_reserved=%s "
-            "free=%s required=%s",
-            user_id, balance, already_reserved, free_balance, required_usdc,
+            "reservation.check.buy user=%s balance=%s already_reserved=%s free=%s required=%s",
+            user_id,
+            balance,
+            already_reserved,
+            free_balance,
+            required_usdc,
         )
 
         if free_balance < required_usdc:
@@ -326,20 +379,20 @@ class ReservationService:
 
         if not matching_pos:
             raise InsufficientFreeShares(
-                f"no position found for token {token_id} to sell "
-                f"{required_size}"
+                f"no position found for token {token_id} to sell {required_size}"
             )
 
         held = Decimal(matching_pos.size_tokens)
-        already_reserved = await self._get_reserved_size(
-            user_id, condition_id, token_id
-        )
+        already_reserved = await self._get_reserved_size(user_id, condition_id, token_id)
         free_shares = held - already_reserved
 
         logger.info(
-            "reservation.check.sell user=%s held=%s already_reserved=%s "
-            "free=%s required=%s",
-            user_id, held, already_reserved, free_shares, required_size,
+            "reservation.check.sell user=%s held=%s already_reserved=%s free=%s required=%s",
+            user_id,
+            held,
+            already_reserved,
+            free_shares,
+            required_size,
         )
 
         if free_shares < required_size:
@@ -350,17 +403,32 @@ class ReservationService:
             )
         return held
 
-    async def _get_reserved_usdc(
-        self, user_id: str, condition_id: str, token_id: str
+    async def _get_position_size(
+        self,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        requested_size: Decimal,
     ) -> Decimal:
+        """Return DB-held shares without a stale pre-lock capacity decision."""
+
+        matching_pos = await self._find_position(user_id, condition_id, token_id)
+        if not matching_pos:
+            raise InsufficientFreeShares(
+                f"no position found for token {token_id} to sell {requested_size}"
+            )
+        held = Decimal(matching_pos.size_tokens)
+        if held <= 0:
+            raise InsufficientFreeShares(f"position for token {token_id} has no held shares")
+        return held
+
+    async def _get_reserved_usdc(self, user_id: str, condition_id: str, token_id: str) -> Decimal:
         total_usdc, _ = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.BUY
         )
         return total_usdc
 
-    async def _get_reserved_size(
-        self, user_id: str, condition_id: str, token_id: str
-    ) -> Decimal:
+    async def _get_reserved_size(self, user_id: str, condition_id: str, token_id: str) -> Decimal:
         _, total_size = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.SELL
         )
@@ -369,6 +437,7 @@ class ReservationService:
     async def get_scope_totals(
         self, user_id: str, condition_id: str, token_id: str
     ) -> ReservationScopeTotals:
+        """Return exact active reservation totals for a scope."""
         buy_usdc, _ = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.BUY
         )
@@ -380,9 +449,7 @@ class ReservationService:
             reserved_size=sell_size,
         )
 
-    async def _find_position(
-        self, user_id: str, condition_id: str, token_id: str
-    ) -> Any:
+    async def _find_position(self, user_id: str, condition_id: str, token_id: str) -> Any:
         positions = await self.positions_repo.list_open_positions(user_id)
         for pos in positions:
             if pos.condition_id == condition_id and pos.token_id == token_id:
@@ -390,6 +457,7 @@ class ReservationService:
         return None
 
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
+        """Release terminal."""
         if self._is_disabled_reservation_id(reservation_id):
             logger.info(
                 "reservation.release.disabled_noop id=%s reason=%s",
@@ -399,7 +467,8 @@ class ReservationService:
             return
         logger.info(
             "reservation.release id=%s reason=%s",
-            reservation_id, reason,
+            reservation_id,
+            reason,
         )
         await self.reservations_repo.mark_released(
             reservation_id=reservation_id,
@@ -434,49 +503,6 @@ class ReservationService:
     def _is_disabled_reservation_id(reservation_id: str) -> bool:
         return str(reservation_id).startswith("disabled:")
 
-    def _expired_beyond_force_grace(self, res: Reservation, now: float) -> bool:
-        """Whether ``res`` has been expired long enough to force-release without
-        terminal reconciliation confirmation (sym 5 deadlock breaker).
-
-        Disabled (returns ``False``) when ``force_release_grace_seconds`` is
-        ``None``. Otherwise true once ``now`` is at least that many seconds past
-        the reservation's ``expires_at``.
-        """
-        grace = self.force_release_grace_seconds
-        if grace is None:
-            return False
-        expires_at = getattr(res, "expires_at", None)
-        if expires_at is None:
-            return False
-        try:
-            exp_ts = expires_at.timestamp()
-        except Exception:
-            return False
-        return (now - exp_ts) >= float(grace)
-
-    async def _force_release_stranded(self, res: Reservation, now: float) -> bool:
-        """Force-release a reservation whose order the reconciler cannot confirm
-        terminal. Returns True on success. Loud by design — a force-release is a
-        last-resort that should be visible in operator logs."""
-        try:
-            await self.reservations_repo.mark_released(
-                res.id, "expired_terminal_forced", now
-            )
-        except Exception as exc:
-            logger.warning(
-                "reservation.force_release_failed id=%s error=%r", res.id, exc
-            )
-            return False
-        logger.warning(
-            "reservation.force_released_after_grace id=%s key=%s side=%s "
-            "usdc=%s size=%s grace_s=%s — reconciliation could not confirm "
-            "terminal within grace; releasing stranded FAK budget so the scope "
-            "is not pinned forever",
-            res.id, res.intent_key, res.side.value,
-            res.reserved_usdc, res.reserved_size, self.force_release_grace_seconds,
-        )
-        return True
-
     async def release_expired_active(self) -> list[str]:
         """Enqueue reconciliation for expired active reservations.
 
@@ -489,27 +515,21 @@ class ReservationService:
         enqueued_ids: list[str] = []
         for res in expired:
             logger.info(
-                "reservation.expiry_enqueue id=%s key=%s side=%s "
-                "usdc=%s size=%s",
-                res.id, res.intent_key, res.side.value,
-                res.reserved_usdc, res.reserved_size,
+                "reservation.expiry_enqueue id=%s key=%s side=%s usdc=%s size=%s",
+                res.id,
+                res.intent_key,
+                res.side.value,
+                res.reserved_usdc,
+                res.reserved_size,
             )
             if self.reconciler_callback is not None:
                 try:
                     result = await self.reconciler_callback(res.id)
                     if result is True:
-                        await self.reservations_repo.mark_released(
-                            res.id, "expired_terminal", now
-                        )
+                        await self.reservations_repo.mark_released(res.id, "expired_terminal", now)
                         enqueued_ids.append(res.id)
                         continue
                     if result is False:
-                        # Reconciler cannot confirm terminal. Keep active unless
-                        # it has been stranded past the force-release grace.
-                        if self._expired_beyond_force_grace(res, now):
-                            if await self._force_release_stranded(res, now):
-                                enqueued_ids.append(res.id)
-                            continue
                         logger.info(
                             "reservation.expiry_callback_deferred id=%s — keeping active",
                             res.id,
@@ -518,24 +538,14 @@ class ReservationService:
                     enqueued_ids.append(res.id)
                     continue
                 except Exception as exc:
-                    if self._expired_beyond_force_grace(res, now):
-                        if await self._force_release_stranded(res, now):
-                            enqueued_ids.append(res.id)
-                            continue
                     logger.warning(
                         "reservation.expiry_reconciliation_failed id=%s "
                         "error=%s — keeping reservation active",
-                        res.id, exc,
+                        res.id,
+                        exc,
                     )
                     continue
             else:
-                # No reconciler wired. A grace-configured deployment still
-                # force-releases stranded reservations so the scope is not
-                # pinned forever; otherwise keep active (legacy behaviour).
-                if self._expired_beyond_force_grace(res, now):
-                    if await self._force_release_stranded(res, now):
-                        enqueued_ids.append(res.id)
-                    continue
                 logger.info(
                     "reservation.expiry_no_reconciler id=%s — keeping reservation active",
                     res.id,
@@ -548,28 +558,15 @@ class ReservationService:
             try:
                 result = await self.reconciler_callback(res.id)
                 if result is True:
-                    await self.reservations_repo.mark_released(
-                        res.id, "expired_terminal", now
-                    )
+                    await self.reservations_repo.mark_released(res.id, "expired_terminal", now)
                     return True
-                # Reconciler could not confirm terminal. Block the new intent
-                # (return False → ReservationConflict) UNLESS the stranded
-                # reservation is past the force-release grace, in which case
-                # releasing it lets the new order proceed (sym 5).
-                if self._expired_beyond_force_grace(res, now):
-                    return await self._force_release_stranded(res, now)
                 return False
             except Exception as exc:
-                if self._expired_beyond_force_grace(res, now):
-                    return await self._force_release_stranded(res, now)
                 logger.warning(
                     "reservation.expiry_reconciliation_failed id=%s "
                     "error=%s — keeping reservation active",
-                    res.id, exc,
+                    res.id,
+                    exc,
                 )
                 return False
-        # No reconciler wired: release a grace-stranded reservation so the new
-        # intent is not blocked forever; otherwise preserve legacy behaviour.
-        if self._expired_beyond_force_grace(res, now):
-            return await self._force_release_stranded(res, now)
         return False

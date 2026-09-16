@@ -10,14 +10,12 @@ Each test constructs a service with explicit mocked ports and verifies:
 from __future__ import annotations
 
 import inspect
-import pytest
 from unittest.mock import MagicMock
 
 from services.circuitBreaker import CircuitBreaker
 from services.executionService import ExecutionService, _CLOB_CIRCUIT
 from services.healthServer import ReadinessTracker
-from domain.trading_context import TradingContext
-from config.app_config import load_config
+from application.trading_context import TradingContext
 from types import SimpleNamespace
 
 
@@ -39,6 +37,7 @@ def _make_config() -> SimpleNamespace:
 # ReadinessTracker
 # ---------------------------------------------------------------------------
 
+
 class TestReadinessTracker:
     def test_default_keys_initialised(self) -> None:
         tracker = ReadinessTracker()
@@ -57,6 +56,7 @@ class TestReadinessTracker:
 # ExecutionService — circuit breaker is injectable
 # ---------------------------------------------------------------------------
 
+
 class TestExecutionCircuitBreakerDI:
     def test_default_uses_module_breaker(self) -> None:
         svc = ExecutionService(
@@ -64,6 +64,7 @@ class TestExecutionCircuitBreakerDI:
             fee_service=object(),
             order_repo=object(),
             config=_make_config(),
+            clob_gateway=object(),
         )
         assert svc.circuit_breaker is _CLOB_CIRCUIT
 
@@ -75,6 +76,7 @@ class TestExecutionCircuitBreakerDI:
             order_repo=object(),
             circuit_breaker=custom,
             config=_make_config(),
+            clob_gateway=object(),
         )
         assert svc.circuit_breaker is custom
 
@@ -83,21 +85,16 @@ class TestExecutionCircuitBreakerDI:
 # Orchestrator DI Seams
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorDISeams:
     def test_leader_registry_accepts_readiness_tracker(self) -> None:
         from orchestrators.leader_registry import LeaderRegistry
+
         sig = inspect.signature(LeaderRegistry.__init__)
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
 
-    def test_trading_context_has_readiness_tracker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Pretend Python 3.12 — the runtime guard rejects 3.13
-        monkeypatch.setattr("config.app_config._runtime_python_supported", lambda: True)
-        monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
-        monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
-        monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
-        monkeypatch.setenv("CHAIN_ID", "137")
-        config = load_config()
+    def test_trading_context_has_readiness_tracker(self) -> None:
         tracker = ReadinessTracker()
         ctx = TradingContext(
             user_id="test",
@@ -112,13 +109,13 @@ class TestOrchestratorDISeams:
             accounting_service=MagicMock(),
             position_manager=MagicMock(),
             execution_service=MagicMock(),
-            readiness=tracker
+            readiness=tracker,
         )
         assert ctx.readiness is tracker
 
     def test_trade_monitor_accepts_readiness_tracker(self) -> None:
         from services.tradeMonitor import trade_monitor
+
         sig = inspect.signature(trade_monitor)
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
-

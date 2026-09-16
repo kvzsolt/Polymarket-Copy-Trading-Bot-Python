@@ -1,3 +1,5 @@
+"""Shared HTTP-client lifecycle regression tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,15 +8,21 @@ from utils import fetchData
 
 
 @pytest.mark.asyncio
-async def test_http_client_recreated_when_session_closed():
+async def test_http_client_recreated_when_session_closed() -> None:
+    """Closing the shared session leaves the lifecycle helper reusable."""
     await fetchData.close_session()
 
 
 @pytest.mark.asyncio
-async def test_app_main_closes_shared_session_on_early_return(monkeypatch):
+async def test_app_main_closes_shared_session_on_early_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup-policy injection preserves cleanup after an early return."""
     import app as app_module
 
-    async def _early_return(_clients):
+    async def _early_return(_clients, *, startup_policy=None):
+        assert startup_policy is not None
+        assert startup_policy.auto_trader is False
         fetchData._get_http_client()
         return 1
 

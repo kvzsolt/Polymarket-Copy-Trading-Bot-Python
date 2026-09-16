@@ -1,9 +1,10 @@
 """Canonical Polymarket venue gateway protocol.
 
 `ExecutionService`, the execution coordinator, the reconciler, and the risk
-monitor must depend on this Protocol instead of a concrete SDK adapter.
-Vendor SDK details live behind
-``integrations/polymarket/clob_v2_gateway.py`` and never leak past it.
+monitor must depend on this Protocol instead of a concrete transport adapter.
+Vendor transport details live behind the CCXT adapter in
+``integrations/polymarket/ccxt_prediction_gateway.py`` (and the paper
+simulator gateway) and never leak past this boundary.
 
 This module is the single source of truth for the gateway shape; previously
 each call site declared its own duplicate ``ClobGateway`` Protocol (see
@@ -11,10 +12,12 @@ each call site declared its own duplicate ``ClobGateway`` Protocol (see
 ``services/execution/reconciliation_service.py`` prior to issue #66). Those
 duplicates are removed.
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from domain.execution import ExecutionMetadata
 from integrations.polymarket.models import (
     LimitOrderRequest,
     MarketableOrderRequest,
@@ -45,30 +48,46 @@ class ClobGateway(Protocol):
 
     async def get_orderbook(self, token_id: str) -> OrderBook: ...
 
+    async def get_execution_metadata(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+    ) -> ExecutionMetadata: ...
+
     async def submit_marketable_order(
         self, request: MarketableOrderRequest
     ) -> VenueSubmitResult: ...
 
-    async def submit_limit_order(
-        self, request: LimitOrderRequest
-    ) -> VenueSubmitResult: ...
+    async def submit_limit_order(self, request: LimitOrderRequest) -> VenueSubmitResult: ...
 
     async def get_order(self, order_id: str) -> VenueOrderState: ...
 
-    async def list_open_orders(self) -> list[VenueOrderState]: ...
+    async def list_open_orders(
+        self,
+        *,
+        order_id: str | None = None,
+        market: str | None = None,
+    ) -> list[VenueOrderState]: ...
 
     async def get_fills(
-        self, market: str | None = None
+        self,
+        market: str | None = None,
+        *,
+        trade_id: str | None = None,
+        order_id: str | None = None,
     ) -> list[VenueFill]: ...
 
     async def cancel_order(self, order_id: str) -> VenueCancelResult: ...
 
     async def check_compatibility(self) -> dict[str, Any]:
-        """Probe venue/SDK readiness; used by startup health gating.
+        """Probe venue transport readiness; used by startup health gating.
 
         Implementations must not raise from this method — they should always
-        return a dict with at minimum ``sdk_available: bool``. The orchestrator
-        decides whether to fail closed (live mode) or warn (paper mode).
+        return a dict with at minimum ``available: bool`` (plus
+        ``authenticated`` / ``live_execution_ready`` for the CCXT transport).
+        The orchestrator decides whether to fail closed (live mode) or warn
+        (paper mode).
         """
         ...
 

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import config.app_config as app_config_mod
-from config.app_config import load_config
-from config.env import rehydrate_env
-from domain.trading_context import TradingContext
+from tests.config_helpers import load_test_config
+from application.trading_context import TradingContext
+from domain.execution import ExecutionMetadata
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker
 from services.risk.risk_engine import RiskEngine
@@ -79,7 +78,7 @@ def _config(**overrides):
     env.update(overrides)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(app_config_mod, "_runtime_python_supported", lambda: True)
-        return load_config(env)
+        return load_test_config(env)
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +92,6 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
-    rehydrate_env()
 
 
 @dataclass
@@ -158,8 +156,13 @@ class _TiersFakeMDS:
     async def require_fresh_data(self, token_id, **_kwargs):
         return self._bundle
 
-    async def require_execution_snapshot(self, token_id, **_kwargs):
-        return self._bundle
+    async def require_execution_metadata(self, token_id, **_kwargs):
+        return ExecutionMetadata(
+            token_id=token_id,
+            tick_size=self._bundle.tick.tick_size,
+            min_order_size=self._bundle.tick.min_order_size,
+            neg_risk=self._bundle.tick.neg_risk,
+        )
 
 
 def _make_context(pool, *, leaders_repo=None, execution_service=None, config=None, tmp_path=None):
@@ -189,7 +192,9 @@ def _make_context(pool, *, leaders_repo=None, execution_service=None, config=Non
     return ctx
 
 
-def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
+def _signal(
+    *, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0
+):
     return {
         "side": side,
         "transactionHash": tx_hash,
@@ -203,6 +208,7 @@ def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="c
 
 
 # --- _resolve_leader_tier unit tests ---
+
 
 class TestResolveLeaderTier:
     @pytest.mark.asyncio
@@ -258,11 +264,14 @@ class TestResolveLeaderTier:
 
 # --- execute_trades tier-gating integration tests ---
 
+
 @pytest.mark.asyncio
 async def test_watchlist_tier_skips_trade(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "skipped"
@@ -273,7 +282,9 @@ async def test_watchlist_tier_skips_trade(tmp_path):
 async def test_paper_follow_tier_records_paper(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "paper"
@@ -285,7 +296,9 @@ async def test_paper_follow_marks_processed(tmp_path):
     """Paper trades should be idempotent (marked processed)."""
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         sig = _signal(tx_hash="0xpaper1")
         await execute_trades(ctx, "0xleader", [sig], time.time())
         results = await execute_trades(ctx, "0xleader", [sig], time.time())
@@ -311,7 +324,9 @@ async def test_no_repo_skips_as_watchlist(tmp_path):
 async def test_multiple_signals_tier_applied_to_all(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         signals = [
             _signal(tx_hash="0x1", asset=FAKE_TOKEN_ID),
             _signal(tx_hash="0x2", asset=FAKE_TOKEN_ID),
@@ -329,11 +344,17 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
         exec_svc = AsyncMock()
-        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-            accepted=True, order_id="ord123", status="filled",
-            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-        ))
+        exec_svc.execute = AsyncMock(
+            return_value=ExecutionResult(
+                accepted=True,
+                order_id="ord123",
+                status="filled",
+                requested_amount=Decimal("5"),
+                filled_amount=Decimal("5"),
+                avg_price=Decimal("0.50"),
+                fees_paid=Decimal("0.01"),
+            )
+        )
         ctx = _make_context(
             pool,
             leaders_repo=repo,
@@ -352,7 +373,8 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
         assert results[0].reason != "tier_watchlist"
 
 
-# --- PAPER_TRADE_ONLY global override tests ---
+# --- immutable paper trading-mode override tests ---
+
 
 @pytest.mark.asyncio
 async def test_paper_trade_only_overrides_live_follow(tmp_path):
@@ -364,7 +386,7 @@ async def test_paper_trade_only_overrides_live_follow(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=exec_svc,
-            config=_config(PAPER_TRADE_ONLY="true"),
+            config=_config(TRADING_MODE="paper"),
             tmp_path=tmp_path,
         )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
@@ -383,7 +405,7 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=MagicMock(),
-            config=_config(PAPER_TRADE_ONLY="true"),
+            config=_config(TRADING_MODE="paper"),
             tmp_path=tmp_path,
         )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
@@ -394,28 +416,39 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
 
 @pytest.mark.asyncio
 async def test_live_trading_enabled_allows_live(tmp_path):
-    """P0-2: with the LIVE_TRADING master switch enabled and a live_follow leader,
-    execution runs live (not demoted to paper)."""
+    """Explicit live selection reaches the injected execution boundary for a live-follow tier."""
     from services.executionService import ExecutionResult
+    from tests.test_trade_pipeline_safety import _PassThroughCoordinator
 
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "live_follow"})
         exec_svc = AsyncMock()
-        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-            accepted=True, order_id="ord456", status="filled",
-            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-        ))
+        exec_svc.execute = AsyncMock(
+            return_value=ExecutionResult(
+                accepted=True,
+                order_id="ord456",
+                status="filled",
+                requested_amount=Decimal("5"),
+                filled_amount=Decimal("5"),
+                avg_price=Decimal("0.50"),
+                fees_paid=Decimal("0.01"),
+            )
+        )
         ctx = _make_context(
             pool,
             leaders_repo=repo,
             execution_service=exec_svc,
-            config=_config(LIVE_TRADING="enabled"),
+            config=_config(TRADING_MODE="live"),
             tmp_path=tmp_path,
         )
-        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance", AsyncMock(return_value=Decimal(1000))
+        ):
+            results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
-        assert results[0].status != "paper"
+        assert results[0].status == "executed"
+        exec_svc.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -436,11 +469,15 @@ async def test_watchlist_gate_requires_injected_config(tmp_path):
             position_manager=PositionManager(),
             execution_service=MagicMock(),
             leaders_repo=repo,
+            config=_config(),
             allocation_pct=1.0,
             buy_min_amount=0.01,
             buy_max_amount=1000.0,
             extra={"slippage_tolerance_bps": 200},
         )
 
-        with pytest.raises(RuntimeError, match="TradingContext.config is required for live tier gating"):
+        ctx.config = None
+        with pytest.raises(
+            RuntimeError, match="TradingContext.config is required for live tier gating"
+        ):
             await execute_trades(ctx, "0xleader", [_signal()], time.time())

@@ -1,43 +1,73 @@
+"""Compose, run, supervise, and close the Polymarket copy-trading runtime."""
+
 from __future__ import annotations
+from adapters.clock import SystemReceiptClock
+from services.telemetry.latency import PipelineLatency
+from services.market_readiness import MarketReadinessGroup
+from services.user_readiness import UserReadinessGroup
 
 import asyncio
+import functools
+import inspect
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from importlib import metadata
+from pathlib import Path
 
-# Load non-sensitive runtime config + local .env as early as possible.
-# IMPORTANT: importing from config triggers config/__init__.py which freezes
-# the ENV snapshot before load_runtime_env() runs. We must call rehydrate_env()
-# immediately after so ENV reflects the freshly populated os.environ.
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from interfaces.source_transactions import SourceTransactionStateStore
+    from interfaces.source_time import BlockTimestampReader
+    from orchestrators.detection_source_factory import (
+        ConfirmedSourceBuilder,
+        DetectionSourceRuntime,
+    )
     from orchestrators.runtime_bootstrap import TradingContext
-try:
-    from config.runtime_env import load_runtime_env
-    from config.env import rehydrate_env
-
-    load_runtime_env()
-    rehydrate_env()
-except Exception as exc:  # pragma: no cover
-    import sys
-    import traceback
-
-    # Pre-fix this was a WARNING-and-continue. A secrets-load failure
-    # (missing python-dotenv, permission error on secrets.env, malformed
-    # runtime env file) silently let the bot proceed with un-hydrated
-    # ENV; in the worst case a partial env from a prior process let
-    # validate_runtime_env appear to pass on a stale snapshot. Boot
-    # failure is the correct fail-closed response.
-    print(f"[FATAL] Failed to load runtime env: {exc}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellFractionResolver,
+    )
+    from services.onchain_detection.leader_sell_scope_guard import (
+        LeaderSellBuyScopeGuard,
+    )
 
 from bootstrap import build_app
-from config.app_config import EnvValidationError, load_config
-from config.env import is_valid_eth_address, validate_runtime_env
-from orchestrators.auto_trader_bootstrap import resolve_startup_leaders
+from orchestrators.account_inventory_startup import InitialInventorySync
+from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidationError, load_config
+from config.env import is_valid_eth_address
+from domain.detection import DetectionMode
+from integrations.control_plane import SystemMonotonicClock
+from integrations.polymarket.venue_runtime import build_polymarket_runtime
+from orchestrators.control_plane_bootstrap import (
+    AiohttpControlPlaneServerFactory,
+    ControlPlaneDatabasePool,
+    ControlPlaneRuntime,
+    ControlPlaneRuntimeFactory,
+)
+from orchestrators.control_plane_reads import (
+    ControlPlaneRuntimeReads,
+    FollowerScopedPositions,
+    PendingConfirmationStatsProbe,
+)
+from orchestrators.control_plane_runtime import (
+    InactiveWorkerStateReader,
+    WorkerStateReader,
+)
+from orchestrators.control_plane_discovery import (
+    DiscoveryRunQueue,
+    LeaderRegistryDiscoveryRunner,
+)
+from orchestrators.control_plane_portfolio import (
+    PortfolioAccountBinding,
+    PortfolioRuntimeFactory,
+)
+from orchestrators.control_plane_tasks import (
+    LeaderMonitoringState,
+    RuntimeTaskActivationGuard,
+)
+from orchestrators.detection_startup_reporter import DetectionStartupReporter
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -49,7 +79,6 @@ from orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
-    configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
     hydrate_resolved_market_state,
@@ -57,25 +86,29 @@ from orchestrators.runtime_bootstrap import (
 )
 from orchestrators.runtime_discovery import (
     discovery_refresh_loop as _discovery_refresh_loop_impl,
+    startup_refresh_targets as _startup_refresh_targets,
     wait_for_active_leaders as _wait_for_active_leaders_impl,
 )
+from orchestrators.trader_startup_policy import TraderStartupPolicy
 from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
+from orchestrators.telemetry_bootstrap import TelemetryRuntime
 from orchestrators.user_data_runtime import UserDataRuntime
-from services.discovery.auto_trader_selector import AutoTraderSelector
-from services.discovery.balance_provider import build_wallet_balance_provider
-from services.discovery.capture_service import DiscoveryCaptureService
-from services.discovery.position_snapshot_service import (
-    SnapshotResult,
-    snapshot_followed_leaders,
+from services.healthServer import ReadinessTracker, start_health_server
+from services.metrics import MetricsRegistry, metrics
+from services.control_plane.runtime import OpenOrderControlGateway
+from services.control_plane.commands import DiscoveryCommandPort
+from services.control_plane.contracts_reads import AccountView, PendingConfirmationStatsView
+from services.control_plane.queries import CachedPortfolioQueryPort
+from services.control_plane.tasks import TaskActivationGuard
+from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
+from services.multiUserConfig import (
+    RuntimeUser,
+    UserFollowConfig,
+    load_runtime_users,
 )
-from services.tradeMonitor import _guarded_leader_fetch
-from services.healthServer import start_health_server
-from services.metrics import metrics
-from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
 from storage.postgres.leaders_repo import LeadersRepo
-from integrations.polymarket.sdk_client import create_polymarket_client
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
     configure_logging,
@@ -85,6 +118,7 @@ from utils.logger import (
 )
 
 logger = get_logger("Main")
+_CONFIG_ROOT = Path(__file__).resolve().parent / "config"
 
 
 async def _wait_for_active_leaders(
@@ -93,12 +127,16 @@ async def _wait_for_active_leaders(
     refresh_interval: int,
     *,
     config,
+    initial_state=None,
+    force_discovery: bool = False,
 ) -> list[str]:
     return await _wait_for_active_leaders_impl(
         registry,
         configured_leaders,
         refresh_interval,
         config=config,
+        initial_state=initial_state,
+        force_discovery=force_discovery,
     )
 
 
@@ -106,17 +144,17 @@ async def _discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
-    leaders_repo: LeadersRepo | None = None,
-    on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
+    force_discovery: bool = False,
 ) -> None:
     await _discovery_refresh_loop_impl(
         registry,
         configured_leaders,
         refresh_interval,
-        leaders_repo=leaders_repo,
         on_new_leaders=on_new_leaders,
         already_monitored=already_monitored,
+        force_discovery=force_discovery,
     )
 
 
@@ -151,36 +189,119 @@ def _to_decimal_balance(value: object) -> Decimal:
 def _flatten_contexts(
     contexts_by_leader: dict[str, list["TradingContext"]],
 ) -> list["TradingContext"]:
-    return [
-        context
-        for contexts in contexts_by_leader.values()
-        for context in contexts
-    ]
+    return [context for contexts in contexts_by_leader.values() for context in contexts]
 
 
-def _onchain_missing_wss_warning_reason(config: object) -> str | None:
-    oc_cfg = getattr(config, "onchain_detection", None)
-    if oc_cfg is None:
-        return None
-    if getattr(oc_cfg, "onchain_ws_url", "") or getattr(oc_cfg, "pending_tx_ws_url", ""):
-        return None
-    if bool(getattr(oc_cfg, "enable_onchain_pending_detection", False)):
-        return "pending_enabled"
+def _refresh_onchain_watched_wallets(
+    onchain_runtime: object | None,
+    wallets: Iterable[str],
+) -> bool:
+    """Point the on-chain runtime at the current monitored-leader set.
 
-    raw = getattr(config, "raw", {}) or {}
-    explicit_mined = str(raw.get("ENABLE_ONCHAIN_MINED_DETECTION") or "").strip()
-    if bool(getattr(oc_cfg, "enable_onchain_mined_detection", False)) and explicit_mined:
-        return "mined_enabled"
-    return None
+    The runtime is built once at startup, so leaders promoted later by
+    discovery must be pushed into its mined/pending wallet filters or they
+    never receive fast-path signals. Returns False (never raises) when
+    on-chain detection is absent or disabled: it is an accelerator, and the
+    REST-polling path already covers the hot-added leader.
+    """
+    if onchain_runtime is None:
+        return False
+    update = getattr(onchain_runtime, "update_watched_wallets", None)
+    if not callable(update):
+        return False
+    watched = {str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()}
+    try:
+        update(watched)
+    except Exception as exc:
+        logger.warning(
+            "onchain_watched_wallets_update_failed | error=%s — hot-added "
+            "leaders keep the REST-polling path only",
+            redact_error_detail(exc),
+        )
+        return False
+    logger.info("onchain_watched_wallets_updated | watched=%d", len(watched))
+    return True
+
+
+def _should_wait_for_discovery_roster(
+    config: AppConfig,
+    *,
+    force_discovery: bool = False,
+) -> bool:
+    """Whether waiting for a discovery roster can actually yield leaders.
+
+    Mirrors ``LeaderRegistry.refresh``, which only reads the roster when
+    ``start_from_roster`` is set. Without that flag the wait can never
+    succeed, so startup fails fast on the empty-roster path instead of
+    blocking for ``startup_wait_timeout_seconds``.
+    """
+    return TraderStartupPolicy(auto_trader=force_discovery).should_wait_for_discovery_roster(config)
 
 
 def _detection_confidence_from_config(value: object):
+    """Parse ``detection.onchain.pending_tx_detection_confidence_required``.
+
+    Fails closed. Silently substituting ``PENDING_PROBABLE`` turned a typo (or
+    a future enum rename) into a detection policy the operator never chose:
+    for ``detection.mode=on_chain_pending`` that floor decides whether every
+    mempool sighting is copied or dropped. ``load_config`` already rejects an
+    unknown value, so reaching this branch means the config was constructed
+    outside the loader or the two value sets have drifted apart.
+
+    Args:
+        value: Raw configured value; compared case-insensitively after strip.
+
+    Returns:
+        The matching ``DetectionConfidence`` member.
+
+    Raises:
+        EnvValidationError: If *value* is not a known confidence level. The
+            raw value is deliberately not echoed (a mis-mapped override could
+            carry a credential), matching the config layer's own message.
+    """
+
     from services.onchain_detection.trade_detection_models import DetectionConfidence
 
     try:
         return DetectionConfidence(str(value or "").strip().lower())
-    except ValueError:
-        return DetectionConfidence.PENDING_PROBABLE
+    except ValueError as exc:
+        allowed = ", ".join(level.value for level in DetectionConfidence)
+        raise EnvValidationError(
+            f"detection.onchain.pending_tx_detection_confidence_required must be one of: {allowed}."
+        ) from exc
+
+
+def _validate_detection_confidence_floor(config: object) -> None:
+    """Fail closed on the pending-path confidence floor before startup proceeds.
+
+    In ``on_chain_pending`` this floor decides whether every mempool sighting
+    is copied or dropped. Validating it here — right after the config loads,
+    before any runtime, socket, or pool exists — means an unparseable value
+    aborts the process instead of being absorbed by the on-chain composition
+    guard, which would silently downgrade the operator's chosen mode to REST
+    polling. Other modes are unaffected.
+
+    Every read is defensive because ``app`` is also driven by partial config
+    doubles in the startup tests; a loader-produced ``AppConfig`` always
+    carries both sections.
+
+    Args:
+        config: Freshly loaded application configuration.
+
+    Raises:
+        EnvValidationError: If a non-polling mode carries an unparseable
+            confidence floor (a missing ``onchain`` section included).
+    """
+
+    detection = getattr(config, "detection", None)
+    if detection is None:
+        return
+    if getattr(detection, "detection_mode", DetectionMode.POLLING) is DetectionMode.POLLING:
+        return
+    onchain = getattr(detection, "onchain", None)
+    _detection_confidence_from_config(
+        getattr(onchain, "pending_tx_detection_confidence_required", None)
+    )
 
 
 def _build_pending_tx_config(oc_cfg: object):
@@ -205,6 +326,338 @@ def _build_onchain_condition_id_resolver():
     return GammaConditionIdResolver().resolve
 
 
+def _build_onchain_ws_health_reporter(
+    readiness,
+    metrics_registry: MetricsRegistry = metrics,
+    *,
+    mode: DetectionMode,
+    confirmed_source: str = "mempool_reserved",
+):
+    """Thin glue: the on-chain WebSocket health reporter, when it applies.
+
+    Only the gen-1 runtime opens ``OnchainWebSocket`` subscriptions: the
+    pending mode (stream ``pendingtx``) and the confirmed mode with
+    ``confirmed_source=logs_only`` (stream ``orderfilled``, one socket per
+    role filter). Registering ``onchain_ws_ok`` for the gen-2
+    ``mempool_reserved`` runtime would publish a check that nothing can ever
+    mark ready — a permanent false "WS down" for a socket the process never
+    opens.
+
+    Args:
+        readiness: Readiness tracker the ``onchain_ws_ok`` check registers on.
+        metrics_registry: Registry receiving the bounded on-chain WS metrics.
+        mode: Selected detection mode.
+        confirmed_source: Selected confirmed-source variant
+            (``detection.onchain.confirmed_source``).
+
+    Returns:
+        ``OnchainWsHealthReporter`` for ``ON_CHAIN_PENDING`` and for
+        ``ON_CHAIN_CONFIRMED`` + ``logs_only``; ``None`` otherwise.
+    """
+
+    from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
+
+    if mode is DetectionMode.ON_CHAIN_PENDING:
+        return OnchainWsHealthReporter(metrics_registry, readiness)
+    if (
+        mode is DetectionMode.ON_CHAIN_CONFIRMED
+        and str(confirmed_source).strip().lower() == "logs_only"
+    ):
+        return OnchainWsHealthReporter(metrics_registry, readiness)
+    return None
+
+
+def _build_onchain_websocket_factory(state_listener):
+    """Thin glue: the subscription constructor, health-reporting when asked.
+
+    Args:
+        state_listener: Connection-state observer, or ``None``.
+
+    Returns:
+        ``OnchainWebSocket`` itself when no listener is supplied, else a
+        partial with the listener bound.
+    """
+
+    from clients.onchain_ws import OnchainWebSocket
+
+    if state_listener is None:
+        return OnchainWebSocket
+    return functools.partial(OnchainWebSocket, state_listener=state_listener)
+
+
+def _build_pending_copy_tracker(
+    config: object,
+    *,
+    telemetry_service: object | None,
+    metrics_registry: MetricsRegistry = metrics,
+):
+    """Thin glue: the pending-copy confirmation tracker, when it applies.
+
+    Only ``detection.mode=on_chain_pending`` copies off an unmined sighting,
+    so only that mode needs the follow-up. Returns ``None`` (feature off) for
+    every other mode, when the operator disabled it, or when no HTTP RPC
+    endpoint is configured — receipt confirmation cannot run without one, and
+    a tracker that can never confirm would report every copy as ``rpc_error``.
+
+    A composed tracker is still inert under ``execution.trading_mode=paper``:
+    the dispatcher only tracks a copy whose pipeline outcome reached the
+    venue, and every paper copy stops at the ``paper`` tier before submission.
+    That is announced once here so a paper soak with zero ``pending_copy_*``
+    output is read as "not exercised", never as "healthy".
+
+    Args:
+        config: Typed application configuration.
+        telemetry_service: Process telemetry service, or ``None``.
+        metrics_registry: Registry receiving the ``pending_copy_*`` metrics.
+
+    Returns:
+        A not-yet-started ``PendingCopyConfirmationTracker``, or ``None``.
+    """
+
+    from clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
+    from services.onchain_detection.pending_copy_confirmation_tracker import (
+        PendingCopyConfirmationTracker,
+    )
+
+    detection = getattr(config, "detection", None)
+    if detection is None or detection.detection_mode is not DetectionMode.ON_CHAIN_PENDING:
+        return None
+    oc_cfg = getattr(detection, "onchain", None)
+    if oc_cfg is None or not bool(getattr(oc_cfg, "pending_copy_confirmation_enabled", False)):
+        return None
+    polymarket = getattr(config, "polymarket", None)
+    rpc_url = str(getattr(polymarket, "rpc_url", "") or "")
+    if not rpc_url.strip():
+        # The endpoint is a secret; report only that it is absent.
+        logger.warning(
+            "pending_copy_tracker_disabled | reason=no_rpc_endpoint — provisional "
+            "copies will not be confirmed against the leader transaction receipt"
+        )
+        return None
+    if bool(getattr(getattr(config, "execution", None), "paper_trade_only", False)):
+        logger.info(
+            "pending_copy_tracker_idle_in_paper_mode | the tracker is composed but "
+            "records nothing while execution.trading_mode=paper: every copy stops at "
+            "the paper tier before reaching the venue, so zero pending_copy_* output "
+            "means NOT EXERCISED, not healthy"
+        )
+    return PendingCopyConfirmationTracker(
+        receipt_fetcher=Web3ReceiptStatusFetcher.from_rpc_url(
+            rpc_url,
+            str(getattr(polymarket, "fallback_rpc_url", "") or ""),
+        ),
+        metrics=metrics_registry,
+        telemetry=telemetry_service,
+        deadline_seconds=float(getattr(oc_cfg, "pending_copy_confirmation_deadline_seconds", 60.0)),
+        max_tracked=int(getattr(oc_cfg, "pending_copy_confirmation_max_tracked", 2048)),
+        # Auto-unwind stays design-only: the flag is accepted but no requester
+        # is wired, so enabling it cannot move money (see
+        # docs/known_limitations.md).
+        unwind_hook=None,
+    )
+
+
+def _build_leader_sell_fraction_resolver(
+    config: object,
+    *,
+    buy_scope_guard: "LeaderSellBuyScopeGuard | None" = None,
+) -> "LeaderSellFractionResolver":
+    """Compose exact and fallback readers for authoritative leader SELLs.
+
+    Args:
+        config: Typed application configuration containing Polygon RPC URLs.
+        buy_scope_guard: Shared durable degraded-scope BUY guard.
+
+    Returns:
+        A resolver that annotates mined SELL signals before copy dispatch.
+
+    Raises:
+        ValueError: If the required primary Polygon RPC endpoint is absent.
+    """
+
+    from adapters.polygon.historical_erc1155_balance import (
+        Web3HistoricalErc1155BalanceReader,
+    )
+    from integrations.polymarket.leader_sell_fraction_data_api import (
+        DataApiLeaderSellFractionReader,
+    )
+    from services.onchain_detection.leader_sell_fraction_resolver import (
+        LeaderSellFractionResolver,
+    )
+    from clients.network.decimal_json_reader import DecimalJsonReader
+    from utils.fetchData import _get_http_client
+
+    polymarket = getattr(config, "polymarket", None)
+    historical = Web3HistoricalErc1155BalanceReader.from_rpc_url(
+        str(getattr(polymarket, "rpc_url", "") or ""),
+        str(getattr(polymarket, "fallback_rpc_url", "") or ""),
+        request_timeout_seconds=2.5,
+    )
+    fallback = DataApiLeaderSellFractionReader(
+        fetch_json=DecimalJsonReader(_get_http_client).get,
+    )
+    return LeaderSellFractionResolver(
+        historical_balances=historical,
+        fallback_fractions=fallback,
+        buy_scope_guard=buy_scope_guard,
+    )
+
+
+def _copy_task_contexts(
+    contexts_by_leader: Mapping[str, list["TradingContext"]],
+    risk_contexts_by_user: Mapping[str, "TradingContext"],
+) -> tuple["TradingContext", ...]:
+    """Bind each context once, including accounts that only manage existing positions."""
+    return tuple(
+        {
+            id(context): context
+            for context in (
+                *risk_contexts_by_user.values(),
+                *(item for contexts in contexts_by_leader.values() for item in contexts),
+            )
+        }.values()
+    )
+
+
+def _confirmed_source_builder(
+    state_store_provider: "Callable[[], Awaitable[SourceTransactionStateStore | None]]",
+    block_timestamp_reader_factory: Callable[[], BlockTimestampReader] | None = None,
+) -> "ConfirmedSourceBuilder":
+    """Thin glue: the receipt-confirmed builder over both CTF exchanges.
+
+    Args:
+        state_store_provider: Awaitable factory for the durable source
+            reservation/idempotency store (Postgres in production, ``None``
+            for an in-memory registry in tests).
+
+    Returns:
+        ``ConfirmedSourceBuilder`` filtering on the CTF and neg-risk exchange
+        contracts.
+    """
+
+    from config.addresses import (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    )
+    from orchestrators.detection_source_factory import ConfirmedSourceBuilder
+
+    return ConfirmedSourceBuilder(
+        exchange_addresses=(
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+            POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+        ),
+        state_store_provider=state_store_provider,
+        block_timestamp_reader_factory=block_timestamp_reader_factory,
+    )
+
+
+async def _start_onchain_runtime(runtime: "DetectionSourceRuntime", *, mode: DetectionMode) -> None:
+    """Thin glue: start ``runtime``; on failure stop it before re-raising.
+
+    A partially started runtime (WebSocket connected, dispatcher task spawned)
+    would otherwise leak because ``app.main`` drops its reference and the
+    shutdown path never sees it. ``stop()`` errors are logged and suppressed.
+
+    Args:
+        runtime: Not-yet-started detection source runtime.
+        mode: Selected detection mode (log context only).
+
+    Raises:
+        Exception: Whatever ``runtime.start()`` raised, after ``stop()``.
+    """
+
+    try:
+        await runtime.start()
+    except BaseException:
+        try:
+            await runtime.stop()
+        except Exception as stop_exc:
+            logger.warning(
+                "onchain_detection_stop_after_failed_start_failed | mode=%s error=%s",
+                mode.value,
+                redact_error_detail(stop_exc),
+            )
+        raise
+
+
+async def _default_source_state_store_provider():
+    """Return the Postgres-backed source state store on the shared pool."""
+
+    from adapters.persistence.source_transaction_state_store import (
+        PostgresSourceTransactionStateStore,
+    )
+    from storage.postgres.connection import get_pool
+
+    return PostgresSourceTransactionStateStore(await get_pool())
+
+
+def _build_detection_source_factory(
+    config: object,
+    *,
+    state_store_provider=None,
+    websocket_factory=None,
+):
+    """Thin glue: one ``DetectionSourceFactory`` covering every detection key.
+
+    Args:
+        config: Typed application configuration (``detection`` section read).
+        state_store_provider: Awaitable factory for the confirmed runtime's
+            durable state store; defaults to the shared Postgres pool.
+        websocket_factory: ``OnchainWebSocket``-compatible constructor for the
+            gen-1 runtimes' subscriptions; ``app.main`` binds the health
+            reporter here. Defaults to the plain client.
+
+    Returns:
+        ``DetectionSourceFactory`` with the provisional-pending,
+        logs-only confirmed, and receipt-confirmed (mempool-reserved)
+        builders registered.
+    """
+
+    from clients.onchain_ws import OnchainWebSocket
+    from config.addresses import (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    )
+    from orchestrators.detection_source_factory import (
+        DetectionSourceFactory,
+        LogsOnlyConfirmedSourceBuilder,
+        ProvisionalPendingSourceBuilder,
+    )
+
+    oc_cfg = getattr(getattr(config, "detection", None), "onchain", None)
+    from adapters.polygon.block_timestamp import RpcBlockTimestampReaderFactory
+    from utils.fetchData import _get_http_client
+
+    rpc_url = getattr(getattr(config, "polymarket", None), "rpc_url", "")
+    block_time_factory = (
+        RpcBlockTimestampReaderFactory(rpc_url=rpc_url, client_provider=_get_http_client).build
+        if rpc_url
+        else None
+    )
+    return DetectionSourceFactory(
+        [
+            ProvisionalPendingSourceBuilder(
+                pending_config=_build_pending_tx_config(oc_cfg),
+                condition_id_resolver=_build_onchain_condition_id_resolver(),
+                websocket_factory=websocket_factory or OnchainWebSocket,
+            ),
+            LogsOnlyConfirmedSourceBuilder(
+                exchange_addresses=(
+                    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+                    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+                ),
+                condition_id_resolver=_build_onchain_condition_id_resolver(),
+                websocket_factory=websocket_factory or OnchainWebSocket,
+                block_timestamp_reader_factory=block_time_factory,
+            ),
+            _confirmed_source_builder(
+                state_store_provider or _default_source_state_store_provider,
+                block_timestamp_reader_factory=block_time_factory,
+            ),
+        ]
+    )
+
+
 async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
     """Reconcile-and-release TTL-expired reservations across *contexts*.
 
@@ -227,7 +680,8 @@ async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
             metrics.inc("reservation_reaper_failed_total")
             logger.error(
                 "reservation_reaper_failed user=%s: %r",
-                getattr(ctx, "user_id", "?"), exc,
+                getattr(ctx, "user_id", "?"),
+                exc,
             )
 
 
@@ -247,11 +701,9 @@ def _wallets_blocked_by_reconcile_failures(
         return []
     failed = set(failed_user_ids)
     return [
-        wallet for wallet in started_wallets
-        if any(
-            ctx.user_id in failed
-            for ctx in contexts_by_leader.get(wallet, [])
-        )
+        wallet
+        for wallet in started_wallets
+        if any(ctx.user_id in failed for ctx in contexts_by_leader.get(wallet, []))
     ]
 
 
@@ -288,7 +740,6 @@ async def _refresh_contexts_for_new_leaders(
     leaders_repo: LeadersRepo,
     config,
     readiness,
-    trust_store=None,
 ) -> list[str]:
     started_wallets: list[str] = []
     ensure_runtime_follows(runtime_users, new_wallets, config)
@@ -312,7 +763,6 @@ async def _refresh_contexts_for_new_leaders(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
-                trust_store=trust_store,
             )
             contexts_by_leader[wallet].append(context)
 
@@ -323,14 +773,15 @@ async def _refresh_contexts_for_new_leaders(
 
 
 def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | None:
-    """Best-effort access to the unified SDK owner.
+    """Best-effort access to the CCXT venue client that owns L2 credentials.
 
-    Preferred source is ``user_state.client``. The facade exposes the secure
-    SDK client's derived or configured ``api_creds`` for user-stream auth.
+    Preferred source is ``user_state.client`` (the ``CcxtPredictionClient``),
+    which exposes derived ``api_creds`` for user-stream auth. Fallbacks keep
+    older test fixtures working.
     """
     for attr_name in (
-        "clob_client",
         "client",
+        "clob_client",
         "clob_wrapper",
         "clob",
     ):
@@ -369,10 +820,7 @@ def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | Non
 
 def _empty_user_ws_api_creds() -> dict[str, str]:
     """Return the unauthenticated user-stream credential shape."""
-    return {
-        field: ""
-        for field in ("api_key", "api_secret", "api_passphrase")
-    }
+    return {field: "" for field in ("api_key", "api_secret", "api_passphrase")}
 
 
 def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
@@ -382,6 +830,7 @@ def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
         return _empty_user_ws_api_creds()
 
     def read(*names: str) -> str:
+        """Return the first populated credential attribute without logging it."""
         if isinstance(raw_creds, dict):
             for name in names:
                 value = raw_creds.get(name)
@@ -452,6 +901,9 @@ async def _start_market_data_runtimes(
     contexts_by_leader: dict[str, list["TradingContext"]],
     readiness,
     config,
+    quote_sink=None,
+    telemetry: WssTelemetryEmitter | None = None,
+    latency: PipelineLatency | None = None,
 ) -> dict[str, MarketDataRuntime]:
     """Start WSS-backed market data runtimes, keyed by user_id.
 
@@ -461,8 +913,9 @@ async def _start_market_data_runtimes(
     the trade pipeline can subscribe new signal tokens dynamically.
     """
     market_data_runtimes: dict[str, MarketDataRuntime] = {}
-    context_tokens = extract_token_ids_from_contexts(
-        _flatten_contexts(contexts_by_leader)
+    context_tokens = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
+    market_readiness = MarketReadinessGroup(
+        readiness, tuple(user.user_id for user in runtime_users)
     )
 
     for runtime_user in runtime_users:
@@ -500,8 +953,11 @@ async def _start_market_data_runtimes(
         market_runtime = MarketDataRuntime(
             market_store=market_store,
             gateway=clob_gateway,
-            readiness=readiness,
+            readiness=market_readiness.scope(runtime_user.user_id),
             config=config,
+            quote_sink=quote_sink,
+            telemetry=telemetry,
+            latency=latency,
         )
 
         await market_runtime.start(initial_tokens)
@@ -547,7 +1003,10 @@ def _build_reconcile_wake_closure(context):
     cannot stack reconcile passes. The closure delegates to the canonical
     ``reconcile_submitted_unconfirmed``; it never touches positions directly.
     """
-    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+    from orchestrators.trade_pipeline import (
+        get_reconciliation_service,
+        reconcile_submitted_unconfirmed,
+    )
 
     lock = asyncio.Lock()
 
@@ -556,6 +1015,8 @@ def _build_reconcile_wake_closure(context):
             return
         async with lock:
             try:
+                reconciler = get_reconciliation_service(context)
+                await reconciler.record_user_order_evidence(event)
                 reconciled = await reconcile_submitted_unconfirmed(context)
                 reservation_reaped = 0
                 extra = getattr(context, "extra", {}) or {}
@@ -569,22 +1030,20 @@ def _build_reconcile_wake_closure(context):
                     None,
                 )
                 if callable(release_expired):
-                    released_ids = await release_expired()
-                    try:
-                        reservation_reaped = len(released_ids or [])
-                    except TypeError:
-                        reservation_reaped = 0
+                    release_result = release_expired()
+                    released_ids = (
+                        await release_result
+                        if inspect.isawaitable(release_result)
+                        else release_result
+                    )
+                    reservation_reaped = len(released_ids) if isinstance(released_ids, Sized) else 0
                 if reconciled or reservation_reaped:
                     logger.info(
                         "user_wss_wake_reconcile_complete | user=%s reconciled=%d reservations_reaped=%d order_id=%s",
                         context.user_id,
                         reconciled,
                         reservation_reaped,
-                        (
-                            event.get("order_id")
-                            or event.get("orderID")
-                            or event.get("id")
-                        )
+                        (event.get("order_id") or event.get("orderID") or event.get("id"))
                         if isinstance(event, dict)
                         else None,
                     )
@@ -640,6 +1099,7 @@ async def _start_user_data_runtimes(
     readiness,
     risk_contexts_by_user: dict[str, "TradingContext"] | None = None,
     market_data_runtimes: dict[str, MarketDataRuntime] | None = None,
+    telemetry: WssTelemetryEmitter | None = None,
 ) -> list[UserDataRuntime]:
     """Start user WSS runtimes.
 
@@ -651,6 +1111,7 @@ async def _start_user_data_runtimes(
     ReconciliationService without waiting for the next polled cycle.
     """
     user_data_runtimes: list[UserDataRuntime] = []
+    user_readiness = UserReadinessGroup(readiness, tuple(user.user_id for user in runtime_users))
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
@@ -689,19 +1150,18 @@ async def _start_user_data_runtimes(
         if market_data_runtimes is not None:
             market_runtime = market_data_runtimes.get(runtime_user.user_id)
             if market_runtime is not None:
-                market_token_subscribe = _build_market_token_subscribe_closure(
-                    market_runtime
-                )
+                market_token_subscribe = _build_market_token_subscribe_closure(market_runtime)
 
         runtime = UserDataRuntime(
             market_store=market_store,
-            readiness=readiness,
+            readiness=user_readiness.scope(runtime_user.user_id),
             api_creds=api_creds,
             user_id=runtime_user.user_id,
             on_reconcile_signal=wake_closure,
             manual_sync_service=getattr(user_state, "manual_sync_service", None),
             on_risk_cache_evict=risk_cache_evict,
             on_market_token_seen=market_token_subscribe,
+            telemetry=telemetry,
         )
 
         await runtime.start()
@@ -720,9 +1180,7 @@ async def _subscribe_context_tokens(
     New trade-signal tokens should also be subscribed from the trade pipeline
     when they appear. This helper only handles context-visible tokens.
     """
-    token_ids = extract_token_ids_from_contexts(
-        _flatten_contexts(contexts_by_leader)
-    )
+    token_ids = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
 
     if not token_ids:
         return
@@ -738,6 +1196,260 @@ async def _subscribe_context_tokens(
 
 
 @dataclass
+class _HealthServerResource:
+    """Idempotent owner for an aiohttp health-server runner."""
+
+    runner: Any
+    closed: bool = False
+
+    async def close(self) -> None:
+        """Close the health server once."""
+
+        if self.closed:
+            return
+        self.closed = True
+        await self.runner.cleanup()
+
+    async def cleanup(self) -> None:
+        """Provide the aiohttp-compatible cleanup alias."""
+
+        await self.close()
+
+
+async def _start_telemetry_runtime(
+    *,
+    application: object,
+    client_registry: list[Any],
+    metrics_registry: MetricsRegistry = metrics,
+) -> TelemetryRuntime:
+    """Start and register the process-wide bounded telemetry owner.
+
+    Args:
+        application: Composed application exposing the readiness tracker.
+        client_registry: Outer lifecycle registry closed from ``main``.
+        metrics_registry: Existing process-wide metrics truth source.
+
+    Returns:
+        The started telemetry runtime used by later control-plane composition.
+    """
+
+    readiness = getattr(application, "readiness", None)
+    if readiness is None:
+        raise TypeError("application readiness tracker is required")
+    runtime = TelemetryRuntime(
+        readiness=readiness,
+        metrics=metrics_registry,
+    )
+    await runtime.start()
+    client_registry.append(runtime)
+    return runtime
+
+
+def _build_telemetry_emitters(telemetry_runtime: TelemetryRuntime | None) -> TelemetryEmitters:
+    """Return the process-wide operator telemetry emitter bundle.
+
+    Args:
+        telemetry_runtime: Started telemetry owner, or ``None`` when telemetry
+            was not composed for this process.
+
+    Returns:
+        A bundle bound to the running telemetry service, or the disabled
+        null-object bundle so no collaborator has to branch on availability.
+    """
+
+    if telemetry_runtime is None:
+        return TelemetryEmitters.disabled()
+    return TelemetryEmitters.build(
+        telemetry_runtime.service,
+        latency=PipelineLatency(
+            clock=SystemReceiptClock(), metrics=telemetry_runtime.service.metrics_registry
+        ),
+    )
+
+
+def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
+    """Return an O(1) transport-health probe for one detection runtime.
+
+    The control plane starts before the detection source exists, so the
+    telemetry emitter is given this probe only after the runtime started. A
+    runtime that exposes no connection state reports ``None`` (unknown) rather
+    than a fabricated ``False``.
+
+    Args:
+        runtime: Started detection source runtime.
+
+    Returns:
+        A callable returning the runtime's connection state, or ``None``.
+    """
+
+    def probe() -> bool | None:
+        state = getattr(runtime, "connected", None)
+        return state if isinstance(state, bool) else None
+
+    return probe
+
+
+def _build_control_plane_reads(
+    *,
+    readiness: ReadinessTracker,
+    metrics_registry: MetricsRegistry,
+    contexts_by_leader: Mapping[str, Sequence[Any]],
+    risk_contexts_by_user: Mapping[str, Any],
+    user_states: Mapping[str, Any],
+    configured_leaders: tuple[str, ...],
+    monitored_leaders: Callable[[], Iterable[str]],
+    detection_counters: Any,
+    pending_stats: Callable[[], PendingConfirmationStatsView | None],
+    portfolio_cache: CachedPortfolioQueryPort | None,
+) -> ControlPlaneRuntimeReads:
+    """Bundle the local runtime state the extended operator reads may observe.
+
+    Only state this process actually composed is published: a follower without
+    a market store contributes no quote source, and a leader with no bound
+    context is not counted for any account.
+
+    Args:
+        readiness: Canonical process readiness truth.
+        metrics_registry: Process metrics registry backing WSS reconnects.
+        contexts_by_leader: Bound trading contexts per leader wallet.
+        risk_contexts_by_user: One canonical trading context per follower.
+        user_states: Composed follower runtimes exposing market stores.
+        configured_leaders: Operator-configured leader wallets.
+        monitored_leaders: Late-bound reader of monitored leader wallets.
+        detection_counters: Detection telemetry emitter counter source.
+        pending_stats: Late-bound provisional-copy tracker probe.
+        portfolio_cache: Optional local-only follower portfolio cache.
+
+    Returns:
+        One immutable read bundle for the control-plane factory.
+    """
+
+    pnl_trackers: dict[str, Any] = {}
+    positions: dict[str, Any] = {}
+    market_stores: dict[str, Any] = {}
+    for user_id, context in risk_contexts_by_user.items():
+        tracker = getattr(context, "pnl_tracker", None)
+        if tracker is not None:
+            pnl_trackers[user_id] = tracker
+        positions_repo = getattr(context, "positions_repo", None)
+        if positions_repo is not None:
+            positions[user_id] = positions_repo
+        market_store = getattr(user_states.get(user_id), "market_store", None)
+        if market_store is not None:
+            market_stores[user_id] = market_store
+
+    def _accounts() -> tuple[AccountView, ...]:
+        """Project the live follower/leader binding on every request.
+
+        ``contexts_by_leader`` changes while the process runs (discovery
+        promotions, roster refreshes), so a snapshot taken at composition
+        would report a stale ``leader_count`` for the life of the process.
+        """
+
+        leader_counts: dict[str, int] = {}
+        for contexts in contexts_by_leader.values():
+            for context in contexts:
+                bound_user = str(getattr(context, "user_id", "") or "")
+                if bound_user:
+                    leader_counts[bound_user] = leader_counts.get(bound_user, 0) + 1
+        views: list[AccountView] = []
+        for account_id, account_context in risk_contexts_by_user.items():
+            wallet = str(getattr(account_context, "wallet_address", "") or "")
+            if wallet:
+                views.append(
+                    AccountView(
+                        follower_account=account_id,
+                        wallet_address=wallet,
+                        leader_count=leader_counts.get(account_id, 0),
+                    )
+                )
+        return tuple(views)
+
+    return ControlPlaneRuntimeReads(
+        accounts=_accounts,
+        detection_counters=detection_counters,
+        pending_stats=pending_stats,
+        pnl_trackers=pnl_trackers,
+        positions=FollowerScopedPositions(positions),
+        market_stores=market_stores,
+        monitored_leaders=monitored_leaders,
+        configured_leaders=tuple(configured_leaders),
+        portfolio=portfolio_cache,
+        readiness=readiness,
+        metrics=metrics_registry,
+    )
+
+
+async def _start_control_plane_runtime(
+    *,
+    application: object,
+    pool: ControlPlaneDatabasePool,
+    telemetry: TelemetryRuntime,
+    worker_state: WorkerStateReader,
+    runtime_gateways: tuple[OpenOrderControlGateway, ...],
+    task_activation_guard: TaskActivationGuard | None,
+    discovery_command_port: DiscoveryCommandPort | None,
+    client_registry: list[Any],
+    factory: ControlPlaneRuntimeFactory,
+    portfolio_cache: CachedPortfolioQueryPort | None = None,
+    reads: ControlPlaneRuntimeReads | None = None,
+) -> ControlPlaneRuntime | None:
+    """Build, register, and start the optional privileged adapter safely.
+
+    Args:
+        application: Composed application exposing config and readiness.
+        pool: Existing shared PostgreSQL pool.
+        telemetry: Existing process-wide telemetry runtime.
+        worker_state: Local bounded copy-worker statistics source.
+        runtime_gateways: One canonical live gateway per follower account.
+        task_activation_guard: Optional fail-closed task resume policy.
+        discovery_command_port: Optional started manual-discovery queue.
+        client_registry: Outer lifecycle registry closed from ``main``.
+        factory: Injected application-service and transport composition root.
+        portfolio_cache: Optional local-only follower portfolio cache.
+        reads: Optional local runtime state backing the extended reads.
+
+    Returns:
+        The owned runtime when enabled, otherwise ``None``.
+
+    Notes:
+        Transport startup failure is isolated from trading. The runtime stays
+        registered so outer shutdown can close any partially started adapter,
+        while its optional readiness check remains false.
+    """
+
+    config = getattr(application, "config", None)
+    readiness = getattr(application, "readiness", None)
+    if config is None or readiness is None:
+        raise TypeError("application config and readiness are required")
+    runtime = factory.build(
+        config=config,
+        pool=pool,
+        readiness=readiness,
+        telemetry_query=telemetry.query,
+        telemetry_hub=telemetry.hub,
+        telemetry_service=telemetry.service,
+        worker_state=worker_state,
+        runtime_gateways=runtime_gateways,
+        task_activation_guard=task_activation_guard,
+        discovery_command_port=discovery_command_port,
+        portfolio_cache=portfolio_cache,
+        reads=reads,
+    )
+    if runtime is None:
+        return None
+    client_registry.append(runtime)
+    try:
+        await runtime.start()
+    except Exception as exc:
+        logger.error(
+            "control_plane_start_failed",
+            extra={"error": redact_error_detail(exc)},
+        )
+    return runtime
+
+
+@dataclass
 class _Supervised:
     """A long-lived auxiliary background loop owned by the main supervisor.
 
@@ -750,7 +1462,7 @@ class _Supervised:
     """
 
     name: str
-    factory: Callable[[], Awaitable[None]]
+    factory: Callable[[], Coroutine[object, object, None]]
     max_restarts: int = 5
     recovery_seconds: float = 60.0
     task: asyncio.Task | None = None
@@ -758,6 +1470,7 @@ class _Supervised:
     started: float = 0.0
 
     def spawn(self) -> asyncio.Task:
+        """Start and track a supervised background task."""
         self.started = asyncio.get_running_loop().time()
         self.task = asyncio.create_task(self.factory(), name=self.name)
         return self.task
@@ -794,6 +1507,7 @@ async def _shutdown_runtime(
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
     onchain_runtime=None,
+    pending_copy_tracker=None,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
 
@@ -814,6 +1528,15 @@ async def _shutdown_runtime(
         except Exception as exc:
             logger.warning(
                 "onchain_runtime_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+    if pending_copy_tracker is not None:
+        try:
+            await pending_copy_tracker.stop()
+        except Exception as exc:
+            logger.warning(
+                "pending_copy_tracker_shutdown_failed",
                 extra={"error": redact_error_detail(exc)},
             )
 
@@ -864,32 +1587,53 @@ async def _shutdown_runtime(
         )
 
 
-async def _run_application(client_registry: list[Any]) -> int:
+async def _run_application(
+    client_registry: list[Any],
+    *,
+    startup_policy: TraderStartupPolicy | None = None,
+) -> int:
+    """Run one fully composed application under a leader startup policy."""
+    startup_policy = startup_policy or TraderStartupPolicy()
     configure_logging(level="INFO")
+    monotonic_clock = SystemMonotonicClock()
+    process_started_monotonic = monotonic_clock.monotonic()
 
     try:
-        validate_runtime_env()
         startup_config = load_config()
+        startup_policy.validate(startup_config)
+        startup_config = startup_policy.effective_config(startup_config)
+        _validate_detection_confidence_floor(startup_config)
     except EnvValidationError as exc:
         print_error(str(exc))
         return 1
+
+    configure_logging(
+        level=startup_config.logging.level,
+        log_dir=startup_config.logging.log_dir,
+        jsonl_file=startup_config.logging.app_log_jsonl_file,
+        max_bytes=startup_config.logging.log_max_bytes,
+        backup_count=startup_config.logging.log_backup_count,
+    )
 
     from bot_cli.commands.doctor import run_doctor_checks
 
     mode = "paper" if startup_config.execution.paper_trade_only else "live"
 
     if mode == "live":
-        doctor_result = await run_doctor_checks("live")
+        doctor_result = await run_doctor_checks(
+            "live",
+            config=startup_config,
+            auto_trader=startup_policy.auto_trader,
+        )
         if doctor_result.get("status") == "blocked":
             print_error("Live mode doctor check failed. Refusing to start.")
             blocked = [
-                c for c in doctor_result.get("checks", [])
+                c
+                for c in doctor_result.get("checks", [])
                 if isinstance(c, dict) and c.get("status") == "blocked"
             ]
             for check in blocked:
-                print_error(
-                    f"  ❌ {check.get('name')}: {check.get('detail', '')}"
-                )
+                print_error(f"  ❌ {check.get('name')}: {check.get('detail', '')}")
                 fix = check.get("fix")
                 if fix:
                     print_error(f"     fix: {fix}")
@@ -899,7 +1643,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             return 1
         if doctor_result.get("status") == "warning":
             warnings = [
-                c for c in doctor_result.get("checks", [])
+                c
+                for c in doctor_result.get("checks", [])
                 if isinstance(c, dict) and c.get("status") == "warning"
             ]
             for check in warnings:
@@ -909,7 +1654,14 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("detail"),
                     check.get("fix"),
                 )
-    application = await build_app()
+    application = await build_app(config=startup_config)
+    telemetry_runtime = await _start_telemetry_runtime(
+        application=application,
+        client_registry=client_registry,
+    )
+    telemetry_emitters = _build_telemetry_emitters(telemetry_runtime)
+    if application.falcon_client is not None:
+        client_registry.append(application.falcon_client)
 
     application.readiness.update(
         wss_market_ok=False,
@@ -919,67 +1671,113 @@ async def _run_application(client_registry: list[Any]) -> int:
         market_data_ready=False,
     )
 
-    configured = configured_leaders(application.config)
+    # Start observability before any discovery-only promotion wait. A fresh
+    # roster can require multiple longitudinal cycles; operators must still be
+    # able to inspect a fail-closed readiness payload during that warm-up.
+    _slowest_loop_interval = max(
+        float(application.config.detection.fetch_interval),
+        float(application.config.risk.risk_check_interval),
+    )
+    application.readiness.configure_heartbeat_budget(
+        staleness_seconds=_slowest_loop_interval * 3.0,
+    )
+    metrics_runner: _HealthServerResource | None = None
+    if application.config.app.enable_metrics_server:
+        metrics_runner = _HealthServerResource(
+            await start_health_server(
+                application.config.app.metrics_port,
+                tracker=application.readiness,
+                host=application.config.app.metrics_bind_host,
+            )
+        )
+        client_registry.append(metrics_runner)
+
+    configured = startup_policy.configured_leaders(application.config)
     invalid = [wallet for wallet in configured if not is_valid_eth_address(wallet)]
 
     if invalid:
         for wallet in invalid:
             print_error(
-                f'Invalid leader wallet "{wallet}" — must be 42-char hex '
-                "(0x + 40 hex digits)."
+                f'Invalid leader wallet "{wallet}" — must be 42-char hex (0x + 40 hex digits).'
             )
         return 1
 
-    startup_selection = await resolve_startup_leaders(
-        configured_leaders=configured,
-        config=application.config,
-        selector=AutoTraderSelector(
-            repo=application.discovery_repo,
-            config=application.config,
-            balance_provider=build_wallet_balance_provider(application.config),
+    registry_state = await application.registry.refresh(
+        configured,
+        force_discovery=startup_policy.force_discovery,
+        target_wallets=await _startup_refresh_targets(
+            application.registry,
+            force_discovery=startup_policy.force_discovery,
         ),
-        discovery_service=application.discovery_service,
     )
-    active_leaders = startup_selection.active_leaders
+    active_leaders = registry_state.active_monitored
 
-    invalid_active = [
-        wallet for wallet in active_leaders if not is_valid_eth_address(wallet)
-    ]
+    invalid_active = [wallet for wallet in active_leaders if not is_valid_eth_address(wallet)]
     if invalid_active:
         logger.error(
             "startup_blocked_no_active_leaders",
             extra={
-                "mode": startup_selection.mode,
+                "mode": registry_state.mode,
                 "reason": "invalid_active_leaders",
                 "invalid_wallets": invalid_active,
-                "allow_auto_trader_detection": (
-                    application.config.discovery.allow_auto_trader_detection
-                ),
-                "max_auto_traders_count": (
-                    application.config.discovery.max_auto_traders_count
-                ),
+                "scheduler_enabled": application.config.discovery.scheduler.enabled,
+                "falcon_enabled": application.config.discovery.falcon.enabled,
+                "force_discovery": startup_policy.force_discovery,
+                "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
         print_error("No active leaders available. Auto-selected leaders were invalid.")
         return 1
 
     if not active_leaders:
+        if _should_wait_for_discovery_roster(
+            application.config,
+            force_discovery=startup_policy.force_discovery,
+        ):
+            logger.info(
+                startup_policy.startup_roster_event,
+                extra={
+                    "rediscover_seconds": application.config.discovery.scheduler.rediscover_seconds,
+                    "required_cycles": application.config.discovery.hysteresis.min_tenure_cycles,
+                },
+            )
+            active_leaders = await _wait_for_active_leaders(
+                application.registry,
+                configured,
+                application.config.discovery.scheduler.rediscover_seconds,
+                config=application.config,
+                initial_state=registry_state,
+                force_discovery=startup_policy.force_discovery,
+            )
+        else:
+            # Fall through to the fail-closed branch below rather than waiting
+            # startup_wait_timeout_seconds for a roster that cannot arrive.
+            logger.info(
+                "startup_roster_wait_skipped",
+                extra={
+                    "reason": "roster cannot supply startup wallets",
+                    "discovery_enabled": (application.config.discovery.scheduler.enabled),
+                    "start_from_roster": (application.config.discovery.scheduler.start_from_roster),
+                    "discovery_has_token": application.config.discovery.api.has_token,
+                },
+            )
+
+    if not active_leaders:
         logger.error(
             "startup_blocked_no_active_leaders",
             extra={
-                "mode": startup_selection.mode,
-                "reason": startup_selection.reason,
-                "allow_auto_trader_detection": (
-                    application.config.discovery.allow_auto_trader_detection
-                ),
-                "max_auto_traders_count": (
-                    application.config.discovery.max_auto_traders_count
-                ),
+                "mode": registry_state.mode,
+                "reason": "manual_and_roster_empty",
+                "scheduler_enabled": application.config.discovery.scheduler.enabled,
+                "falcon_enabled": application.config.discovery.falcon.enabled,
+                "force_discovery": startup_policy.force_discovery,
+                "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
         print_error(
-            "No active leaders available. Manual LEADER_WALLETS are empty and "
-            "auto trader detection did not find eligible candidates."
+            "No active leaders available. No enabled traders in "
+            "config/traders/*.yml and auto trader detection did not find "
+            "eligible candidates."
         )
         return 1
 
@@ -1005,12 +1803,18 @@ async def _run_application(client_registry: list[Any]) -> int:
     from storage.postgres.connection import get_pool
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    _max_age = float(application.config.polling.retention_max_age_seconds)
+    _max_age = float(application.config.app.retention_max_age_seconds)
     # Acquire the pool first so it's available to the per-user wiring below
     # even when the (non-critical) purge step fails. Previously `_pool` was
     # scoped inside the try/except, so a degraded purge would NameError on
     # the subsequent `build_user_state(..., _pool, ...)` reference.
     _pool = await get_pool()
+    from services.onchain_detection.leader_sell_scope_guard import LeaderSellScopeGuard
+    from storage.postgres.leader_sell_scope_repo import LeaderSellSafetyScopeRepo
+
+    leader_sell_scope_guard = LeaderSellScopeGuard(
+        store=LeaderSellSafetyScopeRepo(_pool),
+    )
     try:
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
     except RuntimeError:
@@ -1021,29 +1825,30 @@ async def _run_application(client_registry: list[Any]) -> int:
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
 
-    research_capture_service = await DiscoveryCaptureService.create()
+    research_capture_service = None
     leaders_repo = application.leaders_repo
     registry = application.registry
-    refresh_interval = application.config.discovery.discovery_interval_seconds
+    refresh_interval = application.config.discovery.scheduler.rediscover_seconds
 
     ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_polymarket_client(
-            wallet_config=runtime_user.wallet,
+        venue_runtime = await build_polymarket_runtime(
+            runtime_user=runtime_user,
             config=application.config,
-            authenticated=not application.config.execution.paper_trade_only,
+            latency=telemetry_emitters.latency if telemetry_emitters is not None else None,
         )
-        # Register ownership immediately. If any later startup stage fails,
-        # main() still closes the SDK transports from its outer finally.
-        client_registry.append(client)
+        # The CCXT runtime is the single venue owner; close it on shutdown.
+        client_registry.append(venue_runtime)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
-            client,
+            venue_runtime.client,
             _pool,
             application.config,
+            clob_gateway=venue_runtime.gateway,
+            telemetry=telemetry_emitters,
         )
 
     logger.info(
@@ -1064,10 +1869,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         *(get_my_balance(wallet) for wallet in active_leaders)
     )
     user_balances_raw = await asyncio.gather(
-        *(
-            get_my_balance(runtime_user.wallet.funder_address)
-            for runtime_user in runtime_users
-        )
+        *(get_my_balance(runtime_user.wallet.funder_address) for runtime_user in runtime_users)
     )
 
     # INF-01 (CLAUDE.md no-float-money): keep balances as ``Decimal`` for
@@ -1075,7 +1877,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # consumers cast to float only at display boundaries.
     user_balances: dict[str, Decimal] = {
         runtime_user.user_id: _to_decimal_balance(balance)
-        for runtime_user, balance in zip(runtime_users, user_balances_raw)
+        for runtime_user, balance in zip(runtime_users, user_balances_raw, strict=True)
     }
 
     api_ok = all(value is not None for value in leader_balances_raw) and all(
@@ -1095,7 +1897,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             "startup_stage | stage=live_positions_fetch_started user=%s",
             runtime_user.user_id,
         )
-        # None == fetch failed (fail-closed); the health-check prune treats it
+        # None == fetch failed (fail-closed); the inventory inspection treats it
         # distinctly from a genuinely-empty snapshot. Store [] for downstream
         # consumers but pass the raw value (None-aware) to the health check.
         live_positions = await fetch_live_positions(runtime_user.wallet.funder_address)
@@ -1141,8 +1943,15 @@ async def _run_application(client_registry: list[Any]) -> int:
         application.config,
         leaders_repo=leaders_repo,
         readiness=application.readiness,
-        trust_store=application.trust_store,
     )
+    for context in {
+        id(candidate): candidate
+        for candidate in (
+            *risk_contexts_by_user.values(),
+            *(item for values in contexts_by_leader.values() for item in values),
+        )
+    }.values():
+        context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
     from orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
 
     seeded_user_ids: set[str] = set()
@@ -1162,11 +1971,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
             seeded_user_ids.add(context.user_id)
 
-    monitored_leaders = [
-        leader
-        for leader, contexts in contexts_by_leader.items()
-        if contexts
-    ]
+    monitored_leaders = [leader for leader, contexts in contexts_by_leader.items() if contexts]
     application.readiness.update(monitored_leader_count=len(monitored_leaders))
 
     if not monitored_leaders:
@@ -1175,6 +1980,33 @@ async def _run_application(client_registry: list[Any]) -> int:
             extra={"reason": "no_user_follows_active_leaders"},
         )
         metrics.inc("no_leaders_monitored_total")
+
+    # Prepare the task lifecycle before startup reconciliation so orders-table
+    # evidence can settle retained task budgets. Workers remain stopped until
+    # account state and drift have converged and no detection source exists yet.
+    from orchestrators.v1_runtime_bootstrap import (
+        RuntimeFollowerBalanceReader,
+        start_v1_copy_task_runtime,
+    )
+
+    logger.info("startup_stage | stage=v1_copy_task_restoration_started")
+    initial_v1_contexts = _copy_task_contexts(contexts_by_leader, risk_contexts_by_user)
+    v1_runtime = await start_v1_copy_task_runtime(
+        pool=_pool,
+        config=application.config,
+        copy_tasks_config=application.config.copy_trading.copy_tasks,
+        contexts=initial_v1_contexts,
+        start_workers=False,
+        buy_scope_guard=leader_sell_scope_guard,
+        decision_observer=telemetry_emitters.trade,
+        latency=telemetry_emitters.latency,
+    )
+    if v1_runtime is not None:
+        client_registry.append(v1_runtime)
+    logger.info(
+        "startup_stage | stage=v1_copy_task_restoration_completed enabled=%s",
+        v1_runtime is not None,
+    )
 
     # CLAUDE.md non-negotiable: startup reconciliation MUST run before risk /
     # trade loops AND before the user WSS attaches its on_reconcile_signal
@@ -1189,6 +2021,21 @@ async def _run_application(client_registry: list[Any]) -> int:
     startup_reconciled = await startup_reconcile_unconfirmed(
         list(risk_contexts_by_user.values()),
         failures_out=reconcile_failures,
+    )
+    from orchestration.trading_permission_runtime import TradingPermissionRuntime
+
+    trading_permission_runtime = TradingPermissionRuntime(
+        permissions={
+            user_id: state.trading_permission
+            for user_id, state in user_states.items()
+            if state.trading_permission is not None
+        }
+    )
+    control_failures = await trading_permission_runtime.initialize(
+        blocked_user_ids=set(reconcile_failures)
+    )
+    reconcile_failures.extend(
+        user_id for user_id in control_failures if user_id not in reconcile_failures
     )
     logger.info(
         "startup_stage | stage=startup_reconcile_completed failures=%d",
@@ -1222,46 +2069,17 @@ async def _run_application(client_registry: list[Any]) -> int:
                 len(monitored_leaders),
                 _before,
             )
-            application.readiness.update(
-                monitored_leader_count=len(monitored_leaders)
-            )
+            application.readiness.update(monitored_leader_count=len(monitored_leaders))
     else:
         application.readiness.update(reconciler_ok=True)
 
-    # Boot ordering (read carefully — the race fix lives here):
-    #
-    # 1. ``manual_sync.initial_sync`` seeds positions from the venue's
-    #    ``data-api /positions`` snapshot, excluding zero-value stale rows.
-    # 2. ``startup_drift_check`` validates canonical DB state against live
-    #    truth and timestamps every prune in ``_prune_timestamps``.
-    # 3. ``hydrate_resolved_market_state`` runs LAST: marks resolved /
-    #    archived / inactive markets in MarketStateStore so the risk
-    #    monitor short-circuits 404-prone tokens.
-    # 4. ``_start_user_data_runtimes`` finally attaches the WSS. When auth
-    #    triggers ``manual_sync.trigger_sync``, the upsert path now sees
-    #    the drift prune timestamps and honours the holdoff — so the
-    #    eventually-consistent data-api cannot resurrect what drift just
-    #    pruned, which is what produced the /price 404 + breaker loop.
+    # Seed inventory before drift checks and market/WSS startup so all loops
+    # start against reconciled holdings, including positive zero-mark shares.
+    inventory_startup = InitialInventorySync(application.readiness)
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
-        manual_sync = getattr(user_state, "manual_sync_service", None) if user_state else None
-        if manual_sync is None:
-            continue
-        try:
-            logger.info(
-                "startup_stage | stage=manual_sync_initial_started user=%s",
-                runtime_user.user_id,
-            )
-            await manual_sync.initial_sync()
-            logger.info(
-                "startup_stage | stage=manual_sync_initial_completed user=%s",
-                runtime_user.user_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "manual_sync_initial_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
-            )
+        manual_sync = user_state.manual_sync_service if user_state else None
+        await inventory_startup.initialize(manual_sync)
 
     # PR7 — proactive position drift sweep. Must complete before monitors
     # start AND before the user WSS attaches so its first auth-triggered
@@ -1302,6 +2120,104 @@ async def _run_application(client_registry: list[Any]) -> int:
             extra={"error": redact_error_detail(exc)},
         )
 
+    if v1_runtime is not None:
+        await v1_runtime.start()
+
+    task_monitoring_state = LeaderMonitoringState(())
+    task_activation_guard = (
+        RuntimeTaskActivationGuard(
+            bindings=v1_runtime,
+            monitoring=task_monitoring_state,
+            protective_management_enabled=application.config.risk.enable_risk_mgmt,
+        )
+        if v1_runtime is not None
+        else None
+    )
+    discovery_command_queue = None
+    portfolio_runtime = None
+    if application.config.control_plane.enabled:
+        discovery_command_queue = DiscoveryRunQueue(
+            runner=LeaderRegistryDiscoveryRunner(
+                registry=registry,
+                configured_leaders=tuple(configured),
+            ),
+            telemetry=telemetry_runtime.service,
+        )
+        await discovery_command_queue.start()
+        client_registry.append(discovery_command_queue)
+
+        portfolio_bindings = []
+        for context in risk_contexts_by_user.values():
+            reservations = context.extra.get("reservations_repo")
+            if reservations is None:
+                continue
+            portfolio_bindings.append(
+                PortfolioAccountBinding(
+                    follower_account=context.user_id,
+                    wallet=context.wallet_address,
+                    positions=context.positions_repo,
+                    reservations=reservations,
+                    quotes=user_states[context.user_id].market_store,
+                    quote_max_age_seconds=(
+                        application.config.market_data.executable_quote_max_age_seconds
+                    ),
+                )
+            )
+        portfolio_runtime = PortfolioRuntimeFactory(
+            clock=SystemClock(),
+            balance=RuntimeFollowerBalanceReader(get_my_balance),
+        ).build(
+            bindings=tuple(portfolio_bindings),
+            refresh_interval_seconds=(
+                application.config.control_plane.portfolio_refresh_interval_seconds
+            ),
+            stale_after_seconds=(application.config.control_plane.portfolio_stale_after_seconds),
+        )
+        if portfolio_runtime is not None:
+            await portfolio_runtime.refresh.start()
+            client_registry.append(portfolio_runtime.refresh)
+
+    try:
+        backend_version = metadata.version("polymarket-copy-trading-bot")
+    except metadata.PackageNotFoundError:
+        backend_version = "0.1.0"
+    pending_confirmation_stats = PendingConfirmationStatsProbe()
+    control_plane_reads = _build_control_plane_reads(
+        readiness=application.readiness,
+        metrics_registry=metrics,
+        contexts_by_leader=contexts_by_leader,
+        risk_contexts_by_user=risk_contexts_by_user,
+        user_states=user_states,
+        configured_leaders=tuple(configured),
+        monitored_leaders=lambda: tuple(monitored_leaders),
+        detection_counters=telemetry_emitters.detection,
+        pending_stats=pending_confirmation_stats,
+        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
+    )
+    await _start_control_plane_runtime(
+        application=application,
+        pool=_pool,
+        telemetry=telemetry_runtime,
+        worker_state=v1_runtime if v1_runtime is not None else InactiveWorkerStateReader(),
+        runtime_gateways=tuple(
+            state.clob_gateway for state in user_states.values() if state.clob_gateway is not None
+        ),
+        task_activation_guard=task_activation_guard,
+        discovery_command_port=discovery_command_queue,
+        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
+        reads=control_plane_reads,
+        client_registry=client_registry,
+        factory=ControlPlaneRuntimeFactory(
+            server_factory=AiohttpControlPlaneServerFactory(),
+            config_root=_CONFIG_ROOT,
+            version=backend_version,
+            clock=SystemClock(),
+            monotonic_clock=monotonic_clock,
+            semantic_validator=AppConfigSemanticValidator(),
+            started_monotonic=process_started_monotonic,
+        ),
+    )
+
     # Start market-data WSS only after portfolio/database convergence. Starting
     # it earlier can subscribe/probe stale tokens that manual_sync has not yet
     # filtered and drift has not yet pruned.
@@ -1327,6 +2243,9 @@ async def _run_application(client_registry: list[Any]) -> int:
         contexts_by_leader=contexts_by_leader,
         readiness=application.readiness,
         config=application.config,
+        quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
+        telemetry=telemetry_emitters.wss,
+        latency=telemetry_emitters.latency,
     )
     logger.info(
         "startup_stage | stage=market_data_runtimes_started users=%d",
@@ -1350,6 +2269,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         readiness=application.readiness,
         risk_contexts_by_user=risk_contexts_by_user,
         market_data_runtimes=market_data_runtimes,
+        telemetry=telemetry_emitters.wss,
     )
     logger.info(
         "startup_stage | stage=user_data_runtimes_started users=%d",
@@ -1385,12 +2305,10 @@ async def _run_application(client_registry: list[Any]) -> int:
     startup_health_healthy = all(report.healthy for report in all_health_reports)
     startup_health_status = "healthy" if startup_health_healthy else "unhealthy"
     startup_pruned_positions = sum(
-        report.position_sync.pruned_positions
-        for report in all_health_reports
+        report.position_sync.pruned_positions for report in all_health_reports
     )
     startup_purged_failed_orders = sum(
-        report.order_cleanup.purged_failed
-        for report in all_health_reports
+        report.order_cleanup.purged_failed for report in all_health_reports
     )
 
     for runtime_user in runtime_users[1:]:
@@ -1412,49 +2330,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         startup_purged_failed_orders=startup_purged_failed_orders,
     )
 
-    # Boot-time position snapshot — persists leader + own wallet
-    # snapshots into discovery_position_snapshots tagged with
-    # wallet_role, and surfaces an in-memory tree so the new
-    # TRADERS YOU'RE COPYING + YOUR POSITIONS panels can render
-    # without re-fetching. Fail-soft so PG-pool-not-online (transition)
-    # / data-api degradation never blocks boot.
-    snapshot_result: SnapshotResult | None = None
-    try:
-        logger.info(
-            "startup_stage | stage=boot_snapshot_started leaders=%d users=%d",
-            len(monitored_leaders),
-            len(runtime_users),
-        )
-        from storage.postgres.connection import get_pool
-        from storage.postgres.discovery_repo import DiscoveryRepo
-
-        pool = await get_pool()
-        discovery_repo = DiscoveryRepo(pool)
-
-        async def _boot_snapshot_fetcher(url: str):
-            # Reuse the rate-limited leader fetcher so a 20-leader
-            # watchlist does not 429 the data-api on boot. The kind
-            # tag separates the boot snapshot from the live trade
-            # monitor's positions probe.
-            wallet = url.split("user=")[-1].split("&")[0]
-            return await _guarded_leader_fetch("boot_positions", wallet, url)
-
-        snapshot_result = await snapshot_followed_leaders(
-            leader_wallets=list(monitored_leaders),
-            own_wallets=[u.wallet.funder_address for u in runtime_users],
-            repo=discovery_repo,
-            fetcher=_boot_snapshot_fetcher,
-        )
-        logger.info("startup_stage | stage=boot_snapshot_completed")
-    except Exception as exc:
-        logger.warning(
-            "boot_snapshot_skipped",
-            extra={
-                "reason": "snapshot_pipeline_unavailable",
-                "error": repr(exc),
-            },
-        )
-
     print_startup_summary(
         wallet=first_user.wallet.funder_address,
         available_cash=available_cash,
@@ -1463,35 +2338,19 @@ async def _run_application(client_registry: list[Any]) -> int:
         active_leaders=monitored_leaders,
         config=application.config,
         health_report=health_report,
-        snapshot_result=snapshot_result,
     )
-
-    metrics_runner = None
-
-    # P2-g: derive the strict-readiness heartbeat staleness budget from the
-    # slowest monitored loop interval (trade-poll FETCH_INTERVAL vs risk
-    # RISK_CHECK_INTERVAL), times 3 — mirroring the per-loop lag tolerance in
-    # ``tradeMonitor._monitor_loop_healthy``. ReadinessTracker floors this so a
-    # sub-second poll interval cannot produce a flappy budget. Configured BEFORE
-    # the metrics server begins serving /health/ready so a loop that dies after
-    # ticking flips the endpoint to 503 instead of staying green.
-    _slowest_loop_interval = max(
-        float(application.config.polling.fetch_interval),
-        float(application.config.polling.risk_check_interval),
-    )
-    application.readiness.configure_heartbeat_budget(
-        staleness_seconds=_slowest_loop_interval * 3.0,
-    )
-
-    if application.config.network.enable_metrics_server:
-        metrics_runner = await start_health_server(
-            application.config.network.metrics_port,
-            tracker=application.readiness,
-        )
 
     monitor_tasks: list[asyncio.Task] = []
+    monitor_wallet_by_task: dict[asyncio.Task, str] = {}
     monitored_set: set[str] = set(monitored_leaders)
-    fetch_interval = application.config.polling.fetch_interval
+    fetch_interval = application.config.detection.fetch_interval
+    # Bound before ``_on_new_leaders`` closes over it: the discovery loop is
+    # spawned before the on-chain runtime is constructed below, so the name
+    # must already exist for the closure to read at call time.
+    onchain_runtime = None
+    # Bound here so the shutdown path can stop it even when the on-chain
+    # composition below never runs or fails part-way through.
+    pending_copy_tracker = None
 
     async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
         started_wallets = await _refresh_contexts_for_new_leaders(
@@ -1502,16 +2361,14 @@ async def _run_application(client_registry: list[Any]) -> int:
             leaders_repo=leaders_repo,
             config=application.config,
             readiness=application.readiness,
-            trust_store=application.trust_store,
         )
 
         monitored_leader_count = len(
-            [
-                wallet
-                for wallet, contexts in contexts_by_leader.items()
-                if contexts
-            ]
+            [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
         )
+        # Off-path operator projection: the roster only changes when discovery
+        # promotes leaders, and the emit is synchronous and exception-guarded.
+        telemetry_emitters.detection.roster_updated(monitored_leader_count)
 
         await _subscribe_context_tokens(
             market_data_runtimes=market_data_runtimes,
@@ -1528,6 +2385,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             new_contexts.extend(contexts_by_leader.get(wallet, []))
         dynamic_recon_failures: list[str] = []
         if new_contexts:
+            for context in new_contexts:
+                context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
             await startup_reconcile_unconfirmed(
                 new_contexts,
                 failures_out=dynamic_recon_failures,
@@ -1538,7 +2397,9 @@ async def _run_application(client_registry: list[Any]) -> int:
         # double-fill exposure the startup path already gates against —
         # the dynamic-discovery path must match.
         blocked_wallets = _wallets_blocked_by_reconcile_failures(
-            started_wallets, contexts_by_leader, dynamic_recon_failures,
+            started_wallets,
+            contexts_by_leader,
+            dynamic_recon_failures,
         )
         if blocked_wallets:
             logger.error(
@@ -1549,34 +2410,45 @@ async def _run_application(client_registry: list[Any]) -> int:
                 dynamic_recon_failures,
             )
             blocked_set = set(blocked_wallets)
-            started_wallets = [
-                wallet for wallet in started_wallets
-                if wallet not in blocked_set
-            ]
+            started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
+
+        unblocked_contexts = [
+            context for wallet in started_wallets for context in contexts_by_leader.get(wallet, ())
+        ]
+        if v1_runtime is not None and unblocked_contexts:
+            v1_runtime.add_contexts(unblocked_contexts)
 
         for wallet in started_wallets:
-            monitor_tasks.append(
-                asyncio.create_task(
-                    run_leader_monitor(
-                        wallet,
-                        contexts_by_leader[wallet],
-                        readiness_tracker=application.readiness,
-                        config=application.config,
-                        fetch_interval=fetch_interval,
-                        monitored_leader_count=monitored_leader_count,
-                        research_capture_service=research_capture_service,
-                    )
+            monitor_task = asyncio.create_task(
+                run_leader_monitor(
+                    wallet,
+                    contexts_by_leader[wallet],
+                    readiness_tracker=application.readiness,
+                    config=application.config,
+                    fetch_interval=fetch_interval,
+                    monitored_leader_count=monitored_leader_count,
+                    research_capture_service=research_capture_service,
+                    v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    telemetry=telemetry_emitters.detection,
                 )
             )
+            monitor_tasks.append(monitor_task)
+            monitor_wallet_by_task[monitor_task] = wallet
             logger.info("dynamic_leader_monitor_started", extra={"leader": wallet})
+        task_monitoring_state.add(started_wallets)
+
+        # Give the promoted leaders the mined/pending fast path too. Uses the
+        # wallets whose monitors actually started, so a leader blocked by a
+        # reconcile failure above is not watched on-chain either.
+        if started_wallets:
+            _refresh_onchain_watched_wallets(
+                onchain_runtime,
+                monitored_set | set(started_wallets),
+            )
 
         application.readiness.update(
             monitored_leader_count=len(
-                [
-                    wallet
-                    for wallet, contexts in contexts_by_leader.items()
-                    if contexts
-                ]
+                [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
             )
         )
         return started_wallets
@@ -1587,15 +2459,26 @@ async def _run_application(client_registry: list[Any]) -> int:
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
 
-    if application.config.discovery.enable_trader_discovery:
-        dynamic_monitoring_enabled = bool(
-            application.config.discovery.discovery_dynamic_monitoring_enabled
+    if not application.config.execution.paper_trade_only:
+        control_refresh_interval = float(
+            application.config.reconciliation.reconcile_interval_seconds
         )
+        supervised.append(
+            _Supervised(
+                name="trading-control-refresh",
+                factory=lambda: trading_permission_runtime.run(
+                    interval_seconds=control_refresh_interval
+                ),
+            )
+        )
+
+    if startup_policy.discovery_loop_enabled(application.config) and not configured:
+        dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
         if not dynamic_monitoring_enabled:
             logger.info(
-                "discovery_dynamic_monitoring_disabled",
+                "discovery_roster_hot_add_disabled",
                 extra={
-                    "discovery_dynamic_monitoring_enabled": False,
+                    "roster_hot_add_enabled": False,
                     "configured_value": False,
                     "effect": "background discovery will refresh DB only and will not hot-add monitors",
                 },
@@ -1607,13 +2490,16 @@ async def _run_application(client_registry: list[Any]) -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    leaders_repo=application.discovery_repo,
-                    on_new_leaders=(
-                        _on_new_leaders if dynamic_monitoring_enabled else None
-                    ),
+                    on_new_leaders=(_on_new_leaders if dynamic_monitoring_enabled else None),
                     already_monitored=monitored_set,
+                    force_discovery=startup_policy.force_discovery,
                 ),
             )
+        )
+    elif configured:
+        logger.info(
+            "discovery_skipped_manual_leaders",
+            extra={"configured_leader_count": len(configured)},
         )
 
     if application.config.risk.enable_risk_mgmt:
@@ -1639,7 +2525,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # See docs/concurrency-audit-response.md (C8-adjacent gap).
     if not application.config.risk.enable_risk_mgmt:
         _reaper_interval = max(
-            30.0, float(application.config.polling.reconcile_interval_seconds)
+            30.0, float(application.config.reconciliation.reconcile_interval_seconds)
         )
 
         async def _reservation_reaper_loop() -> None:
@@ -1653,138 +2539,135 @@ async def _run_application(client_registry: list[Any]) -> int:
                 await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
                 await asyncio.sleep(_reaper_interval)
 
-        supervised.append(
-            _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
-        )
+        supervised.append(_Supervised(name="reservation-reaper", factory=_reservation_reaper_loop))
 
     for spec in supervised:
         spec.spawn()
 
-    # On-chain detection runtime (PR2): construct + start if the operator
-    # configured a WSS endpoint. The mined ``OrderFilled`` subscription is
-    # always safe (authoritative); the pending-tx subscription is gated by
-    # ``ENABLE_ONCHAIN_PENDING_DETECTION``. Without this wiring the config
-    # flags were inert (Greptile P1 "On-chain config unused").
-    onchain_runtime = None
-    oc_cfg = application.config.onchain_detection
-    ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
-    missing_wss_reason = _onchain_missing_wss_warning_reason(application.config)
-    if not ws_url and missing_wss_reason:
-        logger.warning(
-            "onchain_detection_wss_missing | reason=%s mined=%s pending=%s "
-            "required=ONCHAIN_WS_URL_or_PENDING_TX_WS_URL",
-            missing_wss_reason,
-            oc_cfg.enable_onchain_mined_detection,
-            oc_cfg.enable_onchain_pending_detection,
-        )
-    if ws_url and (oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection):
-        try:
-            import time as _time_mod
-
-            from orchestrators.onchain_detection_runtime import (
-                OnchainDetectionRuntime,
-            )
-            from orchestrators.trade_pipeline import (
-                execute_trades as _execute_trade_pipeline,
-            )
-
-            async def _onchain_signal_sink(signal) -> None:
-                # Wire the on-chain signal into the same copy pipeline the
-                # REST-polling leader monitor uses. Each signal is converted
-                # to a raw signal dict (shaped for ``normalize_trade_signal``)
-                # and dispatched to every user context following the signal's
-                # leader. The copy pipeline's ``build_trade_key`` idempotency
-                # (``leader|tx_hash|side|asset``) catches the duplicate when
-                # the slower REST-polling path later reports the same fill.
-                #
-                # Case-insensitive leader lookup: the on-chain decoders
-                # lowercase ``signal.leader_wallet``, but
-                # ``contexts_by_leader`` is keyed from the configured
-                # ``LEADER_WALLETS`` entries which may be checksummed or
-                # mixed-case. A direct ``.get(signal.leader_wallet)`` would
-                # miss the match and silently drop the signal (Greptile P1
-                # "Leader lookup mismatches").
-                leader_lower = signal.leader_wallet.lower()
-                contexts: list = []
-                for ck, cv in contexts_by_leader.items():
-                    if ck.lower() == leader_lower:
-                        contexts = cv
-                        break
-                if not contexts:
-                    logger.debug(
-                        "onchain_signal_no_followers | leader=%s tx=%s",
-                        signal.leader_wallet,
-                        signal.tx_hash,
-                    )
-                    return
-                raw = signal.as_raw_signal_dict()
-                now_ts = _time_mod.time()
-                tasks = [
-                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts)
-                    for ctx in contexts
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        ctx = contexts[idx]
-                        logger.warning(
-                            "onchain_signal_pipeline_error | leader=%s user=%s "
-                            "tx=%s error=%s",
-                            leader_lower,
-                            ctx.user_id,
-                            signal.tx_hash,
-                            redact_error_detail(result),
-                        )
-
-            onchain_runtime = OnchainDetectionRuntime(
-                watched_wallets=set(application.config.leader.wallets),
-                ws_url=ws_url,
-                signal_sink=_onchain_signal_sink,
-                enable_pending=oc_cfg.enable_onchain_pending_detection,
-                enable_mined=oc_cfg.enable_onchain_mined_detection,
-                pending_config=_build_pending_tx_config(oc_cfg),
-                condition_id_resolver=_build_onchain_condition_id_resolver(),
-            )
-            await onchain_runtime.start()
-            logger.info(
-                "onchain_detection_started | mined=%s pending=%s watched=%d",
-                oc_cfg.enable_onchain_mined_detection,
-                oc_cfg.enable_onchain_pending_detection,
-                len(application.config.leader.wallets),
-            )
-        except Exception as exc:
-            logger.warning(
-                "onchain_detection_start_failed | error=%s — bot continues "
-                "without on-chain detection (REST-polling leader path unaffected)",
-                redact_error_detail(exc),
-            )
-            onchain_runtime = None
-
-    monitor_tasks.extend(
-        asyncio.create_task(
-            run_leader_monitor(
-                wallet,
-                contexts_by_leader[wallet],
-                readiness_tracker=application.readiness,
-                config=application.config,
-                fetch_interval=fetch_interval,
-                monitored_leader_count=len(monitored_leaders),
-                research_capture_service=research_capture_service,
-            )
-        )
-        for wallet in monitored_leaders
-    )
-
-    loop = asyncio.get_running_loop()
+    # On-chain detection runtime: ``detection.mode`` selects exactly one
+    # source (``on_chain_pending`` -> gen-1 provisional mempool runtime,
+    # ``on_chain_confirmed`` -> gen-2 receipt-confirmed runtime). REST
+    # polling below keeps running in every mode as the parallel fallback;
+    # the copy layer dedups the same fill by trade key.
+    detection_mode = DetectionStartupReporter(logger, metrics).report(application.config)
     try:
+        if detection_mode is not DetectionMode.POLLING:
+            # The confidence floor was already validated at startup (before any
+            # runtime was built) precisely so an unparseable value aborts instead
+            # of being absorbed by the guard below.
+            #
+            # The observability collaborators are likewise built OUTSIDE the
+            # degrade-to-polling ``except`` below: a failure to compose a
+            # tracker or a health reporter is a structural fault, and
+            # swallowing it there would silently downgrade the operator's
+            # chosen detection mode to REST polling. They are nonetheless
+            # inside the ``try`` whose ``finally`` runs ``_shutdown_runtime``,
+            # so failing loud still tears down every runtime already started
+            # instead of leaking market/user streams and the connection pool.
+            pending_copy_tracker = _build_pending_copy_tracker(
+                application.config,
+                telemetry_service=telemetry_runtime.service,
+                metrics_registry=metrics,
+            )
+            oc_cfg = application.config.detection.onchain
+            confirmed_source = str(getattr(oc_cfg, "confirmed_source", "mempool_reserved"))
+            _ws_health_reporter = _build_onchain_ws_health_reporter(
+                application.readiness,
+                metrics,
+                mode=detection_mode,
+                confirmed_source=confirmed_source,
+            )
+            try:
+                from orchestrators.detection_source_factory import DetectionSourceRequest
+                from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+                from orchestrators.trade_pipeline import (
+                    execute_trades as _execute_trade_pipeline,
+                )
+
+                # One adapter routes every on-chain signal into the same copy
+                # pipeline the REST-polling leader monitor uses (v1 runtime when
+                # enabled, else the legacy per-context pipeline), logging
+                # ``detection_signal | source=...`` provenance per signal.
+                _onchain_signal_sink = OnchainSignalDispatchAdapter(
+                    contexts_by_leader=contexts_by_leader,
+                    v1_runtime=v1_runtime,
+                    execute_trades=_execute_trade_pipeline,
+                    pending_copy_tracker=pending_copy_tracker,
+                    telemetry=telemetry_emitters.detection,
+                    sell_fraction_resolver=_build_leader_sell_fraction_resolver(
+                        application.config,
+                        buy_scope_guard=leader_sell_scope_guard,
+                    ),
+                )
+                onchain_runtime = await _build_detection_source_factory(
+                    application.config,
+                    websocket_factory=_build_onchain_websocket_factory(_ws_health_reporter),
+                ).build(
+                    DetectionSourceRequest(
+                        mode=detection_mode,
+                        watched_wallets=frozenset(monitored_leaders),
+                        ws_url=oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url,
+                        chain_id=application.config.wallet.chain_id,
+                        signal_sink=_onchain_signal_sink,
+                        confirmed_source=confirmed_source,
+                    )
+                )
+                if onchain_runtime is not None:
+                    await _start_onchain_runtime(onchain_runtime, mode=detection_mode)
+                    logger.info(
+                        "onchain_detection_started | mode=%s watched=%d",
+                        detection_mode.value,
+                        len(monitored_leaders),
+                    )
+                    if pending_copy_tracker is not None:
+                        await pending_copy_tracker.start()
+                    # Late-bound operator read probes. Composition order puts the
+                    # control plane before detection, so both are attached here,
+                    # after the transport and tracker exist.
+                    telemetry_emitters.detection.attach_connection_probe(
+                        _detection_connection_probe(onchain_runtime)
+                    )
+                    pending_confirmation_stats.attach(pending_copy_tracker)
+            except Exception as exc:
+                logger.warning(
+                    "onchain_detection_start_failed | mode=%s error=%s — bot continues "
+                    "without on-chain detection (REST-polling leader path unaffected)",
+                    detection_mode.value,
+                    redact_error_detail(exc),
+                )
+                onchain_runtime = None
+
+        # Seed the stream with the startup roster size, so a UI attached at boot
+        # sees the roster without waiting for the first discovery promotion (which
+        # is the only other place ``roster_updated`` fires). Off-path: it runs once,
+        # before any monitor exists, and the emit is synchronous and guarded.
+        telemetry_emitters.detection.roster_updated(len(monitored_leaders))
+
+        for wallet in monitored_leaders:
+            monitor_task = asyncio.create_task(
+                run_leader_monitor(
+                    wallet,
+                    contexts_by_leader[wallet],
+                    readiness_tracker=application.readiness,
+                    config=application.config,
+                    fetch_interval=fetch_interval,
+                    monitored_leader_count=len(monitored_leaders),
+                    research_capture_service=research_capture_service,
+                    v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    telemetry=telemetry_emitters.detection,
+                )
+            )
+            monitor_tasks.append(monitor_task)
+            monitor_wallet_by_task[monitor_task] = wallet
+        task_monitoring_state.add(monitored_leaders)
+
+        loop = asyncio.get_running_loop()
         while True:
             # Wait on leader monitors AND every live supervised aux loop, so a
             # crash in risk / discovery is observed here rather than dying
             # silently while the process stays "up".
             active = [task for task in monitor_tasks if not task.done()]
-            active += [
-                spec.task for spec in supervised if spec.task and not spec.task.done()
-            ]
+            active += [spec.task for spec in supervised if spec.task and not spec.task.done()]
 
             if not active:
                 await asyncio.sleep(refresh_interval)
@@ -1795,7 +2678,7 @@ async def _run_application(client_registry: list[Any]) -> int:
 
             fail_closed = False
             for task in done:
-                spec = next((s for s in supervised if s.task is task), None)
+                completed_spec = next((s for s in supervised if s.task is task), None)
 
                 # A cancelled task is a normal lifecycle event (shutdown, or a
                 # loop that re-raises CancelledError) — never a crash. Calling
@@ -1803,16 +2686,16 @@ async def _run_application(client_registry: list[Any]) -> int:
                 # down the supervisor, turning graceful cancellation into an
                 # exit(1). Treat it as a benign drop.
                 if task.cancelled():
-                    if spec is not None:
+                    if completed_spec is not None:
                         logger.info(
                             "supervised_task_cancelled",
-                            extra={"task": spec.name},
+                            extra={"task": completed_spec.name},
                         )
                     continue
 
-                exc = task.exception()
+                task_error = task.exception()
 
-                if spec is None:
+                if completed_spec is None:
                     # Leader monitor: log and drop; dynamic discovery
                     # re-introduces monitors as leaders change. P2-h: a crashed
                     # leader monitor used to leave ``monitored_leader_count``
@@ -1821,44 +2704,50 @@ async def _run_application(client_registry: list[Any]) -> int:
                     # from the still-live monitor tasks (the crashed one is
                     # ``done`` here) so the gauge reflects reality and an
                     # operator can see coverage dropped.
-                    if exc:
+                    if task_error:
                         logger.error(
                             "monitor_task_crashed",
-                            extra={"error": redact_error_detail(exc)},
+                            extra={"error": redact_error_detail(task_error)},
                         )
+                    crashed_wallet = monitor_wallet_by_task.pop(task, None)
+                    if crashed_wallet is not None:
+                        task_monitoring_state.remove((crashed_wallet,))
                     metrics.inc("leader_monitor_crashed_total")
                     application.readiness.update(
                         monitored_leader_count=_live_monitor_count(monitor_tasks)
                     )
                     continue
 
-                if exc is None:
+                if task_error is None:
                     # Supervised loops run forever; a clean return means the
                     # subsystem disabled itself (e.g. config gate). Leave it
                     # dropped rather than tear the process down.
                     logger.warning(
                         "supervised_task_exited_clean",
-                        extra={"task": spec.name},
+                        extra={"task": completed_spec.name},
                     )
                     continue
 
                 metrics.inc("supervised_task_restart_total")
-                decision = _on_supervised_crash(spec, loop.time())
+                decision = _on_supervised_crash(completed_spec, loop.time())
                 logger.error(
                     "supervised_task_crashed",
                     extra={
-                        "task": spec.name,
-                        "restarts": spec.restarts,
+                        "task": completed_spec.name,
+                        "restarts": completed_spec.restarts,
                         "decision": decision,
-                        "error": redact_error_detail(exc),
+                        "error": redact_error_detail(task_error),
                     },
                 )
                 if decision == "restart":
-                    spec.spawn()
+                    completed_spec.spawn()
                 else:
                     logger.critical(
                         "supervised_task_fail_closed",
-                        extra={"task": spec.name, "restarts": spec.restarts},
+                        extra={
+                            "task": completed_spec.name,
+                            "restarts": completed_spec.restarts,
+                        },
                     )
                     application.readiness.update(supervisor_ok=False)
                     fail_closed = True
@@ -1874,6 +2763,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
             onchain_runtime=onchain_runtime,
+            pending_copy_tracker=pending_copy_tracker,
         )
 
 
@@ -1889,7 +2779,9 @@ async def _close_polymarket_clients(clients: list[Any]) -> None:
         if not callable(close):
             continue
         try:
-            await close()
+            close_result = close()
+            if inspect.isawaitable(close_result):
+                await close_result
         except Exception as exc:
             logger.warning(
                 "polymarket_client_shutdown_failed",
@@ -1897,11 +2789,21 @@ async def _close_polymarket_clients(clients: list[Any]) -> None:
             )
 
 
-async def main() -> int:
-    """Run the application while owning every created Polymarket SDK client."""
+async def main(*, auto_trader: bool = False) -> int:
+    """Run the application while owning every created Polymarket client.
+
+    Args:
+        auto_trader: Ignore manual leaders and force discovery for this process.
+
+    Returns:
+        Process exit code.
+    """
     clients: list[Any] = []
     try:
-        return await _run_application(clients)
+        return await _run_application(
+            clients,
+            startup_policy=TraderStartupPolicy(auto_trader=auto_trader),
+        )
     finally:
         await _close_polymarket_clients(clients)
         # Startup can return before ``_shutdown_runtime`` exists (doctor,
@@ -1919,7 +2821,9 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
+    from utils.event_loop import new_event_loop
+
+    loop = new_event_loop()
     main_task = loop.create_task(main())
 
     def _shutdown_handler(sig, _frame):

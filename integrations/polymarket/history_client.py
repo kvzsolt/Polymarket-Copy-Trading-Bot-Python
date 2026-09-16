@@ -44,21 +44,13 @@ class PolymarketHistoryClient:
             async with session.get(self.BASE_URL, params=params) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
-                    raise RuntimeError(
-                        f"Polymarket activity error {resp.status}: {text[:500]}"
-                    )
+                    raise RuntimeError(f"Polymarket activity error {resp.status}: {text[:500]}")
                 payload = await resp.json()
 
         if isinstance(payload, list):
             rows = payload
         elif isinstance(payload, dict):
-            rows = (
-                payload.get("data")
-                or payload.get("activities")
-                or payload.get("results")
-                or []
-            )
+            rows = payload.get("data") or payload.get("activities") or payload.get("results") or []
         else:
             rows = []
         return ActivityPage(rows=list(rows))
-

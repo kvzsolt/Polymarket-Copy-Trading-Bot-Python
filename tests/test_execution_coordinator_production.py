@@ -9,9 +9,11 @@ Pins the layered-defense dup guard:
   - submitted_unconfirmed leaves reservation active and links it to the order.
   - reservation_id flows through ExecutionRequest.recovery_metadata.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,6 +33,7 @@ from services.execution.reservation_service import (
 def _make_reservation(reservation_id: str = "res-1"):
     res = MagicMock()
     res.id = reservation_id
+    res.reserved_size = Decimal("0")
     return res
 
 
@@ -40,7 +43,9 @@ def _intent(
     source: str = "copy_trade",
     size: Decimal = Decimal("5"),
     price: Decimal = Decimal("0.5"),
+    live_position_size: Decimal | None = None,
 ) -> ExecutionIntent:
+    notional = size if side == "BUY" else size * price
     return ExecutionIntent(
         user_id="user-1",
         condition_id="cond-1",
@@ -48,17 +53,20 @@ def _intent(
         side=side,
         size=size,
         price=price,
-        notional_usdc=size * price,
+        notional_usdc=notional,
         idempotency_key="sig-1",
         source=source,
         signal_id="sig-1",
         leader_wallet="0xleader",
         max_slippage_bps=200,
         reason=source,
+        live_position_size=live_position_size,
     )
 
 
-def _make_exec_result(*, status: str, accepted: bool = True, order_id: str | None = "ord-1") -> MagicMock:
+def _make_exec_result(
+    *, status: str, accepted: bool = True, order_id: str | None = "ord-1"
+) -> MagicMock:
     r = MagicMock()
     r.status = status
     r.accepted = accepted
@@ -163,7 +171,9 @@ async def test_duplicate_ignored_releases_just_created_reservation():
     reservation = _make_reservation("res-dup")
     coord, reservation_service, execution_service = _make_coordinator(
         reserve_return=reservation,
-        execute_return=_make_exec_result(status="duplicate_ignored", accepted=True, order_id="ord-existing"),
+        execute_return=_make_exec_result(
+            status="duplicate_ignored", accepted=True, order_id="ord-existing"
+        ),
     )
 
     result = await coord.submit_copy_trade(_intent())
@@ -193,10 +203,18 @@ async def test_inflight_lock_releases_just_created_reservation():
     )
 
 
-@pytest.mark.parametrize("terminal_status", [
-    "rejected", "failed", "book_no_liquidity", "book_spread_wide",
-    "stale_market_data", "market_not_ready", "circuit_open",
-])
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        "rejected",
+        "failed",
+        "book_no_liquidity",
+        "book_spread_wide",
+        "stale_market_data",
+        "market_not_ready",
+        "circuit_open",
+    ],
+)
 @pytest.mark.asyncio
 async def test_terminal_failure_releases_reservation(terminal_status):
     reservation = _make_reservation(f"res-{terminal_status}")
@@ -215,20 +233,34 @@ async def test_terminal_failure_releases_reservation(terminal_status):
 
 
 @pytest.mark.asyncio
-async def test_execute_exception_releases_reservation_and_reraises():
+async def test_execute_exception_retains_reservation_and_reports_safe_unknown():
     reservation = _make_reservation("res-exc")
     coord, reservation_service, execution_service = _make_coordinator(
         reserve_return=reservation,
         execute_return=None,
     )
-    execution_service.execute.side_effect = RuntimeError("network down")
+    execution_service.execute.side_effect = RuntimeError("SYNTHETIC_PROVIDER_SECRET")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="requires reconciliation") as error:
         await coord.submit_copy_trade(_intent())
 
-    reservation_service.release_terminal.assert_called_once_with(
-        "res-exc", reason="execute_exception"
+    reservation_service.release_terminal.assert_not_called()
+    assert "SYNTHETIC" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["filled", "partially_filled", "", "unexpected"])
+async def test_acknowledgement_keeps_reservation_until_durable_accounting(status):
+    """Even a fill acknowledgement is not an applied durable position."""
+    coord, reservations, execution = _make_coordinator(
+        reserve_return=_make_reservation(),
+        execute_return=_make_exec_result(status=status, accepted=False),
     )
+    result = await coord.submit_copy_trade(_intent())
+    reservations.release_terminal.assert_not_called()
+    if status not in {"filled", "partially_filled"}:
+        assert result.status == "submitted_unconfirmed"
+    execution.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -245,6 +277,70 @@ async def test_reservation_id_flows_through_recovery_metadata():
     assert exec_request.recovery_metadata is not None
     assert exec_request.recovery_metadata["reservation_id"] == "res-meta"
     assert exec_request.recovery_metadata["source"] == "copy_trade"
+
+
+@pytest.mark.asyncio
+async def test_buy_reserves_and_submits_exact_collateral_amount() -> None:
+    """Keep BUY amount in pUSD while reservation math remains exact."""
+
+    reservation = _make_reservation("res-buy-units")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+
+    await coord.submit_copy_trade(_intent(side="BUY", size=Decimal("10"), price=Decimal("0.4")))
+
+    reserved_intent = reservation_service.reserve_for_intent.await_args.args[0]
+    assert reserved_intent.size == Decimal("25")
+    assert reserved_intent.size * reserved_intent.price == Decimal("10")
+    request = execution_service.execute.await_args.args[0]
+    assert request.amount == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sell_reserves_and_submits_exact_share_amount() -> None:
+    """Keep SELL amount in outcome shares through both lifecycle layers."""
+
+    reservation = _make_reservation("res-sell-units")
+    reservation.reserved_size = Decimal("7")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+
+    await coord.submit_copy_trade(_intent(side="SELL", size=Decimal("7"), price=Decimal("0.4")))
+
+    reserved_intent = reservation_service.reserve_for_intent.await_args.args[0]
+    assert reserved_intent.size == Decimal("7")
+    request = execution_service.execute.await_args.args[0]
+    assert request.amount == Decimal("7")
+
+
+@pytest.mark.asyncio
+async def test_sell_submits_atomic_reservation_remainder_not_stale_requested_size() -> None:
+    """Coordinator submits the exact shares returned by the locked reservation."""
+
+    reservation = _make_reservation("res-sell-remainder")
+    reservation.reserved_size = Decimal("8.11236964730804071782")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+    intent = _intent(
+        side="SELL",
+        size=Decimal("62.29"),
+        price=Decimal("0.21"),
+        live_position_size=Decimal("62.2902"),
+    )
+
+    await coord.submit_copy_trade(intent)
+
+    request = execution_service.execute.await_args.args[0]
+    assert request.amount == Decimal("8.11236964730804071782")
+    assert request.recovery_metadata["requested_sell_size"] == "62.29"
+    assert request.recovery_metadata["reserved_sell_size"] == "8.11236964730804071782"
+    assert request.recovery_metadata["pre_submit_live_position_size"] == "62.2902"
 
 
 @pytest.mark.asyncio
@@ -300,3 +396,84 @@ async def test_submit_protective_exit_uses_protective_source():
 
     exec_request = execution_service.execute.await_args.args[0]
     assert exec_request.recovery_metadata["source"] == "protective_exit"
+
+
+@pytest.mark.asyncio
+async def test_buy_without_prior_position_records_a_zero_baseline() -> None:
+    """A fresh BUY has a knowable baseline of zero, not an absent one.
+
+    ``pre_submit_live_position_size`` is the only local corroboration the
+    ambiguous-order auto-release has. Omitting it for a token we hold nothing
+    in made the position-delta probe permanently ``inconclusive``, and because
+    the release requires every probe clean, the reservation could never be
+    freed — it stayed parked across restarts, shrinking the balance that copy
+    sizing is derived from.
+    """
+    reservation = _make_reservation("res-fresh-buy")
+    coord, _reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+    coord.positions_repo.get_position = AsyncMock(return_value=None)
+    intent = _intent(side="BUY", live_position_size=None)
+
+    await coord.submit_copy_trade(intent)
+
+    request = execution_service.execute.await_args.args[0]
+    assert request.recovery_metadata["pre_submit_live_position_size"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_buy_with_an_existing_local_position_records_that_size() -> None:
+    """When we already hold the token the baseline is the held size."""
+    reservation = _make_reservation("res-topup-buy")
+    coord, _reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+    coord.positions_repo.get_position = AsyncMock(
+        return_value=SimpleNamespace(size_tokens=Decimal("12.5"))
+    )
+    intent = _intent(side="BUY", live_position_size=None)
+
+    await coord.submit_copy_trade(intent)
+
+    request = execution_service.execute.await_args.args[0]
+    assert request.recovery_metadata["pre_submit_live_position_size"] == "12.5"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_live_position_size_still_wins() -> None:
+    """A caller-supplied live size is authoritative over the local lookup."""
+    reservation = _make_reservation("res-explicit")
+    coord, _reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+    coord.positions_repo.get_position = AsyncMock(
+        return_value=SimpleNamespace(size_tokens=Decimal("99"))
+    )
+    intent = _intent(side="SELL", live_position_size=Decimal("62.2902"))
+
+    await coord.submit_copy_trade(intent)
+
+    request = execution_service.execute.await_args.args[0]
+    assert request.recovery_metadata["pre_submit_live_position_size"] == "62.2902"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_position_lookup_does_not_block_the_order() -> None:
+    """Baseline capture is best-effort: it must never fail a submission."""
+    reservation = _make_reservation("res-lookup-fails")
+    coord, _reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+    coord.positions_repo.get_position = AsyncMock(side_effect=RuntimeError("db down"))
+    intent = _intent(side="BUY", live_position_size=None)
+
+    result = await coord.submit_copy_trade(intent)
+
+    assert result.accepted is True
+    request = execution_service.execute.await_args.args[0]
+    assert "pre_submit_live_position_size" not in request.recovery_metadata

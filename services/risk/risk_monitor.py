@@ -3,27 +3,48 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import inspect
 import time
 from collections import OrderedDict
+from collections.abc import Sized
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from application.trading_context import TradingContext
     from config.app_config import AppConfig
-    from domain.trading_context import TradingContext
     from services.healthServer import ReadinessTracker
 
 from services.metrics import metrics
 from services.executionService import ExecutionRequest
 from services.positionActionCoordinator import PositionScope
 from services.risk.risk_engine import active_policy
+from services.telemetry import RiskTelemetryEmitter
 from storage.postgres.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
-from utils.fetchData import fetch_data
 from utils.logger import get_logger
+
+# Null-object emitter for contexts built without the telemetry field (older
+# tests and tools construct ``TradingContext`` fakes). Every method is a no-op
+# returning ``False``.
+_DISABLED_RISK_TELEMETRY = RiskTelemetryEmitter(None)
+
+
+def _risk_telemetry(context: "TradingContext") -> RiskTelemetryEmitter:
+    """Return the context's protective-exit emitter, or a disabled null object.
+
+    Args:
+        context: Trading context, possibly a fake without the field.
+
+    Returns:
+        The injected emitter when present, else a total null object.
+    """
+    bundle = getattr(context, "telemetry", None)
+    emitter = getattr(bundle, "risk", None)
+    return emitter if isinstance(emitter, RiskTelemetryEmitter) else _DISABLED_RISK_TELEMETRY
+
 
 # ---------------------------------------------------------------------------
 # Venue circuit breaker — suppresses price polls during exchange outages.
@@ -61,10 +82,12 @@ class VenueCircuitBreaker:
         return "open"
 
     def record_success(self) -> None:
+        """Record a successful risk-loop iteration."""
         self._consecutive_failures = 0
         self._opened_at = None
 
     def record_failure(self) -> None:
+        """Record a failed risk-loop iteration and its safe reason."""
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._threshold and self._opened_at is None:
             self._opened_at = time.time()
@@ -84,6 +107,7 @@ class VenueCircuitBreaker:
         return True  # open
 
     def reset(self) -> None:
+        """Reset the risk-loop breaker after a successful recovery."""
         self._consecutive_failures = 0
         self._opened_at = None
 
@@ -106,40 +130,69 @@ def _is_drift_error(msg: str) -> bool:
     return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
 
 
+def _risk_exit_signal_id(
+    pos: Any,
+    *,
+    reason: str,
+    position_manager: Any | None = None,
+) -> str:
+    """Build a stable idempotency key for a protective risk-exit SELL.
+
+    C3 — the key must be stable across retries for the same position so the
+    submission idempotency lock can collapse a duplicate dispatch against an
+    in-flight prior POST (previously ``time.time_ns()`` produced a fresh key
+    every tick, defeating dedup and causing oversell/phantom-prune storms).
+
+    The key is ``risk:{reason}:{condition_id}:{token_id}:{epoch}`` where
+    ``epoch`` is the in-memory tracked position's ``entry_time`` (which resets
+    on re-entry, so a freshly re-entered position is not dedup-suppressed by
+    the prior position's one-shot trim). When the tracked position is absent
+    (e.g. fresh boot before rehydrate) the epoch falls back to a stable hash
+    of immutable DB fields — never the wall clock.
+    """
+    condition_id = str(getattr(pos, "condition_id", "") or "")
+    token_id = str(getattr(pos, "token_id", "") or "")
+    epoch: Any = None
+    if position_manager is not None:
+        get_position = getattr(position_manager, "get_position", None)
+        if callable(get_position):
+            try:
+                tracked = get_position(condition_id, token_id)
+            except TypeError:
+                try:
+                    tracked = get_position(condition_id)
+                except Exception:
+                    tracked = None
+            except Exception:
+                tracked = None
+            if tracked is not None:
+                epoch = getattr(tracked, "entry_time", None)
+    if epoch is None:
+        # Stable fallback: hash immutable DB position fields so the same
+        # position yields the same key across ticks even without the in-memory
+        # tracked position.
+        leader_id = str(getattr(pos, "leader_id", "") or "")
+        avg_entry = str(getattr(pos, "avg_entry_price", "") or "")
+        size_tokens = str(getattr(pos, "size_tokens", "") or "")
+        epoch = _stable_hash(f"{condition_id}|{token_id}|{leader_id}|{avg_entry}|{size_tokens}")
+    return f"risk:{reason}:{condition_id}:{token_id}:{epoch}"
+
+
+def _stable_hash(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(value.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+
+
 async def _fetch_live_risk_position_size(
     context: TradingContext,
     *,
     token_id: str,
 ) -> Decimal | None:
-    wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
-    if not wallet:
+    if context.holdings_reader is None:
         return None
-    try:
-        positions = await fetch_data(
-            f"https://data-api.polymarket.com/positions?user={wallet}",
-            silent=True,
-        )
-    except Exception:
-        return None
-    live_size = Decimal("0")
-    if isinstance(positions, list):
-        for position in positions:
-            if not isinstance(position, dict):
-                continue
-            live_token_id = str(
-                position.get("asset")
-                or position.get("tokenID")
-                or position.get("token_id")
-                or ""
-            ).strip()
-            if live_token_id != token_id:
-                continue
-            try:
-                live_size = Decimal(str(position.get("size") or "0"))
-            except Exception:
-                live_size = Decimal("0")
-            break
-    return live_size
+    return await context.holdings_reader.shares(context.wallet_address, token_id)
+
 
 # Per-context "already warned about this token" set lives in context.extra
 # under this key. Module-level state would leak warning suppression across
@@ -177,12 +230,16 @@ _RISK_EXIT_REJECT_COOLDOWN_KEY = "risk_exit_reject_cooldown_until"
 
 @dataclass
 class RiskPreReconcileBackoff:
+    """Track bounded backoff state for risk pre-reconciliation."""
+
     consecutive_timeouts: int = 0
     next_attempt_at: float = 0.0
 
 
 @dataclass
 class CachedRiskPrice:
+    """Hold one exact risk price and its freshness metadata."""
+
     price: Decimal
     size: Decimal | None
     fetched_at: float
@@ -192,6 +249,7 @@ class CachedRiskPrice:
 
     @property
     def is_dormant(self) -> bool:
+        """Return whether the cached risk price is dormant."""
         return self.dormant_ttl > 0.0
 
 
@@ -200,18 +258,18 @@ class RiskPriceCache:
     # memory growth on a long-running bot. Oldest-inserted entries are
     # evicted first; active tokens are unaffected because each set() bumps
     # them back to the MRU end.
+    """Store bounded exact prices used by the risk loop."""
+
     def __init__(self, *, max_size: int | None = None) -> None:
         if max_size is None:
-            try:
-                max_size = int(os.environ.get("RISK_PRICE_CACHE_MAX_SIZE", "5000"))
-            except (TypeError, ValueError):
-                max_size = 5000
-            if max_size <= 0:
-                max_size = 5000
+            max_size = 5000
         self._max_size = max_size
         self._entries: OrderedDict[str, CachedRiskPrice] = OrderedDict()
 
-    def get_fresh(self, token_id: str, *, stale_after: float, now: float | None = None) -> CachedRiskPrice | None:
+    def get_fresh(
+        self, token_id: str, *, stale_after: float, now: float | None = None
+    ) -> CachedRiskPrice | None:
+        """Return a fresh cached risk price when available."""
         entry = self._entries.get(token_id)
         if entry is None:
             return None
@@ -235,7 +293,15 @@ class RiskPriceCache:
         current_ts = now if now is not None else time.time()
         return (current_ts - entry.fetched_at) <= entry.dormant_ttl
 
-    def set(self, token_id: str, *, price: Decimal, size: Decimal | None = None, fetched_at: float | None = None) -> None:
+    def set(
+        self,
+        token_id: str,
+        *,
+        price: Decimal,
+        size: Decimal | None = None,
+        fetched_at: float | None = None,
+    ) -> None:
+        """Store an exact risk price with bounded cache eviction."""
         self._entries[token_id] = CachedRiskPrice(
             price=price,
             size=size,
@@ -277,7 +343,9 @@ def _risk_cache_stale_after(refresh_interval: float) -> float:
     return max(_MIN_RISK_CACHE_STALE_SECONDS, float(refresh_interval) * 3.0)
 
 
-def _ensure_context_venue_circuit_breaker(context: TradingContext) -> VenueCircuitBreaker:
+def _ensure_context_venue_circuit_breaker(
+    context: TradingContext,
+) -> VenueCircuitBreaker:
     breaker = context.extra.get("venue_circuit_breaker")
     if isinstance(breaker, VenueCircuitBreaker):
         return breaker
@@ -490,7 +558,9 @@ def _market_wss_live_for_token(
         age = age_fn()
     except Exception:
         return False
-    return age is not None and float(age) <= max_silence_seconds
+    return (
+        isinstance(age, (int, float)) and not isinstance(age, bool) and age <= max_silence_seconds
+    )
 
 
 def _risk_wss_connection_max_silence(context: TradingContext) -> float:
@@ -554,8 +624,100 @@ def _cache_market_store_risk_price(
     if price <= 0:
         return None
 
+    if not _risk_mark_passes_sanity(
+        context,
+        token_id=token_id,
+        best_bid=price,
+        best_ask=getattr(quote, "best_ask", None),
+    ):
+        return None
+
     cache.set(token_id, price=price)
     return price
+
+
+def _risk_mark_max_spread_bps(context: TradingContext) -> float:
+    cfg = getattr(context, "config", None)
+    risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
+    value = getattr(risk_cfg, "risk_mark_max_spread_bps", 2000)
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 2000.0
+
+
+def _risk_mark_max_abs_distance(context: TradingContext) -> float:
+    cfg = getattr(context, "config", None)
+    risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
+    value = getattr(risk_cfg, "risk_mark_max_abs_distance", 0.0)
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 0.0
+
+
+def _risk_mark_passes_sanity(
+    context: TradingContext,
+    *,
+    token_id: str,
+    best_bid: Decimal,
+    best_ask: Any,
+) -> bool:
+    """Reject risk marks from crossed or extremely wide books.
+
+    The near-max/stop-loss triggers act directly on ``best_bid``; a corrupt or
+    stale quote must not fire a protective SELL. A one-sided book (no ask) is
+    accepted — rejecting it would blind risk monitoring on thin markets.
+    Fail closed for the enabled exit features: a rejected mark means "no
+    action this tick", never a sell.
+    """
+    if best_ask is None:
+        return True
+    try:
+        ask = Decimal(str(best_ask))
+    except Exception:
+        return True
+    if ask <= 0:
+        return True
+    reason = None
+    if best_bid > ask:
+        reason = "crossed_book"
+    else:
+        max_spread_bps = _risk_mark_max_spread_bps(context)
+        if max_spread_bps > 0:
+            mid = (best_bid + ask) / 2
+            if mid > 0:
+                spread_bps = float((ask - best_bid) / mid) * 10_000.0
+                if spread_bps > max_spread_bps:
+                    reason = "wide_spread"
+        # Phase 2.8 — absolute bid/ask distance check. The bps-of-mid gate is
+        # inert near 1.0 (bid >= 0.82 -> max spread < 2000 bps of mid), exactly
+        # where near-max triggers live. This absolute price-point gap rejects
+        # wide books near 1.0 that the bps gate misses. 0 disables. Strict:
+        # a gap equal to the cap is a normal book (sports markets routinely
+        # quote a 3-cent gap), only a wider gap is rejected.
+        if reason is None:
+            max_abs_distance = _risk_mark_max_abs_distance(context)
+            if max_abs_distance > 0:
+                abs_distance = float(ask - best_bid)
+                if abs_distance > max_abs_distance:
+                    reason = "wide_abs_distance"
+    if reason is None:
+        return True
+    if _should_log_active_reservation_skip(
+        context,
+        condition_id="risk_mark",
+        token_id=token_id,
+        reason=reason,
+    ):
+        logger.warning(
+            "risk_mark_rejected | token=%s reason=%s best_bid=%s best_ask=%s",
+            token_id[:16],
+            reason,
+            best_bid,
+            ask,
+        )
+    return False
 
 
 async def _refresh_context_price_cache(
@@ -564,14 +726,8 @@ async def _refresh_context_price_cache(
     refresh_interval: float,
     max_concurrency: int = _DEFAULT_RISK_PRICE_SEMAPHORE,
 ) -> None:
-    positions = list(
-        await context.positions_repo.list_open_positions(context.user_id) or []
-    )
-    token_ids = [
-        pos.token_id
-        for pos in positions
-        if is_valid_clob_token_id(pos.token_id)
-    ]
+    positions = list(await context.positions_repo.list_open_positions(context.user_id) or [])
+    token_ids = [pos.token_id for pos in positions if is_valid_clob_token_id(pos.token_id)]
     if not token_ids:
         return
     # Build token → condition lookup so ``_fetch_and_store_price`` can
@@ -754,7 +910,11 @@ async def _dispatch_risk_exit(
         logger.error(
             "execution_coordinator_missing | risk path live mode requires coordinator | "
             "user=%s cond=%s token=%s side=%s source=%s",
-            user_id, condition_id, token_id, side, source,
+            user_id,
+            condition_id,
+            token_id,
+            side,
+            source,
             extra={
                 "type": "execution_coordinator_missing",
                 "user_id": user_id,
@@ -766,7 +926,8 @@ async def _dispatch_risk_exit(
         )
         try:
             from services.metrics import (
-                METRIC_COORDINATOR_MISSING_SKIP, metrics,
+                METRIC_COORDINATOR_MISSING_SKIP,
+                metrics,
             )
 
             metrics.inc_sync(
@@ -788,7 +949,7 @@ async def _dispatch_risk_exit(
             fees_paid=_D("0"),
             error="ExecutionCoordinator not wired in live mode",
         )
-    submitter = getattr(execution_service, "execute")
+    submitter = execution_service.execute
     return await submitter(exec_req)
 
 
@@ -804,7 +965,7 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
             try:
                 existing = pm.get_position(pos.condition_id, pos.token_id)
             except Exception:
-                existing = None
+                raise RuntimeError("position protection recovery unavailable") from None
         if existing is not None:
             continue
         try:
@@ -817,7 +978,27 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
                 leader_wallet=pos.leader_id or "",
             )
         except Exception:
-            continue
+            raise RuntimeError("position protection recovery unavailable") from None
+        # Restore durable one-shot exit state. ``near_max_warn_done`` lives
+        # in-memory on the tracked position; without this a restart re-arms
+        # the 60% near-max trim and bleeds the position again on every boot.
+        # A ``pending`` trigger row counts as done (crash between trigger and
+        # fill-status update must not re-arm a sell); ``failed`` re-arms.
+        try:
+            triggers_repo = getattr(context, "risk_triggers_repo", None)
+            if triggers_repo is not None and hasattr(pm, "get_position"):
+                already_trimmed = await triggers_repo.has_trigger_for_reason(
+                    user_id=context.user_id,
+                    condition_id=pos.condition_id,
+                    token_id=pos.token_id,
+                    reason="near_max_partial_trim",
+                )
+                if already_trimmed:
+                    tracked = pm.get_position(pos.condition_id, pos.token_id)
+                    if tracked is not None:
+                        tracked.exit_state.near_max_warn_done = True
+        except Exception:
+            raise RuntimeError("position protection recovery unavailable") from None
 
 
 def _fallback_risk_decision(
@@ -898,13 +1079,16 @@ async def _active_sell_reserved_size(
         return Decimal("0")
 
     try:
-        reservations = await list_active(user_id, condition_id, token_id)
+        lookup_result = list_active(user_id, condition_id, token_id)
+        reservations = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
     except Exception:
         logger.debug("risk_active_reservation_lookup_failed", exc_info=True)
         return Decimal("0")
 
+    if not isinstance(reservations, (list, tuple)):
+        return Decimal("0")
     total = Decimal("0")
-    for reservation in reservations or []:
+    for reservation in reservations:
         side = str(getattr(reservation, "side", "") or "").upper()
         status = str(getattr(reservation, "status", "") or "").lower()
         if side != "SELL" or status != "active":
@@ -913,10 +1097,12 @@ async def _active_sell_reserved_size(
             release = getattr(reservation_service, "release_terminal", None)
             if callable(release):
                 try:
-                    await release(
-                        getattr(reservation, "id"),
+                    release_result = release(
+                        reservation.id,
                         reason="expired_orphan_before_risk_exit",
                     )
+                    if inspect.isawaitable(release_result):
+                        await release_result
                     logger.info(
                         "risk_released_expired_orphan_reservation | "
                         "reservation_id=%s cond=%s token=%s",
@@ -994,18 +1180,17 @@ async def _reap_expired_reservations_for_context(context: TradingContext) -> int
     if not callable(release_expired):
         return 0
     try:
-        released = await release_expired()
+        release_result = release_expired()
+        released = await release_result if inspect.isawaitable(release_result) else release_result
     except Exception:
         logger.debug("risk_reservation_reaper_failed", exc_info=True)
         return 0
-    try:
-        count = len(released or [])
-    except TypeError:
-        count = 0
+    count = len(released) if isinstance(released, Sized) else 0
     if count:
         logger.info(
             "risk_reaped_expired_reservations | count=%d user=%s",
-            count, context.user_id,
+            count,
+            context.user_id,
         )
     return count
 
@@ -1029,6 +1214,7 @@ async def _attempt_phantom_prune_on_no_fill(
     """
     try:
         from orchestrators.trade_pipeline import get_reconciliation_service
+
         drift_reconciler = get_reconciliation_service(context)
 
         async def _fetcher():
@@ -1088,14 +1274,6 @@ def _risk_exit_reject_cooldown_seconds(context: TradingContext) -> float:
         val = getattr(risk_cfg, "risk_exit_reject_cooldown_seconds", None)
         if isinstance(val, (int, float)) and float(val) >= 0.0:
             return float(val)
-    raw = os.environ.get("RISK_EXIT_REJECT_COOLDOWN_SECONDS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            env_val = float(raw)
-        except (TypeError, ValueError):
-            env_val = None
-        if env_val is not None and env_val >= 0.0:
-            return env_val
     return _DEFAULT_RISK_EXIT_REJECT_COOLDOWN_SECONDS
 
 
@@ -1161,6 +1339,7 @@ async def reconcile_unconfirmed_risk_orders(
     context: TradingContext,
     *,
     skip_locked_scopes: bool = False,
+    startup_recovery: bool = False,
 ) -> int:
     """Converge risk-monitor-originated submitted_unconfirmed SELLs.
 
@@ -1224,6 +1403,7 @@ async def reconcile_unconfirmed_risk_orders(
                 pnl_tracker=context.pnl_tracker,
                 get_position=context.positions_repo.get_position,
                 logger=logger,
+                startup_recovery=startup_recovery,
             )
             if applied:
                 reconciled += 1
@@ -1231,41 +1411,30 @@ async def reconcile_unconfirmed_risk_orders(
     return reconciled
 
 
-def _float_env_or_default(name: str, default: float, *, minimum: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    if value <= 0:
-        return default
-    return max(minimum, value)
-
-
-def _risk_pre_reconcile_timeout_seconds(poll_interval: float) -> float:
-    default = max(float(poll_interval or 0.0), _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS)
-    return _float_env_or_default(
-        "RISK_PRE_RECONCILE_TIMEOUT_SECONDS",
-        default,
-        minimum=0.05,
+def _risk_pre_reconcile_timeout_seconds(
+    poll_interval: float,
+    configured: float | None = None,
+) -> float:
+    return max(
+        0.05,
+        float(poll_interval or 0.0),
+        float(
+            configured if configured is not None else _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS
+        ),
     )
 
 
 def _risk_pre_reconcile_backoff_base_seconds(
     poll_interval: float,
     timeout_seconds: float,
+    configured: float | None = None,
 ) -> float:
-    default = max(
+    return max(
         float(poll_interval or 0.0),
         timeout_seconds,
-        _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS,
-    )
-    return _float_env_or_default(
-        "RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS",
-        default,
-        minimum=timeout_seconds,
+        float(
+            configured if configured is not None else _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS
+        ),
     )
 
 
@@ -1325,6 +1494,7 @@ async def _pre_reconcile_for_context(context: TradingContext) -> int:
         return 0
     try:
         from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+
         # skip_locked_scopes: this phase is best-effort and runs under the
         # pre-reconcile wait_for ceiling. Blocking on a scope lock held by an
         # in-flight execute_trades submit/confirm or manual sync (both do venue
@@ -1350,6 +1520,7 @@ async def _pre_reconcile_for_context(context: TradingContext) -> int:
 async def run_risk_check_for_context(
     context: TradingContext, *, pre_reconcile: bool = True
 ) -> None:
+    """Run one follower risk evaluation through injected services."""
     if not context.execution_service:
         return
 
@@ -1361,12 +1532,18 @@ async def run_risk_check_for_context(
     if pre_reconcile:
         await _pre_reconcile_for_context(context)
 
+    if context.task_position_manager is not None:
+        await context.task_position_manager.run_once()
     await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
 
     # Read enable_tiered from context extra (set by bootstrap from config)
-    enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
+    enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
     warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
     for pos in await context.positions_repo.list_open_positions(context.user_id):
@@ -1376,7 +1553,8 @@ async def run_risk_check_for_context(
                 logger.warning(
                     "Skipping position with invalid token_id=%r (condition=%s) — "
                     "likely stale placeholder; close or delete manually",
-                    pos.token_id, pos.condition_id,
+                    pos.token_id,
+                    pos.condition_id,
                 )
             continue
         # --- Per-scoped-position action coordination (issue #28) ---
@@ -1427,13 +1605,17 @@ async def run_risk_check_for_context(
 
                 fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
                 reason = str(action.get("reason") or "risk_exit")
-                trigger_notional = float((Decimal(str(pos.size_tokens)) * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
+                trigger_notional = float(
+                    (Decimal(str(pos.size_tokens)) * Decimal(str(current_price))).quantize(
+                        Decimal("0.00000001")
+                    )
+                )
 
                 # Capture block metadata at trigger time — but defer persisting the
                 # risk block until after the protective SELL actually fills.  Writing
                 # the block before execution creates a durable re-entry ban even when
                 # the SELL fails, which is the core issue #27 lifecycle bug.
-                _block_metadata = {
+                _block_metadata: dict[str, object] = {
                     "leader_notional_at_trigger": trigger_notional,
                     "copied_position_notional_at_trigger": trigger_notional,
                     "trigger_price": float(current_price),
@@ -1447,13 +1629,17 @@ async def run_risk_check_for_context(
                     if not policy.allow_partial_exits:
                         logger.info(
                             "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
-                            policy.name, pos.condition_id[:12], fraction * 100,
+                            policy.name,
+                            pos.condition_id[:12],
+                            fraction * 100,
                         )
                         fraction = 1.0
 
                 _block_metadata["trigger_fraction"] = fraction
 
-                sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
+                sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(
+                    Decimal("0.00000001")
+                )
                 if sell_size <= 0:
                     continue
 
@@ -1510,6 +1696,7 @@ async def run_risk_check_for_context(
                         )
                     except Exception:
                         logger.debug("risk_trigger_record_error", exc_info=True)
+                _risk_telemetry(context).exit_triggered(pos.condition_id, pos.token_id, reason)
 
                 req = ExecutionRequest(
                     user_id=context.user_id,
@@ -1519,23 +1706,38 @@ async def run_risk_check_for_context(
                     amount=sell_size,
                     max_slippage_bps=slippage_bps,
                     reason=reason,
-                    signal_id=f"risk:{reason}:{pos.condition_id}:{time.time_ns()}",
+                    signal_id=_risk_exit_signal_id(
+                        pos,
+                        reason=reason,
+                        position_manager=getattr(context, "position_manager", None),
+                    ),
                     condition_id=pos.condition_id,
                     recovery_metadata=_block_metadata,
                 )
-                result = await _dispatch_risk_exit(
-                    coordinator=getattr(context, "execution_coordinator", None),
-                    execution_service=context.execution_service,
-                    exec_req=req,
-                    user_id=context.user_id,
-                    condition_id=pos.condition_id,
-                    token_id=pos.token_id,
-                    side="SELL",
-                    price=float(current_price) if current_price is not None else 0.0,
-                    notional=float(Decimal(str(pos.size_tokens)) * Decimal(str(current_price or 0))),
-                    source="risk_exit",
-                    leader_wallet=pos.leader_id,
-                    signal_id=req.signal_id,
+                # C4 — shield the protective-exit POST from the outer
+                # ``wait_for`` ceiling so a loop timeout cannot cancel the
+                # venue POST mid-flight (which previously left a live venue
+                # order with no local record, then C3 re-fired a duplicate).
+                # The shielded task completes its POST + persistence even if
+                # the parent ``wait_for`` raises TimeoutError; the stable
+                # idempotency key (C3) collapses any duplicate the next tick.
+                result = await asyncio.shield(
+                    _dispatch_risk_exit(
+                        coordinator=getattr(context, "execution_coordinator", None),
+                        execution_service=context.execution_service,
+                        exec_req=req,
+                        user_id=context.user_id,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                        side="SELL",
+                        price=float(current_price) if current_price is not None else 0.0,
+                        notional=float(
+                            Decimal(str(pos.size_tokens)) * Decimal(str(current_price or 0))
+                        ),
+                        source="risk_exit",
+                        leader_wallet=pos.leader_id,
+                        signal_id=req.signal_id,
+                    )
                 )
                 if not result.accepted:
                     logger.info(
@@ -1570,7 +1772,8 @@ async def run_risk_check_for_context(
                         ):
                             logger.info(
                                 "risk_drift_reconciled_position_deleted | cond=%s token=%s live_size=%s",
-                                pos.condition_id[:12], pos.token_id[:12],
+                                pos.condition_id[:12],
+                                pos.token_id[:12],
                                 str(drift_result.get("live_size", 0)),
                             )
                             if _trigger_id is not None and context.risk_triggers_repo is not None:
@@ -1632,6 +1835,7 @@ async def run_risk_check_for_context(
                         result.status,
                         result.error,
                     )
+                    _risk_telemetry(context).exit_not_filled(pos.condition_id, pos.token_id, reason)
                     # Terminal accepted-but-zero-fill (e.g. a fully-killed FAK on
                     # a resolved/illiquid market). Probe live holdings — if the
                     # shares are gone, prune the phantom so the loop stops.
@@ -1652,7 +1856,8 @@ async def run_risk_check_for_context(
                         ):
                             logger.info(
                                 "risk_drift_reconciled_position_deleted | cond=%s token=%s live_size=%s",
-                                pos.condition_id[:12], pos.token_id[:12],
+                                pos.condition_id[:12],
+                                pos.token_id[:12],
                                 str(drift_result.get("live_size", 0)),
                             )
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
@@ -1752,7 +1957,10 @@ async def run_risk_check_for_context(
                 # skips ``apply_fill``), preventing the double-count
                 # regression flagged in PR #108.
                 try:
-                    fill_id, updated_pos = await context.fills_repo.append_fill_and_apply(
+                    (
+                        fill_id,
+                        updated_pos,
+                    ) = await context.fills_repo.append_fill_and_apply(
                         FillRecord(
                             user_id=context.user_id,
                             leader_id=pos.leader_id,
@@ -1856,6 +2064,7 @@ async def run_risk_check_for_context(
                         "reason": reason,
                     },
                 )
+                _risk_telemetry(context).exit_filled(pos.condition_id, pos.token_id, reason)
                 if hasattr(context.position_manager, "track_sell"):
                     context.position_manager.track_sell(
                         pos.condition_id,
@@ -1888,7 +2097,9 @@ async def run_risk_check_for_context(
             except Exception as exc:
                 logger.error(
                     "Risk context check failed user=%s condition=%s: %r",
-                    context.user_id, pos.condition_id, exc,
+                    context.user_id,
+                    pos.condition_id,
+                    exc,
                 )
 
 
@@ -1905,7 +2116,7 @@ async def risk_monitor_loop_for_contexts(
         return
 
     enabled = _exit_monitor_enabled(config)
-    poll_interval = float(interval or config.polling.risk_check_interval)
+    poll_interval = float(interval or config.risk.risk_check_interval)
 
     if not enabled:
         logger.info("Global risk management disabled — monitor will not run")
@@ -1929,16 +2140,14 @@ async def risk_monitor_loop_for_contexts(
         now_ts = time.time()
         if now_ts - last_reap >= reap_interval:
             last_reap = now_ts
-            reap_tasks = [
-                _reap_expired_reservations_for_context(context)
-                for context in contexts
-            ]
+            reap_tasks = [_reap_expired_reservations_for_context(context) for context in contexts]
             reap_results = await asyncio.gather(*reap_tasks, return_exceptions=True)
             for context, result in zip(contexts, reap_results, strict=False):
                 if isinstance(result, Exception):
                     logger.error(
                         "Risk reservation reaper failed user=%s: %r",
-                        context.user_id, result,
+                        context.user_id,
+                        result,
                     )
 
         # Pre-reconcile unconfirmed orders in their OWN phase, ahead of the timed
@@ -1953,23 +2162,24 @@ async def risk_monitor_loop_for_contexts(
         # back off this user's pre-reconcile attempts; the standalone reconciler
         # and WSS wake path can still converge state, while risk checks keep
         # running with ``pre_reconcile=False`` instead of parking behind venue IO.
-        prerec_ceiling = _risk_pre_reconcile_timeout_seconds(poll_interval)
+        risk_config = getattr(config, "risk", None)
+        prerec_ceiling = _risk_pre_reconcile_timeout_seconds(
+            poll_interval,
+            getattr(risk_config, "risk_pre_reconcile_timeout_seconds", None),
+        )
         prerec_backoff_base = _risk_pre_reconcile_backoff_base_seconds(
             poll_interval,
             prerec_ceiling,
+            getattr(risk_config, "risk_pre_reconcile_backoff_seconds", None),
         )
         prerec_now = time.monotonic()
         prerec_contexts = [
-            context
-            for context in contexts
-            if _risk_pre_reconcile_is_due(context, now=prerec_now)
+            context for context in contexts if _risk_pre_reconcile_is_due(context, now=prerec_now)
         ]
         if prerec_contexts:
             prereconcile_results = await asyncio.gather(
                 *(
-                    asyncio.wait_for(
-                        _pre_reconcile_for_context(context), timeout=prerec_ceiling
-                    )
+                    asyncio.wait_for(_pre_reconcile_for_context(context), timeout=prerec_ceiling)
                     for context in prerec_contexts
                 ),
                 return_exceptions=True,
@@ -1991,7 +2201,8 @@ async def risk_monitor_loop_for_contexts(
                 elif isinstance(result, Exception):
                     logger.error(
                         "Risk pre-reconcile failed user=%s: %r",
-                        context.user_id, result,
+                        context.user_id,
+                        result,
                     )
                 else:
                     _record_risk_pre_reconcile_success(context)
@@ -2005,7 +2216,8 @@ async def risk_monitor_loop_for_contexts(
             if isinstance(result, Exception):
                 logger.error(
                     "Risk price cache refresh failed user=%s: %r",
-                    context.user_id, result,
+                    context.user_id,
+                    result,
                 )
         # Pre-fix: sequential iteration blocked every context behind a
         # stalled venue call for any single one. Parallel gather mirrors
@@ -2032,6 +2244,7 @@ async def risk_monitor_loop_for_contexts(
             elif isinstance(result, Exception):
                 logger.error(
                     "Risk loop error user=%s: %r",
-                    context.user_id, result,
+                    context.user_id,
+                    result,
                 )
         await asyncio.sleep(poll_interval)

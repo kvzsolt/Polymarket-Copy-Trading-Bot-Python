@@ -1,0 +1,81 @@
+# Configuration guide — global copy-trading admission and v1 task runtime.
+# Purpose: score leader signals, bound ingestion workers/caches/budgets, and
+# enable the optional file-defined task engine. Trader identities live only in
+# config/traders/*.yml.
+# Options: score is 0..1; percentages/non-negative durations are numeric;
+# copy_tasks and nested protections are booleans with positive bounded sizes.
+# Trade-offs: stricter/lower admission limits reject more late or degraded
+# signals; larger queues/caches/concurrency improve burst handling but use more
+# memory/provider capacity. Enabling copy_tasks adds durable per-trader policy
+# but currently requires detection.mode=polling.
+#
+# This file owns only the global copy-trading settings. Followed leaders are
+# NOT configured here — each followed leader lives in exactly one file:
+#
+#     config/traders/<fantasy-name>.yml
+#
+# That trader file contains the wallet address, enabled flag, per-leader
+# copy gates, and the complete v1 copy-task strategy for following that
+# leader. The loader projects those files into the internal
+# ``copy_trading.wallets`` / ``copy_trading.leaders`` shapes at startup, so
+# existing runtime code keeps working without a second place to edit.
+
+# Minimum composite trade score (0..1) when execution.enable_copy_decision_gate
+# is true. Higher improves selectivity but skips more otherwise-copyable trades.
+copy_decision_min_score: 0.15
+# Reject when current BUY price rose more than this percentage from the leader
+# fill, when the decision gate is on. Lower limits chasing; higher fills more.
+copy_max_price_drift_pct: 15.0
+# Maximum percentage of the original upside-to-1.0 that may have disappeared.
+# Lower preserves edge but rejects fast markets; higher tolerates worse entry.
+copy_max_edge_decay_pct: 90.0
+# Maximum signal age used by scoring/gating; 0 disables the age hard-fail.
+# Shorter reduces stale copies; longer tolerates polling/provider delay.
+copy_max_signal_age_seconds: 100.0
+# Leader notional that earns full liquidity score. Higher penalizes small fills
+# more; lower treats small signals as sufficiently liquid.
+copy_liquidity_target_usdc: 50.0
+# Watchlist tier gate. false passes the existing roster; true restricts signals
+# to the tier/watchlist policy and may reduce coverage.
+enable_tier_gate_watchlist: false
+# Emit tier-gate diagnostics when the gate is enabled. Useful for tuning but
+# noisier and potentially higher-volume in logs.
+enable_tier_gate_watchlist_log: false
+
+# v1 copy-task engine settings (workers, budgets, reentry locks).
+# ``enabled`` is the master switch for the v1 engine. Keep it false when
+# running the account-level pipeline only; set it true to run file-defined
+# copy tasks from config/traders/*.yml.
+copy_tasks:
+  # Master v1 task-engine switch. true seeds trader-file tasks and enables their
+  # workers/budgets/locks; false uses only the account-level copy pipeline.
+  enabled: true
+  workers:
+    # Per-leader FIFO worker layer. Serial ordering improves determinism; turning
+    # it off removes the task worker runtime rather than raising concurrency.
+    enabled: true
+    # Batches buffered per worker. Larger absorbs spikes but increases lag/RAM.
+    queue_size: 64
+    # Cross-leader in-flight cap. Higher lowers queue time but raises I/O and
+    # account contention; each leader remains serial.
+    global_concurrency: 4
+    # Bound on instantiated leader workers. Higher supports larger rosters at
+    # greater memory/task overhead.
+    max_leader_workers: 64
+  shared_price_cache:
+    # Share fresh price reads across workers. true reduces duplicate I/O but can
+    # reuse data until its configured age; false favors fresh reads at more cost.
+    enabled: true
+    # Bounded cache entries. Larger improves hit rate; smaller bounds memory.
+    max_entries: 5000
+  task_budget:
+    # Durable per-task spend/one-entry reservations. Disabling removes those
+    # task-local protections; account-level risk still applies.
+    enabled: true
+    # Age at which an unused task reservation may expire. Shorter releases
+    # capacity faster; longer avoids premature reuse during slow confirmation.
+    reservation_ttl_seconds: 120
+  reentry_lock:
+    # Prevent re-entering a scope after a protective exit. true avoids churn;
+    # false permits immediate recopy and can recreate a just-closed risk.
+    enabled: true

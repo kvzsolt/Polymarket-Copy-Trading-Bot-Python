@@ -19,6 +19,7 @@ replaced. They only feed the copy path when ``ENABLE_ONCHAIN_PENDING_DETECTION``
 is on, and they are superseded by the mined ``OrderFilled`` signal that
 shares their ``tx_hash``.
 """
+
 from __future__ import annotations
 
 import time
@@ -27,6 +28,7 @@ from decimal import Decimal
 
 from services.onchain_detection.calldata_decoder import (
     MatchOrdersCall,
+    WatchedMatch,
     decode_match_orders,
     find_watched_wallets,
 )
@@ -45,6 +47,8 @@ from config.addresses import (
 
 @dataclass(frozen=True)
 class PendingTxConfig:
+    """Validate bounded pending-transaction detection settings."""
+
     max_signal_age_ms: int = 500
     hashes_only: bool = False
     confidence_required: DetectionConfidence = DetectionConfidence.PENDING_PROBABLE
@@ -67,9 +71,7 @@ def pending_subscription_params(
     is a full transaction object (``hash, input, from, to, ...``) when
     ``hashesOnly`` is False; hashes only when True.
     """
-    addresses = tuple(
-        a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES)
-    )
+    addresses = tuple(a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES))
     options = {
         "toAddress": list(addresses),
         "hashesOnly": bool(hashes_only),
@@ -84,14 +86,14 @@ def _tx_to_exchange(tx: dict) -> str:
     return ""
 
 
-def _amounts_for_pending(match: object, call: MatchOrdersCall) -> tuple[int, int]:
+def _amounts_for_pending(match: WatchedMatch, call: MatchOrdersCall) -> tuple[int, int]:
     """Return ``(maker_filled, taker_filled)`` raw amounts for a pending match.
 
     ``matchOrders`` fill arguments are expressed in maker-amount units. Compute
     the paired taker amount from the order ratio so partial pending matches do
     not copy the full order size.
     """
-    role = getattr(match, "role")
+    role = match.role
     if role == "taker":
         return _fill_pair(call.taker_fill_amount, call.taker_order)
     maker_index = getattr(match, "maker_index", None)
@@ -217,6 +219,8 @@ def is_stale_pending(signal: OnchainTradeSignal, now_ms: int, max_age_ms: int) -
     """Return True if a pending signal is older than ``max_age_ms`` at dispatch."""
     if not signal.provisional:
         return False
+    if signal.event_ts is None or signal.event_ts > now_ms:
+        return True
     if max_age_ms <= 0:
         return False
     return (now_ms - signal.event_ts) > max_age_ms

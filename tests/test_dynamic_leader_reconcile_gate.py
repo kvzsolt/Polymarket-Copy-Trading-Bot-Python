@@ -8,6 +8,7 @@ covers the second caller (``_refresh_contexts_for_new_leaders`` →
 monitors anyway, exposing affected users to double-fills against stale
 position state.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -20,11 +21,14 @@ def _ctx(user_id: str) -> SimpleNamespace:
 
 
 def test_no_failures_blocks_nothing() -> None:
-    assert _wallets_blocked_by_reconcile_failures(
-        ["leader_a", "leader_b"],
-        {"leader_a": [_ctx("u1")], "leader_b": [_ctx("u2")]},
-        [],
-    ) == []
+    assert (
+        _wallets_blocked_by_reconcile_failures(
+            ["leader_a", "leader_b"],
+            {"leader_a": [_ctx("u1")], "leader_b": [_ctx("u2")]},
+            [],
+        )
+        == []
+    )
 
 
 def test_failed_user_blocks_its_leader() -> None:
@@ -47,7 +51,9 @@ def test_shared_leader_blocks_when_any_user_failed() -> None:
 
 def test_unknown_wallet_does_not_crash() -> None:
     blocked = _wallets_blocked_by_reconcile_failures(
-        ["leader_a"], {}, ["u1"],
+        ["leader_a"],
+        {},
+        ["u1"],
     )
     assert blocked == []
 
@@ -59,7 +65,7 @@ def test_unknown_wallet_does_not_crash() -> None:
 # the leader monitors spawn.
 # ---------------------------------------------------------------------------
 
-from app import _cold_start_monitored_after_reconcile
+from app import _cold_start_monitored_after_reconcile  # noqa: E402
 
 
 def test_cold_start_no_failures_returns_all() -> None:

@@ -1,4 +1,5 @@
 """bot status — show current bot runtime status."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,8 +7,6 @@ import asyncio
 import json
 import time
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
 
 
@@ -28,8 +27,6 @@ async def _gather_status() -> dict:
     }
 
     try:
-        load_runtime_env()
-        rehydrate_env()
         config = load_config()
     except EnvValidationError:
         result["config_error"] = "validation_failed"
@@ -52,28 +49,34 @@ async def _gather_status() -> dict:
                 # bot process owns schema lifecycle. CLI is read-only.
 
                 # Open positions count
-                result["open_positions"] = await conn.fetchval(
-                    "SELECT COUNT(*) FROM positions"
-                ) or 0
+                result["open_positions"] = (
+                    await conn.fetchval("SELECT COUNT(*) FROM positions") or 0
+                )
 
                 # Pending orders count
-                result["pending_orders"] = await conn.fetchval(
-                    """
+                result["pending_orders"] = (
+                    await conn.fetchval(
+                        """
                     SELECT COUNT(*) FROM orders
                     WHERE status IN ('submitted_unconfirmed', 'delayed', 'pending',
                                      'pending_lock', 'submitting', 'submitted')
                     """
-                ) or 0
+                    )
+                    or 0
+                )
 
                 # Active reservations count
                 now_ts = int(time.time())
-                result["active_reservations"] = await conn.fetchval(
-                    """
+                result["active_reservations"] = (
+                    await conn.fetchval(
+                        """
                     SELECT COUNT(*) FROM order_reservations
                     WHERE status = 'active' AND expires_at > $1
                     """,
-                    now_ts,
-                ) or 0
+                        now_ts,
+                    )
+                    or 0
+                )
 
                 # Geoblock last check — use risk_blocks as a proxy timestamp source
                 result["geoblock_last_check"] = await conn.fetchval(
@@ -87,16 +90,13 @@ async def _gather_status() -> dict:
                 )
 
                 # Uptime — best-effort: read earliest order created_at
-                first_ts = await conn.fetchval(
-                    "SELECT MIN(created_at) FROM orders"
-                )
+                first_ts = await conn.fetchval("SELECT MIN(created_at) FROM orders")
                 if first_ts is not None:
                     try:
                         from datetime import datetime, timezone
+
                         if isinstance(first_ts, str):
-                            first_dt = datetime.fromisoformat(first_ts).replace(
-                                tzinfo=timezone.utc
-                            )
+                            first_dt = datetime.fromisoformat(first_ts).replace(tzinfo=timezone.utc)
                         else:
                             first_dt = first_ts
                             if first_dt.tzinfo is None:

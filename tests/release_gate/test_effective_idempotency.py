@@ -5,8 +5,12 @@ component matches. ``utils.idempotency.build_trade_key`` keys are namespaced
 by ``(user_id, leader_wallet, tx_hash, side, asset)``; same components ⇒ same
 key, any one diverges ⇒ different key.
 """
+
 from __future__ import annotations
 
+from decimal import Decimal
+
+from services.idempotency import compute_effective_key
 from utils.idempotency import build_trade_key
 
 
@@ -75,10 +79,6 @@ def test_key_falls_back_to_leader_namespace_when_no_user() -> None:
 # ``services.idempotency.compute_effective_key`` so a future refactor
 # cannot drop or silently widen any of the discriminators.
 # ---------------------------------------------------------------------------
-
-from decimal import Decimal
-
-from services.idempotency import compute_effective_key
 
 
 def _exec_kwargs(**overrides):

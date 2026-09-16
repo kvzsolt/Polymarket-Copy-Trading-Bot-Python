@@ -12,6 +12,7 @@ starts with the documented operator marker ``operator:``. System
 triggers (``risk_monitor:*``, ``reconciler:*``, …) still reset for
 the normal re-trigger semantics.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -72,9 +73,7 @@ async def test_operator_clear_survives_re_trigger():
             clear_reason=f"{OPERATOR_CLEAR_PREFIX}manual_unlock",
         )
         assert cleared is True
-        assert await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        ) is None
+        assert await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None
 
         await repo.mark_risk_block(
             user_id="u",
@@ -83,9 +82,9 @@ async def test_operator_clear_survives_re_trigger():
             reason="stop_loss",
             source="risk_monitor",
         )
-        assert await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        ) is None, "operator clear must survive re-trigger UPSERT"
+        assert (
+            await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None
+        ), "operator clear must survive re-trigger UPSERT"
 
 
 async def test_system_clear_does_get_reset_on_re_trigger():
@@ -105,9 +104,7 @@ async def test_system_clear_does_get_reset_on_re_trigger():
             token_id="t",
             clear_reason="reconciler:full_close_confirmed",
         )
-        assert await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        ) is None
+        assert await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None
 
         await repo.mark_risk_block(
             user_id="u",
@@ -116,6 +113,7 @@ async def test_system_clear_does_get_reset_on_re_trigger():
             reason="stop_loss",
             source="risk_monitor",
         )
-        assert await repo.get_active_risk_block(
-            user_id="u", condition_id="c", token_id="t"
-        ) is not None, "system-cleared block must be re-armed by a fresh trigger"
+        assert (
+            await repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t")
+            is not None
+        ), "system-cleared block must be re-armed by a fresh trigger"

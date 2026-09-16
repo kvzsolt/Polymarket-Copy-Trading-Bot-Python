@@ -1,4 +1,5 @@
 """bot drift — detect off-bot/manual position drift between persisted and live state."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,24 +9,23 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from config.app_config import EnvValidationError, load_config
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
-from services.multiUserConfig import load_runtime_users
+from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
+from utils.logger import redact_error_detail
 
 if TYPE_CHECKING:
     import asyncpg
 
+    from config.app_config import AppConfig
+    from services.multiUserConfig import RuntimeUser
+
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser(
-        "drift", help="Detect off-bot/manual position drift"
-    )
+    """Register the reconciliation-drift command with the CLI parser."""
+    parser = subparsers.add_parser("drift", help="Detect off-bot/manual position drift")
     sub = parser.add_subparsers(dest="drift_subcommand", required=True)
 
     check_parser = sub.add_parser("check", help="Compare persisted vs live holdings")
-    check_parser.add_argument(
-        "--user-id", default=None, help="Filter to a single user_id"
-    )
+    check_parser.add_argument("--user-id", default=None, help="Filter to a single user_id")
     check_parser.add_argument(
         "--epsilon",
         type=str,
@@ -36,17 +36,13 @@ def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
 
 def _load_config_or_fail():
     try:
-        load_runtime_env()
-        rehydrate_env()
         return load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))
         return None
 
 
-async def _list_persisted_positions(
-    pool: "asyncpg.Pool", *, user_id: str | None
-) -> list[dict]:
+async def _list_persisted_positions(pool: "asyncpg.Pool", *, user_id: str | None) -> list[dict]:
     """List persisted positions for the optional user filter.
 
     Takes the asyncpg pool so callers (CLI entry + tests) own pool
@@ -86,14 +82,9 @@ async def _list_persisted_positions(
 def _live_size_index(live_positions: list[dict]) -> dict[tuple[str, str], Decimal]:
     index: dict[tuple[str, str], Decimal] = {}
     for position in live_positions:
-        condition_id = str(
-            position.get("conditionId") or position.get("condition_id") or ""
-        )
+        condition_id = str(position.get("conditionId") or position.get("condition_id") or "")
         token_id = str(
-            position.get("tokenID")
-            or position.get("token_id")
-            or position.get("asset")
-            or ""
+            position.get("tokenID") or position.get("token_id") or position.get("asset") or ""
         )
         if not condition_id or not token_id:
             continue
@@ -106,9 +97,7 @@ def _live_size_index(live_positions: list[dict]) -> dict[tuple[str, str], Decima
     return index
 
 
-def _classify_drift(
-    persisted_size: Decimal, live_size: Decimal, epsilon: Decimal
-) -> str | None:
+def _classify_drift(persisted_size: Decimal, live_size: Decimal, epsilon: Decimal) -> str | None:
     delta = persisted_size - live_size
     if abs(delta) <= epsilon:
         return None
@@ -117,6 +106,25 @@ def _classify_drift(
     if persisted_size > live_size:
         return "shrink"
     return "phantom_grow"
+
+
+async def _resolve_live_deposit_wallets(
+    runtime_users: list[RuntimeUser], config: AppConfig
+) -> None:
+    """Bind each live user's explicitly configured Deposit Wallet.
+
+    CCXT signature type 3 requires the verified funder address up front and
+    never derives or guesses it from the EOA private key. Missing identity is
+    therefore a configuration failure rather than a client lookup.
+    """
+    if config.execution.paper_trade_only:
+        return
+
+    for runtime_user in runtime_users:
+        funder = str(runtime_user.wallet.funder_address or "").strip()
+        if not funder:
+            raise ValueError("live CCXT runtime requires a verified funder_address")
+        bind_resolved_deposit_wallet(runtime_user, funder)
 
 
 async def _run_check_async(args: argparse.Namespace) -> int:
@@ -130,7 +138,26 @@ async def _run_check_async(args: argparse.Namespace) -> int:
     except Exception:
         epsilon = Decimal("0.000001")
 
-    runtime_users = load_runtime_users(config.leader.wallets or [], config)
+    runtime_users = load_runtime_users(list(config.copy_trading.enabled_wallets()), config)
+
+    # Bind before filtering: binding rewrites an empty/"default" user_id to the
+    # resolved wallet, so --user-id must be matched against the bound identity.
+    try:
+        await _resolve_live_deposit_wallets(runtime_users, config)
+    except Exception as exc:
+        # Never fall through to a silent ``checked_users: 0`` — an unresolvable
+        # live wallet means the check did not run, which is not the same as
+        # "no drift".
+        print(
+            json.dumps(
+                {
+                    "error": "wallet_resolution_failed",
+                    "details": redact_error_detail(exc),
+                }
+            )
+        )
+        return 1
+
     if user_filter is not None:
         runtime_users = [ru for ru in runtime_users if ru.user_id == user_filter]
 
@@ -146,6 +173,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
 
     drifts: list[dict] = []
     checked_users: list[str] = []
+    skipped_users: list[str] = []
 
     from orchestrators.runtime_bootstrap import fetch_live_positions
     from storage.postgres.connection import init_pool, shutdown_pool
@@ -160,18 +188,20 @@ async def _run_check_async(args: argparse.Namespace) -> int:
         for runtime_user in runtime_users:
             wallet_addr = runtime_user.wallet.funder_address or ""
             if not wallet_addr:
+                # Unreachable for a valid config: paper requires a funder and
+                # live binds one above. Recorded rather than dropped so a skip
+                # can never be mistaken for a clean check.
+                skipped_users.append(runtime_user.user_id)
                 continue
             checked_users.append(runtime_user.user_id)
 
-            persisted = await _list_persisted_positions(
-                pool, user_id=runtime_user.user_id
-            )
+            persisted = await _list_persisted_positions(pool, user_id=runtime_user.user_id)
             try:
                 live = await fetch_live_positions(wallet_addr)
             except Exception:
                 live = []
 
-            live_index = _live_size_index(live)
+            live_index = _live_size_index(live or [])
             seen_keys: set[tuple[str, str]] = set()
 
             for record in persisted:
@@ -220,8 +250,13 @@ async def _run_check_async(args: argparse.Namespace) -> int:
         "drift_count": len(drifts),
         "drifts": drifts,
     }
+    if skipped_users:
+        # An incomplete check must not exit 0: "we could not look" reads
+        # identically to "nothing drifted" to any script checking drift_count.
+        output["skipped_users"] = skipped_users
+        output["error"] = "users_without_wallet_skipped"
     print(json.dumps(output, indent=2))
-    return 0
+    return 1 if skipped_users else 0
 
 
 async def _run_drift_async(args: argparse.Namespace) -> int:
@@ -231,4 +266,5 @@ async def _run_drift_async(args: argparse.Namespace) -> int:
 
 
 def run_drift(args: argparse.Namespace) -> int:
+    """Query and render reconciliation drift for the selected follower."""
     return asyncio.run(_run_drift_async(args))

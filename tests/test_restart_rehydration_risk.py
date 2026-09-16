@@ -5,7 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
+from integrations.polymarket.models import VenueFill
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
@@ -52,7 +53,8 @@ async def _pg_pool():
 
 
 class _FakeClobGateway:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, confirmed_fills=()):
+        self._fills = tuple(confirmed_fills)
         self._responses = responses or {}
 
     async def get_order(self, order_id: str):
@@ -72,14 +74,22 @@ class _FakeClobGateway:
     async def submit_limit_order(self, request):
         return None
 
-    async def get_fills(self, market=None):
-        return []
+    async def get_fills(self, market=None, *, order_id=None, trade_id=None):
+        return [fill for fill in self._fills if order_id is None or fill.order_id == order_id]
+
+    async def list_open_orders(self, *, order_id=None, market=None):
+        return [
+            response
+            for identifier, response in self._responses.items()
+            if (order_id is None or identifier == order_id)
+            and response["status"] == "partially_filled"
+        ]
 
     async def cancel_order(self, order_id: str):
         return None
 
     async def check_compatibility(self):
-        return {"sdk_available": True}
+        return {"available": True, "authenticated": True, "live_execution_ready": True}
 
 
 class _FakeClient:
@@ -354,9 +364,7 @@ async def test_failed_risk_sell_does_not_create_risk_block():
             condition_id="cond-1",
             token_id=FAKE_TOKEN_ID,
         )
-        assert quarantine is None, (
-            "risk block must NOT be written when the protective SELL fails"
-        )
+        assert quarantine is None, "risk block must NOT be written when the protective SELL fails"
 
         # Position should still be open (SELL didn't fill).
         assert await positions_repo.get_position("u1", "cond-1") is not None
@@ -468,11 +476,14 @@ async def test_partial_risk_sell_updates_position_but_does_not_create_risk_block
 
         await run_risk_check_for_context(context)
 
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
         remaining = await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
         assert remaining is not None
         assert remaining.size_tokens == Decimal("5")
@@ -597,9 +608,31 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-1",
+                            order_id="venue-risk-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("10"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
+                    responses={
+                        "venue-risk-1": {
+                            "status": "filled",
+                            "size_matched": "10",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-1",
+                        },
+                    },
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -670,7 +703,10 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
                         "trigger_fraction": 1.0,
                     },
                 },
-                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-partial-1"},
+                response_payload={
+                    "status": "submitted_unconfirmed",
+                    "orderID": "venue-risk-partial-1",
+                },
             )
         )
 
@@ -687,9 +723,31 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingPartialExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-partial-1": {"status": "cancelled", "size_matched": "4", "avg_price": "0.30", "orderID": "venue-risk-partial-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-partial-1",
+                            order_id="venue-risk-partial-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("4"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
+                    responses={
+                        "venue-risk-partial-1": {
+                            "status": "cancelled",
+                            "size_matched": "4",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-partial-1",
+                        },
+                    },
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -701,11 +759,14 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
         order_row = await orders_repo.get_by_order_id("venue-risk-partial-1")
         assert order_row is not None
         assert order_row["status"] == "filled_reconciled"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -791,9 +852,31 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingRiskProgressExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-progress-1": {"status": "partially_filled", "size_matched": "5", "avg_price": "0.30", "orderID": "venue-risk-progress-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-risk-progress-1",
+                            order_id="venue-risk-progress-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("5"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
+                    responses={
+                        "venue-risk-progress-1": {
+                            "status": "partially_filled",
+                            "size_matched": "5",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-progress-1",
+                        },
+                    },
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -804,14 +887,19 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
         assert remaining.size_tokens == Decimal("5")
         order_row = await orders_repo.get_by_order_id("venue-risk-progress-1")
         assert order_row is not None
-        assert order_row["status"] == "submitted_unconfirmed"
+        assert order_row["status"] == "order_live"
         assert order_row["response"].get("matched_previous") == "2"
         assert order_row["response"].get("matched_delta") == "3"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
+
+        assert await startup_reconcile_unconfirmed([context]) == {}
 
 
 @pytest.mark.asyncio
@@ -863,9 +951,31 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-sell-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-sell-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    confirmed_fills=(
+                        VenueFill(
+                            fill_id="confirmed-venue-sell-1",
+                            order_id="venue-sell-1",
+                            token_id=FAKE_TOKEN_ID,
+                            side="SELL",
+                            size=Decimal("10"),
+                            price=Decimal("0.30"),
+                            fee=Decimal(0),
+                            status="CONFIRMED",
+                        ),
+                    ),
+                    responses={
+                        "venue-sell-1": {
+                            "status": "filled",
+                            "size_matched": "10",
+                            "avg_price": "0.30",
+                            "orderID": "venue-sell-1",
+                        },
+                    },
+                ),
+            },
         )
 
         await run_risk_check_for_context(context)
@@ -877,11 +987,14 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
         processed = await orders_repo.get_processed_trade("sell-restart-1")
         assert processed is not None
         assert processed["status"] == "filled_reconciled"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -932,3 +1045,105 @@ async def test_risk_price_cache_reuses_recent_price_between_checks():
         assert await positions_repo.get_position("u1", "cond-1") is not None
         assert pnl_tracker.sells == 0
         assert client.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Durable near-max warn state: a 60% partial trim must not re-fire after a
+# restart. The trim's ``risk_triggers`` row (reason="near_max_partial_trim")
+# is the durable record; rehydration restores ``near_max_warn_done`` from it.
+# ---------------------------------------------------------------------------
+
+
+async def _rehydrated_pm_with_trigger(pool, fill_status):
+    from storage.postgres.risk_triggers_repo import RiskTriggersRepo
+
+    fills_repo = FillsRepo(pool)
+    positions_repo = PositionsRepo(pool)
+    triggers_repo = RiskTriggersRepo(pool)
+
+    await positions_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="l1",
+            size_tokens=Decimal("10"),
+            avg_entry_price=Decimal("0.60"),
+        )
+    )
+    if fill_status is not None:
+        trigger_id = await triggers_repo.record_trigger(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            reason="near_max_partial_trim",
+            fill_status="pending",
+        )
+        if fill_status != "pending":
+            await triggers_repo.update_fill_status(trigger_id, fill_status)
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.96"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=_FakePnlTracker(),
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_FakeExecutionService(),
+        risk_triggers_repo=triggers_repo,
+        extra={"slippage_tolerance_bps": 50},
+    )
+    await rehydrate_position_manager(context)
+    return context.position_manager
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_restores_near_max_warn_done_and_suppresses_repeat_trim():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "filled")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is True
+
+        # cp in the warn band [0.92, 0.95): the trim must NOT re-fire after restart.
+        assert pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93) is None
+        # The full-exit tier (>= 0.95 default) is unaffected by warn persistence.
+        action = pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.96)
+        assert action is not None
+        assert action["reason"] == "near_max_full_exit"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_pending_trim_counts_as_done():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "pending")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is True
+        assert pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93) is None
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_failed_trim_rearms_warn():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "failed")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is False
+        action = pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93)
+        assert action is not None
+        assert action["reason"] == "near_max_partial_trim"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_without_trigger_rows_keeps_warn_armed():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, None)
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is False

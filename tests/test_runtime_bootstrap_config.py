@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import config.app_config as app_config_mod
-from config.app_config import load_config
+from application.trading_context import TradingContext
+from config.env import SignatureType
+from tests.config_helpers import load_test_config
 import orchestrators.runtime_bootstrap as runtime_bootstrap
 from orchestrators.runtime_bootstrap import (
     build_trading_context,
@@ -15,7 +18,7 @@ from orchestrators.runtime_bootstrap import (
     default_follow,
     startup_reconcile_unconfirmed,
 )
-from services.multiUserConfig import load_runtime_users
+from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
 
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -38,7 +41,7 @@ def _config(**overrides):
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        return load_config(env)
+        return load_test_config(env)
 
 
 def test_configured_leaders_uses_typed_config_wallets():
@@ -59,9 +62,114 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
     users = load_runtime_users(["0x" + "d" * 40], cfg)
     assert len(users) == 1
     user = users[0]
+    # The fixture configures FUNDER_ADDRESS, so the single-user path must
+    # carry it onto the RuntimeUser wallet: in paper mode nothing else ever
+    # resolves an address, and it is the identity health probes use.
     assert user.wallet.funder_address == _VALID_FUNDER
+    assert user.user_id == _VALID_FUNDER
+    assert user.follows["0x" + "d" * 40].user_id == _VALID_FUNDER
+    assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
     assert user.follows["0x" + "d" * 40].allocation_pct == 0.07
     assert user.follows["0x" + "d" * 40].max_trade_usdc == 42.0
+
+
+def test_bind_resolved_deposit_wallet_sets_runtime_identity():
+    cfg = _config(LEADER_WALLETS="0x" + "d" * 40)
+    user = load_runtime_users(["0x" + "d" * 40], cfg)[0]
+
+    bind_resolved_deposit_wallet(user, _VALID_FUNDER)
+
+    assert user.wallet.funder_address == _VALID_FUNDER
+    assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
+    assert user.user_id == _VALID_FUNDER
+    assert user.follows["0x" + "d" * 40].user_id == _VALID_FUNDER
+
+
+def test_load_runtime_users_accepts_deposit_wallet_signature_type(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config_path = tmp_path / "users.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "users": [
+                    {
+                        "user_id": "deposit-user",
+                        "private_key": _VALID_PRIVATE_KEY,
+                        "funder_address": _VALID_FUNDER,
+                        "signature_type": 3,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=str(config_path))
+
+    users = load_runtime_users([], cfg)
+
+    assert users[0].wallet.signature_type == SignatureType.DEPOSIT_WALLET
+
+
+def _multi_user_file(tmp_path, entry: dict) -> str:
+    path = tmp_path / "users.json"
+    path.write_text(json.dumps({"users": [entry]}), encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("funder", [None, "", "   "])
+def test_load_runtime_users_rejects_paper_entry_without_funder(
+    funder,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Paper entries must carry a funder, matching the single-user invariant.
+
+    Paper never authenticates, so no secure client resolves a Deposit Wallet
+    and ``bind_resolved_deposit_wallet`` never runs. An omitted funder leaves
+    "" as the entry's only wallet identity, which the balance/live-position
+    probes then query — failing readiness with no actionable error.
+    """
+    entry = {
+        "user_id": "paper-user",
+        "private_key": _VALID_PRIVATE_KEY,
+        "signature_type": 3,
+    }
+    if funder is not None:
+        entry["funder_address"] = funder
+    config_path = _multi_user_file(tmp_path, entry)
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=config_path, TRADING_MODE="paper")
+
+    with pytest.raises(ValueError, match=r"'paper-user' is missing funder_address"):
+        load_runtime_users([], cfg)
+
+
+def test_load_runtime_users_allows_live_entry_without_funder(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Live entries may omit the funder — the authenticated SDK derives it.
+
+    Requiring it here would break the one-secret auth chain; the resolved
+    address is bound back by ``bind_resolved_deposit_wallet`` after startup.
+    """
+    config_path = _multi_user_file(
+        tmp_path,
+        {
+            "user_id": "live-user",
+            "private_key": _VALID_PRIVATE_KEY,
+            "signature_type": 3,
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=config_path, TRADING_MODE="live")
+
+    users = load_runtime_users([], cfg)
+
+    assert users[0].wallet.funder_address == ""
 
 
 @pytest.mark.asyncio
@@ -71,15 +179,19 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
     ctx3 = SimpleNamespace(user_id="user-2", execution_service=None)
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
 
     assert result == {"user-1": 2}
-    reconcile.assert_called_once_with(ctx1)
-    reconcile_risk.assert_called_once_with(ctx1)
+    reconcile.assert_called_once_with(ctx1, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx1, startup_recovery=True)
     rehydrate.assert_called_once_with(ctx1)
 
 
@@ -88,15 +200,19 @@ async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence
     ctx = SimpleNamespace(user_id="user-1", execution_service=object())
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
 
     assert result == {"user-1": 3}
-    reconcile.assert_called_once_with(ctx)
-    reconcile_risk.assert_called_once_with(ctx)
+    reconcile.assert_called_once_with(ctx, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx, startup_recovery=True)
     rehydrate.assert_called_once_with(ctx)
 
 
@@ -112,15 +228,19 @@ async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
     )
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
 
     assert result == {"user-1": 2}
-    reconcile.assert_called_once_with(ctx)
-    reconcile_risk.assert_called_once_with(ctx)
+    reconcile.assert_called_once_with(ctx, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx, startup_recovery=True)
     reservation_service.release_expired_active.assert_awaited_once_with()
     rehydrate.assert_called_once_with(ctx)
 
@@ -196,7 +316,9 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
             assert order_id == "order-1"
             return self.order_row
 
-        async def update_submission_status(self, *, order_id: str, status: str, response_patch=None):
+        async def update_submission_status(
+            self, *, order_id: str, status: str, response_patch=None
+        ):
             self.updated.append((order_id, status, response_patch))
             self.order_row["status"] = status
 
@@ -272,7 +394,10 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
         reservations_repo=reservation_service.reservations_repo,
     )
 
-    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+    with patch(
+        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        new=AsyncMock(return_value=None),
+    ):
         runtime_bootstrap._bind_reservation_runtime(ctx, coord)
         released = await reservation_service.reconciler_callback("res-1")
 
@@ -287,40 +412,48 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     follow = default_follow("user-1", "leader-1", cfg)
     risk_blocks_repo = object()
     user_state = SimpleNamespace(
-        user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
+        user=SimpleNamespace(
+            user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)
+        ),
         client=object(),
         positions_repo=object(),
         fills_repo=object(),
         orders_repo=object(),
         risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=object(),
+        leader_performance=None,
         risk_engine=object(),
         accounting_service=object(),
         position_manager=object(),
         execution_service=object(),
         clob_gateway=None,
+        market_store=object(),
         risk_triggers_repo=None,
     )
 
-    trust_store = object()
-    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+    with patch(
+        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        new=AsyncMock(return_value=None),
+    ):
         ctx = asyncio.run(
             build_trading_context(
                 user_state,
                 follow,
                 cfg,
                 readiness=object(),
-                trust_store=trust_store,
             )
         )
 
     assert ctx.buy_min_amount == 3.0
     assert ctx.buy_max_amount == 42.0
     assert ctx.extra["slippage_tolerance_bps"] == 150
+    assert ctx.extra["leader_wallet"] == "leader-1"
     assert ctx.entry_permission_service is not None
     assert ctx.entry_permission_service._repo is risk_blocks_repo
+    assert ctx.market_quotes is user_state.market_store
+    assert ctx.holdings_reader is not None
     assert ctx.config is cfg
-    assert ctx.leader_scorer._trust_store is trust_store
+    assert ctx.leader_scorer._config is cfg
     assert ctx.copy_decision_service._config is cfg
 
 
@@ -328,13 +461,16 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
     user_state = SimpleNamespace(
-        user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
+        user=SimpleNamespace(
+            user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)
+        ),
         client=object(),
         positions_repo=object(),
         fills_repo=object(),
         orders_repo=object(),
         risk_blocks_repo=object(),
         pnl_tracker=object(),
+        leader_performance=None,
         risk_engine=object(),
         accounting_service=object(),
         position_manager=object(),
@@ -344,8 +480,11 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     )
 
     with (
-        patch("domain.trading_context.CopyDecisionService") as copy_decision_cls,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)),
+        patch("application.trading_context.CopyDecisionService") as copy_decision_cls,
+        patch(
+            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
 
@@ -365,24 +504,24 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     ):
         position_manager_instance = position_manager_cls.return_value
         execution_service_instance = execution_service_cls.return_value
+        clob_gateway = object()
         state = runtime_bootstrap.build_user_state(
             runtime_user,
             client=object(),
             pool=MagicMock(),
             config=cfg,
+            clob_gateway=clob_gateway,
         )
 
     position_manager_cls.assert_called_once_with(config=cfg)
     execution_service_cls.assert_called_once()
     assert execution_service_cls.call_args.kwargs["config"] is cfg
+    assert execution_service_cls.call_args.kwargs["clob_gateway"] is clob_gateway
     assert state.position_manager is position_manager_instance
     assert state.execution_service is execution_service_instance
     assert state.execution_coordinator is not None
     reservation_service = state.execution_coordinator.reservation_service
-    assert (
-        state.position_drift_service._reservations_repo
-        is reservation_service.reservations_repo
-    )
+    assert state.position_drift_service._reservations_repo is reservation_service.reservations_repo
 
 
 def test_copy_notional_prefers_typed_config_over_env():
@@ -396,8 +535,6 @@ def test_copy_notional_prefers_typed_config_over_env():
         ADAPTIVE_MAX_PERCENT="95",
         ADAPTIVE_THRESHOLD_USDC="777",
     )
-    from domain.trading_context import TradingContext
-
     ctx = TradingContext(
         user_id="user-1",
         wallet_address=_VALID_FUNDER,
