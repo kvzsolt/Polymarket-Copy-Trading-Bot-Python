@@ -89,6 +89,7 @@ async def test_control_plane_helper_registers_before_start_and_returns_runtime()
             "discovery_command_port": discovery_command_port,
             "portfolio_cache": portfolio_cache,
             "reads": reads,
+            "auto_traders": None,
         }
     ]
 
@@ -231,3 +232,27 @@ def test_detection_connection_probe_reports_unknown_without_runtime_state() -> N
     assert _detection_connection_probe(_Probed())() is False
     assert _detection_connection_probe(object())() is None
     assert _detection_connection_probe(None)() is None
+
+
+async def test_automatic_runtime_exposes_its_saved_evidence_and_promotion_service():
+    """The production HTTP composition receives the running account-scoped service."""
+    from app import _start_control_plane_runtime
+    from orchestrators.auto_trader_runtime import AutoTraderRuntime
+    from services.control_plane.auto_traders import AutoTraderControlService
+
+    factory = FakeFactory(None)
+    application = SimpleNamespace(
+        config=object(), readiness=object(), auto_traders=AutoTraderRuntime(services={})
+    )
+    await _start_control_plane_runtime(
+        application=application,
+        pool=object(),
+        telemetry=SimpleNamespace(query=object(), hub=object(), service=object()),
+        worker_state=object(),
+        runtime_gateways=(),
+        task_activation_guard=None,
+        discovery_command_port=None,
+        client_registry=[],
+        factory=factory,
+    )
+    assert isinstance(factory.calls[0]["auto_traders"], AutoTraderControlService)

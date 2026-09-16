@@ -26,18 +26,18 @@ def _config(*, token: str = "test-discovery-token", start_from_roster: bool = Tr
     )
 
 
-def test_auto_trader_policy_ignores_manual_wallets_and_forces_discovery() -> None:
-    """The command-line opt-in selects only the automatic discovery path."""
+def test_auto_trader_policy_uses_persistent_manager_without_forced_discovery() -> None:
+    """Automatic mode selects the durable roster manager, not the legacy sweep."""
     policy = TraderStartupPolicy(auto_trader=True)
     config = _config()
 
     policy.validate(config)
 
     assert policy.configured_leaders(config) == []
-    assert policy.force_discovery is True
-    assert policy.discovery_loop_enabled(config) is True
-    assert policy.should_wait_for_discovery_roster(config) is True
-    assert policy.startup_roster_event == "auto_trader_startup_burst_started"
+    assert policy.force_discovery is False
+    assert policy.discovery_loop_enabled(config) is False
+    assert policy.should_wait_for_discovery_roster(config) is False
+    assert policy.startup_roster_event == "auto_trader_roster_restored"
 
 
 def test_auto_trader_enables_falcon_for_only_the_effective_runtime_config() -> None:
@@ -67,12 +67,11 @@ def test_default_policy_keeps_enabled_manual_wallets() -> None:
     assert policy.startup_roster_event == "startup_waiting_for_discovery_roster"
 
 
-def test_auto_trader_requires_discovery_credentials() -> None:
-    """Forced discovery fails closed before runtime construction without auth."""
+def test_restoring_auto_trader_roster_does_not_require_provider_credentials() -> None:
+    """Provider availability is checked only when an evaluation is requested."""
     policy = TraderStartupPolicy(auto_trader=True)
 
-    with pytest.raises(EnvValidationError, match="discovery.api.token"):
-        policy.validate(_config(token=""))
+    policy.validate(_config(token=""))
 
 
 def test_auto_trader_requires_roster_startup() -> None:

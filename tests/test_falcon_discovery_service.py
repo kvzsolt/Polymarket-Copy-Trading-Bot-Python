@@ -467,3 +467,23 @@ async def test_sweep_run_reports_the_sweep_cycle_mode(
 
     records = [item for item in caplog.records if item.message == "discovery_cycle_summary"]
     assert records and records[0].discovery_cycle_mode == "sweep"
+
+
+async def test_targeted_checks_recover_each_wallet_score_across_other_account_cycles():
+    from unittest.mock import AsyncMock
+
+    repo = FakeRepo()
+    repo.candidate_hscores = AsyncMock(return_value={GOOD: Decimal("82")})
+    service = TargetedFakeService(
+        DiscoveryResult(ranked=(_ranked(GOOD, Decimal(".9")),), rejected=(), source="falcon")
+    )
+    adapter = FalconDiscoveryService(
+        service=service,
+        repository=repo,
+        config=_config(),
+        get_funds=AsyncMock(return_value=Decimal("100")),
+    )
+    await adapter.run(wallets=[GOOD])
+    assert service.calls[0][1] == [{"wallet": GOOD, "h_score": Decimal("82")}]
+    assert adapter.last_evaluations[0].wallet == GOOD
+    assert adapter.last_cycle_id == "cycle-1"

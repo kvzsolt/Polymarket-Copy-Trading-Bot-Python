@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import blake2b
 from typing import Any, TYPE_CHECKING
@@ -75,6 +75,7 @@ class LeaderBatchDispatcher:
         v1_sink: V1BatchSink | None = None,
         clock: MonotonicClock = time.time,
         telemetry: DetectionTelemetryEmitter | None = None,
+        observer: Callable[[str, Sequence[Mapping[str, object]]], None] | None = None,
     ) -> None:
         self._leader = str(leader)
         self._contexts = tuple(contexts)
@@ -82,6 +83,7 @@ class LeaderBatchDispatcher:
         self._v1_sink = v1_sink
         self._clock = clock
         self._telemetry = telemetry
+        self._observer = observer
 
     def _emit_detection(self, trades: list[dict[str, Any]]) -> None:
         """Publish one detection event per polled trade row.
@@ -112,6 +114,8 @@ class LeaderBatchDispatcher:
         """
 
         self._emit_detection(trades)
+        if self._observer is not None:
+            self._observer(self._leader, trades)
         if self._v1_sink is not None:
             await self._v1_sink(self._leader, trades)
             return ()
@@ -141,6 +145,7 @@ async def run_leader_monitor(
     research_capture_service: Any | None = None,
     v1_sink: V1BatchSink | None = None,
     telemetry: DetectionTelemetryEmitter | None = None,
+    observer: Callable[[str, Sequence[Mapping[str, object]]], None] | None = None,
 ) -> None:
     """Poll one leader and route each batch to v1 or legacy execution.
 
@@ -173,6 +178,7 @@ async def run_leader_monitor(
         legacy_executor=execute_trade_pipeline,
         v1_sink=v1_sink,
         telemetry=telemetry,
+        observer=observer,
     )
 
     if v1_sink is not None:

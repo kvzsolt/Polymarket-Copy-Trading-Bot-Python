@@ -52,6 +52,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from config.auto_follow import AutoFollowConfig
 from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
 from config.trader_config import (
     TraderConfig,
@@ -1104,6 +1105,7 @@ class DiscoveryConfig(_FrozenSettingsModel):
     hysteresis: HysteresisConfig = HysteresisConfig.model_validate({})
     scheduler: DiscoverySchedulerConfig = DiscoverySchedulerConfig.model_validate({})
     falcon: FalconDiscoveryConfig = FalconDiscoveryConfig.model_validate({})
+    auto_follow: AutoFollowConfig = AutoFollowConfig.model_validate({})
 
 
 @dataclass(frozen=True)

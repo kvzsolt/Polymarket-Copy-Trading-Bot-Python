@@ -114,6 +114,9 @@ resolve, a field that does not exist, and a field that is not a string.
 """
 
 DECIMAL_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "AutoTraderPerformanceView": ("falcon_score",),
+    "AutoTraderEvaluationView": ("falcon_score",),
+    "CopyPerformanceView": ("realized_pnl", "recent_pnl", "drawdown"),
     "DiscoveryCandidateView": ("score",),
     "DiscoveryRosterView": ("score",),
     "FillView": ("size", "price", "fee"),
@@ -588,6 +591,25 @@ ROUTE_GROUPS: tuple[RouteGroup, ...] = (
         optional_query=_PAGE,
     ),
     # -- detection, leaders, discovery -------------------------------------
+    RouteGroup(
+        method="GET",
+        paths=(f"{API_PREFIX}/leaders/{{wallet}}/performance",),
+        permission="leader.read",
+        capability="auto_trader_performance",
+        response="AutoTraderPerformanceView",
+        summary="Saved Falcon and source-separated copy results.",
+        required_query=_FOLLOWER,
+    ),
+    RouteGroup(
+        method="POST",
+        paths=(f"{API_PREFIX}/leaders/{{wallet}}/promote",),
+        permission="leader.promote",
+        capability="auto_trader_promotion",
+        response="AutoTraderPerformanceView",
+        summary="Approve qualified paper evidence; fill only a vacant slot.",
+        body=("follower_account", "expected_revision", "evaluation_id", "request_id"),
+        action="leader.promote",
+    ),
     RouteGroup(
         method="GET",
         paths=(f"{API_PREFIX}/detection",),

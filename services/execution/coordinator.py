@@ -245,6 +245,14 @@ class AuditLogger(Protocol):
         ...
 
 
+class CopyAdmission(Protocol):
+    """Check durable automatic membership before copied order reservations."""
+
+    async def admit(self, follower_account: str, wallet: str, side: str) -> bool:
+        """Return whether this exact account/leader may submit the copied side."""
+        ...
+
+
 class ExecutionCoordinator:
     """Coordinate guarded order execution through injected ports."""
 
@@ -263,6 +271,7 @@ class ExecutionCoordinator:
         execution_service: Any | None = None,
         position_coordinator: Any | None = None,
         latency: PipelineLatency | None = None,
+        copy_admission: CopyAdmission | None = None,
     ) -> None:
         self.reservation_service = reservation_service
         self.orders_repo = orders_repo
@@ -281,6 +290,7 @@ class ExecutionCoordinator:
         self.execution_service = execution_service
         self.position_coordinator = position_coordinator
         self._latency = latency
+        self._copy_admission = copy_admission
         self.leader_sell_target_service: object | None = None
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
@@ -629,6 +639,16 @@ class ExecutionCoordinator:
     # ------------------------------------------------------------------
     async def submit_copy_trade(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
         """Submit a copied entry through the guarded coordinator."""
+        if self._copy_admission is not None and not await self._copy_admission.admit(
+            intent.user_id, intent.leader_wallet or "", intent.side
+        ):
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="rejected",
+                skip_code="auto_trader_not_active",
+                reason="automatic trader membership does not permit this copy",
+                lifecycle_status="rejected",
+            )
         return await self._submit_with_reservation(intent, source_override="copy_trade")
 
     async def submit_risk_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:

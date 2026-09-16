@@ -27,6 +27,11 @@ from integrations.control_plane import (
     TelemetryHubPort,
     TelemetryQueryPort,
 )
+from integrations.control_plane.contracts import AutoTraderControlPort
+from orchestrators.control_plane_auto_traders import (
+    AutomaticDiscoveryView,
+    AutomaticLeaderRosterView,
+)
 from orchestrators.control_plane_reads import ControlPlaneRuntimeReads
 from orchestrators.control_plane_runtime import (
     Clock,
@@ -309,6 +314,7 @@ class ControlPlaneRuntimeFactory:
         discovery_command_port: DiscoveryCommandPort | None = None,
         portfolio_cache: CachedPortfolioQueryPort | None = None,
         reads: ControlPlaneRuntimeReads | None = None,
+        auto_traders: AutoTraderControlPort | None = None,
     ) -> ControlPlaneRuntime | None:
         """Build an unstarted runtime or return ``None`` when disabled.
 
@@ -368,6 +374,7 @@ class ControlPlaneRuntimeFactory:
                 task_commands_enabled=task_activation_guard is not None,
                 discovery_commands_enabled=discovery_command_port is not None,
                 portfolio_enabled=portfolio_cache is not None,
+                auto_traders_enabled=auto_traders is not None,
                 reads=reads,
             ),
             active_task_counter=query_repository,
@@ -409,6 +416,7 @@ class ControlPlaneRuntimeFactory:
             )
             task_decoder = CopyTaskPayloadDecoder()
         dependencies = ControlPlaneDependencies(
+            auto_traders=auto_traders,
             system=SystemQueryService(system_adapter),
             accounts=(AccountQueryService(account_scope) if account_scope is not None else None),
             detection=(
@@ -453,7 +461,9 @@ class ControlPlaneRuntimeFactory:
             ),
             leaders=(
                 LeaderQueryService(
-                    roster=query_repository,
+                    roster=AutomaticLeaderRosterView(auto_traders)
+                    if auto_traders is not None
+                    else query_repository,
                     counts=query_repository,
                     configured=reads.configured_leaders,
                     monitored=reads.monitored_leaders or (lambda: ()),
@@ -470,7 +480,13 @@ class ControlPlaneRuntimeFactory:
             positions=PositionQueryService(query_repository),
             orders=OrderQueryService(query_repository),
             activity=ActivityQueryService(query_repository),
-            discovery=DiscoveryQueryService(query_repository),
+            discovery=(
+                AutomaticDiscoveryView(
+                    base=DiscoveryQueryService(query_repository), automatic=auto_traders
+                )
+                if auto_traders is not None
+                else DiscoveryQueryService(query_repository)
+            ),
             discovery_commands=(
                 DiscoveryCommandService(
                     port=discovery_command_port,
@@ -584,6 +600,7 @@ class ControlPlaneRuntimeFactory:
         task_commands_enabled: bool,
         discovery_commands_enabled: bool,
         portfolio_enabled: bool,
+        auto_traders_enabled: bool = False,
         reads: ControlPlaneRuntimeReads | None = None,
     ) -> tuple[str, ...]:
         """Return sorted capabilities backed by this exact composition."""
@@ -626,6 +643,8 @@ class ControlPlaneRuntimeFactory:
             )
         if discovery_commands_enabled:
             capabilities.add("discovery_manual_run")
+        if auto_traders_enabled:
+            capabilities.update({"auto_trader_performance", "auto_trader_promotion"})
         if portfolio_enabled:
             capabilities.add("portfolio_read")
         if reads is not None:

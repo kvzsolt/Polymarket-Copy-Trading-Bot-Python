@@ -237,6 +237,33 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
             )
         return [dict(row) for row in rows]
 
+    async def candidate_hscores(
+        self, wallets: Sequence[str], *, config_hash: str
+    ) -> dict[str, Decimal]:
+        """Read each requested wallet's latest completed evidence across targeted cycles."""
+        if not wallets:
+            return {}
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT DISTINCT ON (snapshots.wallet) snapshots.wallet,
+                          snapshots.hscore_json->>'h_score' AS h_score
+                   FROM discovery_candidate_snapshots snapshots
+                   JOIN discovery_cycles cycles USING (cycle_id)
+                   WHERE snapshots.wallet=ANY($1::text[]) AND snapshots.config_hash=$2
+                     AND cycles.status='completed'
+                   ORDER BY snapshots.wallet, snapshots.cycle_ts DESC, snapshots.cycle_id DESC""",
+                list(dict.fromkeys(wallet.lower() for wallet in wallets)),
+                config_hash,
+            )
+        output = {}
+        for row in rows:
+            if row["h_score"] is not None:
+                score = Decimal(row["h_score"])
+                if not score.is_finite():
+                    raise ValueError("stored candidate score is not finite")
+                output[row["wallet"]] = score
+        return output
+
     async def latest_candidates(
         self,
         *,

@@ -17,13 +17,13 @@ class TraderStartupPolicy:
     @property
     def force_discovery(self) -> bool:
         """Return whether provider discovery must run despite scheduler config."""
-        return self.auto_trader
+        return False
 
     @property
     def startup_roster_event(self) -> str:
         """Return the structured event describing the selected startup path."""
         if self.auto_trader:
-            return "auto_trader_startup_burst_started"
+            return "auto_trader_roster_restored"
         return "startup_waiting_for_discovery_roster"
 
     def validate(self, config: AppConfig) -> None:
@@ -33,15 +33,10 @@ class TraderStartupPolicy:
             config: Immutable application configuration.
 
         Raises:
-            EnvValidationError: If automatic startup cannot authenticate or
-                consume the qualified discovery roster.
+            EnvValidationError: If automatic startup cannot consume saved membership.
         """
         if not self.auto_trader:
             return
-        if not config.discovery.api.has_token:
-            raise EnvValidationError(
-                "--auto-trader requires discovery.api.token (PMCOPY__DISCOVERY__API__TOKEN)."
-            )
         if not config.discovery.scheduler.start_from_roster:
             raise EnvValidationError(
                 "--auto-trader requires discovery.scheduler.start_from_roster: true."
@@ -83,9 +78,9 @@ class TraderStartupPolicy:
             config: Immutable application configuration.
 
         Returns:
-            ``True`` for the CLI override or a configured scheduler.
+            ``True`` only for the legacy configured scheduler in manual mode.
         """
-        return self.auto_trader or config.discovery.scheduler.enabled
+        return not self.auto_trader and config.discovery.scheduler.enabled
 
     def should_wait_for_discovery_roster(self, config: AppConfig) -> bool:
         """Return whether a bounded startup wait can produce an active leader.

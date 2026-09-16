@@ -22,6 +22,15 @@ def test_run_parser_accepts_auto_trader_flag() -> None:
     assert args.auto_trader is True
 
 
+def test_auto_follow_is_the_same_flag_without_a_second_count_setting() -> None:
+    import argparse
+    from bot_cli.commands.run import register_run_command
+
+    parser = argparse.ArgumentParser()
+    register_run_command(parser.add_subparsers(dest="command"))
+    assert parser.parse_args(["run", "--auto-follow"]).auto_trader is True
+
+
 @pytest.mark.asyncio
 async def test_run_forwards_auto_trader_flag_to_application(
     monkeypatch: pytest.MonkeyPatch,

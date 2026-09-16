@@ -45,6 +45,7 @@ from services.control_plane.contracts import (
 )
 from services.control_plane.contracts_reads import (
     AccountView,
+    AutoTraderPerformanceView,
     DetectionStatusView,
     FillView,
     LeaderView,
@@ -428,6 +429,31 @@ class TelemetryHubPort(Protocol):
         ...
 
 
+class AutoTraderControlPort(Protocol):
+    """Persisted evaluation reads and audited paper promotion commands."""
+
+    async def list_discovery_roster(self, page: PageRequest) -> Page[DiscoveryRosterView]:
+        """Return bounded persisted automatic membership."""
+        ...
+
+    async def performance(self, follower_account: str, wallet: str) -> AutoTraderPerformanceView:
+        """Read local evidence for one account and trader."""
+        ...
+
+    async def promote(
+        self,
+        follower_account: str,
+        wallet: str,
+        *,
+        expected_revision: int,
+        evaluation_id: str,
+        request_id: str,
+        actor: str,
+    ) -> AutoTraderPerformanceView:
+        """Promote the reviewed evidence without displacing healthy incumbents."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class ControlPlaneDependencies:
     """Optional application services; service presence defines route support.
@@ -443,6 +469,7 @@ class ControlPlaneDependencies:
     fills: FillQueryPort | None = None
     pnl: PnlQueryPort | None = None
     risk: RiskQueryPort | None = None
+    auto_traders: AutoTraderControlPort | None = None
     leaders: LeaderQueryPort | None = None
     metrics: MetricsQueryPort | None = None
     tasks: TaskQueryPort | None = None

@@ -68,7 +68,7 @@ class TradeScoringService:
         self,
         trade: dict,
         *,
-        live_price: float,
+        live_price: Decimal | float,
         leader_score: float,
     ) -> TradeScore:
         """Score a BUY; legacy edge/liquidity fields mean upside decay and notional strength."""

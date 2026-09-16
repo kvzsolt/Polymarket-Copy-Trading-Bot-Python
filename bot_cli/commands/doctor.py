@@ -256,6 +256,34 @@ def _resolve_jsonl_path(config=None) -> Path:
     return _resolve_log_dir(config) / f"{APP_NAME}.jsonl"
 
 
+async def _automatic_rosters_available(config) -> bool:
+    """Compose a local durable startup probe without contacting Falcon."""
+    from domain.auto_trader import AutoTraderScope
+    from orchestrators.auto_trader_startup import AutoTraderStartupProbe
+    from services.multiUserConfig import load_runtime_users
+    from storage.postgres.auto_trader_repository import PostgresAutoTraderRepository
+    from storage.postgres.connection import init_pool, shutdown_pool
+    from storage.postgres.leaders_repo import LeadersRepo
+
+    pool = await init_pool(
+        config.database.dsn, min_size=1, max_size=2, command_timeout_seconds=15.0
+    )
+    try:
+        repository = PostgresAutoTraderRepository(pool)
+        if not await repository.schema_available():
+            return bool(await LeadersRepo(pool).list_active())
+        return await AutoTraderStartupProbe(
+            repository=repository,
+            scopes=tuple(
+                AutoTraderScope(user.user_id, config.execution.trading_mode)
+                for user in load_runtime_users([], config)
+            ),
+            legacy_wallets=LeadersRepo(pool).list_active,
+        ).restorable()
+    finally:
+        await shutdown_pool()
+
+
 async def _auto_trader_db_candidate_count(config) -> int:
     """Count hysteresis-qualified active roster entries."""
     from storage.postgres.connection import init_pool, shutdown_pool
@@ -706,7 +734,29 @@ async def run_doctor_checks(
 
     # ----- leaders -----------------------------------------------------
     startup_policy = TraderStartupPolicy(auto_trader=auto_trader)
-    if startup_policy.configured_leaders(config):
+    if auto_trader:
+        try:
+            restorable = await _automatic_rosters_available(config)
+        except Exception as exc:
+            ctx.blocked(
+                "leaders",
+                f"automatic roster database probe failed: {type(exc).__name__}",
+                "restore database access before starting automatic traders",
+            )
+        else:
+            if restorable:
+                ctx.ok(
+                    "leaders", "automatic roster is saved; startup restores it without discovery"
+                )
+            elif config.discovery.api.has_token:
+                ctx.ok("leaders", "initial automatic discovery is configured")
+            else:
+                ctx.blocked(
+                    "leaders",
+                    "automatic roster is uninitialized and Falcon credentials are missing",
+                    "configure discovery.api.token for the first automatic initialization",
+                )
+    elif startup_policy.configured_leaders(config):
         ctx.ok("leaders", "leader wallets configured")
     elif not config.discovery.scheduler.start_from_roster:
         ctx.blocked(

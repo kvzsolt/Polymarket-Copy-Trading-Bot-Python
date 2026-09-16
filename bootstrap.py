@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from orchestrators.auto_trader_runtime import AutoTraderRuntime
 
 from config.app_config import AppConfig, load_config
 from integrations.falcon.client import FalconClient
@@ -40,6 +41,7 @@ class Application:
     discovery_service: FalconDiscoveryService
     registry: LeaderRegistry
     falcon_client: FalconClient | None
+    auto_traders: AutoTraderRuntime | None = None
 
     async def aclose(self) -> None:
         """Close application-owned external clients idempotently."""

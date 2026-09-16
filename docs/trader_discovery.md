@@ -19,7 +19,7 @@ Supply the raw token, without adding a `Bearer` prefix. An explicit
 Premium endpoint access does not imply access to every analytics agent. In
 particular, `discovery.falcon.enable_price_jump_risk: true` requires price-jump
 agent **596**. A `403 AGENT_NOT_ALLOWED` stops discovery without retries or a
-persisted-roster fallback during forced startup. The failure log preserves the
+weaker-candidate fallback during initial qualification. The failure log preserves the
 requested `falcon_agent_id`; the exception also reports `agent_id=596` for this
 case, without provider error bodies or response headers. The shipped operator
 configuration explicitly sets `discovery.falcon.enable_price_jump_risk: false`
@@ -70,10 +70,10 @@ bankroll. No order, approval, or mutation is performed by the discovery path.
 ## Fail-closed provider semantics
 
 - Auth, permission, schema, or configuration errors fail closed.
-- During forced `--auto-trader` startup, permanent provider errors stop the
-  current startup burst and propagate a sanitized failure before any persisted
-  active roster is accepted. A targeted authentication failure never starts a
-  fallback sweep.
+- Initial automatic discovery propagates sanitized provider failures. Restarts
+  restore initialized membership without a provider request. A failed routine
+  targeted check persists an entry block while keeping owned exits available;
+  it never counts as poor performance or starts a fallback sweep.
 - Transient outage/rate-limit raises propagate as a failed cycle
   (`last_cycle_degraded=True`); the roster is not mass-demoted on missing
   evidence.
@@ -131,37 +131,30 @@ error is re-raised and the cycle is recorded as failed — fail closed.
 
 `candidate_limit` ships at **50**. Each shortlisted wallet costs several
 provider calls, so one sweep runs a few minutes at `candidate_concurrency: 12`,
-and the three-cycle `--auto-trader` startup burst
+and initial automatic qualification
 (`hysteresis.min_tenure_cycles: 3`) stays bounded by that. Raise
 `candidate_limit` for a wider net — cycle time scales roughly linearly with it —
 keeping the provider rate limit in `discovery.api` in mind.
 
-## Startup burst: DB first, targeted re-check, then capped sweep
+## Durable automatic selection
 
-`--auto-trader` does not sweep the leaderboard first. The startup burst
-(`orchestrators.runtime_discovery.AutoTraderStartupBurst`) asks the discovery
-service for the wallets accepted by the latest persisted cycle
-(`FalconDiscoveryService.persisted_wallets`, a durable-roster read with no
-provider call) and re-checks exactly those:
+`python bot.py run --auto-trader` and `--auto-follow` select the same DB-backed
+lifecycle. See [Automatic traders](auto-follow.md) for configuration and control
+plane commands.
 
-- **targeted** — `LeaderRegistry.refresh(..., target_wallets=[...])` →
-  `FalconDiscoveryService.run(wallets=[...])` →
-  `FalconCandidateService.discover(funds, wallets=[...])`. The leaderboard
-  shortlist is skipped and each wallet is rebuilt from its stored H-Score;
-  `min_h_score` is not re-applied because those rows passed it when they were
-  persisted. Every other gate and the whole score run against fresh evidence,
-  the official PnL leaderboard is still read for rank corroboration, and the
-  cycle is persisted normally, so tenure and hysteresis behave exactly as they
-  do for a sweep.
-- **sweep** — the historical full shortlist, used when nothing is persisted
-  (`auto_trader_startup_sweep_fallback reason=no_persisted_candidates`) or when
-  the targeted re-check yields neither an active roster nor a promotable
-  candidate (`reason=targeted_recheck_empty`). The fallback sweep consumes one
-  of the `min_tenure_cycles` refreshes; the burst adds no extra loop.
+An initialized account restores its saved membership without a Falcon startup
+request. Existing active legacy leaders are imported once. An empty initialized
+roster stays empty; it does not trigger a sweep on each restart.
 
-Remaining tenure cycles continue in whichever mode produced candidates. Each
-cycle logs `discovery_cycle_mode=targeted|sweep` alongside the accept/reject
-histogram in `discovery_cycle_summary`.
+For a new account, one capped shortlist plus targeted qualification cycles
+selects the best qualifying candidates automatically. Paper evidence is not
+required for this initial selection. Healthy incumbents remain selected even
+when another wallet ranks higher. Routine evaluation targets known wallets.
+A sweep is permitted after sustained incumbent degradation when the stored
+reserve cannot fill the vacancy, or through an explicit operator discovery job.
+
+The sole count is `scheduler.max_active_leaders`. It bounds active traders and
+also derives the reserve paper cohort. Outstanding exits retain monitoring.
 
 ## Hard gates and rejection reasons
 
@@ -274,14 +267,13 @@ setting. Note that promotion additionally needs `hysteresis.promote_score`
 (default `0.55`) on `hysteresis.min_tenure_cycles` consecutive cycles, so a
 freshly accepted wallet is not tradeable on its first cycle.
 
-### Changing a gate rebuilds the roster
+### Changing discovery gates
 
-Every value under `discovery.falcon`, `discovery.hysteresis` and the other
-scoring sections feeds `discovery_config_hash`
-(`services/discovery/models.py`). Changing any of them invalidates the persisted
-roster: active rows whose hash no longer matches are not accepted at startup, so
-the next `--auto-trader` start needs a fresh set of `min_tenure_cycles` cycles
-before a leader is promoted.
+The legacy discovery roster still uses `discovery_config_hash` to invalidate
+old scoring evidence. Automatic membership is stored separately and survives
+configuration changes. Its next targeted evaluation applies the current gates;
+provider failures block entries, while successful poor evaluations advance the
+configured degradation streak. Restart to apply a changed trader count.
 
 ## Configuration
 

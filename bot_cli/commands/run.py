@@ -18,8 +18,9 @@ def register_run_command(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--auto-trader",
+        "--auto-follow",
         action="store_true",
-        help="Ignore configured leaders and force automatic trader discovery",
+        help="Restore the automatic DB roster; discover initially or after degradation",
     )
 
 

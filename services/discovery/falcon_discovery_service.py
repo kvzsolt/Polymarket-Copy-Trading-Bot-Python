@@ -128,6 +128,20 @@ class FalconDiscoveryService:
         self._config_hash = discovery_config_hash(getattr(config, "discovery", config))
         self.last_cycle_degraded: bool = False
         self.last_cycle_summary: DiscoveryCycleSummary | None = None
+        self.last_cycle_id: str | None = None
+        self.last_evaluations: tuple[Candidate, ...] = ()
+
+    def with_funds(
+        self, get_funds: Callable[[], Awaitable[Decimal | None]]
+    ) -> FalconDiscoveryService:
+        """Share the provider but evaluate copyability against one follower bankroll."""
+        return FalconDiscoveryService(
+            service=self._service,
+            repository=self._repository,
+            config=self._config,
+            get_funds=get_funds,
+            logger_instance=self._logger,
+        )
 
     @property
     def config_hash(self) -> str:
@@ -174,7 +188,9 @@ class FalconDiscoveryService:
         """
         self.last_cycle_degraded = False
         self.last_cycle_summary = None
+        self.last_evaluations = ()
         cycle_id = await self._repository.begin_cycle(self._config_hash)
+        self.last_cycle_id = cycle_id
         candidates: list[Candidate] = []
         try:
             if self._service is None:
@@ -221,6 +237,7 @@ class FalconDiscoveryService:
                 candidate_count=len(candidates),
                 kept_count=len(accepted),
             )
+            self.last_evaluations = tuple(candidates)
             return accepted
         except Exception:
             self.last_cycle_degraded = True
@@ -248,13 +265,17 @@ class FalconDiscoveryService:
             One row per distinct wallet, in the tolerant leaderboard wire shape
             the candidate service parses.
         """
-        stored = await self._repository.latest_candidates(config_hash=self._config_hash)
+        reader = getattr(self._repository, "candidate_hscores", None)
         h_scores: dict[str, Any] = {}
-        for candidate in stored:
-            wallet = str(candidate.wallet or "").strip().lower()
-            payload = candidate.hscore if isinstance(candidate.hscore, Mapping) else {}
-            if wallet and wallet not in h_scores:
-                h_scores[wallet] = payload.get("h_score")
+        if reader is not None:
+            h_scores.update(await reader(wallets, config_hash=self._config_hash))
+        else:
+            stored = await self._repository.latest_candidates(config_hash=self._config_hash)
+            for candidate in stored:
+                wallet = str(candidate.wallet or "").strip().lower()
+                payload = candidate.hscore if isinstance(candidate.hscore, Mapping) else {}
+                if wallet and wallet not in h_scores:
+                    h_scores[wallet] = payload.get("h_score")
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in wallets:

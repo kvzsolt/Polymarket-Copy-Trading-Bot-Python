@@ -272,7 +272,7 @@ hysteresis:
   min_dwell_seconds: 10800
 scheduler:
   # Background roster maintenance. true adds recurring provider/database work;
-  # false keeps the configured/persisted roster unless --auto-trader forces a run.
+  # Automatic mode uses its own targeted evaluation lifecycle regardless of this flag.
   enabled: false
   # Full rediscovery and cheaper rescore cadences (>=30s). Shorter adapts faster
   # but spends more provider quota.
@@ -283,8 +283,8 @@ scheduler:
   # Maximum failed-evaluation fraction [0,1] before a cycle fails closed. Lower is
   # stricter; higher tolerates partial provider outages.
   max_evaluation_error_ratio: 0.25
-  # Active roster ceiling. Higher diversifies signals but divides bankroll and
-  # increases monitoring load.
+  # Sole automatic trader count; also derives the reserve paper cohort.
+  # Restart to apply a change. Open exits may retain additional monitors.
   max_active_leaders: 3
   # true rechecks persisted roster before sweeping; false starts from fresh
   # discovery, increasing startup time/cost but avoiding stale incumbents.
@@ -294,12 +294,11 @@ scheduler:
   startup_wait_timeout_seconds: 3900
 falcon:
   # Falcon policy switch. true requires a valid API token/schema and evaluates
-  # candidates; false performs no provider discovery unless --auto-trader forces
-  # it for that process. Failures/zero-safe results never silently use weaker data.
+  # candidates; automatic mode enables Falcon evaluation for that process.
+  # Failures/zero-safe results never silently use weaker data.
   enabled: false
-  # Bounds one full leaderboard sweep. The `--auto-trader` startup burst
-  # re-checks the persisted accepted roster first and only sweeps when the
-  # database is empty or that re-check produces nothing.
+  # Bounds an initial or degradation-triggered shortlist. Automatic restarts
+  # restore their own saved roster without provider requests.
   candidate_limit: 50
   # Candidate evaluations in parallel. Higher makes sweeps faster but can exceed
   # the api rate/burst limit and provider capacity.

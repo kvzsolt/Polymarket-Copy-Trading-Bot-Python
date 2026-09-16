@@ -498,3 +498,81 @@ __all__ = [
     "RiskStateView",
     "RiskTriggerView",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class CopyPerformanceView:
+    """Persisted source-specific evaluation with exact money and evidence age."""
+
+    evaluation_id: str
+    observed_at: datetime
+    started_at: datetime
+    closed_episodes: int
+    realized_pnl: str
+    recent_pnl: str
+    drawdown: str | None
+    complete: bool
+
+    def __post_init__(self) -> None:
+        """Validate exact transport money and temporal evidence."""
+        ContractValidation.require_text(self.evaluation_id)
+        ContractValidation.require_aware_datetime(self.observed_at)
+        ContractValidation.require_aware_datetime(self.started_at)
+        ContractValidation.require_count(self.closed_episodes)
+        ContractValidation.optional_decimal_string(self.drawdown)
+        for value in (self.realized_pnl, self.recent_pnl):
+            ContractValidation.require_decimal_string(value)
+
+
+@dataclass(frozen=True, slots=True)
+class AutoTraderEvaluationView:
+    """One saved membership revision with separate paper and live evidence."""
+
+    revision: int
+    status: str
+    falcon_score: str
+    falcon_observed_at: datetime | None
+    degradation_reason: str
+    paper: CopyPerformanceView | None
+    live: CopyPerformanceView | None
+
+    def __post_init__(self) -> None:
+        """Validate exact transport score and revision."""
+        ContractValidation.require_count(self.revision)
+        ContractValidation.require_decimal_string(self.falcon_score)
+        if self.falcon_observed_at is not None:
+            ContractValidation.require_aware_datetime(self.falcon_observed_at)
+
+
+@dataclass(frozen=True, slots=True)
+class AutoTraderPerformanceView:
+    """Durable membership and the evaluation required for operator promotion."""
+
+    follower_account: str
+    trading_mode: str
+    leader_wallet: str
+    status: str
+    revision: int
+    target_count: int
+    active_count: int
+    activation_source: str
+    entry_block_reason: str
+    falcon_score: str
+    falcon_observed_at: datetime | None
+    degradation_reason: str
+    qualification_reasons: tuple[str, ...]
+    paper: CopyPerformanceView | None
+    live: CopyPerformanceView | None
+
+    history: tuple[AutoTraderEvaluationView, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate the public source and membership identities."""
+        ContractValidation.require_text(self.follower_account)
+        ContractValidation.require_text(self.leader_wallet)
+        ContractValidation.require_count(self.revision)
+        ContractValidation.require_count(self.target_count)
+        ContractValidation.require_count(self.active_count)
+        ContractValidation.require_decimal_string(self.falcon_score)
+        if self.falcon_observed_at is not None:
+            ContractValidation.require_aware_datetime(self.falcon_observed_at)

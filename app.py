@@ -68,7 +68,7 @@ from orchestrators.control_plane_tasks import (
     RuntimeTaskActivationGuard,
 )
 from orchestrators.detection_startup_reporter import DetectionStartupReporter
-from orchestrators.leader_registry import LeaderRegistry
+from orchestrators.leader_registry import LeaderRegistry, LeaderRegistryState
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
     extract_token_ids_from_contexts,
@@ -91,6 +91,7 @@ from orchestrators.runtime_discovery import (
 )
 from orchestrators.trader_startup_policy import TraderStartupPolicy
 from orchestrators.runtime_monitor import run_leader_monitor
+from orchestrators.auto_trader_runtime import AutoTraderRuntime, AutomaticDiscoveryRunner
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.telemetry_bootstrap import TelemetryRuntime
@@ -737,7 +738,7 @@ async def _refresh_contexts_for_new_leaders(
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
     contexts_by_leader: dict[str, list],
-    leaders_repo: LeadersRepo,
+    leaders_repo: LeadersRepo | AutoTraderRuntime,
     config,
     readiness,
 ) -> list[str]:
@@ -1422,7 +1423,16 @@ async def _start_control_plane_runtime(
     readiness = getattr(application, "readiness", None)
     if config is None or readiness is None:
         raise TypeError("application config and readiness are required")
+    from services.control_plane.auto_traders import AutoTraderControlService
+
+    automatic = getattr(application, "auto_traders", None)
+    automatic_control = (
+        AutoTraderControlService(services=automatic.services, clock=AutoTraderRuntime.now)
+        if automatic is not None
+        else None
+    )
     runtime = factory.build(
+        auto_traders=automatic_control,
         config=config,
         pool=pool,
         readiness=readiness,
@@ -1702,14 +1712,30 @@ async def _run_application(
             )
         return 1
 
-    registry_state = await application.registry.refresh(
-        configured,
-        force_discovery=startup_policy.force_discovery,
-        target_wallets=await _startup_refresh_targets(
-            application.registry,
+    auto_traders = None
+    auto_runtime_users = None
+    if startup_policy.auto_trader:
+        from orchestrators.auto_trader_runtime import AutoTraderRuntime
+        from storage.postgres.connection import get_pool as get_auto_trader_pool
+
+        auto_runtime_users = load_runtime_users([], application.config)
+        auto_traders = AutoTraderRuntime.create(
+            application=application, pool=await get_auto_trader_pool(), users=auto_runtime_users
+        )
+        application.auto_traders = auto_traders
+        automatic_wallets = await auto_traders.startup(
+            legacy_wallets=await application.leaders_repo.list_active()
+        )
+        registry_state = LeaderRegistryState(active_monitored=automatic_wallets, mode="automatic")
+    else:
+        registry_state = await application.registry.refresh(
+            configured,
             force_discovery=startup_policy.force_discovery,
-        ),
-    )
+            target_wallets=await _startup_refresh_targets(
+                application.registry,
+                force_discovery=startup_policy.force_discovery,
+            ),
+        )
     active_leaders = registry_state.active_monitored
 
     invalid_active = [wallet for wallet in active_leaders if not is_valid_eth_address(wallet)]
@@ -1729,7 +1755,7 @@ async def _run_application(
         print_error("No active leaders available. Auto-selected leaders were invalid.")
         return 1
 
-    if not active_leaders:
+    if not active_leaders and auto_traders is None:
         if _should_wait_for_discovery_roster(
             application.config,
             force_discovery=startup_policy.force_discovery,
@@ -1762,7 +1788,7 @@ async def _run_application(
                 },
             )
 
-    if not active_leaders:
+    if not active_leaders and auto_traders is None:
         logger.error(
             "startup_blocked_no_active_leaders",
             extra={
@@ -1781,7 +1807,11 @@ async def _run_application(
         )
         return 1
 
-    runtime_users = load_runtime_users(active_leaders, application.config)
+    runtime_users = (
+        auto_runtime_users
+        if auto_runtime_users is not None
+        else load_runtime_users(active_leaders, application.config)
+    )
     if not runtime_users:
         print_error("No runtime users configured.")
         return 1
@@ -1826,7 +1856,7 @@ async def _run_application(
         logger.info("Startup cleanup: purged %s stale records", purged)
 
     research_capture_service = None
-    leaders_repo = application.leaders_repo
+    leaders_repo = auto_traders if auto_traders is not None else application.leaders_repo
     registry = application.registry
     refresh_interval = application.config.discovery.scheduler.rediscover_seconds
 
@@ -1849,6 +1879,7 @@ async def _run_application(
             application.config,
             clob_gateway=venue_runtime.gateway,
             telemetry=telemetry_emitters,
+            copy_admission=auto_traders,
         )
 
     logger.info(
@@ -2137,9 +2168,12 @@ async def _run_application(
     portfolio_runtime = None
     if application.config.control_plane.enabled:
         discovery_command_queue = DiscoveryRunQueue(
-            runner=LeaderRegistryDiscoveryRunner(
-                registry=registry,
-                configured_leaders=tuple(configured),
+            runner=(
+                AutomaticDiscoveryRunner(runtime=auto_traders, clock=AutoTraderRuntime.now)
+                if auto_traders is not None
+                else LeaderRegistryDiscoveryRunner(
+                    registry=registry, configured_leaders=tuple(configured)
+                )
             ),
             telemetry=telemetry_runtime.service,
         )
@@ -2429,6 +2463,7 @@ async def _run_application(
                     monitored_leader_count=monitored_leader_count,
                     research_capture_service=research_capture_service,
                     v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    observer=paper_evaluation.offer if paper_evaluation is not None else None,
                     telemetry=telemetry_emitters.detection,
                 )
             )
@@ -2453,11 +2488,48 @@ async def _run_application(
         )
         return started_wallets
 
+    async def _on_retired_leaders(wallets: list[str]) -> None:
+        """Retire only monitors already proven free of outstanding exit ownership."""
+        retired = set(wallets)
+        tasks = [task for task, wallet in monitor_wallet_by_task.items() if wallet in retired]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            monitor_wallet_by_task.pop(task, None)
+            if task in monitor_tasks:
+                monitor_tasks.remove(task)
+        for wallet in retired:
+            contexts_by_leader.pop(wallet, None)
+        task_monitoring_state.remove(retired)
+        monitored_leaders[:] = [wallet for wallet in monitored_leaders if wallet not in retired]
+        remaining = monitored_set - retired
+        _refresh_onchain_watched_wallets(onchain_runtime, remaining)
+        application.readiness.update(monitored_leader_count=len(remaining))
+        telemetry_emitters.detection.roster_updated(len(remaining))
+
     # Auxiliary long-lived loops are registered as _Supervised specs and driven
     # by the main wait loop below (bounded restart, fail-closed on exhaustion)
     # instead of being fire-and-forget. Each factory must return a FRESH
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
+
+    paper_evaluation = None
+    if auto_traders is not None:
+        from orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
+
+        paper_evaluation = AutoTraderPaperRuntime.create(
+            lifecycle=auto_traders,
+            pool=_pool,
+            states=user_states,
+            config=application.config,
+            contexts=contexts_by_leader,
+            seed_funds=user_balances,
+            clock=AutoTraderRuntime.now,
+        )
+        await paper_evaluation.prepare()
+        supervised.append(_Supervised(name="auto-trader-paper", factory=paper_evaluation.run))
 
     if not application.config.execution.paper_trade_only:
         control_refresh_interval = float(
@@ -2472,7 +2544,23 @@ async def _run_application(
             )
         )
 
-    if startup_policy.discovery_loop_enabled(application.config) and not configured:
+    if auto_traders is not None:
+        supervised.append(
+            _Supervised(
+                name="auto-trader-evaluation",
+                factory=lambda: auto_traders.run(
+                    evaluation_seconds=application.config.discovery.scheduler.rescore_seconds,
+                    falcon_seconds=application.config.discovery.scheduler.rediscover_seconds,
+                    on_new_leaders=_on_new_leaders,
+                    monitored=monitored_set,
+                    on_retired_leaders=_on_retired_leaders,
+                    evaluate_results=paper_evaluation.evaluate_results
+                    if paper_evaluation is not None
+                    else None,
+                ),
+            )
+        )
+    elif startup_policy.discovery_loop_enabled(application.config) and not configured:
         dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
         if not dynamic_monitoring_enabled:
             logger.info(
@@ -2591,6 +2679,7 @@ async def _run_application(
                 _onchain_signal_sink = OnchainSignalDispatchAdapter(
                     contexts_by_leader=contexts_by_leader,
                     v1_runtime=v1_runtime,
+                    observer=paper_evaluation.offer if paper_evaluation is not None else None,
                     execute_trades=_execute_trade_pipeline,
                     pending_copy_tracker=pending_copy_tracker,
                     telemetry=telemetry_emitters.detection,
@@ -2654,6 +2743,7 @@ async def _run_application(
                     monitored_leader_count=len(monitored_leaders),
                     research_capture_service=research_capture_service,
                     v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    observer=paper_evaluation.offer if paper_evaluation is not None else None,
                     telemetry=telemetry_emitters.detection,
                 )
             )
@@ -2793,7 +2883,7 @@ async def main(*, auto_trader: bool = False) -> int:
     """Run the application while owning every created Polymarket client.
 
     Args:
-        auto_trader: Ignore manual leaders and force discovery for this process.
+        auto_trader: Use durable automatic membership and degradation-driven rotation.
 
     Returns:
         Process exit code.

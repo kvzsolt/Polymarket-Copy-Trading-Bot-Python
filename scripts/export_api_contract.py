@@ -390,6 +390,7 @@ class ApiContractExporter:
                         task_commands_enabled=True,
                         discovery_commands_enabled=True,
                         portfolio_enabled=True,
+                        auto_traders_enabled=True,
                         reads=reads,
                     )
                 )

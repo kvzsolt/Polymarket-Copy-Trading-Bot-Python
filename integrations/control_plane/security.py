@@ -60,6 +60,7 @@ class ControlPlanePermission(StrEnum):
     DISCOVERY_READ = "discovery.read"
     DISCOVERY_RUN = "discovery.run"
     LEADER_READ = "leader.read"
+    LEADER_PROMOTE = "leader.promote"
     LOCK_READ = "lock.read"
     LOCK_RESET = "lock.reset"
     RESERVATION_READ = "reservation.read"

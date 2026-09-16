@@ -13,6 +13,8 @@
   "capabilities": [
     "account_read",
     "activity_read",
+    "auto_trader_performance",
+    "auto_trader_promotion",
     "ccxt_backend",
     "detection_read",
     "discovery_manual_run",
@@ -48,6 +50,17 @@
     "telemetry_snapshot"
   ],
   "decimal_fields": {
+    "AutoTraderEvaluationView": [
+      "falcon_score"
+    ],
+    "AutoTraderPerformanceView": [
+      "falcon_score"
+    ],
+    "CopyPerformanceView": [
+      "realized_pnl",
+      "recent_pnl",
+      "drawdown"
+    ],
     "DiscoveryCandidateView": [
       "score"
     ],
@@ -427,6 +440,7 @@
       "discovery.read",
       "discovery.run",
       "fill.read",
+      "leader.promote",
       "leader.read",
       "lock.read",
       "lock.reset",
@@ -627,6 +641,39 @@
       "response": "LeaderView[]",
       "status": 200,
       "summary": "Merged leader identities, capped at 500 rows."
+    },
+    {
+      "action": null,
+      "body": [],
+      "capability": "auto_trader_performance",
+      "method": "GET",
+      "optional_query": [],
+      "path": "/api/v1/leaders/{wallet}/performance",
+      "permission": "leader.read",
+      "required_query": [
+        "follower_account"
+      ],
+      "response": "AutoTraderPerformanceView",
+      "status": 200,
+      "summary": "Saved Falcon and source-separated copy results."
+    },
+    {
+      "action": "leader.promote",
+      "body": [
+        "follower_account",
+        "expected_revision",
+        "evaluation_id",
+        "request_id"
+      ],
+      "capability": "auto_trader_promotion",
+      "method": "POST",
+      "optional_query": [],
+      "path": "/api/v1/leaders/{wallet}/promote",
+      "permission": "leader.promote",
+      "required_query": [],
+      "response": "AutoTraderPerformanceView",
+      "status": 200,
+      "summary": "Approve qualified paper evidence; fill only a vacant slot."
     },
     {
       "action": null,
@@ -2233,6 +2280,177 @@
         }
       ]
     },
+    "AutoTraderEvaluationView": {
+      "doc": "One saved membership revision with separate paper and live evidence.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "falcon_score",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "falcon_observed_at",
+          "nullable": true,
+          "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "degradation_reason",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "paper",
+          "nullable": true,
+          "type": "CopyPerformanceView",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "live",
+          "nullable": true,
+          "type": "CopyPerformanceView",
+          "vocabulary": null
+        }
+      ]
+    },
+    "AutoTraderPerformanceView": {
+      "doc": "Durable membership and the evaluation required for operator promotion.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "follower_account",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "trading_mode",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "leader_wallet",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "status",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "revision",
+          "nullable": false,
+          "type": "integer",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "target_count",
+          "nullable": false,
+          "type": "integer",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "active_count",
+          "nullable": false,
+          "type": "integer",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "activation_source",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "entry_block_reason",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "falcon_score",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "falcon_observed_at",
+          "nullable": true,
+          "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "degradation_reason",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "qualification_reasons",
+          "nullable": false,
+          "type": "array<string>",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "paper",
+          "nullable": true,
+          "type": "CopyPerformanceView",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "live",
+          "nullable": true,
+          "type": "CopyPerformanceView",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "history",
+          "nullable": false,
+          "type": "array<AutoTraderEvaluationView>",
+          "vocabulary": null
+        }
+      ]
+    },
     "BulkTaskCommand": {
       "doc": "All-or-none task mutation batch validated before persistence.",
       "fields": [
@@ -2312,6 +2530,67 @@
           "name": "observed_at",
           "nullable": false,
           "type": "timestamp",
+          "vocabulary": null
+        }
+      ]
+    },
+    "CopyPerformanceView": {
+      "doc": "Persisted source-specific evaluation with exact money and evidence age.",
+      "fields": [
+        {
+          "decimal": false,
+          "name": "evaluation_id",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "observed_at",
+          "nullable": false,
+          "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "started_at",
+          "nullable": false,
+          "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "closed_episodes",
+          "nullable": false,
+          "type": "integer",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "realized_pnl",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "recent_pnl",
+          "nullable": false,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": true,
+          "name": "drawdown",
+          "nullable": true,
+          "type": "string",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "complete",
+          "nullable": false,
+          "type": "boolean",
           "vocabulary": null
         }
       ]

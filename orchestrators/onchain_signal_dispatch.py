@@ -555,6 +555,7 @@ class OnchainSignalDispatchAdapter:
         monotonic: Callable[[], float] = time.monotonic,
         telemetry: DetectionTelemetryEmitter | None = None,
         sell_fraction_resolver: LeaderSellFractionResolver | None = None,
+        observer: Callable[[str, Sequence[Mapping[str, object]]], None] | None = None,
     ) -> None:
         """Bind the live follower map and routing collaborators.
 
@@ -599,6 +600,7 @@ class OnchainSignalDispatchAdapter:
         self._metrics = metrics
         self._telemetry = telemetry
         self._sell_fraction_resolver = sell_fraction_resolver
+        self._observer = observer
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
         self._claim_policy = (
             claim_policy
@@ -645,6 +647,8 @@ class OnchainSignalDispatchAdapter:
                 )
                 return
             signal = outcome.signal
+        if self._observer is not None and not signal.provisional:
+            self._observer(signal.leader_wallet, [signal.as_raw_signal_dict()])
         if self._v1_runtime is not None:
             await self._v1_runtime.submit_onchain(signal)
             return

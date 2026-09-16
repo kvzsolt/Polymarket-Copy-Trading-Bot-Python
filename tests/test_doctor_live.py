@@ -120,6 +120,7 @@ async def _run_doctor(
     *,
     tmp_log=None,
     tmp_path=None,
+    auto_trader=False,
 ):
     """Run the doctor against a fresh PG testcontainer.
 
@@ -161,7 +162,7 @@ async def _run_doctor(
         with ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            return await doctor_mod.run_doctor_checks(mode)
+            return await doctor_mod.run_doctor_checks(mode, auto_trader=auto_trader)
 
 
 def _checks_by_name(result: dict) -> dict[str, dict]:
@@ -310,3 +311,41 @@ def test_console_summary_renders_fix_line(tmp_path):
     }
     out = _render_console_summary(fake)
     assert "❌ drift_ok" in out
+
+
+async def test_automatic_initialization_does_not_require_periodic_discovery(tmp_path):
+    out = await _run_doctor(
+        "live",
+        {
+            "LEADER_WALLETS": "",
+            "USER_ADDRESS": "",
+            "DISCOVERY_API_TOKEN": "test-token",
+            "DISCOVERY_SCHEDULER_ENABLED": "false",
+        },
+        tmp_log=tmp_path,
+        auto_trader=True,
+    )
+    assert _checks_by_name(out)["leaders"]["status"] == "ok"
+
+
+async def test_saved_automatic_roster_can_restore_without_provider_credentials(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from bot_cli.commands import doctor
+
+    monkeypatch.setattr(
+        doctor, "_automatic_rosters_available", AsyncMock(return_value=True), raising=False
+    )
+    out = await _run_doctor(
+        "live",
+        {
+            "LEADER_WALLETS": "",
+            "USER_ADDRESS": "",
+            "DISCOVERY_API_TOKEN": "",
+            "DISCOVERY_SCHEDULER_ENABLED": "false",
+        },
+        tmp_log=tmp_path,
+        auto_trader=True,
+    )
+    assert _checks_by_name(out)["leaders"]["status"] == "ok"

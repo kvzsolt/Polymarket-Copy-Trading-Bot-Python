@@ -415,6 +415,9 @@ class ControlPlaneHttpApplication:
             router.add_get(f"{API_PREFIX}/pnl", self._get_pnl)
         if _supports(self._dependencies.risk, "get"):
             router.add_get(f"{API_PREFIX}/risk", self._get_risk)
+        if self._dependencies.auto_traders is not None:
+            router.add_get(f"{API_PREFIX}/leaders/{{wallet}}/performance", self._leader_performance)
+            router.add_post(f"{API_PREFIX}/leaders/{{wallet}}/promote", self._promote_leader)
         if _supports(self._dependencies.leaders, "list"):
             router.add_get(f"{API_PREFIX}/leaders", self._list_leaders)
         if _supports(self._dependencies.metrics, "snapshot"):
@@ -631,6 +634,36 @@ class ControlPlaneHttpApplication:
                 _required_query(request, "follower_account")
             ),
         )
+
+    async def _leader_performance(self, request: web.Request) -> web.Response:
+        """Delegate authenticated saved-evidence reads."""
+        self._authorize(request, ControlPlanePermission.LEADER_READ)
+        service = self._dependencies.auto_traders
+        assert service is not None
+        return self._ok(
+            request,
+            await service.performance(
+                _required_query(request, "follower_account"), request.match_info["wallet"]
+            ),
+        )
+
+    async def _promote_leader(self, request: web.Request) -> web.Response:
+        """Delegate one rate-limited, authenticated, revision-bound promotion."""
+        principal = self._authorize(
+            request, ControlPlanePermission.LEADER_PROMOTE, action="leader.promote"
+        )
+        body = await self._json_body(request)
+        service = self._dependencies.auto_traders
+        assert service is not None
+        result = await service.promote(
+            _required_text(body.get("follower_account")),
+            request.match_info["wallet"],
+            expected_revision=_required_int(body.get("expected_revision")),
+            evaluation_id=_required_text(body.get("evaluation_id")),
+            request_id=_required_text(body.get("request_id")),
+            actor=principal.subject,
+        )
+        return self._ok(request, result)
 
     async def _list_leaders(self, request: web.Request) -> web.Response:
         self._authorize(request, ControlPlanePermission.LEADER_READ)

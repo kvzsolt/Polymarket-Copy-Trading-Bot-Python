@@ -16,6 +16,7 @@ from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
 from services.compliance import GeoblockGate
 from services.executionService import ExecutionService
+from services.execution.coordinator import CopyAdmission
 from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
@@ -260,6 +261,7 @@ def build_user_state(
     config: AppConfig,
     clob_gateway: "ClobGateway | None" = None,
     telemetry: TelemetryEmitters | None = None,
+    copy_admission: CopyAdmission | None = None,
 ) -> UserRuntimeState:
     """Build one follower runtime from injected configuration and ports.
 
@@ -384,6 +386,7 @@ def build_user_state(
         funder_address=runtime_user.wallet.funder_address,
         config=config,
         latency=emitters.latency,
+        copy_admission=copy_admission,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
@@ -567,6 +570,7 @@ def _build_execution_coordinator(
     funder_address: str,
     config: "AppConfig | None" = None,
     latency: PipelineLatency | None = None,
+    copy_admission: CopyAdmission | None = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -618,6 +622,7 @@ def _build_execution_coordinator(
         positions_repo=positions_repo,
         execution_service=execution_service,
         latency=latency,
+        copy_admission=copy_admission,
     )
     from services.execution.leader_sell_target_service import (
         LeaderSellTargetService,
@@ -875,6 +880,8 @@ async def build_trading_context(
     readiness: ReadinessTracker | None = None,
 ) -> TradingContext:
     """Build the venue-neutral trading context for one follower binding."""
+    if leaders_repo is not None and hasattr(leaders_repo, "for_account"):
+        leaders_repo = leaders_repo.for_account(user_state.user.user_id)
     rank_multiplier = Decimal("1")
     roster_score: float | None = None
     if leaders_repo is not None and hasattr(leaders_repo, "get_roster"):
