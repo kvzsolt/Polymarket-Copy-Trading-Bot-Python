@@ -41,6 +41,7 @@ class TickRounding(Enum):
     CONSERVATIVE = "conservative"
     MARKETABLE = "marketable"
 
+
 _DEFAULT_TTL_SECONDS = 300.0
 
 

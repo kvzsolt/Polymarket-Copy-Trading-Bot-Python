@@ -45,7 +45,7 @@ def context(*, quote: FixedQuote | None, entry_price: Decimal = Decimal("0.5")):
         ),
         market_quotes=QuoteSource(quote),
         positions_repo=SimpleNamespace(
-            list_open_positions=AsyncMock(
+            list_held_positions=AsyncMock(
                 return_value=[
                     Position("account-a", "condition", "token", "leader", Decimal(100), entry_price)
                 ]

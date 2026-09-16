@@ -18,5 +18,6 @@ def test_catalog_lists_every_sql_migration_in_immutable_order() -> None:
         "20260908_05_economic_intent_lookup",
         "20260908_06_partial_protective_layers",
         "20260908_07_fill_fee_evidence",
+        "20260916_08_position_lifecycle",
     )
     assert all(migration.path.name == f"{migration.migration_id}.sql" for migration in migrations)

@@ -187,7 +187,13 @@ class LeaderboardEntry:
 
 @dataclass(frozen=True, slots=True)
 class Wallet360Snapshot:
-    """Represent normalized multi-window wallet analytics evidence."""
+    """Represent normalized multi-window wallet analytics evidence.
+
+    ``max_position_pct`` retains its provider field name but stores a fraction
+    in [0, 1], converted from percentage points in [0, 100]. ``max_drawdown``
+    preserves the non-negative provider metric, which can exceed one; it is
+    never rescaled into a smaller risk observation.
+    """
 
     wallet: str
     window_days: int
@@ -223,8 +229,23 @@ class Wallet360Snapshot:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "Wallet360Snapshot":
-        """Build a Wallet360 snapshot from a provider result row."""
+        """Build a Wallet360 snapshot using explicit provider field units.
+
+        Args:
+            row: Provider result row; ``max_position_pct`` is percentage points,
+                including values below one. Drawdown retains its raw magnitude;
+                win rate, concentration, and confidence remain bounded fractions.
+
+        Returns:
+            Normalized analytics with the original provider row preserved.
+
+        Raises:
+            ValueError: If a performance observation is malformed or out of range.
+        """
         raw = dict(row)
+        drawdown = PerformanceUnits.finite(row.get("max_drawdown"))
+        if drawdown is not None and drawdown < 0:
+            raise ValueError("Falcon Wallet360 drawdown must be non-negative")
         return cls(
             wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address")),
             window_days=_integer(_first(row, "calculation_window_days", "window_days")) or 0,
@@ -236,8 +257,10 @@ class Wallet360Snapshot:
             market_concentration_ratio=PerformanceUnits.fraction(
                 row.get("market_concentration_ratio")
             ),
-            max_drawdown=PerformanceUnits.fraction(row.get("max_drawdown")),
-            max_position_pct=PerformanceUnits.fraction(row.get("max_position_pct")),
+            max_drawdown=drawdown,
+            max_position_pct=PerformanceUnits.fraction(
+                PerformanceUnits.percentage_points_to_fraction(row.get("max_position_pct"))
+            ),
             profit_factor=_decimal(row.get("profit_factor")),
             # Wallet360 documents ROI as percentage points (e.g. 3.8743 == 3.8743%).
             roi=PerformanceUnits.percentage_points_to_fraction(row.get("roi")),

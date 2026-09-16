@@ -8,6 +8,7 @@ from typing import Any
 
 from config.app_config import AppConfig
 from config.env import is_valid_eth_address
+from integrations.falcon.errors import FalconError, FalconPermissionError
 from services.discovery.models import Candidate
 from services.healthServer import ReadinessTracker
 from services.metrics import metrics
@@ -134,6 +135,10 @@ class LeaderRegistry:
 
         Returns:
             The sanitized registry state for this refresh.
+
+        Raises:
+            FalconError: If forced discovery encounters a permanent provider
+                failure, before a persisted roster can be used.
         """
         configured_clean = _configured_wallets(configured or [])
         discovery = self.config.discovery
@@ -163,9 +168,25 @@ class LeaderRegistry:
             except Exception as exc:
                 self.logger.warning(
                     "discovery_refresh_failed",
-                    extra={"error": redact_error_detail(exc)},
+                    extra={
+                        "error": (
+                            type(exc).__name__
+                            if isinstance(exc, FalconError)
+                            else redact_error_detail(exc)
+                        ),
+                        **(
+                            {"falcon_agent_id": exc.agent_id}
+                            if isinstance(exc, FalconError) and exc.agent_id is not None
+                            else {}
+                        ),
+                    },
                 )
                 metrics.inc("discovery_refresh_failed_total")
+                if force_discovery and isinstance(exc, FalconError) and not exc.retryable:
+                    message = f"Falcon discovery failed: {type(exc).__name__}"
+                    if isinstance(exc, FalconPermissionError):
+                        message += "; verify Falcon plan access for the denied agent"
+                    raise exc.with_context(message) from None
             else:
                 self.logger.info(
                     "discovery_refresh_succeeded",

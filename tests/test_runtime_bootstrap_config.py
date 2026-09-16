@@ -190,8 +190,8 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
         result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
 
     assert result == {"user-1": 2}
-    reconcile.assert_called_once_with(ctx1)
-    reconcile_risk.assert_called_once_with(ctx1)
+    reconcile.assert_called_once_with(ctx1, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx1, startup_recovery=True)
     rehydrate.assert_called_once_with(ctx1)
 
 
@@ -211,8 +211,8 @@ async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence
         result = await startup_reconcile_unconfirmed([ctx])
 
     assert result == {"user-1": 3}
-    reconcile.assert_called_once_with(ctx)
-    reconcile_risk.assert_called_once_with(ctx)
+    reconcile.assert_called_once_with(ctx, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx, startup_recovery=True)
     rehydrate.assert_called_once_with(ctx)
 
 
@@ -239,8 +239,8 @@ async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
         result = await startup_reconcile_unconfirmed([ctx])
 
     assert result == {"user-1": 2}
-    reconcile.assert_called_once_with(ctx)
-    reconcile_risk.assert_called_once_with(ctx)
+    reconcile.assert_called_once_with(ctx, startup_recovery=True)
+    reconcile_risk.assert_called_once_with(ctx, startup_recovery=True)
     reservation_service.release_expired_active.assert_awaited_once_with()
     rehydrate.assert_called_once_with(ctx)
 

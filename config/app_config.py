@@ -731,7 +731,7 @@ class _FrozenSettingsModel(BaseModel):
 class FalconApiConfig(_FrozenSettingsModel):
     """Validate the private Falcon analytics transport settings."""
 
-    base_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+    base_url: str = "https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized"
     token: SecretStr = SecretStr("")
     timeout_seconds: float = Field(20.0, gt=0)
     max_retries: int = Field(6, ge=1, le=10)
@@ -1353,7 +1353,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
             errors.append(f"{label}: copy_max_price_drift_pct must be non-negative.")
         if trader.copy_max_edge_decay_pct is not None and trader.copy_max_edge_decay_pct < 0:
             errors.append(f"{label}: copy_max_edge_decay_pct must be non-negative.")
-        if trader.copy_max_signal_age_seconds is not None and trader.copy_max_signal_age_seconds < 0:
+        if (
+            trader.copy_max_signal_age_seconds is not None
+            and trader.copy_max_signal_age_seconds < 0
+        ):
             errors.append(f"{label}: copy_max_signal_age_seconds must be non-negative.")
         if trader.copy_liquidity_target_usdc is not None and trader.copy_liquidity_target_usdc <= 0:
             errors.append(f"{label}: copy_liquidity_target_usdc must be > 0.")
@@ -1399,9 +1402,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
     if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
         errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
-    _validate_entry_price_drift(
-        e.max_entry_price_drift_pct, "MAX_ENTRY_PRICE_DRIFT_PCT", errors
-    )
+    _validate_entry_price_drift(e.max_entry_price_drift_pct, "MAX_ENTRY_PRICE_DRIFT_PCT", errors)
     if cfg.copy_trading.max_entry_price_drift_pct is not None:
         _validate_entry_price_drift(
             cfg.copy_trading.max_entry_price_drift_pct,
@@ -2213,9 +2214,7 @@ def _read_trader_configs(directory: Path) -> list[TraderConfig]:
         data.pop("wallet_id", None)
         data.pop("leader_wallet", None)
         if not _ETH_ADDR_RE.match(wallet):
-            raise EnvValidationError(
-                f"Trader file must declare a valid wallet address: {file}"
-            )
+            raise EnvValidationError(f"Trader file must declare a valid wallet address: {file}")
         try:
             trader = TraderConfig.model_validate(data)
         except ValidationError as exc:
@@ -2517,8 +2516,7 @@ def load_config(
             {
                 "copy_trading": {
                     "wallets": [
-                        {"wallet": trader.wallet, "enabled": trader.enabled}
-                        for trader in traders
+                        {"wallet": trader.wallet, "enabled": trader.enabled} for trader in traders
                     ],
                     "leaders": trader_leader_entries + legacy_leaders,
                     "traders": [trader.model_dump(mode="python") for trader in traders],

@@ -38,6 +38,10 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from services.execution.fill_accounting import AccountedOrderFill, AccountedFillReader
+from services.execution.recovery_inventory import (
+    RecoveryInventoryReader,
+    StartupInventoryRecoveryUnavailable,
+)
 from domain.cost_basis import PositionCostBasis
 from domain.performance import PerformanceUnits
 from typing import Any, Awaitable, Callable, Protocol, cast
@@ -416,6 +420,7 @@ class ReconciliationService:
         user_order_evidence_parser: UserOrderEvidenceParser | None = None,
         leader_sell_target_service: LeaderSellTargetRedriver | None = None,
         accounted_fill_reader: AccountedFillReader | None = None,
+        recovery_inventory: RecoveryInventoryReader | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -439,6 +444,7 @@ class ReconciliationService:
         )
         self.leader_sell_target_service = leader_sell_target_service
         self._accounted_fill_reader = accounted_fill_reader
+        self._recovery_inventory = recovery_inventory
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
@@ -2132,6 +2138,42 @@ class ReconciliationService:
     # ------------------------------------------------------------------
     # Trade BUY/SELL processed_trade reconciliation
     # ------------------------------------------------------------------
+    async def _startup_sell_inventory_recovery(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        confirmed: bool,
+        get_position: Callable[..., Any] | None,
+    ) -> bool | None:
+        """Choose normal application, verified absence recovery, or unresolved.
+
+        True authorizes the locked absence-recovery writer; False retains the
+        normal position delta for positive local inventory. None means local
+        state, final fill evidence, or current account inventory is unavailable.
+        """
+        try:
+            position_reader = get_position or self.positions_repo.get_position
+            position = await position_reader(user_id, condition_id, token_id=token_id)
+            if position is not None:
+                size = getattr(position, "size_tokens", None)
+                if not isinstance(size, Decimal) or not size.is_finite() or size < 0:
+                    return None
+                if size > 0:
+                    return False
+            if (
+                not confirmed
+                or self._accounted_fill_reader is None
+                or self._recovery_inventory is None
+            ):
+                return None
+            absent = await self._recovery_inventory.zero_inventory(user_id, condition_id, token_id)
+        except Exception as exc:
+            _log.warning("startup_sell_recovery_unavailable error_type=%s", type(exc).__name__)
+            return None
+        return True if absent is True else None
+
     async def reconcile_trade_record(
         self,
         record: dict[str, Any],
@@ -2142,12 +2184,20 @@ class ReconciliationService:
         get_position: Callable[..., Any] | None = None,
         logger: Any | None = None,
         balance_regime: Any | None = None,
+        startup_recovery: bool = False,
     ) -> bool:
         """Reconcile one BUY/SELL processed_trade order.
 
         Returns True if the order was reconciled (fill applied or retry
         unlocked); False otherwise. Logs go through ``logger`` if supplied so
         callers retain their existing trace tags.
+
+        ``startup_recovery`` permits confirmed absent-inventory SELL accounting
+        only with a fresh complete holdings proof and a locked absence check.
+
+        Raises:
+            StartupInventoryRecoveryUnavailable: An absent-position startup SELL
+                lacks authoritative inventory, final fill, or accounting evidence.
         """
         order_id = record.get("order_id")
         if not order_id:
@@ -2345,6 +2395,21 @@ class ReconciliationService:
             order_status in _TERMINAL_NO_FILL_STATUSES and current_matched > 0
         )
 
+        recover_absent_position = False
+        if startup_recovery and side == "SELL" and current_matched > 0:
+            recovery = await self._startup_sell_inventory_recovery(
+                user_id=record["user_id"],
+                condition_id=record["condition_id"],
+                token_id=record["asset"],
+                confirmed=order_status in _FINAL_FILL_STATUSES_TRADE,
+                get_position=get_position,
+            )
+            if recovery is None:
+                raise StartupInventoryRecoveryUnavailable(
+                    "Startup SELL inventory recovery is unresolved"
+                )
+            recover_absent_position = recovery
+
         if delta_matched <= 0:
             if is_final_fill:
                 if self.task_budget_settlement is not None and current_matched > 0:
@@ -2465,7 +2530,12 @@ class ReconciliationService:
             # left the reconciler recomputing the same delta) conflicts on
             # idx_fills_dedup_v2 and returns (0, None), so the delta is applied
             # exactly once — no more double-apply across a wall-clock second.
-            fill_id, _applied = await self.fills_repo.append_fill_and_apply(
+            append_fill = (
+                self.fills_repo.append_recovered_sell
+                if recover_absent_position
+                else self.fills_repo.append_fill_and_apply
+            )
+            fill_id, _applied = await append_fill(
                 FillRecord(
                     user_id=record["user_id"],
                     leader_id=record.get("leader_id"),
@@ -2486,9 +2556,14 @@ class ReconciliationService:
                     "copy_order_id": order_id,
                     "status": "reconciled",
                     "side": side,
+                    **({"position_delta": "already_absorbed"} if recover_absent_position else {}),
                 },
             )
         except Exception as exc:
+            if recover_absent_position:
+                raise StartupInventoryRecoveryUnavailable(
+                    "Startup SELL inventory recovery is unresolved"
+                ) from None
             if logger is not None:
                 logger.warning(
                     "reconcile_unconfirmed_apply_error | side=%s order_id=%s error=%s",
@@ -2678,10 +2753,18 @@ class ReconciliationService:
         pnl_tracker: Any | None = None,
         get_position: Callable[..., Any] | None = None,
         logger: Any | None = None,
+        startup_recovery: bool = False,
     ) -> bool:
         """Reconcile one risk-monitor-originated SELL order.
 
         Returns True when reconciliation produced any state convergence.
+
+        ``startup_recovery`` enables the same verified absent-inventory handling
+        as the trade path; it never applies to ordinary runtime reconciliation.
+
+        Raises:
+            StartupInventoryRecoveryUnavailable: An absent-position startup SELL
+                lacks authoritative inventory, final fill, or accounting evidence.
         """
         order_id = str(record.get("order_id") or "").strip()
         if not order_id:
@@ -2824,6 +2907,21 @@ class ReconciliationService:
             venue_status in _TERMINAL_NO_FILL_STATUSES and current_matched > 0
         )
 
+        recover_absent_position = False
+        if startup_recovery and current_matched > 0:
+            recovery = await self._startup_sell_inventory_recovery(
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                confirmed=venue_status in _FINAL_FILL_STATUSES_TRADE,
+                get_position=get_position,
+            )
+            if recovery is None:
+                raise StartupInventoryRecoveryUnavailable(
+                    "Startup SELL inventory recovery is unresolved"
+                )
+            recover_absent_position = recovery
+
         if delta_matched <= 0 and not is_final_fill:
             return False
 
@@ -2886,7 +2984,12 @@ class ReconciliationService:
             # cumulative matched total (same idempotency guard as the trade
             # path). A re-apply of the same settlement returns (0, None) and is
             # not applied twice.
-            fill_id, updated_pos = await self.fills_repo.append_fill_and_apply(
+            append_fill = (
+                self.fills_repo.append_recovered_sell
+                if recover_absent_position
+                else self.fills_repo.append_fill_and_apply
+            )
+            fill_id, updated_pos = await append_fill(
                 FillRecord(
                     user_id=user_id,
                     leader_id=leader_id,
@@ -2907,9 +3010,14 @@ class ReconciliationService:
                     "copy_order_id": order_id,
                     "status": "reconciled",
                     "side": "SELL",
+                    **({"position_delta": "already_absorbed"} if recover_absent_position else {}),
                 },
             )
         except Exception as exc:
+            if recover_absent_position:
+                raise StartupInventoryRecoveryUnavailable(
+                    "Startup SELL inventory recovery is unresolved"
+                ) from None
             if logger is not None:
                 logger.warning(
                     "risk_unconfirmed_reconcile_apply_error | user=%s order_id=%s error=%s",

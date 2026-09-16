@@ -24,7 +24,11 @@ DELIBERATE_OVERRIDES: dict[str, Any] = {"candidate_concurrency": 12}
 # Packaged YAML values that additionally diverge from the pydantic default: one
 # full leaderboard sweep is capped at 50 wallets because the `--auto-trader`
 # startup burst re-checks the persisted roster before it ever sweeps.
-PACKAGED_OVERRIDES: dict[str, Any] = {**DELIBERATE_OVERRIDES, "candidate_limit": 50}
+PACKAGED_OVERRIDES: dict[str, Any] = {
+    **DELIBERATE_OVERRIDES,
+    "candidate_limit": 50,
+    "enable_price_jump_risk": False,
+}
 
 
 def _packaged_falcon_section() -> dict[str, Any]:

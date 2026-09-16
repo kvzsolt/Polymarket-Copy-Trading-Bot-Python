@@ -56,7 +56,11 @@ class AsyncioSleeper:
 
 @dataclass(frozen=True, slots=True)
 class PortfolioAccountSnapshot:
-    """Exact account inputs available without a market-price assumption."""
+    """Exact account inputs with active cost and total inventory valuation.
+
+    Settled inventory contributes to equity but is excluded from active
+    unrealized PnL. Missing redemption value keeps total equity unavailable.
+    """
 
     follower_account: str
     aliases: tuple[str, ...]
@@ -65,6 +69,7 @@ class PortfolioAccountSnapshot:
     positions_cost_usdc: Decimal | None
     position_count: int
     marked_inventory_usdc: Decimal | None = None
+    settled_inventory_usdc: Decimal | None = Decimal(0)
 
     def __post_init__(self) -> None:
         """Validate identities and non-negative exact amounts."""
@@ -79,7 +84,11 @@ class PortfolioAccountSnapshot:
         ):
             if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
                 raise ValueError("portfolio amounts must be non-negative finite decimals")
-        for valuation in (self.positions_cost_usdc, self.marked_inventory_usdc):
+        for valuation in (
+            self.positions_cost_usdc,
+            self.marked_inventory_usdc,
+            self.settled_inventory_usdc,
+        ):
             if valuation is not None and (
                 not isinstance(valuation, Decimal) or not valuation.is_finite() or valuation < 0
             ):
@@ -142,8 +151,10 @@ class PortfolioSnapshotCache:
         equity = None if marked_value is None else snapshot.cash_usdc + marked_value
         unrealized = (
             None
-            if marked_value is None or snapshot.positions_cost_usdc is None
-            else marked_value - snapshot.positions_cost_usdc
+            if marked_value is None
+            or snapshot.positions_cost_usdc is None
+            or snapshot.settled_inventory_usdc is None
+            else marked_value - snapshot.settled_inventory_usdc - snapshot.positions_cost_usdc
         )
         return PortfolioView(
             follower_account=snapshot.follower_account,

@@ -16,9 +16,8 @@ dependencies = [
   "web3==7.15.0",
   "eth-account==0.13.7",
   # CCXT prediction namespace is the only Polymarket venue transport.
-  # Range pin so patch releases are picked up but a breaking major (5.x) is
-  # not installed without review.
-  "ccxt==4.5.75",
+  # Keep the exact behavior-verified release synchronized with install exports.
+  "ccxt==4.5.78",
   "rich==14.3.3",
   "websockets>=13.0",
   "asyncpg>=0.30.0",
@@ -85,7 +84,7 @@ venv = ".venv"
 typeCheckingMode = "basic"
 # Match the existing production-only mypy boundary. Test doubles are verified
 # by pytest and intentionally excluded from static compatibility checks.
-exclude = [".venv", "legacy", "tests", "polymarket_copy_trading_bot.egg-info"]
+exclude = [".venv", "legacy", "tests", "build", "dist", "polymarket_copy_trading_bot.egg-info"]
 
 [tool.ruff]
 # Stabilization-phase config: formatting plus correctness-focused linting only.

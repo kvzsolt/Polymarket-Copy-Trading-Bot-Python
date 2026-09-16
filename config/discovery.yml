@@ -17,7 +17,7 @@
 api:
   # Provider endpoint. Changing it enables another compatible service only if
   # the same schema/auth contract is honored; malformed schema fails closed.
-  base_url: https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized
+  base_url: https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized
   # Secret bearer token placeholder. Keep empty in tracked YAML and set
   # PMCOPY__DISCOVERY__API__TOKEN in secrets.env; empty disables usable Falcon I/O.
   token: ''
@@ -344,9 +344,10 @@ falcon:
   # Maximum recent jumps before rejection. Lower avoids unstable markets but may
   # exclude profitable event-driven specialists.
   max_recent_price_jumps: 8
-  # true enforces the jump gate; false records/ignores it, improving coverage
-  # with more anomaly exposure.
-  enable_price_jump_risk: true
+  # true requires Falcon price-jump agent 596 and enforces the jump gate.
+  # Explicitly disabled for the operator's plan, which does not include 596.
+  # false skips those requests and the jump gate, with more anomaly exposure.
+  enable_price_jump_risk: false
   # Markets closing within this many days count as short duration. Larger treats
   # more of the portfolio as short-term.
   short_market_max_days: 30
@@ -375,7 +376,8 @@ falcon:
   # Optional drawdown rejection. true enforces max_drawdown; false leaves
   # drawdown in scoring/evidence but does not hard-reject on this field.
   drawdown_gate_enabled: false
-  # Maximum drawdown fraction [0,1] when gate enabled. Lower is safer/stricter.
+  # Raw provider drawdown threshold [0,1] when gate enabled. Lower is stricter;
+  # provider values above one always exceed this gate and are never rescaled.
   max_drawdown: '0.35'
   # Maximum provider sybil score (>=0). Lower rejects more linked-wallet risk.
   max_sybil_score: '20'

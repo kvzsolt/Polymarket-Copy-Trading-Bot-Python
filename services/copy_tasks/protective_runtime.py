@@ -30,6 +30,14 @@ class ProtectiveLotSubmitter(Protocol):
         ...
 
 
+class ProtectiveLotLifecycleReader(Protocol):
+    """Identify settled claims from canonical account inventory."""
+
+    async def is_settled(self, lot: DurableRiskLot) -> bool:
+        """Return True only for an explicitly settled canonical holding."""
+        ...
+
+
 class TaskProtectivePositionManager:
     """Own one account's restored lots independently of task/leader activation."""
 
@@ -40,12 +48,14 @@ class TaskProtectivePositionManager:
         lots: RiskLotService,
         quotes: ExecutableLotQuoteReader,
         exits: ProtectiveLotSubmitter,
+        lifecycle: ProtectiveLotLifecycleReader | None = None,
     ) -> None:
         """Inject persistence, quote, and execution ports without owning transports."""
         self._follower_account = follower_account
         self._lots = lots
         self._quotes = quotes
         self._exits = exits
+        self._lifecycle = lifecycle
         self._engine = ProtectiveExitEngine()
         self._lock = asyncio.Lock()
 
@@ -77,6 +87,8 @@ class TaskProtectivePositionManager:
                 ):
                     continue
                 try:
+                    if self._lifecycle is not None and await self._lifecycle.is_settled(current):
+                        continue
                     bid = await self._quotes.executable_bid(current)
                     if not bid.is_finite() or not Decimal(0) < bid < Decimal(1):
                         raise ValueError("Executable protective bid must be in (0, 1)")

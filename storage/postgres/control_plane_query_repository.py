@@ -216,6 +216,7 @@ class PostgresControlPlaneQueryRepository:
             FROM positions
             WHERE user_id = $1
               AND size_tokens::numeric > 0
+              AND lifecycle <> 'settled'
               AND (condition_id, token_id) > ($2, $3)
             ORDER BY condition_id ASC, token_id ASC
             LIMIT $4
@@ -251,6 +252,7 @@ class PostgresControlPlaneQueryRepository:
             WHERE user_id = $1
               AND token_id = $2
               AND size_tokens::numeric > 0
+              AND lifecycle <> 'settled'
             """,
             follower_account,
             position_id,
@@ -679,6 +681,7 @@ class PostgresControlPlaneQueryRepository:
             FROM positions
             WHERE leader_id IS NOT NULL
               AND size_tokens::numeric > 0
+              AND lifecycle <> 'settled'
             GROUP BY leader_id
             ORDER BY leader_count DESC, leader_id ASC
             LIMIT $1

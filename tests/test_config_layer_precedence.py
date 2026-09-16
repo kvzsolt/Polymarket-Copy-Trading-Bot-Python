@@ -13,11 +13,12 @@ Original Phase 3.11 findings this file pins:
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copyfile
 
 import pytest
 import yaml
 
-from config.app_config import load_config
+from config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
@@ -26,6 +27,26 @@ PACKAGED_TRADER_WALLETS = (
     "0x31864feb9d25dee93728c6225ba891530967e9ca",
     "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep service defaults while seeding a roster independent of operator profiles."""
+    packaged_config = tmp_path / "packaged-config"
+    packaged_config.mkdir()
+    for service in SERVICE_CONFIG_FILES:
+        source = ROOT / "config" / f"{service}.yml"
+        if source.exists():
+            copyfile(source, packaged_config / source.name)
+    traders = packaged_config / "traders"
+    traders.mkdir()
+    for index, wallet in enumerate(PACKAGED_TRADER_WALLETS):
+        name = f"synthetic-trader-{index}"
+        (traders / f"{name}.yml").write_text(
+            yaml.safe_dump({"name": name, "wallet": wallet, "enabled": True}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr("config.app_config._CONFIG_ROOT", packaged_config)
 
 
 def _overrides() -> dict:

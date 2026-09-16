@@ -42,6 +42,7 @@ import asyncpg
 from ports.repositories import AbstractPositionRepository
 from domain.cost_basis import PositionCostBasis
 from domain.position_ownership import PositionOwnership
+from domain.position_lifecycle import PositionClassification, PositionLifecycle
 from utils import is_valid_clob_token_id
 from utils.logger import get_logger
 
@@ -72,6 +73,8 @@ class PositionRecord:
     leader_id: str | None
     size_tokens: Decimal
     avg_entry_price: Decimal
+    lifecycle: PositionLifecycle = PositionLifecycle.UNKNOWN
+    settlement_price: Decimal | None = None
 
 
 def _row_to_record(row: asyncpg.Record) -> PositionRecord:
@@ -82,6 +85,10 @@ def _row_to_record(row: asyncpg.Record) -> PositionRecord:
         leader_id=row["leader_id"],
         size_tokens=Decimal(str(row["size_tokens"] or "0")),
         avg_entry_price=Decimal(str(row["avg_entry_price"] or "0")),
+        lifecycle=PositionLifecycle(row.get("lifecycle", "unknown")),
+        settlement_price=(
+            Decimal(row["settlement_price"]) if row.get("settlement_price") is not None else None
+        ),
     )
 
 
@@ -92,12 +99,20 @@ class PositionsRepo(AbstractPositionRepository):
         self._pool = pool
 
     async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
-        """Return open positions."""
+        """Return active and unclassified exposure, excluding settled claims."""
+        return [
+            position
+            for position in await self.list_held_positions(user_id)
+            if position.lifecycle is not PositionLifecycle.SETTLED
+        ]
+
+    async def list_held_positions(self, user_id: str) -> list[PositionRecord]:
+        """Return every positive holding, including settled redemption claims."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
+                       size_tokens, avg_entry_price, lifecycle, settlement_price
                 FROM positions
                 WHERE user_id = $1
                 """,
@@ -132,14 +147,14 @@ class PositionsRepo(AbstractPositionRepository):
     # token_id rather than silently picking a row by alphabetical order.
     _SELECT_POSITION_WITH_TOKEN = """
         SELECT user_id, condition_id, token_id, leader_id,
-               size_tokens, avg_entry_price
+               size_tokens, avg_entry_price, lifecycle, settlement_price
         FROM positions
         WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
     """
     _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
     _SELECT_POSITION_WITHOUT_TOKEN = """
         SELECT user_id, condition_id, token_id, leader_id,
-               size_tokens, avg_entry_price
+               size_tokens, avg_entry_price, lifecycle, settlement_price
         FROM positions
         WHERE user_id = $1 AND condition_id = $2
         ORDER BY token_id ASC, leader_id ASC
@@ -196,7 +211,7 @@ class PositionsRepo(AbstractPositionRepository):
             rows = await conn.fetch(
                 """
                 SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
+                       size_tokens, avg_entry_price, lifecycle, settlement_price
                 FROM positions
                 WHERE user_id = $1 AND condition_id = $2
                 """,
@@ -223,13 +238,15 @@ class PositionsRepo(AbstractPositionRepository):
             """
             INSERT INTO positions (
                 user_id, condition_id, token_id, leader_id,
-                size_tokens, avg_entry_price, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                size_tokens, avg_entry_price, updated_at, lifecycle, settlement_price
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                 leader_id       = excluded.leader_id,
                 size_tokens     = excluded.size_tokens,
                 avg_entry_price = excluded.avg_entry_price,
-                updated_at      = excluded.updated_at
+                updated_at      = excluded.updated_at,
+                lifecycle       = excluded.lifecycle,
+                settlement_price = excluded.settlement_price
             """,
             record.user_id,
             record.condition_id,
@@ -238,6 +255,8 @@ class PositionsRepo(AbstractPositionRepository):
             str(record.size_tokens),
             str(record.avg_entry_price),
             datetime.now(timezone.utc),
+            record.lifecycle.value,
+            str(record.settlement_price) if record.settlement_price is not None else None,
         )
 
     async def delete_position(
@@ -251,6 +270,89 @@ class PositionsRepo(AbstractPositionRepository):
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
+
+    async def _assert_absent_position_in_conn(
+        self,
+        conn: PostgresConnection,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+    ) -> None:
+        """Reject recovered SELL accounting if inventory changed during venue I/O."""
+        await conn.execute(
+            _ADVISORY_LOCK_SQL,
+            _lock_key(f"position:{user_id}:{condition_id}:{token_id}"),
+        )
+        current = await self._get_position_in_conn(
+            conn,
+            user_id,
+            condition_id,
+            token_id=token_id,
+            for_update=True,
+        )
+        if current is not None and current.size_tokens != 0:
+            raise ValueError("Recovered SELL inventory is no longer absent")
+
+    async def delete_position_if_unchanged(
+        self,
+        user_id: str,
+        condition_id: str,
+        *,
+        token_id: str,
+        expected_size: Decimal,
+    ) -> bool:
+        """Prune a verified absent holding only while its size and ownership are unchanged.
+
+        Reservation locks prevent concurrent capacity allocation during the check.
+        A position lock serializes fills and snapshot writes, including absent rows.
+        Unknown order states retain inventory until reconciliation resolves them.
+        """
+        if not is_valid_clob_token_id(token_id):
+            raise ValueError("Cannot prune an invalid outcome token")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for key in (
+                    f"buy_reservation:{user_id}",
+                    f"sell_reservation:{user_id}:{condition_id}:{token_id}",
+                    f"position:{user_id}:{condition_id}:{token_id}",
+                ):
+                    await conn.execute(_ADVISORY_LOCK_SQL, _lock_key(key))
+                current = await self._get_position_in_conn(
+                    conn,
+                    user_id,
+                    condition_id,
+                    token_id=token_id,
+                    for_update=True,
+                )
+                if current is not None and current.size_tokens != expected_size:
+                    return False
+                pending = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM order_reservations
+                        WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
+                          AND status = 'active'
+                        UNION ALL
+                        SELECT 1 FROM orders
+                        WHERE user_id = $1
+                          AND COALESCE(request_json->>'condition_id', '') = $2
+                          AND COALESCE(request_json->>'token_id', '') = $3
+                          AND status NOT IN (
+                            'filled', 'filled_reconciled', 'cancelled', 'canceled', 'rejected', 'expired',
+                            'failed', 'submission_failed', 'terminal_failed',
+                            'confirmed_absent', 'duplicate_ignored', 'cross_source_claimed'
+                          )
+                    )
+                    """,
+                    user_id,
+                    condition_id,
+                    token_id,
+                )
+                if pending:
+                    return False
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
+                return True
 
     @staticmethod
     async def _delete_position_in_conn(
@@ -378,6 +480,7 @@ class PositionsRepo(AbstractPositionRepository):
                 ),
                 size_tokens=new_size,
                 avg_entry_price=avg,
+                lifecycle=PositionLifecycle.ACTIVE,
             )
             await self._upsert_position_in_conn(conn, updated)
             return updated
@@ -406,6 +509,8 @@ class PositionsRepo(AbstractPositionRepository):
                 leader_id=current.leader_id,
                 size_tokens=new_size,
                 avg_entry_price=current.avg_entry_price,
+                lifecycle=current.lifecycle,
+                settlement_price=current.settlement_price,
             )
             await self._upsert_position_in_conn(conn, updated)
             return updated
@@ -422,6 +527,8 @@ class PositionsRepo(AbstractPositionRepository):
         avg_entry_price: Decimal,
         leader_id: str | None = None,
         expected_size: Decimal | None = None,
+        lifecycle: PositionLifecycle = PositionLifecycle.UNKNOWN,
+        settlement_price: Decimal | None = None,
     ) -> bool:
         """Absolutely set a position size under the per-position advisory lock.
 
@@ -437,6 +544,7 @@ class PositionsRepo(AbstractPositionRepository):
         state. Returns ``True`` when the size was written or the row deleted at
         ~0.
         """
+        PositionClassification(lifecycle, settlement_price)
         if not is_valid_clob_token_id(token_id):
             raise ValueError(f"set_position_size: refusing invalid token_id={token_id!r}")
 
@@ -481,6 +589,8 @@ class PositionsRepo(AbstractPositionRepository):
                         leader_id=leader_id,
                         size_tokens=size_tokens,
                         avg_entry_price=avg_entry_price,
+                        lifecycle=lifecycle,
+                        settlement_price=settlement_price,
                     ),
                 )
                 return True

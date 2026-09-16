@@ -13,7 +13,7 @@ from services.position_drift_service import PositionDriftService
 async def test_failed_snapshot_pauses_all_account_scopes_and_recovers() -> None:
     fetcher = AsyncMock(side_effect=ValueError("synthetic transport failure"))
     service = PositionDriftService(
-        positions_repo=SimpleNamespace(list_open_positions=AsyncMock(return_value=[])),
+        positions_repo=SimpleNamespace(list_held_positions=AsyncMock(return_value=[])),
         reservations_repo=None,
         live_positions_fetcher=fetcher,
         config=PositionDriftConfig(),
@@ -38,7 +38,7 @@ async def test_failed_snapshot_pauses_all_account_scopes_and_recovers() -> None:
 async def test_snapshot_failure_does_not_expose_provider_error(caplog) -> None:
     secret = "SYNTHETIC_DSN_PASSWORD_DO_NOT_EXPOSE"
     service = PositionDriftService(
-        positions_repo=SimpleNamespace(list_open_positions=AsyncMock(return_value=[])),
+        positions_repo=SimpleNamespace(list_held_positions=AsyncMock(return_value=[])),
         reservations_repo=None,
         live_positions_fetcher=AsyncMock(side_effect=ValueError(secret)),
         config=PositionDriftConfig(),
@@ -54,7 +54,7 @@ async def test_unknown_reservation_ownership_cannot_prune_inventory() -> None:
     from decimal import Decimal
 
     repo = SimpleNamespace(
-        list_open_positions=AsyncMock(
+        list_held_positions=AsyncMock(
             return_value=[
                 SimpleNamespace(
                     condition_id="condition",
@@ -63,7 +63,7 @@ async def test_unknown_reservation_ownership_cannot_prune_inventory() -> None:
                 )
             ]
         ),
-        delete_position=AsyncMock(),
+        delete_position_if_unchanged=AsyncMock(return_value=True),
     )
     service = PositionDriftService(
         positions_repo=repo,
@@ -75,6 +75,6 @@ async def test_unknown_reservation_ownership_cannot_prune_inventory() -> None:
     )
     result = await service.scan_user(user_id="account-1", wallet="wallet")
     assert not result.clean
-    repo.delete_position.assert_not_awaited()
+    repo.delete_position_if_unchanged.assert_not_awaited()
     assert service.is_scope_paused(user_id="account-1", condition_id="condition", token_id="123")
     assert "SYNTHETIC_RESERVATION_SECRET" not in repr(result)

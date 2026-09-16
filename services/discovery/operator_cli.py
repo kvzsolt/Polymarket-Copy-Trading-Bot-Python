@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence, TextIO
 
+from config.app_config import FalconApiConfig
 from integrations.falcon.client import FalconClient
 from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionClient,
@@ -173,6 +174,7 @@ async def build_cli_resources(
     api_key: str,
     ccxt_depth: str,
     timeout_seconds: float,
+    base_url: str = FalconApiConfig.model_validate({}).base_url,
     policy: FalconDiscoveryPolicy | None = None,
     stderr: TextIO | None = None,
 ) -> DiscoveryCliResources:
@@ -180,6 +182,7 @@ async def build_cli_resources(
     error_stream = stderr or sys.stderr
     falcon = FalconClient(
         api_key=api_key,
+        base_url=base_url,
         timeout_seconds=timeout_seconds,
     )
     ccxt_client: CcxtPredictionClient | None = None
@@ -225,10 +228,15 @@ async def run_cli(
     output = stdout or sys.stdout
     error_stream = stderr or sys.stderr
     args = parse_cli_args(argv)
+    env = os.environ if environ is None else environ
     resources: DiscoveryCliResources | None = None
     try:
         resources = await build_cli_resources(
             api_key=resolve_api_key(environ),
+            base_url=env.get(
+                "PMCOPY__DISCOVERY__API__BASE_URL",
+                FalconApiConfig.model_validate({}).base_url,
+            ),
             ccxt_depth=args.ccxt_depth,
             timeout_seconds=args.timeout_seconds,
             stderr=error_stream,

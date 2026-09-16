@@ -446,7 +446,9 @@ class FalconCandidateService:
                 if isinstance(analysis, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                     raise analysis
                 if isinstance(analysis, FalconError) and not analysis.retryable:
-                    raise type(analysis)("Falcon discovery evidence is unavailable") from None
+                    raise analysis.with_context(
+                        "Falcon discovery evidence is unavailable"
+                    ) from None
                 rejected.append(
                     RejectedTrader(
                         wallet=entry.wallet,
@@ -587,7 +589,7 @@ class FalconCandidateService:
                 if not isinstance(result, FalconError):
                     raise result
                 if not result.retryable:
-                    raise type(result)("Falcon discovery shortlist is unavailable") from None
+                    raise result.with_context("Falcon discovery shortlist is unavailable") from None
                 first_error = first_error or result
                 warnings.append(f"leaderboard:{mode}:{type(result).__name__}")
                 continue
@@ -789,7 +791,7 @@ class FalconCandidateService:
             raise
         except FalconError as exc:
             if not exc.retryable:
-                raise type(exc)("Falcon corroborating leaderboard is unavailable") from None
+                raise exc.with_context("Falcon corroborating leaderboard is unavailable") from None
             return {}
         except Exception:
             return {}
@@ -832,6 +834,7 @@ class FalconCandidateService:
                 break
         if not token_ids:
             return 0
+        permission_errors: list[FalconPermissionError] = []
 
         async def load(token_id: str) -> int:
             """Return the bounded price-jump count for one outcome token."""
@@ -851,11 +854,18 @@ class FalconCandidateService:
                 )
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
+            except FalconPermissionError as exc:
+                permission_errors.append(
+                    exc.with_context("Falcon price-jump evidence is unavailable")
+                )
+                return 0
             except Exception as exc:
                 errors.append(f"price_jumps:{type(exc).__name__}")
                 return 0
 
         counts = await asyncio.gather(*(load(token_id) for token_id in token_ids))
+        if permission_errors:
+            raise permission_errors[0] from None
         return sum(counts)
 
     async def _safe_trades(

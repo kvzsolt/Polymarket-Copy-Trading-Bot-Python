@@ -43,7 +43,7 @@
 
 name: gamma-aggressive
 wallet: "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705"
-enabled: true
+enabled: false
 
 # Per-leader copy-admission gate: widen the one-shot copy-entry FAK band for
 # this leader alone. Unset values inherit from config/copy_trading.yml.

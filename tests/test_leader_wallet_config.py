@@ -81,7 +81,5 @@ def test_roster_activation_has_one_unambiguous_owner() -> None:
         (root / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
     )
     assert "wallets" not in live_payload
-    base_payload = yaml.safe_load(
-        (root / "config/copy_trading.yml").read_text(encoding="utf-8")
-    )
+    base_payload = yaml.safe_load((root / "config/copy_trading.yml").read_text(encoding="utf-8"))
     assert "wallets" not in base_payload

@@ -47,9 +47,7 @@ def _request() -> MarketableOrderRequest:
 async def test_submission_reuses_metadata_fetched_within_the_ttl() -> None:
     clock = FakeClock()
     exchange = FakeExchange()
-    gateway = CcxtPredictionGateway(
-        exchange, metadata_ttl_seconds=10.0, monotonic=clock
-    )
+    gateway = CcxtPredictionGateway(exchange, metadata_ttl_seconds=10.0, monotonic=clock)
 
     await gateway.get_execution_metadata(TOKEN, condition_id="condition")
     fetches_after_prefetch = exchange.metadata_market_calls
@@ -66,9 +64,7 @@ async def test_submission_reuses_metadata_fetched_within_the_ttl() -> None:
 async def test_submission_refetches_once_the_ttl_has_expired() -> None:
     clock = FakeClock()
     exchange = FakeExchange()
-    gateway = CcxtPredictionGateway(
-        exchange, metadata_ttl_seconds=10.0, monotonic=clock
-    )
+    gateway = CcxtPredictionGateway(exchange, metadata_ttl_seconds=10.0, monotonic=clock)
 
     await gateway.get_execution_metadata(TOKEN, condition_id="condition")
     fetches_after_prefetch = exchange.metadata_market_calls
@@ -85,9 +81,7 @@ async def test_a_zero_ttl_preserves_refetch_on_every_submission() -> None:
     """The old always-refresh behaviour stays reachable by configuration."""
     clock = FakeClock()
     exchange = FakeExchange()
-    gateway = CcxtPredictionGateway(
-        exchange, metadata_ttl_seconds=0.0, monotonic=clock
-    )
+    gateway = CcxtPredictionGateway(exchange, metadata_ttl_seconds=0.0, monotonic=clock)
 
     await gateway.get_execution_metadata(TOKEN, condition_id="condition")
     fetches_after_prefetch = exchange.metadata_market_calls
@@ -102,9 +96,7 @@ async def test_metadata_is_still_validated_when_served_from_cache() -> None:
     """A cached hit must not bypass the signed-order metadata contract."""
     clock = FakeClock()
     exchange = FakeExchange()
-    gateway = CcxtPredictionGateway(
-        exchange, metadata_ttl_seconds=10.0, monotonic=clock
-    )
+    gateway = CcxtPredictionGateway(exchange, metadata_ttl_seconds=10.0, monotonic=clock)
 
     metadata = await gateway.get_execution_metadata(TOKEN, condition_id="condition")
     clock.advance(1.0)

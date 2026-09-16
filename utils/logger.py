@@ -185,9 +185,7 @@ def _extra_value_text(value: Any) -> str:
     if isinstance(value, (bool, int, float, type(None))):
         return str(value)
     if isinstance(value, (list, tuple)):
-        return _escape_markup(
-            "[" + ", ".join(_extra_value_text(item) for item in value) + "]"
-        )
+        return _escape_markup("[" + ", ".join(_extra_value_text(item) for item in value) + "]")
     if isinstance(value, dict):
         return _escape_markup(
             "{" + ", ".join(f"{k}={_extra_value_text(v)}" for k, v in value.items()) + "}"
@@ -200,9 +198,7 @@ def _record_extra_fields(record: LogRecord) -> dict[str, Any]:
     return {
         str(key): value
         for key, value in vars(record).items()
-        if key not in _STANDARD_RECORD_ATTRS
-        and key != "message"
-        and not str(key).startswith("_")
+        if key not in _STANDARD_RECORD_ATTRS and key != "message" and not str(key).startswith("_")
     }
 
 
@@ -211,7 +207,14 @@ def _append_extra_fields(msg: str, record: LogRecord) -> str:
     extras = _record_extra_fields(record)
     if not extras:
         return msg
-    _SECRET_KEY_FRAGMENTS = ("token", "secret", "password", "private_key", "api_key", "authorization")
+    _SECRET_KEY_FRAGMENTS = (
+        "token",
+        "secret",
+        "password",
+        "private_key",
+        "api_key",
+        "authorization",
+    )
     parts: list[str] = []
     for key, value in extras.items():
         if any(fragment in key.lower() for fragment in _SECRET_KEY_FRAGMENTS):
@@ -348,7 +351,14 @@ class RichConsoleHandler(logging.Handler):
                 continue
             if any(
                 fragment in key.lower()
-                for fragment in ("token", "secret", "password", "private_key", "api_key", "authorization")
+                for fragment in (
+                    "token",
+                    "secret",
+                    "password",
+                    "private_key",
+                    "api_key",
+                    "authorization",
+                )
             ):
                 value_text = "***REDACTED***"
             else:

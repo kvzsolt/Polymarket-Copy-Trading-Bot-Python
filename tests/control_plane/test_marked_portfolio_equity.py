@@ -48,7 +48,7 @@ async def test_real_portfolio_factory_uses_fresh_marks_and_preserves_missing_cos
     quote, cost, equity, unrealized
 ):
     positions = AsyncMock(
-        list_open_positions=AsyncMock(
+        list_held_positions=AsyncMock(
             return_value=[
                 SimpleNamespace(
                     token_id="token",

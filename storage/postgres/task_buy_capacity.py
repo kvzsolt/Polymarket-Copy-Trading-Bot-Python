@@ -8,7 +8,7 @@ from domain.order_lifecycle import OrderIntent
 
 
 class PostgresTaskBuyCapacity:
-    """Include held inventory and all pending task allocations in configured caps."""
+    """Include active or unknown holdings and pending task allocations in configured caps."""
 
     @staticmethod
     async def permits(
@@ -25,7 +25,7 @@ class PostgresTaskBuyCapacity:
         rows = await connection.fetch(
             "SELECT condition_id, size_tokens::numeric AS size_tokens, "
             "avg_entry_price::numeric AS avg_entry_price FROM positions "
-            "WHERE user_id = $1 AND size_tokens::numeric > 0",
+            "WHERE user_id = $1 AND size_tokens::numeric > 0 AND lifecycle <> 'settled'",
             intent.key.user_id,
         )
         pending = await connection.fetch(

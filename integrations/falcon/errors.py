@@ -2,16 +2,50 @@
 
 from __future__ import annotations
 
+from typing import Self
+
 
 class FalconError(RuntimeError):
-    """Base error carrying a redacted request identifier when available."""
+    """Provider error carrying optional request and trusted agent identifiers."""
 
     retryable = False
 
-    def __init__(self, message: str, *, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str | None = None,
+        agent_id: int | None = None,
+    ) -> None:
+        """Attach adapter diagnostics to a provider failure.
+
+        Args:
+            message: Error description supplied by the adapter or application.
+            request_id: Optional provider request identifier.
+            agent_id: Positive agent identifier from the outbound request.
+
+        Raises:
+            ValueError: If the agent identifier is not a positive integer.
+        """
+        if agent_id is not None and (type(agent_id) is not int or agent_id <= 0):
+            raise ValueError("Falcon agent_id must be a positive integer")
         self.request_id = request_id
+        self.agent_id = agent_id
         suffix = f" [request_id={request_id}]" if request_id else ""
+        if agent_id is not None:
+            suffix += f" [agent_id={agent_id}]"
         super().__init__(message + suffix)
+
+    def with_context(self, message: str) -> Self:
+        """Replace untrusted error details while retaining the requested agent.
+
+        Args:
+            message: Application-owned diagnostic text, never provider content.
+
+        Returns:
+            The same error type without the original message or response headers.
+        """
+        return type(self)(message, agent_id=self.agent_id)
 
 
 class FalconConfigurationError(FalconError):

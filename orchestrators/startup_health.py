@@ -61,6 +61,7 @@ class PositionSyncResult:
     # pruning is SKIPPED (a transient venue/data-API failure must never be
     # read as "the wallet holds nothing" and delete the local ledger).
     fetch_failed: bool = False
+    deferred_positions: int = 0
 
 
 @dataclass(frozen=True)
@@ -229,8 +230,14 @@ async def reconcile_persisted_positions_to_live(
     user_id: str,
     live_positions: list[dict[str, Any]] | None,
 ) -> PositionSyncResult:
-    """Reconcile persisted positions against authoritative venue state."""
-    persisted = await positions_repo.list_open_positions(user_id)
+    """Inspect inventory while leaving mutations to post-recovery canonical sync.
+
+    The supplied venue snapshot predates this local read, so it cannot prove
+    whether a fill committed during that interval. Retain the SELL cost basis
+    until recovery finishes and manual synchronization captures fresh evidence
+    in the correct order for a guarded mutation.
+    """
+    persisted = await positions_repo.list_held_positions(user_id)
 
     # Fail closed: a None snapshot means the live-position fetch failed. We must
     # not prune — deleting every persisted position because a transient API
@@ -255,20 +262,14 @@ async def reconcile_persisted_positions_to_live(
         if not record_keys.intersection(live_keys):
             stale.append(record)
 
-    for record in stale:
-        await positions_repo.delete_position(
-            user_id,
-            record.condition_id,
-            token_id=record.token_id,
-        )
-
     return PositionSyncResult(
         persisted_before=len(persisted),
-        persisted_after=len(persisted) - len(stale),
+        persisted_after=len(persisted),
         live_count=len(live_positions),
-        pruned_positions=len(stale),
-        pruned_condition_ids=tuple(record.condition_id for record in stale[:12]),
-        pruned_token_ids=tuple(record.token_id for record in stale[:12]),
+        pruned_positions=0,
+        pruned_condition_ids=(),
+        pruned_token_ids=(),
+        deferred_positions=len(stale),
     )
 
 
@@ -489,6 +490,15 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
             message=(
                 f"live position snapshot fetch failed; skipped pruning "
                 f"{sync.persisted_before} persisted position(s) (fail-closed)"
+            ),
+            details=asdict(sync),
+        )
+    if sync.deferred_positions > 0:
+        return StartupHealthCheckItem(
+            status="warning",
+            message=(
+                f"preserved {sync.deferred_positions} position(s) for canonical "
+                "synchronization after fill recovery"
             ),
             details=asdict(sync),
         )

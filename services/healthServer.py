@@ -140,11 +140,24 @@ class ReadinessTracker:
         if initial:
             self._state.update(initial)
         self._checks: dict[str, ReadinessCheck] = {}
+        self._account_drift: dict[str, bool] = {}
 
     def update(self, **kwargs: Any) -> None:
         """Update one readiness component without replacing the shared truth."""
         with self._lock:
             self._state.update(kwargs)
+
+    def register_drift_account(self, user_id: str) -> None:
+        """Require an account inventory result before aggregate drift readiness."""
+        with self._lock:
+            self._account_drift.setdefault(user_id, False)
+            self._state["drift_ok"] = all(self._account_drift.values())
+
+    def update_account_drift(self, user_id: str, clean: bool) -> None:
+        """Publish drift readiness without clearing another account's failure."""
+        with self._lock:
+            self._account_drift[user_id] = clean
+            self._state["drift_ok"] = all(self._account_drift.values())
 
     def register_check(
         self,

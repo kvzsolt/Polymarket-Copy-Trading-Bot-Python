@@ -21,7 +21,7 @@ from integrations.falcon.errors import (
     FalconUnavailableError,
 )
 
-_BASE_URL = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+_BASE_URL = "https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized"
 _RETRYABLE_STATUS = {429, 500, 503}
 
 
@@ -78,18 +78,6 @@ def _pnl_boundary(value: Any) -> str | None:
 
 def _normalize_params(params: Mapping[str, Any] | None) -> dict[str, str]:
     return {str(key): _param(value) for key, value in (params or {}).items() if value is not None}
-
-
-def _error_text(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, Mapping):
-        value = payload.get("error") or payload.get("message") or payload.get("detail")
-        if value:
-            return str(value)[:500]
-    return str(getattr(response, "text", "") or "")[:500] or "request failed"
 
 
 class FalconClient:
@@ -216,7 +204,10 @@ class FalconClient:
             if 200 <= status < 300:
                 return self._parse_page(response, requested_limit=limit, requested_offset=offset)
             if status == 400 or status == 404:
-                raise FalconBadRequestError(_error_text(response), request_id=request_id)
+                raise FalconBadRequestError(
+                    f"Falcon request rejected ({status})",
+                    request_id=request_id,
+                )
             if status == 401:
                 raise FalconAuthenticationError(
                     "Falcon authentication rejected",
@@ -224,8 +215,8 @@ class FalconClient:
                 )
             if status == 403:
                 raise FalconPermissionError(
-                    "Falcon permission denied",
-                    request_id=request_id,
+                    "Falcon permission denied (403); verify plan access for the requested agent",
+                    agent_id=body["agent_id"],
                 )
             if status in _RETRYABLE_STATUS:
                 if attempt + 1 < self._max_attempts:

@@ -257,8 +257,7 @@ class TraderTaskConfig(_FrozenModel):
         # one of the two sizing fields is explicit, derive the other from it.
         if sizing_mode_explicit and sizing_explicit and canonical != str(self.sizing.mode):
             raise ValueError(
-                f"task sizing_mode {canonical!r} conflicts with sizing.mode "
-                f"{self.sizing.mode!r}"
+                f"task sizing_mode {canonical!r} conflicts with sizing.mode {self.sizing.mode!r}"
             )
         if sizing_mode_explicit and not sizing_explicit and canonical != str(self.sizing.mode):
             return self.model_copy(

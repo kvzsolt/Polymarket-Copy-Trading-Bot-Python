@@ -169,7 +169,7 @@ class Position:
 class Positions:
     """Return deterministic durable positions."""
 
-    async def list_open_positions(self, user_id: str) -> list[Position]:
+    async def list_held_positions(self, user_id: str) -> list[Position]:
         """Return two exact cost-basis rows."""
 
         assert user_id == "user-a"

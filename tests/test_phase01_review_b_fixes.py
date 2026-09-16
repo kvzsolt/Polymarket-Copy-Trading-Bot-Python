@@ -69,8 +69,9 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
 
     reconcile_count = 0
 
-    async def _fake_reconcile_one(_ctx, _rec, _side):
+    async def _fake_reconcile_one(_ctx, _rec, _side, *, startup_recovery=False):
         nonlocal reconcile_count
+        assert startup_recovery is False
         reconcile_count += 1
         return True
 
@@ -187,7 +188,8 @@ async def test_reconcile_includes_orders_table_only_v1_submissions(monkeypatch):
 
     reconciled: list[tuple[str, str]] = []
 
-    async def _fake_reconcile_one(_ctx, record, side):
+    async def _fake_reconcile_one(_ctx, record, side, *, startup_recovery=False):
+        assert startup_recovery is False
         reconciled.append((record["order_id"], side))
         return True
 

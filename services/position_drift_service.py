@@ -16,17 +16,18 @@ only:
 
 from __future__ import annotations
 
-import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
+from adapters.clock import SystemClock
 from domain.position_drift import (
     DriftReport,
     PositionDriftAction,
     PositionDriftRecord,
     PositionDriftStatus,
 )
+from interfaces.source_transactions import Clock
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -45,6 +46,44 @@ DRIFT_PRUNE_HOLDOFF_SECONDS = 60.0
 
 
 LivePositionsFetcher = Callable[[str], Awaitable[list[dict[str, Any]]]]
+
+
+class DriftPosition(Protocol):
+    """Expose immutable inventory identity and size for a drift comparison."""
+
+    @property
+    def condition_id(self) -> str:
+        """Return the held market's condition identity."""
+        ...
+
+    @property
+    def token_id(self) -> str:
+        """Return the raw outcome token identity."""
+        ...
+
+    @property
+    def size_tokens(self) -> Decimal:
+        """Return the exact number of held shares."""
+        ...
+
+
+class DriftInventoryRepository(Protocol):
+    """Read complete holdings and delete only inventory proven unchanged."""
+
+    async def list_held_positions(self, user_id: str) -> Sequence[DriftPosition]:
+        """Return held inventory including settled and unknown lifecycle rows."""
+        ...
+
+    async def delete_position_if_unchanged(
+        self,
+        user_id: str,
+        condition_id: str,
+        *,
+        token_id: str,
+        expected_size: Decimal,
+    ) -> bool:
+        """Delete under lock only if size matches and no order owns the scope."""
+        ...
 
 
 def _decimal_or_zero(value: Any) -> Decimal:
@@ -92,22 +131,25 @@ class PositionDriftService:
     def __init__(
         self,
         *,
-        positions_repo: Any,
+        positions_repo: DriftInventoryRepository,
         reservations_repo: Any | None,
         live_positions_fetcher: LivePositionsFetcher,
         config: "PositionDriftConfig",
         audit_logger: Any | None = None,
+        clock: Clock | None = None,
     ) -> None:
+        """Inject inventory, venue, ownership, and time boundaries."""
         self._positions_repo = positions_repo
         self._reservations_repo = reservations_repo
         self._live_positions_fetcher = live_positions_fetcher
         self._config = config
         self._audit_logger = audit_logger
+        self._clock = clock or SystemClock()
         # user_id -> set of scope_key
         self._paused_scopes: dict[str, set[str]] = {}
         # scope_key -> latest PositionDriftRecord
         self._latest: dict[str, PositionDriftRecord] = {}
-        # scope_key -> monotonic timestamp of the last PRUNE_LOCAL_ZERO_POSITION
+        # scope_key -> wall timestamp of the last PRUNE_LOCAL_ZERO_POSITION
         # decision. Consulted by manual_sync via ``was_recently_pruned`` so an
         # eventually-consistent data-api echo cannot resurrect the row inside
         # ``DRIFT_PRUNE_HOLDOFF_SECONDS``.
@@ -117,65 +159,68 @@ class PositionDriftService:
     # Public API
     # ------------------------------------------------------------------
     async def scan_user(self, *, user_id: str, wallet: str) -> DriftReport:
-        """Run a full drift sweep for one user wallet."""
+        """Run a full drift sweep using local state captured before venue I/O."""
+        try:
+            local_positions = tuple(await self._positions_repo.list_held_positions(user_id))
+        except Exception as exc:
+            _log.warning("drift_scan_state_unavailable error_type=%s", type(exc).__name__)
+            return self._unavailable_report(
+                user_id=user_id,
+                reason=f"inventory reconciliation unavailable: {type(exc).__name__}",
+            )
+
         try:
             venue_positions = await self._live_positions_fetcher(wallet)
         except Exception as exc:
-            _log.warning(
-                "drift_scan_fetch_failed | error_type=%s",
-                type(exc).__name__,
-            )
-            # Treat fetch failure as unresolved — fail closed.
-            record = PositionDriftRecord(
+            _log.warning("drift_scan_fetch_failed | error_type=%s", type(exc).__name__)
+            return self._unavailable_report(
                 user_id=user_id,
-                condition_id="",
-                token_id="",
-                local_size=Decimal("0"),
-                venue_size=Decimal("0"),
-                drift_size=Decimal("0"),
-                status=PositionDriftStatus.UNRESOLVED,
-                action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
                 reason=f"venue snapshot fetch failed: {type(exc).__name__}",
-            )
-            self._pause(user_id, record.scope_key)
-            self._latest[record.scope_key] = record
-            return DriftReport(
-                user_id=user_id,
-                clean=False,
-                records=(record,),
-                generated_at=int(time.time()),
-                paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
             )
 
         try:
-            return await self._scan_snapshot(user_id=user_id, venue_positions=venue_positions)
+            return await self._scan_snapshot(
+                user_id=user_id,
+                local_positions=local_positions,
+                venue_positions=venue_positions,
+            )
         except Exception as exc:
             _log.warning("drift_scan_state_unavailable error_type=%s", type(exc).__name__)
-            record = PositionDriftRecord(
+            return self._unavailable_report(
                 user_id=user_id,
-                condition_id="",
-                token_id="",
-                local_size=Decimal("0"),
-                venue_size=Decimal("0"),
-                drift_size=Decimal("0"),
-                status=PositionDriftStatus.UNRESOLVED,
-                action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
                 reason=f"inventory reconciliation unavailable: {type(exc).__name__}",
             )
-            self._pause(user_id, record.scope_key)
-            self._latest[record.scope_key] = record
-            return DriftReport(
-                user_id=user_id,
-                clean=False,
-                records=(record,),
-                generated_at=int(time.time()),
-                paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
-            )
+
+    def _unavailable_report(self, *, user_id: str, reason: str) -> DriftReport:
+        """Keep the entire account paused when any required evidence is unavailable."""
+        record = PositionDriftRecord(
+            user_id=user_id,
+            condition_id="",
+            token_id="",
+            local_size=Decimal("0"),
+            venue_size=Decimal("0"),
+            drift_size=Decimal("0"),
+            status=PositionDriftStatus.UNRESOLVED,
+            action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
+            reason=reason,
+        )
+        self._pause(user_id, record.scope_key)
+        self._latest[record.scope_key] = record
+        return DriftReport(
+            user_id=user_id,
+            clean=False,
+            records=(record,),
+            generated_at=int(self._clock.now().timestamp()),
+            paused_scopes=tuple(sorted(self._paused_scopes.get(user_id, set()))),
+        )
 
     async def _scan_snapshot(
-        self, *, user_id: str, venue_positions: list[dict[str, Any]]
+        self,
+        *,
+        user_id: str,
+        local_positions: Sequence[DriftPosition],
+        venue_positions: list[dict[str, Any]],
     ) -> DriftReport:
-        local_positions = list(await self._positions_repo.list_open_positions(user_id) or [])
         records: list[PositionDriftRecord] = []
         seen_scopes: set[str] = set()
 
@@ -211,24 +256,44 @@ class PositionDriftService:
                 venue_size=venue_size,
             )
             records.append(record)
+            seen_scopes.add(scope_key)
             self._latest[scope_key] = record
 
         snapshot_scope = f"{user_id}||"
+        for scope_key in sorted(self._paused_scopes.get(user_id, set()) - seen_scopes):
+            if scope_key == snapshot_scope:
+                continue
+            previous = self._latest[scope_key]
+            record = await self._classify(
+                user_id=user_id,
+                condition_id=previous.condition_id,
+                token_id=previous.token_id,
+                local_size=Decimal("0"),
+                venue_size=_venue_size_for(venue_positions, previous.token_id),
+            )
+            records.append(record)
+            self._latest[scope_key] = record
+
+        for record in records:
+            if record.is_clean:
+                self._paused_scopes.get(user_id, set()).discard(record.scope_key)
         self._paused_scopes.get(user_id, set()).discard(snapshot_scope)
         self._latest.pop(snapshot_scope, None)
-        clean = all(r.is_clean for r in records)
+        clean = all(r.is_clean for r in records) and not self._paused_scopes.get(user_id)
         return DriftReport(
             user_id=user_id,
             clean=clean,
             records=tuple(records),
-            generated_at=int(time.time()),
-            paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
+            generated_at=int(self._clock.now().timestamp()),
+            paused_scopes=tuple(sorted(self._paused_scopes.get(user_id, set()))),
         )
 
     def paused_scopes(self, user_id: str) -> set[str]:
+        """Return a copy of the account's unresolved trading scopes."""
         return set(self._paused_scopes.get(user_id, set()))
 
     def is_scope_paused(self, *, user_id: str, condition_id: str, token_id: str) -> bool:
+        """Return whether account or outcome uncertainty prevents submission."""
         scope_key = f"{user_id}|{condition_id}|{token_id}"
         paused = self._paused_scopes.get(user_id, set())
         return f"{user_id}||" in paused or scope_key in paused
@@ -236,6 +301,7 @@ class PositionDriftService:
     def mark_resolved(
         self, *, user_id: str, condition_id: str, token_id: str, reason: str = "operator_resolved"
     ) -> None:
+        """Clear an explicitly operator-resolved scope without changing holdings."""
         scope_key = f"{user_id}|{condition_id}|{token_id}"
         scopes = self._paused_scopes.get(user_id)
         if scopes is not None:
@@ -250,6 +316,7 @@ class PositionDriftService:
         )
 
     def latest_record(self, scope_key: str) -> PositionDriftRecord | None:
+        """Return the most recent observed outcome for a scope."""
         return self._latest.get(scope_key)
 
     # ------------------------------------------------------------------
@@ -303,14 +370,25 @@ class PositionDriftService:
                     reservation_ids=reservation_ids,
                 )
             if self._config.allow_auto_prune_zero:
-                # Safe to prune: bot believes it holds shares the venue does
-                # not actually report and no order is in flight.
-                try:
-                    await self._positions_repo.delete_position(
-                        user_id, condition_id, token_id=token_id
+                deleted = await self._positions_repo.delete_position_if_unchanged(
+                    user_id,
+                    condition_id,
+                    token_id=token_id,
+                    expected_size=local_size,
+                )
+                if deleted is not True:
+                    return self._record_and_pause(
+                        user_id=user_id,
+                        condition_id=condition_id,
+                        token_id=token_id,
+                        local_size=local_size,
+                        venue_size=venue_size,
+                        drift_size=drift,
+                        status=PositionDriftStatus.UNRESOLVED,
+                        action=PositionDriftAction.PAUSE_SCOPE,
+                        reason="position or order ownership changed before guarded prune",
+                        reservation_ids=reservation_ids,
                     )
-                except Exception:
-                    _log.debug("drift_prune_delete_failed", exc_info=True)
                 return self._record(
                     user_id=user_id,
                     condition_id=condition_id,
@@ -318,7 +396,7 @@ class PositionDriftService:
                     local_size=local_size,
                     venue_size=venue_size,
                     drift_size=drift,
-                    status=PositionDriftStatus.LOCAL_MISSING_VENUE_POSITION,
+                    status=PositionDriftStatus.RECONCILED,
                     action=PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION,
                     reason="local position pruned; venue reports zero, no active orders",
                     reservation_ids=reservation_ids,
@@ -406,17 +484,16 @@ class PositionDriftService:
                 reservation_ids=reservation_ids,
             )
 
-        # Fallback (shouldn't reach here, but pin a safe default).
-        return self._record(
+        return self._record_and_pause(
             user_id=user_id,
             condition_id=condition_id,
             token_id=token_id,
             local_size=local_size,
             venue_size=venue_size,
             drift_size=drift,
-            status=PositionDriftStatus.CLEAN,
-            action=PositionDriftAction.NO_ACTION,
-            reason="no drift detected",
+            status=PositionDriftStatus.RESERVATION_ORPHANED,
+            action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
+            reason="reservation remains active without local or venue inventory",
             reservation_ids=reservation_ids,
         )
 
@@ -468,7 +545,7 @@ class PositionDriftService:
         # branches either pause or update read-only and shouldn't suppress
         # manual_sync.
         if action == PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION:
-            self._prune_timestamps[record.scope_key] = time.time()
+            self._prune_timestamps[record.scope_key] = self._clock.now().timestamp()
         self._emit(record)
         return record
 
@@ -490,17 +567,18 @@ class PositionDriftService:
         ttl_seconds: float | None = None,
         now: float | None = None,
     ) -> bool:
-        """Return True when this scope was pruned by drift inside the holdoff
-        window. ``ManualSyncService`` consults this before upserting a
+        """Return whether this scope was pruned inside the holdoff window.
+
+        ``ManualSyncService`` consults this before upserting a
         venue-positive row so the eventually-consistent data-api can't
         resurrect a position drift just deleted. ``now`` overrides
-        ``time.time()`` for deterministic tests.
+        the injected clock for compatibility with explicit-time callers.
         """
         scope_key = f"{user_id}|{condition_id}|{token_id}"
         ts = self._prune_timestamps.get(scope_key)
         if ts is None:
             return False
-        current = now if now is not None else time.time()
+        current = now if now is not None else self._clock.now().timestamp()
         ttl = (
             ttl_seconds
             if ttl_seconds is not None

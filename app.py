@@ -1897,7 +1897,7 @@ async def _run_application(
             "startup_stage | stage=live_positions_fetch_started user=%s",
             runtime_user.user_id,
         )
-        # None == fetch failed (fail-closed); the health-check prune treats it
+        # None == fetch failed (fail-closed); the inventory inspection treats it
         # distinctly from a genuinely-empty snapshot. Store [] for downstream
         # consumers but pass the raw value (None-aware) to the health check.
         live_positions = await fetch_live_positions(runtime_user.wallet.funder_address)

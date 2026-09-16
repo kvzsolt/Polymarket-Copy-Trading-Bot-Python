@@ -49,7 +49,7 @@
 
 name: alpha-steady
 wallet: "0xc4ac7dee4d55d1698e88a8160d5c61ede96b9722"
-enabled: true
+enabled: false
 
 # Per-leader copy-admission gates. Omitted values inherit from
 # config/copy_trading.yml. max_entry_price_drift_pct is the one-shot FAK

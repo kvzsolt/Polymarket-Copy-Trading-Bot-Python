@@ -307,6 +307,18 @@ class PositionManager:
     def closed_positions(self) -> list[TrackedPosition]:
         return list(self._closed)
 
+    def retain_active_positions(self, keys: set[tuple[str, str]]) -> None:
+        """Remove tracking outside authoritative active inventory without inventing fills.
+
+        Args:
+            keys: Complete set of active condition and outcome identities.
+        """
+        self._positions = {
+            key: position
+            for key, position in self._positions.items()
+            if (position.condition_id, position.asset) in keys
+        }
+
     def track_buy(
         self,
         condition_id: str,

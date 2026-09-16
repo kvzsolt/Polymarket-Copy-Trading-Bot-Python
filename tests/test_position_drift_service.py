@@ -43,8 +43,8 @@ def _make_svc(
     config=None,
 ):
     positions_repo = MagicMock()
-    positions_repo.list_open_positions = AsyncMock(return_value=local_positions or [])
-    positions_repo.delete_position = AsyncMock()
+    positions_repo.list_held_positions = AsyncMock(return_value=local_positions or [])
+    positions_repo.delete_position_if_unchanged = AsyncMock(return_value=True)
     reservations_repo = MagicMock()
     reservations_repo.list_active_for_scope = AsyncMock(return_value=active_reservations or [])
     fetcher = AsyncMock(return_value=venue_positions or [])
@@ -120,8 +120,11 @@ async def test_local_only_with_no_active_reservations_prunes_when_allowed():
     report = await svc.scan_user(user_id="u1", wallet="0xfunder")
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION
-    assert rec.status == PositionDriftStatus.LOCAL_MISSING_VENUE_POSITION
-    positions_repo.delete_position.assert_called_once_with("u1", "cond1", token_id="0xtok")
+    assert rec.status == PositionDriftStatus.RECONCILED
+    assert report.clean is True
+    positions_repo.delete_position_if_unchanged.assert_awaited_once_with(
+        "u1", "cond1", token_id="0xtok", expected_size=Decimal("10")
+    )
     assert svc.is_scope_paused(user_id="u1", condition_id="cond1", token_id="0xtok") is False
 
 
@@ -136,7 +139,7 @@ async def test_local_only_with_active_reservation_does_not_prune():
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PAUSE_SCOPE
     assert rec.status == PositionDriftStatus.UNRESOLVED
-    positions_repo.delete_position.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_not_awaited()
     assert svc.is_scope_paused(user_id="u1", condition_id="cond1", token_id="0xtok") is True
 
 
@@ -150,7 +153,7 @@ async def test_local_only_with_auto_prune_disabled_pauses():
     report = await svc.scan_user(user_id="u1", wallet="0xfunder")
     rec = report.records[0]
     assert rec.action == PositionDriftAction.PAUSE_SCOPE
-    positions_repo.delete_position.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_not_awaited()
 
 
 @pytest.mark.asyncio

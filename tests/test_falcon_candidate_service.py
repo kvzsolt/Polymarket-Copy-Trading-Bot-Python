@@ -39,7 +39,7 @@ def wallet360(
             "avg_position_size": 5 if wallet.endswith("1") else 10_000,
             "market_concentration_ratio": concentration,
             "max_drawdown": 0.08,
-            "max_position_pct": 0.20,
+            "max_position_pct": "20",
             "profit_factor": 1.4,
             "roi": 0.18,
             "sharpe_ratio": 1.8,

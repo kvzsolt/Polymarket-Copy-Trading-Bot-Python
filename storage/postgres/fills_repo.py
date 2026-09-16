@@ -18,13 +18,16 @@ import json
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import asyncpg
 
 from ports.repositories import AbstractFillRepository
 from services.execution.fill_accounting import AccountedOrderFill, FillAccountingConflict
 from storage.postgres.task_fill_projection import PostgresTaskFillProjection
+
+if TYPE_CHECKING:
+    from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 
 @dataclass
@@ -142,6 +145,50 @@ class FillsRepo(AbstractFillRepository):
         execution success path so a process crash between the two writes
         cannot leave the fill committed while the position is unchanged.
         """
+        return await self._append_fill_and_apply(record, positions_repo, raw_payload=raw_payload)
+
+    async def append_recovered_sell(
+        self,
+        record: FillRecord,
+        positions_repo: PositionsRepo,
+        *,
+        raw_payload: dict[str, object] | None = None,
+    ) -> tuple[int, PositionRecord | None]:
+        """Record missing confirmed SELL accounting while preserving proven absence.
+
+        The reconciler must first obtain fresh complete zero-inventory evidence.
+        The transaction verifies the local position is still absent under its
+        normal lock and checks the ledger watermark before inserting the fill.
+
+        Raises:
+            ValueError: The fill lacks SELL identity or stable accounting evidence,
+                or the position changed before the transaction acquired its lock.
+            FillAccountingConflict: Another writer advanced the order ledger.
+        """
+        if (
+            record.side != "SELL"
+            or not record.order_id
+            or not record.dedup_key
+            or record.accounted_shares is None
+            or not record.accounted_shares.is_finite()
+            or record.accounted_shares < 0
+            or not record.size_tokens.is_finite()
+            or record.size_tokens <= 0
+        ):
+            raise ValueError("Recovered SELL requires stable identity and accounted fill evidence")
+        return await self._append_fill_and_apply(
+            record, positions_repo, raw_payload=raw_payload, recovered_position_absent=True
+        )
+
+    async def _append_fill_and_apply(
+        self,
+        record: FillRecord,
+        positions_repo: PositionsRepo,
+        *,
+        raw_payload: dict[str, object] | None = None,
+        recovered_position_absent: bool = False,
+    ) -> tuple[int, PositionRecord | None]:
+        """Serialize order accounting, position verification, and task projection."""
         payload = raw_payload or {
             "user_id": record.user_id,
             "leader_id": record.leader_id,
@@ -160,6 +207,13 @@ class FillsRepo(AbstractFillRepository):
                     await conn.execute(
                         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                         f"fill-accounting:{record.user_id}:{record.order_id}",
+                    )
+                if recovered_position_absent:
+                    await positions_repo._assert_absent_position_in_conn(
+                        conn,
+                        user_id=record.user_id,
+                        condition_id=record.condition_id,
+                        token_id=record.token_id,
                     )
                 if record.accounted_shares is not None:
                     accounted = await conn.fetchval(
@@ -199,16 +253,18 @@ class FillsRepo(AbstractFillRepository):
                 if fill_id == 0:
                     # Duplicate fill — do NOT re-apply to the position.
                     return 0, None
-                updated = await positions_repo._apply_fill_in_conn(
-                    conn,
-                    user_id=record.user_id,
-                    leader_id=record.leader_id,
-                    condition_id=record.condition_id,
-                    token_id=record.token_id,
-                    side=record.side,
-                    fill_size=record.size_tokens,
-                    fill_price=record.price,
-                )
+                updated = None
+                if not recovered_position_absent:
+                    updated = await positions_repo._apply_fill_in_conn(
+                        conn,
+                        user_id=record.user_id,
+                        leader_id=record.leader_id,
+                        condition_id=record.condition_id,
+                        token_id=record.token_id,
+                        side=record.side,
+                        fill_size=record.size_tokens,
+                        fill_price=record.price,
+                    )
                 if self._task_projection is not None:
                     await self._task_projection.apply(conn, fill_id, record)
                 return fill_id, updated

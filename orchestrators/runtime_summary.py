@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from rich.panel import Panel
 
+from domain.position_lifecycle import PositionLifecycle
 from orchestrators.startup_health import StartupHealthReport
 from utils.logger import console, get_logger, shorten_addr
 
@@ -220,10 +221,14 @@ def print_startup_summary(
 ) -> None:
     """Render the sanitized startup portfolio and configuration summary."""
     print_startup_health_check(health_report)
+    active_positions = [
+        position for position in positions if position.get("lifecycle") != PositionLifecycle.SETTLED
+    ]
+    settled_position_count = len(positions) - len(active_positions)
 
-    if positions:
+    if active_positions:
         position_lines: list[str] = []
-        for position in positions[:8]:
+        for position in active_positions[:8]:
             market = str(
                 position.get("title")
                 or position.get("market")
@@ -239,7 +244,7 @@ def print_startup_summary(
                 f"• {market[:72]}\n"
                 f"  ↳ symbol={symbol} | side={side} | size={size:.2f} | value=${value:.2f}"
             )
-        remaining = len(positions) - 8
+        remaining = len(active_positions) - 8
         if remaining > 0:
             position_lines.append(f"• ... and {remaining} more position(s)")
     else:
@@ -249,7 +254,8 @@ def print_startup_summary(
         f"💼 wallet: {shorten_addr(wallet, 8, 4)}",
         f"💵 cash: ${available_cash:.2f}",
         f"🧾 total: ${total_portfolio:.2f}",
-        f"📂 open_positions: {len(positions)}",
+        f"📂 open_positions: {len(active_positions)}",
+        f"📁 settled_holdings: {settled_position_count}",
     ]
     console.print(
         Panel(
@@ -524,13 +530,14 @@ def print_startup_summary(
             "size": float(position.get("size") or position.get("size_tokens") or 0.0),
             "value": float(position.get("currentValue") or position.get("value") or 0.0),
         }
-        for position in positions[:12]
+        for position in active_positions[:12]
     ]
 
     logger.info(
         (
             f"STARTUP SUMMARY | wallet={shorten_addr(wallet, 8, 4)} | leaders={len(active_leaders)} | "
-            f"cash={available_cash:.2f} | total={total_portfolio:.2f} | open_positions={len(positions)}"
+            f"cash={available_cash:.2f} | total={total_portfolio:.2f} | "
+            f"open_positions={len(active_positions)} | settled_holdings={settled_position_count}"
         ),
         extra={
             "type": "startup_summary",
@@ -540,7 +547,8 @@ def print_startup_summary(
             # extra payload so the formatter never raises on a Decimal.
             "availableCash": float(available_cash),
             "totalPortfolio": float(total_portfolio),
-            "openPositionCount": len(positions),
+            "openPositionCount": len(active_positions),
+            "settledPositionCount": settled_position_count,
             "livePositions": sanitized_positions,
             "engineConfig": sanitized_engine_config,
             "health": health_report.as_log_payload(),

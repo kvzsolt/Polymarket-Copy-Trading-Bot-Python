@@ -72,10 +72,10 @@ def _make_service(
     orders_repo=None,
 ) -> tuple[ManualSyncService, MagicMock, MagicMock]:
     positions_repo = positions_repo or MagicMock()
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
     positions_repo.upsert_position = AsyncMock()
     positions_repo.set_position_size = AsyncMock(return_value=True)
-    positions_repo.delete_position = AsyncMock()
+    positions_repo.delete_position_if_unchanged = AsyncMock(return_value=True)
     market_store = market_store or MagicMock()
     market_store.evict = MagicMock()
 
@@ -287,7 +287,7 @@ async def test_position_discrepancy_emits_log_and_upsert():
     """Venue position not in local DB → discrepancy log + upsert_position fires."""
     svc, positions_repo, _ = _make_service()
     # No local positions — every venue position is a new insert (discrepancy).
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
 
     with (
         patch(
@@ -325,7 +325,7 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
     reservation_service = MagicMock()
     reservation_service.release_expired_active = AsyncMock(return_value=["res-buy-1"])
     svc, positions_repo, _ = _make_service(reservation_service=reservation_service)
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
 
     with (
         patch(
@@ -354,17 +354,10 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
 
 
 @pytest.mark.asyncio
-async def test_deletion_skipped_when_api_response_is_empty():
-    """Empty positions API → local positions NOT deleted (empty = suspect response).
-
-    A genuinely zero-position portfolio is a valid state, but the Data API
-    returning an empty list is far more likely to be a transient failure than
-    proof the user sold everything.  Wiping all local rows on an empty response
-    would cause cascading failures (risk-monitor probes against retired tokens,
-    reservations not released, etc.).  Deletion is deferred to the next sync.
-    """
+async def test_complete_empty_snapshot_deletes_absent_local_position():
+    """A complete empty snapshot establishes absence and permits guarded pruning."""
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -384,7 +377,7 @@ async def test_deletion_skipped_when_api_response_is_empty():
             AsyncMock(
                 side_effect=[
                     [],  # activity
-                    [],  # positions — empty → deletion guard fires
+                    [],  # complete positions snapshot
                 ]
             ),
         ),
@@ -395,21 +388,17 @@ async def test_deletion_skipped_when_api_response_is_empty():
     ):
         await svc.sync_now(reason="manual_sell_to_zero")
 
-    positions_repo.delete_position.assert_not_called()
-    market_store.evict.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_awaited_once_with(
+        FUNDER, "0xcond-stale", token_id="0xasset-stale", expected_size=Decimal("7.5")
+    )
+    market_store.evict.assert_called_once_with("0xasset-stale")
 
 
 @pytest.mark.asyncio
-async def test_deletion_skipped_when_api_response_smaller_than_local():
-    """Sparse positions API (fewer items than local) → deletion skipped.
-
-    If the Data API returns fewer positions than we track locally the response
-    may be truncated or paginated.  Deleting rows whose tokens are simply absent
-    from this snapshot would silently wipe live positions, so the entire
-    deletion pass is skipped and logged.  The next sync will retry.
-    """
+async def test_complete_smaller_snapshot_deletes_only_absent_local_position():
+    """Completeness comes from the reader, independent of the local row count."""
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -431,7 +420,6 @@ async def test_deletion_skipped_when_api_response_smaller_than_local():
     )
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
-    # API only returns 1 position — 1 < 2 local → sparse-response guard fires.
     with (
         patch(
             "services.manual_sync_service.fetch_data",
@@ -449,21 +437,17 @@ async def test_deletion_skipped_when_api_response_smaller_than_local():
     ):
         await svc.sync_now(reason="test")
 
-    # 0xasset2 is absent from the API response but deletion must be skipped.
-    positions_repo.delete_position.assert_not_called()
-    market_store.evict.assert_not_called()
+    positions_repo.delete_position_if_unchanged.assert_awaited_once_with(
+        FUNDER, "0xcond2", token_id="0xasset2", expected_size=Decimal("5")
+    )
+    market_store.evict.assert_called_once_with("0xasset2")
 
 
 @pytest.mark.asyncio
 async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
-    """API returns as many positions as we have locally, one token missing → delete.
-
-    When the raw API count equals (or exceeds) the local tracked count the
-    response is treated as complete.  A token absent from that complete snapshot
-    is genuinely closed and should be removed from local state.
-    """
+    """A complete snapshot containing another token permits guarded disposal."""
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -477,8 +461,6 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
     )
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
-    # API returns 1 position (different token) — count 1 == local count 1.
-    # The old token is absent from the snapshot → deletion should proceed.
     with (
         patch(
             "services.manual_sync_service.fetch_data",
@@ -496,10 +478,11 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
     ):
         await svc.sync_now(reason="manual_switch")
 
-    positions_repo.delete_position.assert_awaited_once_with(
+    positions_repo.delete_position_if_unchanged.assert_awaited_once_with(
         FUNDER,
         "0xcond-closed",
         token_id="0xasset-closed",
+        expected_size=Decimal("7.5"),
     )
     market_store.evict.assert_called_once_with("0xasset-closed")
 
@@ -508,7 +491,7 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
 async def test_zero_value_position_preserves_existing_local_position():
     """A zero mark does not establish sale or redemption of held shares."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -544,14 +527,14 @@ async def test_zero_value_position_preserves_existing_local_position():
         await svc.sync_now(reason="startup")
 
     positions_repo.set_position_size.assert_awaited_once()
-    positions_repo.delete_position.assert_not_awaited()
+    positions_repo.delete_position_if_unchanged.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_zero_value_position_is_seeded_as_held_inventory():
     """Positive shares remain inventory even if the reported mark is zero."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
     with (
@@ -582,7 +565,7 @@ async def test_zero_value_position_is_seeded_as_held_inventory():
 async def test_position_already_matching_does_not_log_discrepancy():
     """Venue size == local size → no discrepancy log, but upsert still refreshes."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -729,7 +712,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
     consistent /positions endpoint produces this exact race in production).
     """
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
     drift_mock = MagicMock()
     drift_mock.was_recently_pruned = MagicMock(return_value=True)
     svc._position_drift_service = drift_mock
@@ -771,7 +754,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
 async def test_manual_sync_upserts_when_drift_not_recent():
     """Drift returns False → manual_sync resumes its normal upsert path."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
     drift_mock = MagicMock()
     drift_mock.was_recently_pruned = MagicMock(return_value=False)
     svc._position_drift_service = drift_mock
@@ -810,7 +793,7 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
     """
     svc, positions_repo, _ = _make_service()
     # Local already holds the position → existing is not None.
-    positions_repo.list_open_positions = AsyncMock(
+    positions_repo.list_held_positions = AsyncMock(
         return_value=[
             PositionRecord(
                 user_id=FUNDER,
@@ -1055,7 +1038,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
     write; seeding here double-counts)."""
     orders_repo = _orders_repo(has_recent=True)
     svc, positions_repo, _ = _make_service(orders_repo=orders_repo)
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
 
     with (
         patch(
@@ -1095,7 +1078,7 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
     holdings)."""
     orders_repo = _orders_repo(has_recent=False)
     svc, positions_repo, _ = _make_service(orders_repo=orders_repo)
-    positions_repo.list_open_positions = AsyncMock(return_value=[])
+    positions_repo.list_held_positions = AsyncMock(return_value=[])
 
     with (
         patch(
@@ -1138,7 +1121,7 @@ async def test_marked_zero_still_represents_held_inventory() -> None:
     ):
         await svc._sync_positions_and_tracking()
     repo.set_position_size.assert_awaited_once()
-    repo.delete_position.assert_not_awaited()
+    repo.delete_position_if_unchanged.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1154,7 +1137,7 @@ async def test_initial_inventory_failure_is_not_reported_as_applied() -> None:
 @pytest.mark.asyncio
 async def test_required_position_read_failure_prevents_writes_and_reports_failure() -> None:
     svc, repo, _ = _make_service()
-    repo.list_open_positions.side_effect = ValueError("SYNTHETIC_POSITION_SECRET")
+    repo.list_held_positions.side_effect = ValueError("SYNTHETIC_POSITION_SECRET")
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
@@ -1169,12 +1152,12 @@ async def test_required_position_read_failure_prevents_writes_and_reports_failur
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["set_position_size", "delete_position"])
+@pytest.mark.parametrize("failure", ["set_position_size", "delete_position_if_unchanged"])
 async def test_required_position_write_failure_is_reported(failure) -> None:
     svc, repo, _ = _make_service()
     getattr(repo, failure).side_effect = ValueError("SYNTHETIC_POSITION_SECRET")
-    if failure == "delete_position":
-        repo.list_open_positions.return_value = [
+    if failure == "delete_position_if_unchanged":
+        repo.list_held_positions.return_value = [
             PositionRecord(
                 user_id=FUNDER,
                 condition_id="condition-old",
@@ -1208,7 +1191,7 @@ async def test_pending_fill_keeps_existing_position_under_reconciler_ownership(
         scope["side"] in (None, side)
     )
     svc, repo, store = _make_service(orders_repo=orders)
-    repo.list_open_positions.return_value = [
+    repo.list_held_positions.return_value = [
         PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader", Decimal(10), Decimal("0.5"))
     ]
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
@@ -1222,7 +1205,7 @@ async def test_pending_fill_keeps_existing_position_under_reconciler_ownership(
     ):
         assert await svc.sync_now(reason="pending_fill") is True
     repo.set_position_size.assert_not_awaited()
-    repo.delete_position.assert_not_awaited()
+    repo.delete_position_if_unchanged.assert_not_awaited()
     store.evict.assert_not_called()
 
 
@@ -1230,7 +1213,7 @@ async def test_pending_fill_keeps_existing_position_under_reconciler_ownership(
 @pytest.mark.parametrize("condition", [None, "", True])
 async def test_missing_held_position_identity_cannot_be_treated_as_disposal(condition) -> None:
     svc, repo, _ = _make_service()
-    repo.list_open_positions.return_value = [
+    repo.list_held_positions.return_value = [
         PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader", Decimal(10), Decimal("0.5"))
     ]
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
@@ -1244,7 +1227,7 @@ async def test_missing_held_position_identity_cannot_be_treated_as_disposal(cond
     ):
         assert await svc.sync_now(reason="invalid_identity") is False
     repo.set_position_size.assert_not_awaited()
-    repo.delete_position.assert_not_awaited()
+    repo.delete_position_if_unchanged.assert_not_awaited()
     history.delete_many.assert_not_awaited()
 
 
@@ -1252,7 +1235,7 @@ async def test_missing_held_position_identity_cannot_be_treated_as_disposal(cond
 @pytest.mark.parametrize(("size", "owner"), [("12", None), ("8", "leader-a")])
 async def test_manual_increment_does_not_inherit_a_copied_position_owner(size, owner) -> None:
     svc, repo, _ = _make_service()
-    repo.list_open_positions.return_value = [
+    repo.list_held_positions.return_value = [
         PositionRecord(FUNDER, "0xcond1", "0xasset1", "leader-a", Decimal(10), Decimal(".5"))
     ]
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())

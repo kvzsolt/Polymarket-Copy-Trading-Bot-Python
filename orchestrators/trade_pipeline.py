@@ -234,6 +234,17 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
         if reservation_service is not None:
             context.extra["reservation_service"] = reservation_service
     if svc is None:
+        from services.execution.recovery_inventory import CompleteRecoveryInventoryReader
+
+        holdings_reader = getattr(context, "holdings_reader", None)
+        recovery_inventory = (
+            CompleteRecoveryInventoryReader(
+                holdings_reader,
+                wallet_by_user={context.user_id: context.wallet_address},
+            )
+            if holdings_reader is not None
+            else None
+        )
         svc = ReconciliationService(
             orders_repo=context.orders_repo,
             fills_repo=context.fills_repo,
@@ -260,6 +271,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             telemetry=_execution_telemetry(context),
             leader_sell_target_service=context.extra.get("leader_sell_target_service"),
             accounted_fill_reader=context.extra.get("accounted_fill_reader"),
+            recovery_inventory=recovery_inventory,
         )
         context.extra["_reconciliation_service"] = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
@@ -1281,7 +1293,7 @@ async def _fetch_balance_snapshot(
     if free_cash is None or free_cash < 0:
         return None
     _seed_position_pct_cap_snapshot_if_stale(context, free_cash)
-    positions = await context.positions_repo.list_open_positions(context.user_id)
+    positions = await context.positions_repo.list_held_positions(context.user_id)
     return AccountRiskSnapshotBuilder(
         context.market_quotes,
         max_age_seconds=_trade_config(context).market_data.executable_quote_max_age_seconds,
@@ -1529,6 +1541,8 @@ async def _reconcile_one(
     context: TradingContext,
     record: dict,
     side: str,
+    *,
+    startup_recovery: bool = False,
 ) -> bool:
     """Reconcile a single unconfirmed BUY/SELL via the canonical reconciler.
 
@@ -1561,6 +1575,7 @@ async def _reconcile_one(
             pnl_tracker=context.pnl_tracker,
             get_position=context.positions_repo.get_position,
             logger=logger,
+            startup_recovery=startup_recovery,
         )
     return await reconciler.reconcile_trade_record(
         record,
@@ -1569,6 +1584,7 @@ async def _reconcile_one(
         pnl_tracker=context.pnl_tracker,
         get_position=context.positions_repo.get_position,
         logger=logger,
+        startup_recovery=startup_recovery,
         # Phase 4 — let the reconciler release the daily-cap reservation
         # for BUYs that terminally cancelled without filling.
         balance_regime=getattr(context, "balance_regime", None),
@@ -1580,6 +1596,7 @@ async def reconcile_submitted_unconfirmed(
     *,
     max_age_seconds: float = 300.0,
     skip_locked_scopes: bool = False,
+    startup_recovery: bool = False,
 ) -> int:
     """Poll exchange for BUY and SELL orders stuck at submitted_unconfirmed.
 
@@ -1717,7 +1734,9 @@ async def reconcile_submitted_unconfirmed(
                 return False
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
-                    return await _reconcile_one(context, record, side)
+                    return await _reconcile_one(
+                        context, record, side, startup_recovery=startup_recovery
+                    )
 
         if not records:
             return 0
@@ -1727,6 +1746,8 @@ async def reconcile_submitted_unconfirmed(
         batch_reconciled = 0
         for result in results:
             if isinstance(result, Exception):
+                if startup_recovery:
+                    raise result
                 logger.warning("reconcile_batch_error | side=%s error=%s", side, repr(result))
                 continue
             if result:

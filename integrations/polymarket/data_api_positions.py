@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 
 from clients.network.http_client import AsyncHttpClient
 from clients.network.decimal_json_reader import DecimalJsonReader
+from domain.position_lifecycle import PositionLifecyclePolicy
 from utils.logger import get_logger
 
 logger = get_logger("DataApiPositions")
@@ -96,7 +97,15 @@ class DataApiPositionSizeReader:
                     raise ValueError("Repeated holdings identity")
                 seen.add(asset)
                 parsed: dict[str, object] = dict(row)
-                parsed.update(asset=asset, size=size)
+                classification = PositionLifecyclePolicy().classify(
+                    redeemable=row.get("redeemable"), settlement_price=row.get("curPrice")
+                )
+                parsed.update(
+                    asset=asset,
+                    size=size,
+                    lifecycle=classification.lifecycle.value,
+                    settlement_price=classification.settlement_price,
+                )
                 rows.append(parsed)
             if len(page) < self._PAGE_SIZE:
                 return rows

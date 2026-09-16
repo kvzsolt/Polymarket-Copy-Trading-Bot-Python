@@ -38,7 +38,7 @@
 
 name: beta-quiet
 wallet: "0x31864feb9d25dee93728c6225ba891530967e9ca"
-enabled: true
+enabled: false
 
 task:
   monitoring_mode: normal

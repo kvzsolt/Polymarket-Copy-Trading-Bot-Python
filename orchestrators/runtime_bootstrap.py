@@ -45,6 +45,8 @@ from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 from storage.postgres.trading_control_repo import TradingControlRepo
 from utils.fetchData import _get_http_client, fetch_data
 from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
+from orchestrators.account_inventory_startup import InventoryRuntimeRefresh
+from collections.abc import Awaitable, Callable
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -121,8 +123,8 @@ async def startup_reconcile_unconfirmed(
             continue
 
         try:
-            trade_n = await reconcile_submitted_unconfirmed(context)
-            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            trade_n = await reconcile_submitted_unconfirmed(context, startup_recovery=True)
+            risk_n = await reconcile_unconfirmed_risk_orders(context, startup_recovery=True)
             reservation_n = await _release_expired_reservations_for_context(context)
             total_n = trade_n + risk_n + reservation_n
             if total_n > 0:
@@ -191,6 +193,7 @@ class UserRuntimeState:
     position_drift_service: "object | None" = None
     # Manual sync service — funder activity + position seeder (TS port).
     manual_sync_service: ManualSyncService | None = None
+    inventory_refresh: InventoryRuntimeRefresh | None = None
     # Cached durable control state; refreshed off the order hot path.
     trading_permission: TradingPermissionService | None = None
     # Part C — operator telemetry emitters shared by every collaborator this
@@ -400,6 +403,13 @@ def build_user_state(
     # Manual sync service — detects off-bot trades on the funder wallet and
     # seeds positions table from venue on startup. Optional so paper-only
     # contexts that lack a funder address skip the service cleanly.
+    inventory_refresh = InventoryRuntimeRefresh(
+        user_id=runtime_user.user_id,
+        wallet=runtime_user.wallet.funder_address,
+        positions=positions_repo,
+        manager=position_manager,
+        drift=position_drift_service,
+    )
     manual_sync_service = _build_manual_sync_service(
         funder_address=runtime_user.wallet.funder_address,
         user_id=runtime_user.user_id,
@@ -409,6 +419,7 @@ def build_user_state(
         orders_repo=order_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
+        on_positions_synced=inventory_refresh.refresh,
     )
 
     return UserRuntimeState(
@@ -430,6 +441,7 @@ def build_user_state(
         execution_coordinator=execution_coordinator,
         position_drift_service=position_drift_service,
         manual_sync_service=manual_sync_service,
+        inventory_refresh=inventory_refresh,
         trading_permission=trading_permission,
         telemetry=emitters,
         leader_performance=PostgresLeaderPerformanceReader(pool),
@@ -485,6 +497,7 @@ def _build_manual_sync_service(
     orders_repo: OrdersRepo | None = None,
     position_drift_service=None,
     reservation_service=None,
+    on_positions_synced: Callable[[], Awaitable[None]] | None = None,
 ):
     """Build the per-user ManualSyncService. Returns None when prerequisites are missing."""
     if not funder_address or market_store is None:
@@ -504,6 +517,7 @@ def _build_manual_sync_service(
         orders_repo=orders_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
+        on_positions_synced=on_positions_synced,
     )
 
 
@@ -972,6 +986,9 @@ async def build_trading_context(
                 type(_exc).__name__,
             )
             raise RuntimeError("reservation ownership recovery unavailable") from None
+    inventory_refresh = getattr(user_state, "inventory_refresh", None)
+    if inventory_refresh is not None:
+        inventory_refresh.bind_readiness(context.readiness)
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)
@@ -1040,7 +1057,10 @@ async def startup_drift_check(
                 len(report.paused_scopes),
             )
 
-    readiness.update(drift_ok=all_clean)
+    for user_id, clean in per_user.items():
+        readiness.update_account_drift(user_id, clean)
+    if not per_user:
+        readiness.update(drift_ok=all_clean)
     return per_user
 
 

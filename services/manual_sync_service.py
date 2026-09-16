@@ -49,6 +49,7 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable, Sized
 from decimal import Decimal, InvalidOperation
+from domain.position_lifecycle import PositionLifecycle, PositionLifecyclePolicy
 from domain.position_ownership import PositionOwnership
 from typing import TYPE_CHECKING, Any
 
@@ -92,6 +93,10 @@ _DEFAULT_OWN_TRADE_DEDUP_WINDOW_SECONDS = 300.0
 _DEFAULT_OWN_FILL_SEED_HOLDOFF_SECONDS = 45.0
 
 
+class ManualPositionSyncDeferred(RuntimeError):
+    """Indicate that concurrent inventory ownership prevented a complete alignment."""
+
+
 class ManualSyncService:
     """Funder-scoped manual-trade detector + venue→DB position seeder."""
 
@@ -112,11 +117,14 @@ class ManualSyncService:
         position_drift_service: Any | None = None,
         reservation_service: Any | None = None,
         positions_fetcher: Callable[[str], Awaitable[list[dict[str, object]] | None]] | None = None,
+        on_positions_synced: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        """Inject funder-scoped storage, snapshot reads, and runtime refresh boundaries."""
         if not funder_address:
             raise ValueError("ManualSyncService requires a non-empty funder_address")
         self._funder = funder_address.lower()
         self._positions_fetcher = positions_fetcher
+        self._on_positions_synced = on_positions_synced
         # user_id is the positions_repo key — must match the casing used by
         # the rest of the runtime (RuntimeUser.user_id = checksum funder).
         # Lowercasing here would create rows the drift check / coordinator
@@ -227,6 +235,8 @@ class ManualSyncService:
                 )
             try:
                 await self._sync_positions_and_tracking()
+                if self._on_positions_synced is not None:
+                    await self._on_positions_synced()
             except Exception as exc:
                 logger.warning(
                     "manual_sync_positions_failed | error=%s",
@@ -533,11 +543,33 @@ class ManualSyncService:
     async def _sync_positions_and_tracking(self) -> None:
         if self._positions_fetcher is None:
             raise RuntimeError("Manual inventory snapshot reader is not bound")
+        try:
+            persisted = tuple(await self._positions_repo.list_held_positions(self._user_id))
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_positions_repo_list_failed | error_type=%s",
+                type(exc).__name__,
+            )
+            raise RuntimeError("Canonical positions are unavailable") from None
         positions = await self._positions_fetcher(self._funder)
         if positions is None:
             raise RuntimeError("Manual inventory snapshot is unavailable")
 
-        live = [p for p in positions if self._is_held_position(p)]
+        lifecycle_policy = PositionLifecyclePolicy()
+        classified = [
+            (
+                position,
+                lifecycle_policy.classify(
+                    redeemable=position.get("redeemable"),
+                    settlement_price=position.get("curPrice"),
+                ),
+            )
+            for position in positions
+        ]
+        held = [
+            (position, state) for position, state in classified if self._is_held_position(position)
+        ]
+        live = [position for position, _state in held]
         for position in live:
             self._validate_held_identity(position)
 
@@ -555,20 +587,11 @@ class ManualSyncService:
 
         # 2. Upsert canonical positions_repo rows + emit discrepancy log when
         #    the local tracked size disagrees with the venue.
-        try:
-            persisted = await self._positions_repo.list_open_positions(self._user_id)
-        except Exception as exc:
-            logger.warning(
-                "manual_sync_positions_repo_list_failed | error_type=%s",
-                type(exc).__name__,
-            )
-            raise RuntimeError("Canonical positions are unavailable") from None
-
         persisted_by_token: dict[str, Any] = {str(record.token_id): record for record in persisted}
         live_tokens: set[str] = set()
         increased_position_scopes = 0
 
-        for pos in live:
+        for pos, classification in held:
             token_id = str(pos.get("asset") or pos.get("tokenId") or "").strip()
             condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
             live_tokens.add(token_id)
@@ -645,9 +668,13 @@ class ManualSyncService:
                         venue_size,
                     ),
                     expected_size=local_size,
+                    lifecycle=classification.lifecycle,
+                    settlement_price=classification.settlement_price,
                 )
                 if venue_size_increased:
                     increased_position_scopes += 1
+            except ManualPositionSyncDeferred:
+                raise
             except Exception as exc:
                 logger.warning(
                     "manual_sync_positions_repo_upsert_failed | error_type=%s",
@@ -655,78 +682,50 @@ class ManualSyncService:
                 )
                 raise RuntimeError("Position synchronization failed") from None
 
-        # Guard: skip deletion when the Data-API response cannot be trusted as a
-        # complete picture of the user's holdings.  Two signals:
-        #
-        # (a) Empty raw response — almost certainly a transient API failure, not
-        #     "the user has zero positions".  Wiping all local rows on an empty
-        #     response risks runaway risk-monitor probes against retired tokens.
-        #
-        # (b) Raw response smaller than local tracked count — suggests a paginated
-        #     or truncated response.  Skipping avoids deleting a position whose
-        #     token was transiently absent from this single snapshot.
-        #
-        # In both cases we log a warning and defer deletion to the next sync when
-        # the API hopefully returns a complete picture. A zero market value
-        # does not establish disposal; positive holdings remain tracked.
         deleted_position_scopes = 0
-        _can_delete: bool
-        if not positions:
-            if persisted_by_token:
-                logger.warning(
-                    "manual_sync_deletion_skipped_empty_api | local_count=%d user=%s",
-                    len(persisted_by_token),
+        for token_id, record in persisted_by_token.items():
+            if token_id in live_tokens:
+                continue
+            condition_id = str(getattr(record, "condition_id", "") or "").strip()
+            if not token_id or not condition_id:
+                continue
+            if await self._has_pending_bot_trade(token_id=token_id, side=None):
+                logger.info("manual_sync_disposal_deferred_pending_fill | token=%s", token_id)
+                continue
+            try:
+                deleted = await self._positions_repo.delete_position_if_unchanged(
                     self._user_id,
+                    condition_id,
+                    token_id=token_id,
+                    expected_size=record.size_tokens,
                 )
-            _can_delete = False
-        elif len(positions) < len(persisted_by_token):
-            logger.warning(
-                "manual_sync_deletion_skipped_sparse_api | api_count=%d local_count=%d user=%s",
-                len(positions),
-                len(persisted_by_token),
-                self._user_id,
-            )
-            _can_delete = False
-        else:
-            _can_delete = True
-
-        if _can_delete:
-            for token_id, record in persisted_by_token.items():
-                if token_id in live_tokens:
-                    continue
-                condition_id = str(getattr(record, "condition_id", "") or "").strip()
-                if not token_id or not condition_id:
-                    continue
-                if await self._has_pending_bot_trade(token_id=token_id, side=None):
-                    logger.info("manual_sync_disposal_deferred_pending_fill | token=%s", token_id)
-                    continue
+                if deleted is not True:
+                    raise ManualPositionSyncDeferred(
+                        "Position disposal deferred by concurrent ownership"
+                    )
+                deleted_position_scopes += 1
                 try:
-                    await self._positions_repo.delete_position(
-                        self._user_id,
-                        condition_id,
-                        token_id=token_id,
-                    )
-                    deleted_position_scopes += 1
-                    try:
-                        self._market_store.evict(token_id)
-                    except Exception as exc:
-                        logger.debug(
-                            "manual_sync_cache_evict_failed | token=%s error=%s",
-                            token_id,
-                            redact_error_detail(exc),
-                        )
-                    logger.info(
-                        "manual_sync_deleted_stale_position | user=%s cond=%s token=%s",
-                        self._user_id,
-                        condition_id,
-                        token_id,
-                    )
+                    self._market_store.evict(token_id)
                 except Exception as exc:
-                    logger.warning(
-                        "manual_sync_positions_repo_delete_failed | error_type=%s",
-                        type(exc).__name__,
+                    logger.debug(
+                        "manual_sync_cache_evict_failed | token=%s error=%s",
+                        token_id,
+                        redact_error_detail(exc),
                     )
-                    raise RuntimeError("Position synchronization failed") from None
+                logger.info(
+                    "manual_sync_deleted_stale_position | user=%s cond=%s token=%s",
+                    self._user_id,
+                    condition_id,
+                    token_id,
+                )
+            except ManualPositionSyncDeferred:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "manual_sync_positions_repo_delete_failed | error_type=%s",
+                    type(exc).__name__,
+                )
+                raise RuntimeError("Position synchronization failed") from None
 
         await self._reap_expired_reservations_after_position_change(
             changed_scopes=increased_position_scopes + deleted_position_scopes,
@@ -741,6 +740,8 @@ class ManualSyncService:
         avg_entry_price: Decimal,
         leader_id: str | None,
         expected_size: Decimal | None = None,
+        lifecycle: PositionLifecycle = PositionLifecycle.UNKNOWN,
+        settlement_price: Decimal | None = None,
     ) -> None:
         # P1-b: route the absolute venue-size align through the locked
         # ``set_position_size`` so a reconciler ``apply_fill`` delta committing
@@ -756,13 +757,16 @@ class ManualSyncService:
             avg_entry_price=avg_entry_price,
             leader_id=leader_id,
             expected_size=expected_size,
+            lifecycle=lifecycle,
+            settlement_price=settlement_price,
         )
-        if written is False:
+        if written is not True:
             logger.info(
                 "manual_sync_align_deferred_concurrent_change | token=%s cond=%s",
                 token_id,
                 condition_id,
             )
+            raise ManualPositionSyncDeferred("Position alignment deferred by concurrent inventory")
 
     async def _reap_expired_reservations_after_position_change(
         self,

@@ -89,7 +89,7 @@ def _config(**overrides):
 
 
 from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo  # noqa: E402
-from storage.postgres.positions_repo import PositionsRepo  # noqa: E402
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo  # noqa: E402
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -978,7 +978,7 @@ async def test_max_position_pct_caps_cash_only_even_when_balance_policy_disabled
             config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         await ctx.positions_repo.upsert_position(
-            SimpleNamespace(
+            PositionRecord(
                 user_id="user1",
                 condition_id="cond1",
                 token_id=FAKE_TOKEN_ID,
@@ -1053,7 +1053,7 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
             config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         await ctx.positions_repo.upsert_position(
-            SimpleNamespace(
+            PositionRecord(
                 user_id="user1",
                 condition_id="cond1",
                 token_id=FAKE_TOKEN_ID,

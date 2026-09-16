@@ -28,7 +28,7 @@ attrs==26.1.0
     #   ccxt
 bitarray==3.10.0
     # via eth-account
-ccxt==4.5.75
+ccxt==4.5.78
     # via polymarket-copy-trading-bot (pyproject.toml)
 certifi==2026.6.17
     # via

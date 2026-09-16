@@ -7,6 +7,7 @@ from typing import Protocol
 
 from domain.cost_basis import PositionCostBasis
 from domain.performance import PerformanceUnits
+from domain.position_lifecycle import PositionClassification, PositionLifecycle
 from services.portfolio_valuation import CachedMarkPolicy, MarketQuoteSource
 
 
@@ -87,6 +88,7 @@ class AccountRiskSnapshotBuilder:
             raise ValueError("Account cash must be finite and non-negative")
         equity = cash
         total_cost = market_cost = leader_cost = Decimal(0)
+        active_position_count = 0
         marks_known = total_known = market_known = leader_known = True
         for position in positions:
             if position.user_id != account:
@@ -96,6 +98,19 @@ class AccountRiskSnapshotBuilder:
                 raise ValueError("Position shares must be finite and non-negative")
             if shares == 0:
                 continue
+            if (
+                getattr(position, "lifecycle", PositionLifecycle.UNKNOWN)
+                == PositionLifecycle.SETTLED
+            ):
+                settlement = PositionClassification(
+                    PositionLifecycle.SETTLED, getattr(position, "settlement_price", None)
+                ).settlement_price
+                if settlement is None:
+                    marks_known = False
+                else:
+                    equity += shares * settlement
+                continue
+            active_position_count += 1
             mark = self._marks.midpoint(self._quotes, position.token_id)
             if mark is None:
                 marks_known = False
@@ -121,5 +136,5 @@ class AccountRiskSnapshotBuilder:
             total_exposure_usdc=total_cost if total_known else None,
             market_exposure_usdc=market_cost if market_known else None,
             leader_exposure_usdc=leader_cost if leader_known else None,
-            open_positions_count=len(positions),
+            open_positions_count=active_position_count,
         )

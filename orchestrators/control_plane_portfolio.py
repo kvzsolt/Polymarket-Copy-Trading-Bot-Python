@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from domain.cost_basis import PositionCostBasis
+from domain.position_lifecycle import PositionClassification, PositionLifecycle
 from services.control_plane.valuation import CachedMarkPolicy, MarketQuoteSource
 
 from services.control_plane.portfolio import (
@@ -37,10 +38,10 @@ class PositionRecord(Protocol):
 
 
 class PositionReader(Protocol):
-    """Read durable open positions for one follower account."""
+    """Read complete held inventory for one follower account."""
 
-    async def list_open_positions(self, user_id: str) -> Sequence[PositionRecord]:
-        """Return current non-dust position records."""
+    async def list_held_positions(self, user_id: str) -> Sequence[PositionRecord]:
+        """Return positive holdings including settled redemption claims."""
 
         ...
 
@@ -73,7 +74,7 @@ class TradingContextPortfolioSource:
         Args:
             follower_account: Canonical account/user scope.
             wallet: Bound collateral wallet alias.
-            positions: Durable open-position reader.
+            positions: Complete durable held-inventory reader.
             reservations: Durable active-reservation reader.
             balance: Existing collateral adapter.
         """
@@ -94,15 +95,35 @@ class TradingContextPortfolioSource:
         cash_raw = await self._balance.read(self._wallet)
         if cash_raw is None:
             raise RuntimeError("follower collateral is unavailable")
-        positions = tuple(await self._positions.list_open_positions(self._follower_account))
+        positions = tuple(await self._positions.list_held_positions(self._follower_account))
         reserved_raw = await self._reservations.sum_active_quote_for_user(self._follower_account)
         cash = self._decimal(cash_raw, name="cash")
         reserved = self._decimal(reserved_raw, name="reserved")
         positions_cost = Decimal(0)
         inventory_value = Decimal(0)
+        settlement_value = Decimal(0)
+        settlement_complete = True
+        active_position_count = 0
         costs_complete = marks_complete = True
         for position in positions:
             shares = self._decimal(position.size_tokens, name="position size")
+            if shares == 0:
+                continue
+            if (
+                getattr(position, "lifecycle", PositionLifecycle.UNKNOWN)
+                == PositionLifecycle.SETTLED
+            ):
+                settlement = PositionClassification(
+                    PositionLifecycle.SETTLED, getattr(position, "settlement_price", None)
+                ).settlement_price
+                if settlement is None:
+                    marks_complete = settlement_complete = False
+                else:
+                    value = shares * settlement
+                    settlement_value += value
+                    inventory_value += value
+                continue
+            active_position_count += 1
             entry = PositionCostBasis.from_value(position.avg_entry_price).entry_price
             mark = (
                 self._marks.midpoint(self._quotes, position.token_id)
@@ -124,7 +145,8 @@ class TradingContextPortfolioSource:
             reserved_usdc=reserved,
             positions_cost_usdc=positions_cost if costs_complete else None,
             marked_inventory_usdc=inventory_value if marks_complete else None,
-            position_count=len(positions),
+            settled_inventory_usdc=settlement_value if settlement_complete else None,
+            position_count=active_position_count,
         )
 
     @staticmethod

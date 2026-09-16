@@ -1339,6 +1339,7 @@ async def reconcile_unconfirmed_risk_orders(
     context: TradingContext,
     *,
     skip_locked_scopes: bool = False,
+    startup_recovery: bool = False,
 ) -> int:
     """Converge risk-monitor-originated submitted_unconfirmed SELLs.
 
@@ -1402,6 +1403,7 @@ async def reconcile_unconfirmed_risk_orders(
                 pnl_tracker=context.pnl_tracker,
                 get_position=context.positions_repo.get_position,
                 logger=logger,
+                startup_recovery=startup_recovery,
             )
             if applied:
                 reconciled += 1

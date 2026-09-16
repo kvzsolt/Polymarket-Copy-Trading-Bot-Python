@@ -13,11 +13,12 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from pathlib import Path
+from shutil import copyfile
 
 import pytest
 import yaml
 
-from config.app_config import load_config
+from config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_DIR = ROOT / "config" / "environments" / "live"
@@ -26,6 +27,31 @@ LEADER_WALLETS = (
     "0x31864feb9d25dee93728c6225ba891530967e9ca",
     "0xbca08c1bc204a34f2fddbe47b438b9bd42ac9705",
 )
+
+
+@pytest.fixture(autouse=True)
+def packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep real service/live overlays while isolating the followed-trader fixtures."""
+    config_root = tmp_path / "packaged-config"
+    live_root = config_root / "environments" / "live"
+    live_root.mkdir(parents=True)
+    for service in SERVICE_CONFIG_FILES:
+        source = ROOT / "config" / f"{service}.yml"
+        if source.exists():
+            copyfile(source, config_root / source.name)
+        live_source = LIVE_DIR / f"{service}.yml"
+        if live_source.exists():
+            copyfile(live_source, live_root / live_source.name)
+    traders = config_root / "traders"
+    traders.mkdir()
+    for index, wallet in enumerate(LEADER_WALLETS):
+        name = f"synthetic-trader-{index}"
+        (traders / f"{name}.yml").write_text(
+            yaml.safe_dump({"name": name, "wallet": wallet, "enabled": True}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr("config.app_config._CONFIG_ROOT", config_root)
+    return config_root
 
 
 def _overrides() -> dict:
@@ -244,8 +270,8 @@ def test_live_environment_contains_no_secret_material() -> None:
         assert "token" not in text.lower(), path.name
 
 
-def test_trader_files_exist_for_the_live_roster() -> None:
-    trader_files = sorted((ROOT / "config" / "traders").glob("*.yml"))
+def test_trader_files_exist_for_the_live_roster(packaged_config: Path) -> None:
+    trader_files = sorted((packaged_config / "traders").glob("*.yml"))
     assert len(trader_files) == len(LEADER_WALLETS)
 
     config = load_config(_overrides(), environment="live")

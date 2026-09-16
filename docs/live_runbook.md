@@ -127,3 +127,35 @@ The control is checked immediately before every live CCXT submission and is
 shared by all bot processes using the database. A database outage also blocks
 new live submissions. See `docs/emergency_shutdown.md` for containment and
 recovery.
+
+## Inventory classification and startup recovery
+
+CCXT is pinned to `4.5.78` across the project, lockfile, and requirements files.
+The normal database initializer applies the additive
+`20260916_08_position_lifecycle` migration once. Existing rows start as `unknown`
+and continue to count as active risk until a validated account snapshot arrives.
+The migration preserves shares, cost basis, and fill history.
+
+The public positions API can retain positive shares after settlement. An explicit
+`redeemable: true` classifies that holding as settled; a zero market price alone
+does not. Settled holdings remain in complete inventory reconciliation but leave
+open-position counts, protective monitoring, and active exposure limits. A known
+settlement payout contributes to equity without becoming spendable cash. Missing
+payout evidence leaves equity unavailable. This classification does not redeem
+claims or submit an order.
+
+A complete empty snapshot proves absence. Failed or incomplete snapshots do not.
+Pruning checks current inventory and unresolved order/reservation ownership under
+database locks. Successful synchronization refreshes monitoring and account drift
+readiness. Concurrent changes defer synchronization instead of overwriting fills.
+
+Startup recovery for a confirmed SELL whose local position is already absent
+requires a fresh complete snapshot proving zero shares and durable fill totals.
+It records any missing fill once while preserving zero inventory and unknown cost
+basis. Missing evidence or a concurrent accounting change keeps startup inhibited.
+
+Falcon discovery uses the premium endpoint documented in
+[Trader discovery](trader_discovery.md). Configure the raw API token; the client
+adds the Bearer header. Permanent authentication, permission, schema, or
+configuration failures stop forced `--auto-trader` discovery. A successful search
+with no safe candidates remains empty.

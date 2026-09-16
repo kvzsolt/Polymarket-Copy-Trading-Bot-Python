@@ -70,7 +70,7 @@ def _summary_env() -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
+async def test_startup_retains_stale_rows_for_canonical_synchronization():
     async with _pg_pool() as pool:
         repo = PositionsRepo(pool)
         await repo.upsert_position(
@@ -108,12 +108,15 @@ async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
         )
 
         assert sync.persisted_before == 2
-        assert sync.persisted_after == 1
-        assert sync.pruned_positions == 1
+        assert sync.persisted_after == 2
+        assert sync.pruned_positions == 0
+        assert sync.deferred_positions == 1
         assert (
             await repo.get_position("u1", "cond-live", token_id="11111111111111111111") is not None
         )
-        assert await repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is None
+        assert (
+            await repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is not None
+        )
 
 
 @pytest.mark.asyncio
@@ -351,7 +354,8 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
 
         assert report.healthy is True
         assert report.status == "warning"
-        assert report.position_sync.pruned_positions == 1
+        assert report.position_sync.pruned_positions == 0
+        assert report.position_sync.deferred_positions == 1
         assert report.checks["positionSync"].status == "warning"
         assert report.checks["balance"].status == "warning"
         assert report.checks["orders"].status == "warning"
@@ -402,10 +406,13 @@ async def test_perform_startup_health_check_fails_when_orders_repo_missing(monke
         assert report.checks["atomicLock"].status == "error"
         assert report.status == "error"
         assert report.healthy is False
-        assert (
-            await positions_repo.get_position("u1", "cond-stale", token_id="22222222222222222222")
-            is None
+        retained = await positions_repo.get_position(
+            "u1", "cond-stale", token_id="22222222222222222222"
         )
+        assert retained is not None
+        assert retained.size_tokens == Decimal("7")
+        assert report.position_sync.deferred_positions == 1
+        assert report.position_sync.pruned_positions == 0
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +429,7 @@ class _FakePositionsRepo:
         self._records = list(records)
         self.deleted: list[tuple[str, str, str | None]] = []
 
-    async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
+    async def list_held_positions(self, user_id: str) -> list[PositionRecord]:
         return [r for r in self._records if r.user_id == user_id]
 
     async def delete_position(self, user_id, condition_id, token_id=None):
@@ -457,15 +464,16 @@ async def test_reconcile_skips_prune_when_live_snapshot_fetch_failed():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_still_prunes_on_genuinely_empty_snapshot():
-    """live_positions=[] (genuinely empty, fetch OK) → prune proceeds as before."""
+async def test_early_empty_snapshot_defers_pruning_until_canonical_synchronization():
+    """Even a successful early empty snapshot cannot predate a safe local baseline."""
     repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111")])
 
     sync = await reconcile_persisted_positions_to_live(repo, user_id="u1", live_positions=[])
 
     assert sync.fetch_failed is False
-    assert sync.pruned_positions == 1
-    assert repo.deleted == [("u1", "cond-a", "11111111111111111111")]
+    assert sync.pruned_positions == 0
+    assert sync.deferred_positions == 1
+    assert repo.deleted == []
 
 
 def test_position_sync_check_fetch_failed_reports_error():

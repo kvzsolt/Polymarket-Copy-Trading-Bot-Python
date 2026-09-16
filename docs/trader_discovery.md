@@ -4,16 +4,30 @@ The project has one discovery pipeline and one PostgreSQL roster. The live
 discovery service is the Falcon-backed
 `services.discovery.falcon_discovery_service.FalconDiscoveryService`,
 which consumes `integrations.falcon.client.FalconClient` (the
-`narrative.agent.heisenberg.so` parameterized-agent endpoint) and produces
+premium `retriever.falconapi.net` parameterized-agent endpoint) and produces
 `services.discovery.models.Candidate` rows persisted by
 `storage.postgres.discovery_repo.DiscoveryRepo`. There is no legacy funnel or
 alternate analytics-provider client.
 
-The paid Falcon transport currently retains the vendor hostname shown above
-and the wire field `h_score`; those are external protocol details documented
-by the [paid API reference](https://prediction.heisenberg.so/docs/api-reference/heisenberg-leaderboard),
-not a second application integration. The runtime exposes only Falcon-named
-packages, services, configuration, telemetry, and roster source values.
+The premium endpoint is
+`https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized`.
+Its request uses `Authorization: Bearer <token>` and the `data.results` response
+envelope described by the [Falcon API documentation](https://polygunllc.mintlify.app).
+Supply the raw token, without adding a `Bearer` prefix. An explicit
+`discovery.api.base_url` override remains supported for compatible endpoints.
+
+Premium endpoint access does not imply access to every analytics agent. In
+particular, `discovery.falcon.enable_price_jump_risk: true` requires price-jump
+agent **596**. A `403 AGENT_NOT_ALLOWED` stops discovery without retries or a
+persisted-roster fallback during forced startup. The failure log preserves the
+requested `falcon_agent_id`; the exception also reports `agent_id=596` for this
+case, without provider error bodies or response headers. The shipped operator
+configuration explicitly sets `discovery.falcon.enable_price_jump_risk: false`
+because this plan does not include agent 596. This skips price-jump requests
+and the excessive-price-jump rejection; the other discovery gates still run.
+To restore this check, ask Falcon to enable agent 596 for the configured token
+and set the flag to `true`. The application never disables an enabled check
+automatically after a denial.
 
 Polymarket's public Data API polling and the existing mined/pending on-chain
 detector remain the live leader-signal sources.
@@ -56,12 +70,31 @@ bankroll. No order, approval, or mutation is performed by the discovery path.
 ## Fail-closed provider semantics
 
 - Auth, permission, schema, or configuration errors fail closed.
+- During forced `--auto-trader` startup, permanent provider errors stop the
+  current startup burst and propagate a sanitized failure before any persisted
+  active roster is accepted. A targeted authentication failure never starts a
+  fallback sweep.
 - Transient outage/rate-limit raises propagate as a failed cycle
   (`last_cycle_degraded=True`); the roster is not mass-demoted on missing
   evidence.
 - A successful Falcon run that produces zero safe wallets returns zero
   candidates and does not silently substitute weaker candidates.
 - All provider secrets and error bodies are redacted before logging.
+
+Wallet360's `max_position_pct` is parsed as percentage points in `[0, 100]`
+and normalized to a fraction internally: `21.225` becomes `0.21225` and
+`0.3048` becomes `0.003048`. This is a field-specific conversion, never a
+magnitude-based guess. Win rate, confidence, and market concentration retain
+their fraction contracts. Missing values remain missing; malformed or
+out-of-range values still fail closed, including in historical snapshot rows.
+
+Wallet360's `max_drawdown` remains a finite, non-negative provider metric,
+without rescaling. Falcon's [Wallet360 reference](https://falcon-bot.gitbook.io/falcon-api/market-intelligence/falcon-wallet-360)
+includes values above one (for example, `3.7464`), so the parser does not impose
+an upper bound of one. Such values retain the maximum existing drawdown scoring
+penalty and exceed every supported `max_drawdown` rejection threshold when
+`drawdown_gate_enabled` is true. Missing drawdown remains missing; negative,
+boolean, non-finite, and malformed values fail closed.
 
 ## Roster and hysteresis
 
@@ -258,6 +291,7 @@ Falcon policy lives under `discovery.falcon`; its private transport lives under
 
 ```dotenv
 PMCOPY__DISCOVERY__API__TOKEN=...
+PMCOPY__DISCOVERY__API__BASE_URL=https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized
 PMCOPY__DISCOVERY__FALCON__ENABLED=true
 PMCOPY__DISCOVERY__SCHEDULER__REDISCOVER_SECONDS=900
 PMCOPY__DISCOVERY__HYSTERESIS__MIN_DWELL_SECONDS=21600
@@ -278,6 +312,10 @@ pmcopy rotate-traders --rescore-only
 ranks Polymarket wallets for an explicitly supplied USDC bankroll and prints a
 ranked report. It performs no live trading, accepts no private keys, and never
 mutates venue state.
+
+The standalone ranking CLI reads its token and optional endpoint override from
+`PMCOPY__DISCOVERY__API__TOKEN` and `PMCOPY__DISCOVERY__API__BASE_URL`; it defaults
+to the premium endpoint and does not load the bot's full runtime configuration.
 
 ```bash
 python scripts/rank_copy_wallets.py --funds 500 --top 10

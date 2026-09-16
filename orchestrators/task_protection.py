@@ -2,14 +2,26 @@
 
 from decimal import Decimal
 from collections.abc import Iterable
+from typing import Protocol
 
 from application.trading_context import TradingContext
 from domain.execution import ExecutionOrderType
+from domain.position_lifecycle import PositionLifecycle
 from services.copy_tasks.lots import DurableRiskLot, RiskLotService
 from services.copy_tasks.protective_runtime import TaskProtectivePositionManager
 from services.copy_tasks.protective_exits import ProtectiveExitDecision
 from services.execution.coordinator import ExecutionCoordinator, ExecutionIntent
 from services.market_data_service import MarketDataService
+
+
+class ProtectivePositionReader(Protocol):
+    """Read canonical inventory without taking ownership of durable task lots."""
+
+    async def get_position(
+        self, user_id: str, condition_id: str, *, token_id: str
+    ) -> object | None:
+        """Return the bound outcome holding or None when it is absent."""
+        ...
 
 
 class TaskProtectiveExecutionAdapter:
@@ -20,12 +32,23 @@ class TaskProtectiveExecutionAdapter:
         *,
         market_data: MarketDataService,
         coordinator: ExecutionCoordinator,
+        positions: ProtectivePositionReader,
         slippage_bps: int,
     ) -> None:
         """Inject the account's shared market-data and reservation services."""
         self._market_data = market_data
         self._coordinator = coordinator
+        self._positions = positions
         self._slippage_bps = slippage_bps
+
+    async def is_settled(self, lot: DurableRiskLot) -> bool:
+        """Exclude only explicit settlement; missing evidence preserves risk checks."""
+        position = await self._positions.get_position(
+            lot.follower_account, lot.lot.market_id, token_id=lot.lot.outcome_id
+        )
+        return (
+            getattr(position, "lifecycle", PositionLifecycle.UNKNOWN) == PositionLifecycle.SETTLED
+        )
 
     async def executable_bid(self, lot: DurableRiskLot) -> Decimal:
         """Return a fresh best bid from the existing executable-book authority."""
@@ -105,6 +128,7 @@ class TaskProtectiveRuntimeBindings:
                 adapter = TaskProtectiveExecutionAdapter(
                     market_data=context.market_data_service,
                     coordinator=context.execution_coordinator,
+                    positions=context.positions_repo,
                     slippage_bps=self._slippage_bps,
                 )
                 manager = TaskProtectivePositionManager(
@@ -112,6 +136,7 @@ class TaskProtectiveRuntimeBindings:
                     lots=self._lots,
                     quotes=adapter,
                     exits=adapter,
+                    lifecycle=adapter,
                 )
                 self._managers[context.user_id] = manager
             context.task_position_manager = manager

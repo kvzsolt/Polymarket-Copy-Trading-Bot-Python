@@ -29,9 +29,9 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
     runtime_ccxt = [
         dependency for dependency in runtime_requirements if dependency.startswith("ccxt")
     ]
-    assert project_ccxt == ["ccxt==4.5.75"]
-    assert exported_ccxt == ["ccxt==4.5.75"]
-    assert runtime_ccxt == ["ccxt==4.5.75"]
+    assert project_ccxt == ["ccxt==4.5.78"]
+    assert exported_ccxt == ["ccxt==4.5.78"]
+    assert runtime_ccxt == ["ccxt==4.5.78"]
 
     # The official SDK must not reappear in any dependency surface.
     for banned in ("polymarket-client", "py-clob-client"):
@@ -40,3 +40,38 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
         assert not any(banned in dep for dep in runtime_requirements), (
             f"{banned} in requirements.runtime.txt"
         )
+
+
+def test_standalone_constraint_uses_the_verified_exact_release() -> None:
+    """Prevent targeted installs from selecting an unverified patch release."""
+
+    root = Path(__file__).resolve().parents[1]
+    constraints = [
+        line.strip()
+        for line in (root / "requirements.ccxt.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert constraints == ["ccxt==4.5.78"]
+
+
+def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
+    """Keep the lockfile package and root requirement aligned with the manifest."""
+
+    root = Path(__file__).resolve().parents[1]
+    packages = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))["package"]
+    locked_versions = [package["version"] for package in packages if package["name"] == "ccxt"]
+    project = next(
+        package for package in packages if package["name"] == "polymarket-copy-trading-bot"
+    )
+    ccxt_requirements = [
+        dependency["specifier"]
+        for dependency in project["metadata"]["requires-dist"]
+        if dependency["name"] == "ccxt"
+    ]
+
+    assert locked_versions == ["4.5.78"]
+    assert ccxt_requirements == ["==4.5.78"]
+    assert not {"polymarket-client", "py-clob-client"}.intersection(
+        package["name"] for package in packages
+    )
