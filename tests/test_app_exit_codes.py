@@ -44,11 +44,14 @@ def test_startup_reuses_one_config_snapshot_for_doctor_and_bootstrap():
     assert '"live",' in source
     assert "config=startup_config" in source
     assert "auto_trader=startup_policy.auto_trader" in source
-    assert "build_app(config=startup_config)" in source
+    assert "build_app(config=startup_config, provider_runtime=provider_runtime)" in source
+    assert source.index("ProviderRuntime.from_config(startup_config)") < source.index(
+        "await run_doctor_checks("
+    )
 
 
 def test_dunder_main_exits_with_main_result():
     # __main__ must propagate main()'s return code, not swallow it.
     src = Path(app.__file__).read_text(encoding="utf-8") if app.__file__ else ""
     assert "sys.exit(exit_code)" in src
-    assert "loop.run_until_complete(main_task) or 0" in src
+    assert "ApplicationRunner(loop_factory=new_event_loop).run(main()) or 0" in src

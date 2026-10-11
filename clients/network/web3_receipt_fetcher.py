@@ -42,7 +42,9 @@ class Web3ReceiptStatusFetcher:
         self._adapter = web3_adapter
 
     @classmethod
-    def from_rpc_url(cls, primary: str, fallback: str = "") -> "Web3ReceiptStatusFetcher":
+    def from_rpc_url(
+        cls, primary: str, fallback: str = "", *, provider_runtime=None
+    ) -> "Web3ReceiptStatusFetcher":
         """Build a fetcher over the read-only primary+fallback RPC provider.
 
         Args:
@@ -60,6 +62,8 @@ class Web3ReceiptStatusFetcher:
 
         if not str(primary or "").strip():
             raise ValueError("a primary RPC endpoint is required for receipt confirmation")
+        if provider_runtime is not None:
+            return cls(AsyncWeb3Adapter(provider_runtime.web3()))
         provider = FallbackWeb3Provider(str(primary).strip(), str(fallback or "").strip())
         return cls(AsyncWeb3Adapter(provider.get_web3()))
 

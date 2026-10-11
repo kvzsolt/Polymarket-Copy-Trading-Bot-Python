@@ -49,6 +49,7 @@ class TransportReceipt:
     wall_timestamp_ms: int
     monotonic_ns: int
     boot_id: str
+    wall_timestamp_ns: int | None = None
 
     def __post_init__(self) -> None:
         """Require exact non-negative clock values and a bounded session identity."""
@@ -57,6 +58,11 @@ class TransportReceipt:
                 raise ValueError("Receipt clocks must be non-negative integers")
         if self.wall_timestamp_ms >= 253402300800000:
             raise ValueError("Receipt wall time is outside the supported UTC range")
+        if self.wall_timestamp_ns is not None and (
+            type(self.wall_timestamp_ns) is not int or self.wall_timestamp_ns < 0
+            or self.wall_timestamp_ns // 1_000_000 != self.wall_timestamp_ms
+        ):
+            raise ValueError("Native receipt sample must agree with its millisecond projection")
         if (
             not isinstance(self.boot_id, str)
             or not 1 <= len(self.boot_id) <= 128

@@ -105,7 +105,45 @@ class StartupHealthReport:
         }
 
 
-async def _check_rpc(rpc_url: str) -> StartupHealthCheckItem:
+class AdmittedRpcHealthProbe:
+    """Run startup RPC readiness through an injected admitted read port."""
+
+    def __init__(self, runtime, rpc_url: str) -> None:
+        """Keep endpoint values private and share the runtime's admission ledger."""
+        self._runtime = runtime
+        self._url = rpc_url
+
+    async def check(self) -> StartupHealthCheckItem:
+        """Return safe readiness metadata; unavailable evidence never becomes healthy."""
+        try:
+            payload = await self._runtime.post_json(
+                self._url,
+                json_body={
+                    "jsonrpc": "2.0",
+                    "method": "eth_blockNumber",
+                    "params": [],
+                    "id": 1,
+                },
+                silent=True,
+            )
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(result, str) or not result.startswith("0x"):
+                raise ValueError("invalid block evidence")
+            int(result, 16)
+            return StartupHealthCheckItem(
+                status="ok", message="RPC endpoint responding", details={"block": result}
+            )
+        except Exception:
+            return StartupHealthCheckItem(
+                status="error",
+                message="Admitted RPC unavailable",
+                details={"reason": "rpc_unavailable"},
+            )
+
+
+async def _check_rpc(rpc_url: str, *, provider_runtime=None) -> StartupHealthCheckItem:
+    if provider_runtime is not None:
+        return await AdmittedRpcHealthProbe(provider_runtime, rpc_url).check()
     try:
         async with ClientSession() as session:
             async with session.post(
@@ -584,10 +622,13 @@ async def perform_startup_health_check(
     rpc_url: str,
     clob_gateway: ClobGateway | None = None,
     require_live_clob: bool = False,
+    provider_runtime: Any = None,
 ) -> StartupHealthReport:
     """Run the fail-closed startup health sequence."""
     rpc_check, polymarket_check, clob_check = await asyncio.gather(
-        _check_rpc(rpc_url),
+        _check_rpc(rpc_url, provider_runtime=provider_runtime)
+        if provider_runtime is not None
+        else _check_rpc(rpc_url),
         _check_polymarket_api(),
         _check_clob_gateway(
             clob_gateway,

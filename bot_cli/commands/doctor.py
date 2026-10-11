@@ -26,6 +26,7 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from collections.abc import Awaitable, Callable
 
 from config.app_config import (
     AppConfig,
@@ -34,6 +35,7 @@ from config.app_config import (
 )
 from config.env import secret_value
 from orchestrators.trader_startup_policy import TraderStartupPolicy
+from orchestrators.provider_runtime import ProviderRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +330,7 @@ async def run_doctor_checks(
     *,
     config: AppConfig | None = None,
     auto_trader: bool = False,
+    provider_runtime: Any = None,
 ) -> dict[str, Any]:
     """Run the structured readiness gate.
 
@@ -518,7 +521,11 @@ async def run_doctor_checks(
     # ----- RPC ----------------------------------------------------------
     from orchestrators.startup_health import _check_rpc
 
-    rpc = await _check_rpc(config.polymarket.rpc_url)
+    rpc = (
+        await _check_rpc(config.polymarket.rpc_url, provider_runtime=provider_runtime)
+        if provider_runtime is not None
+        else await _check_rpc(config.polymarket.rpc_url)
+    )
     if getattr(rpc, "status", "") == "error":
         ctx.blocked(
             "network_rpc",
@@ -821,9 +828,42 @@ def _render_console_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+class AdmittedDoctorCommand:
+    """Compose diagnostic reads behind admission before any provider I/O."""
+
+    def __init__(
+        self,
+        config_loader: Callable[[], AppConfig],
+        provider_factory: Callable[[AppConfig], ProviderRuntime],
+        checks: Callable[..., Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Inject configuration, provider lifetime, and existing diagnostic checks."""
+        self._config_loader = config_loader
+        self._provider_factory = provider_factory
+        self._checks = checks
+
+    async def run(self, mode: str) -> dict[str, Any]:
+        """Return safe blocked evidence when admission or configuration fails."""
+        try:
+            config = self._config_loader()
+            runtime = self._provider_factory(config)
+        except Exception:
+            return {
+                "status": "blocked", "mode": mode,
+                "checks": [{"name": "provider_admission", "status": "blocked",
+                            "detail": "provider configuration or free-budget admission failed",
+                            "fix": "verify provider settings and budget baseline"}],
+            }
+        try:
+            return await self._checks(mode, config=config, provider_runtime=runtime)
+        finally:
+            await runtime.aclose()
+
+
 async def _run_doctor_async(args: argparse.Namespace) -> int:
-    mode = "live" if args.live else "paper"
-    output = await run_doctor_checks(mode)
+    output = await AdmittedDoctorCommand(
+        load_config, ProviderRuntime.from_config, run_doctor_checks
+    ).run("live" if args.live else "paper")
     summary = _render_console_summary(output)
     print(summary)
     print(json.dumps(output, indent=2))

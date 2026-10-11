@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
+from domain.grouped_detection import TraderDetectionState
 
 from services.control_plane.contracts_reads import AccountView, PendingConfirmationStatsView
 from services.control_plane.queries_monitoring import (
@@ -167,6 +168,7 @@ class ControlPlaneRuntimeReads:
     readiness: ReadinessSource | None = None
     metrics: MetricsSource | None = None
     day_start_equity: Callable[[str], Decimal | None] | None = None
+    native_states: Callable[[], tuple[TraderDetectionState, ...] | None] | None = None
 
     @property
     def detection_supported(self) -> bool:

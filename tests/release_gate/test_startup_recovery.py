@@ -68,11 +68,11 @@ def test_app_main_calls_startup_reconcile_before_monitors() -> None:
     assert reconcile_line is not None, "app.py must call startup_reconcile_unconfirmed"
 
     risk_line = _line_of_first_call(tree, "risk_monitor_loop_for_contexts")
-    leader_line = _line_of_first_call(tree, "run_leader_monitor")
+    leader_line = _line_of_first_call(tree, "compose")
 
     for label, line in [
         ("risk_monitor_loop_for_contexts", risk_line),
-        ("run_leader_monitor", leader_line),
+        ("native owner source composition", leader_line),
     ]:
         assert line is not None, f"app.py must schedule {label}"
         assert reconcile_line < line, (
@@ -92,7 +92,7 @@ def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
     reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")
     drift_line = _line_of_first_call(tree, "startup_drift_check")
     risk_line = _line_of_first_call(tree, "risk_monitor_loop_for_contexts")
-    leader_line = _line_of_first_call(tree, "run_leader_monitor")
+    leader_line = _line_of_first_call(tree, "compose")
 
     assert drift_line is not None, "app.py must call startup_drift_check"
     assert reconcile_line is not None
@@ -102,7 +102,7 @@ def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
     )
     for label, line in [
         ("risk_monitor_loop_for_contexts", risk_line),
-        ("run_leader_monitor", leader_line),
+        ("native owner source composition", leader_line),
     ]:
         assert line is not None
         assert drift_line < line, (

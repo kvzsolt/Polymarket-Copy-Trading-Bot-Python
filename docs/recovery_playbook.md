@@ -87,7 +87,63 @@ contract:
    doctor returns `status=ok`. Reference `docs/live_runbook.md` §3 for
    the resume sequence.
 
-## 4. Invariants the operator must not break
+## 4. Automatic no-order-id (lost POST) recovery
+
+A POST whose response was lost leaves an `orders` row at
+`submitted_unconfirmed` with `order_id IS NULL`. That row is
+duplicate-blocking by design, and order-id reconciliation cannot help: the
+venue cannot be asked for "the order for this market" without an id.
+
+The runtime resolves such rows automatically on a bounded supervised
+schedule (`ambiguous-recovery`; cadence
+`reconciliation.ambiguous_recovery.interval_seconds`, default 300s; disable
+with `reconciliation.ambiguous_recovery.enabled=false`). The composition
+lives in `orchestrators/runtime_bootstrap.py`
+(`_build_ambiguous_recovery_service` / `ambiguous_recovery_loop`); the
+evidence adapter is `integrations/polymarket/ccxt_ambiguous_evidence.py`.
+
+Each cycle takes at most `batch_size` (default 100) oldest-first candidates
+and, once a row is past `grace_seconds` (default 120s), runs one strictly
+read-only evidence scan per row:
+
+- the paginated **private fill** history for the row's market;
+- that market's **open order** history;
+- the account's outcome-token **position** and collateral **balance**.
+
+Guarantees:
+
+- **Read-only.** The evidence source holds no collaborator able to submit,
+  cancel, or otherwise mutate a venue, and it never retries the original
+  submission.
+- **Fail-closed.** Any transport error, timeout, incomplete pagination,
+  missing market identity, or unreadable account state marks that part of
+  the scan incomplete. An incomplete scan can support neither a recovered
+  identity nor an absence proof, and it resets the consecutive-absence
+  counter to zero.
+- **No weakened blocks.** Until a row is resolved it stays exactly as
+  duplicate-blocking as before; a scan failure changes nothing.
+- **Thresholds are unchanged.** Recovery still requires the configured
+  `required_absence_scans` (default 3) *consecutive* complete-absence scans,
+  each exhausting both private collections and finding every account check
+  consistent with absence.
+
+Outcomes are recorded in `orders.response_json.ambiguous_recovery`:
+
+| Resolution | Effect |
+| --- | --- |
+| `recovered_order_id` | An authoritative venue order id was attached to the still-`submitted_unconfirmed` row; normal order-id reconciliation then determines fills and terminal state. |
+| `confirmed_absent` | After the required consecutive complete-absence scans the row moves to terminal status `confirmed_absent`, which stops duplicate-blocking. |
+
+The same JSON keeps a bounded tail of scan evidence (`scans[]`, default 8
+entries) with the completeness flags and account-check results observed at
+each attempt.
+
+The manual override still exists: `python bot.py resolve` remains the
+operator path for a row the automatic scan cannot resolve — for example a
+legacy row with no `token_id`/`condition_id`, which fails closed forever by
+design. Prefer it over direct DB edits.
+
+## 5. Invariants the operator must not break
 
 - `startup_reconcile_unconfirmed` runs before any monitor subscription
   opens. Do not skip it even in dry-run mode — the reservation rehydration
@@ -100,12 +156,15 @@ contract:
   is gone; re-submitting it does NOT preserve the idempotency key and
   may duplicate an order. Treat the auto-release as authoritative.
 
-## 5. Related docs and code
+## 6. Related docs and code
 
 - `docs/live_runbook.md` — daily operator workflow.
 - `docs/runbooks/rollback.md` — code-level rollback procedure.
 - `docs/audit/reconcile_state_machine_notes.md` — the full reconciliation
   invariant proof set (post-PR1 audit notes).
 - `orchestrators/runtime_bootstrap.py` — the startup orchestrator that
-  wires `startup_reconcile_unconfirmed` and `startup_drift_check`.
+  wires `startup_reconcile_unconfirmed`, `startup_drift_check`, and the
+  bounded `ambiguous-recovery` loop.
+- `integrations/polymarket/ccxt_ambiguous_evidence.py` — the read-only
+  no-ID evidence adapter (§4).
 - `tests/release_gate/test_startup_recovery.py` — order-of-calls pinning.

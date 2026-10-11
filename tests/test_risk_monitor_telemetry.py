@@ -131,6 +131,39 @@ async def test_filled_protective_exit_reports_triggered_then_filled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_protective_exit_keeps_unknown_fee_in_accounting_and_evidence() -> None:
+    """Immediate risk exits must not publish absent venue fees as measured zero."""
+    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from tests.test_aethertrade_fill_evidence import FillClock
+    from tests.test_aethertrade_fill_evidence_postgres import events
+
+    class UnknownFeeExecution(_FakeExecutionService):
+        async def execute(self, request):
+            result = await super().execute(request)
+            result.fees_paid = None
+            return result
+
+    async with _pg_pool() as pool:
+        await _seed_position(pool)
+        context = _make_context(pool, execution_service=UnknownFeeExecution())
+        context.fills_repo = FillsRepo(
+            pool, evidence_projection=PostgresFillEvidenceProjection(clock=FillClock())
+        )
+        await rehydrate_position_manager(context)
+
+        await run_risk_check_for_context(context)
+
+        fills = await context.fills_repo.list_fills_for_user("u1")
+        exits = [fill for fill in fills if fill["side"] == "SELL"]
+        assert len(exits) == 1
+        assert exits[0]["fee"] is None
+        observed = await events(pool)
+        assert len(observed) == 1
+        assert observed[0]["payload"].get("fee") is None
+        assert observed[0]["payload"].get("source_action_id") is None
+
+
+@pytest.mark.asyncio
 async def test_zero_fill_protective_exit_reports_a_retryable_failure() -> None:
     async with _pg_pool() as pool:
         await _seed_position(pool)

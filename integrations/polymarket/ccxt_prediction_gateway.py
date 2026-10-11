@@ -979,6 +979,20 @@ class CcxtPredictionGateway:
             or None
         )
 
+        def _list(d: dict, *keys: str) -> list[str]:
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, list):
+                    return [str(x) for x in v if x]
+                if isinstance(v, str) and v:
+                    return [v]
+            return []
+
+        trade_ids = _list(raw, "trade_ids", "tradeIds") or _list(info, "trade_ids", "tradeIds")
+        transactions_hashes = _list(raw, "transactions_hashes", "transactionHashes", "transaction_hashes") or _list(
+            info, "transactions_hashes", "transactionHashes", "transaction_hashes"
+        )
+
         if success_marker is False or status in {"canceled", "rejected"}:
             return VenueSubmitResult(
                 success=False,
@@ -987,6 +1001,8 @@ class CcxtPredictionGateway:
                 raw=raw,
                 error=error or "order_rejected",
                 non_retryable=True,
+                trade_ids=trade_ids or None,
+                transactions_hashes=transactions_hashes or None,
             )
         if order_id is None:
             return VenueSubmitResult(
@@ -995,12 +1011,16 @@ class CcxtPredictionGateway:
                 raw=raw,
                 error=error or "ambiguous_success_response_without_order_id",
                 ambiguous_post_failure=True,
+                trade_ids=trade_ids or None,
+                transactions_hashes=transactions_hashes or None,
             )
         return VenueSubmitResult(
             success=True,
             order_id=order_id,
             status=status,
             raw=raw,
+            trade_ids=trade_ids or None,
+            transactions_hashes=transactions_hashes or None,
         )
 
     @staticmethod

@@ -183,6 +183,9 @@ class VenueSubmitResult:
     order_id: str
     status: str
     error_msg: str = ""
+    raw: dict | None = None
+    trade_ids: list[str] | None = None
+    transactions_hashes: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -479,12 +482,19 @@ class ExecutionCoordinator:
             # SUBMITTED_UNCONFIRMED.
             unresolved_status = status
 
+            metadata_dict = {"raw_status": venue_result.status}
+            if venue_result.raw or venue_result.trade_ids or venue_result.transactions_hashes:
+                metadata_dict["response"] = {
+                    "raw": venue_result.raw,
+                    "trade_ids": venue_result.trade_ids,
+                    "transactions_hashes": venue_result.transactions_hashes,
+                }
             await self._transition_order(
                 order.id,
                 from_status=OrderLifecycleStatus.SUBMITTING,
                 to_status=unresolved_status,
                 venue_order_id=venue_result.order_id,
-                metadata={"raw_status": venue_result.status},
+                metadata=metadata_dict,
             )
 
             if unresolved_status in {

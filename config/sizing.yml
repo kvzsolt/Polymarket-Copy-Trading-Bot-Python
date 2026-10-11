@@ -50,7 +50,7 @@ trust_size_multiplier_min: 0.5
 trust_size_multiplier_max: 1.25
 # Percent of follower balance usable for copies, in (0,100]. Lower preserves
 # more cash; higher deploys more bankroll.
-copyable_balance_percent: 75.0
+copyable_balance_percent: 50.0
 # true caps proportional percentage by follower/leader balance ratio. false
 # avoids a leader-balance dependency but can overscale a small follower.
 proportional_balance_cap_enabled: false

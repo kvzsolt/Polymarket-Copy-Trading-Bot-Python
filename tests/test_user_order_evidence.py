@@ -7,6 +7,7 @@ ambiguous FAK reservation is released only from authoritative venue facts.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -294,3 +295,58 @@ async def test_wss_wake_persists_order_evidence_before_reconciliation(
     )
 
     assert call_order == ["record", "reconcile"]
+
+
+@pytest.mark.asyncio
+async def test_wss_wake_records_evidence_while_reconcile_is_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CONFIRMED trade must be stored even when an earlier wake still holds the lock.
+
+    User-channel MATCHED starts reconciliation. MINED and CONFIRMED follow
+    immediately. Dropping those events leaves the order unconfirmed after the
+    trade has already settled.
+    """
+
+    import app
+    import orchestrators.trade_pipeline as pipeline
+
+    call_order: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+    reconciler = MagicMock()
+
+    async def _record(_event: dict[str, Any]) -> bool:
+        call_order.append("record")
+        return True
+
+    async def _reconcile(_context: Any) -> int:
+        call_order.append("reconcile")
+        started.set()
+        await release.wait()
+        return 0
+
+    reconciler.record_user_order_evidence = _record
+    monkeypatch.setattr(pipeline, "get_reconciliation_service", lambda _context: reconciler)
+    monkeypatch.setattr(pipeline, "reconcile_submitted_unconfirmed", _reconcile)
+    context = MagicMock()
+    context.user_id = "user-1"
+    context.extra = {}
+    context.execution_coordinator = None
+    wake = app._build_reconcile_wake_closure(context)
+    first = {
+        "event_type": "trade",
+        "id": "trade-1",
+        "taker_order_id": "0xorder",
+        "status": "MATCHED",
+        "size": "15",
+    }
+    confirmed = {**first, "status": "CONFIRMED"}
+
+    inflight = asyncio.create_task(wake(first))
+    await started.wait()
+    await wake(confirmed)
+    release.set()
+    await inflight
+
+    assert call_order == ["record", "reconcile", "record"]

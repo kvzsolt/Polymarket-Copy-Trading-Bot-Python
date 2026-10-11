@@ -1970,7 +1970,11 @@ async def run_risk_check_for_context(
                             side="SELL",
                             size_tokens=fill_size,
                             price=fill_price,
-                            fee=Decimal(str(result.fees_paid or 0)),
+                            fee=(
+                                None
+                                if result.fees_paid is None
+                                else Decimal(str(result.fees_paid))
+                            ),
                             fill_ts=_fill_ts,
                         ),
                         context.positions_repo,

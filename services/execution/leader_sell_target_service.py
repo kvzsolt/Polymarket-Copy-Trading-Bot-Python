@@ -28,6 +28,12 @@ _TERMINAL_NO_FILL_REASONS = frozenset(
         "terminal_failed",
         "auto_released_ambiguous",
         "auto_release_after_ambiguous_timeout",
+        # Operator-applied terminal no-fill resolutions (``bot resolve --apply``).
+        # Exact matches only: ``manual_resolution:filled`` frees no shares and
+        # must never become eligible.
+        "manual_resolution:canceled",
+        "manual_resolution:expired",
+        "manual_resolution:confirmed_absent",
     }
 )
 

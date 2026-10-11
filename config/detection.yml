@@ -1,87 +1,38 @@
-# Configuration guide — leader trade detection and ingestion.
-# Purpose: set REST polling cadence, batch aggregation/backpressure, and the
-# single optional on-chain accelerator. REST polling remains active in every
-# mode and cross-source claims deduplicate the same mined fill.
-# Options: detection.mode is polling | on_chain_pending | on_chain_confirmed;
-# confirmed_source is mempool_reserved | logs_only; provider is alchemy, or
-# generic only with on_chain_confirmed + logs_only; confidence floors are
-# market_unattributed | pending_probable | mined_authoritative | confirmed_final.
-# Trade-offs: polling is free/simple but slower; logs_only detects authoritative
-# mined fills cheaply at block inclusion; mempool_reserved waits for mining and
-# costs more provider capacity; on_chain_pending is fastest but provisional and
-# can create an orphan copy if the leader transaction never mines.
-#
-# Selection rules:
-# - The base intentionally omits mode, so its typed default is polling.
-# - A non-polling mode requires a secret wss:// URL and a restart.
-# - on_chain_pending requires Alchemy full transaction bodies, hashes_only=false,
-#   confirmed_source=mempool_reserved, and a reachable pending confidence floor.
-# - on_chain_confirmed + logs_only accepts Alchemy or generic WSS and does not
-#   use pending-copy confirmation because its OrderFilled log is already mined.
-# - Any non-polling mode is rejected while copy_trading.copy_tasks.enabled=true;
-#   that v1 route does not yet have polling/on-chain cross-source deduplication.
-# - Deprecated enable_onchain_* flags never select provisional pending copy. If
-#   mode is absent, either true flag derives on_chain_confirmed with a warning;
-#   when mode is explicit, both flags are ignored with a warning.
-#
-# REST leader poll cadence in seconds. Lower detects sooner but increases Data
-# API/CPU load and rate-limit pressure; higher is cheaper but adds copy latency.
+# Configuration guide — grouped native owner evidence in Finland.
+# Options: native.traders mode mined|pending, provider alchemy|infura, exhaustion
+# mined|pause; pending_enabled defaults false; state/recovery bounds are explicit.
+# Trade-offs: bounded mined logs reduce provider load; missed data is recovered
+# as evidence only, and new roster members require a restart before activation.
+# Finland production uses grouped native-owner mined logs only. No REST trade
+# monitor, provisional-copy source, broad exchange log feed, or newHeads feed starts.
+# Legacy fields below remain parse-compatible for offline compatibility tooling;
+# detection.mode/onchain do not select the production entry source.
+# RPC/WSS secrets are resolved only inside the approved shared ProviderRuntime.
+# Native owner settings and roster additions apply after restart. Pending is a
+# read-only observation feature and remains unavailable until its evaluator is wired.
+# Position/inventory/risk reads are separate from leader trade detection.
 fetch_interval: 0.5
-# Merge compatible fills within this many seconds before dispatch. A wider
-# window reduces duplicate/small actions but can blur distinct fills and delay
-# processing; 0 approaches one event per fill.
 aggregate_signal_window_seconds: 1
-# Minimum per-leader spacing between position REST reads. Lower gives fresher
-# SELL-fraction evidence but raises provider load; higher protects rate limits.
 leader_positions_min_fetch_spacing_ms: 250
-# Minimum per-leader spacing between activity REST reads. Lower is more
-# responsive; higher reduces request fan-out and coalesces concurrent readers.
 leader_activity_min_fetch_spacing_ms: 250
-# Bounded polling-batch queue capacity. Higher absorbs bursts using more memory
-# and permits more lag; lower applies backpressure sooner.
 trade_queue_max_batches: 64
 onchain:
-  # Deprecated compatibility flag. false has no effect; true derives confirmed
-  # mode only when no explicit mode exists. Prefer detection.mode.
   enable_onchain_pending_detection: false
-  # Deprecated compatibility flag with the same derivation behavior. It does
-  # not independently start a second runtime.
   enable_onchain_mined_detection: false
-  # on_chain_confirmed variant. mempool_reserved observes Alchemy mempool then
-  # waits for an authoritative receipt (earlier observation, more cost/state);
-  # logs_only copies topic-filtered mined OrderFilled logs (cheaper, later).
-  # Inert in polling; on_chain_pending requires mempool_reserved.
   confirmed_source: mempool_reserved
-  # Primary detection WSS. Empty is safe in polling; a non-polling mode requires
-  # this or pending_tx_ws_url to be a wss:// URL. Supply secret URLs via
-  # PMCOPY__DETECTION__ONCHAIN__ONCHAIN_WS_URL, never tracked YAML.
   onchain_ws_url: ''
-  # Legacy/alternate WSS slot used when onchain_ws_url is empty. Same security
-  # and mode rules; keeping both empty avoids accidental provider activation.
   pending_tx_ws_url: ''
-  # false requests full pending transaction bodies needed to decode calldata;
-  # true saves payload bandwidth but is rejected for on_chain_pending.
   pending_tx_hashes_only: false
-  # Maximum internal queue age for a pending sighting, not total mempool age.
-  # Lower rejects stale work but may drop signals under load; higher accepts
-  # more delayed signals and increases adverse-price/orphan exposure.
   pending_tx_max_signal_age_ms: 500
-  # Minimum admitted evidence. Pending sightings only reach pending_probable;
-  # the two higher options intentionally reject every pending signal and are
-  # therefore invalid in on_chain_pending.
   pending_tx_detection_confidence_required: pending_probable
-  # Pending-copy confirmation applies only to on_chain_pending live submissions.
-  # true tracks leader receipts and reports orphan risk; false saves background
-  # RPC/state but leaves provisional copies entirely unverified. It never runs
-  # in polling/logs_only/mempool_reserved and paper copies never reach it.
   pending_copy_confirmation_enabled: false
-  # Final receipt verdict age (>0). Longer tolerates congested mining but delays
-  # orphan alerts; shorter alerts earlier with more not-mined false positives.
   pending_copy_confirmation_deadline_seconds: 60.0
-  # Concurrent tracked-copy ceiling (>0). Higher covers larger bursts using more
-  # memory/RPC work; when full, the oldest entry is evicted and reported dropped.
   pending_copy_confirmation_max_tracked: 2048
-  # Accepted but currently inert: no unwind requester is wired, so true and
-  # false both move no money. Orphan unwinding remains a manual operator action;
-  # leaving false accurately advertises the implemented behavior.
   pending_copy_auto_unwind_enabled: false
+native:
+  state_path: data/native_detection.sqlite3
+  traders: []
+  pending_enabled: false
+  maximum_inclusions: 1000000
+  recovery_maximum_gap: 5000
+  recovery_overlap: 8

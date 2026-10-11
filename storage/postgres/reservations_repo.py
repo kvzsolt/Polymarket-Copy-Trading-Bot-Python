@@ -680,6 +680,34 @@ class ReservationsRepo:
                     reservation_id,
                 )
 
+    async def record_manual_resolution(
+        self, reservation_id: str, payload: dict[str, object]
+    ) -> None:
+        """Persist a manual-resolution audit entry without clobbering metadata.
+
+        Used by ``bot resolve --apply`` so an evidence-based operator decision
+        lands in ``metadata_json.manual_resolution`` next to the release reason
+        written by :meth:`mark_released`.
+        """
+        if not reservation_id:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE order_reservations
+                SET metadata_json = jsonb_set(
+                        COALESCE(metadata_json, '{}'::jsonb),
+                        '{manual_resolution}',
+                        $1::jsonb,
+                        true
+                    ),
+                    updated_at = EXTRACT(epoch FROM now())::bigint
+                WHERE id = $2
+                """,
+                json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+                reservation_id,
+            )
+
     def _row_to_reservation(self, row: asyncpg.Record) -> Reservation:
         return Reservation(
             id=row["id"],

@@ -123,8 +123,8 @@ def test_run_application_reports_the_startup_roster_before_starting_monitors() -
 
     source = inspect.getsource(app._run_application)
 
-    seed = source.index("telemetry_emitters.detection.roster_updated(len(monitored_leaders))")
-    monitors = source.index("for wallet in monitored_leaders:")
+    seed = source.index("telemetry_emitters.detection.roster_updated(len(active_owners))")
+    monitors = source.index("await onchain_runtime.start()")
     assert seed < monitors, "the roster must be published before monitors start"
 
 
@@ -139,13 +139,14 @@ def test_run_application_reports_the_roster_on_discovery_promotion() -> None:
 
 
 def test_run_application_passes_the_detection_emitter_to_every_producer() -> None:
-    """Both leader monitors and the on-chain dispatch adapter must be wired."""
+    """Only the native dispatch adapter emits accepted production leader signals."""
 
     import app
 
     source = inspect.getsource(app._run_application)
 
-    assert source.count("telemetry=telemetry_emitters.detection") == 3
+    assert source.count("telemetry=telemetry_emitters.detection") == 1
+    assert "run_leader_monitor(" not in source
     assert source.count("telemetry=telemetry_emitters.wss") == 2
 
 

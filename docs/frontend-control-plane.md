@@ -136,7 +136,8 @@ The table below is an orientation map only. When it disagrees with
 | Risk | `/risk` | — |
 | Telemetry | `/telemetry` (alias `/telemetry/snapshot`), `/metrics/snapshot`, WS `/stream` | — |
 
-Start a client by reading snapshots, then attach the stream. The current build
+Start a client by attaching the stream, awaiting `stream_ready`, and then reading
+authoritative snapshots while buffering bounded invalidations. The current build
 registers only routes backed by composed services; consult
 `GET /api/v1/system/capabilities` instead of assuming a route is mutable.
 
@@ -256,13 +257,31 @@ ceiling. `GET /accounts` is projected per request, so `leader_count` follows
 leader bindings that change while the process runs.
 
 In `FillView`, `filled_at` is nullable because the durable fill timestamp is;
-`size`, `price`, and `fee` are always exact decimal strings.
+`size` and `price` are exact decimal strings. `fee` is an exact decimal string
+when an attributable fee amount is known, and `null` otherwise.
 
 The immutable DTO definitions in `services/control_plane/contracts.py` and
 `services/control_plane/contracts_reads.py` are the canonical response
 contract; `docs/ui/api_contract.json` is their generated projection and is the
 right thing to hand a client generator. The narrow HTTP ports are defined in
 `integrations/control_plane/contracts.py`.
+
+The generated `json_schema.$defs` graph contains complete HTTP request and response
+wire schemas. Every route's `request_schema` describes supported JSON input;
+`response_schema` describes `data` inside the standard success envelope. Actor
+identity and task lifecycle/version fields are server-owned, not task create/update
+inputs. The strict task payload uses `configuration`; it is not the internal
+`CopyTask` or application command dataclass. Create accepts the documented `task`
+wrapper and the existing flat payload alias. On update, a supplied `task_id` must
+match the URL. HTTP command wrappers historically ignore extra keys; generated
+clients allow only supported keys. Task payload/configuration decoders reject extras.
+The bot still performs semantic domain validation after shape validation.
+
+WebSocket schemas are referenced by `server_frame_schemas` and `client_frame_schemas`.
+The bounded telemetry snapshot uses a separate event projection: its trade and skip
+payloads currently omit the `decision` carried on the live stream. Never reconstruct
+omitted evidence. Financial decimals remain strings, missing values remain null,
+and integer responses beyond JavaScript's exact range are encoded as strings.
 
 ## Commands
 

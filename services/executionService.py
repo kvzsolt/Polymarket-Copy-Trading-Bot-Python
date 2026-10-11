@@ -206,6 +206,48 @@ def _copy_fak_limit_on_tick(
     return HardPriceBound.on_tick(bound, tick_size, side)
 
 
+_MAX_ATTEMPTED_ORDER_IDS = 8
+
+
+def _seed_attempted_order_ids(existing: dict[str, Any] | None) -> list[str]:
+    """Seed the per-call attempted order-id list from the persisted row.
+
+    2026-09-19 sibling-hash ambiguity: ``save_submission`` replaces the row's
+    ``order_id`` with each locally accepted submission, so ids recorded by an
+    earlier attempt would otherwise be lost. The bounded list is re-persisted
+    by every save in the submission flow and probed by reconciliation.
+    """
+    response = existing.get("response") if isinstance(existing, dict) else None
+    if not isinstance(response, dict):
+        return []
+    raw = response.get("attempted_order_ids")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    seeded: list[str] = []
+    for item in raw:
+        value = str(item or "").strip()
+        if value and value not in seeded:
+            seeded.append(value)
+    return seeded[:_MAX_ATTEMPTED_ORDER_IDS]
+
+
+def _merge_attempted_order_ids(
+    response: dict[str, Any],
+    attempted_order_ids: list[str] | None,
+) -> dict[str, Any]:
+    """Attach the deduped, bounded attempted order-id list to a response."""
+    if not attempted_order_ids:
+        return response
+    merged: list[str] = []
+    for item in attempted_order_ids:
+        value = str(item or "").strip()
+        if value and value not in merged:
+            merged.append(value)
+    if merged:
+        response["attempted_order_ids"] = merged[:_MAX_ATTEMPTED_ORDER_IDS]
+    return response
+
+
 def _submit_result_to_response(submit_result) -> dict[str, Any]:
     """Translate a ``VenueSubmitResult`` into the dict shape ExecutionService
     persists and returns. The dict view keeps downstream consumers
@@ -248,6 +290,8 @@ def _submit_result_to_response(submit_result) -> dict[str, Any]:
             if submit_result.effective_price is not None
             else None
         ),
+        "trade_ids": submit_result.trade_ids,
+        "transactions_hashes": submit_result.transactions_hashes,
         "raw": submit_result.raw,
     }
 
@@ -564,11 +608,14 @@ class ExecutionService:
         idempotency_key: str,
         request: dict[str, Any],
         response: dict[str, Any] | Any,
+        attempted_order_ids: list[str] | None = None,
     ) -> None:
         from storage.postgres.orders_repo import OrderSubmissionRecord
 
         sanitized_request = _sanitize_submission_request(request)
         sanitized_response = _sanitize_submission_response(response)
+        if attempted_order_ids:
+            _merge_attempted_order_ids(sanitized_response, attempted_order_ids)
         status = str(
             sanitized_response.get("status")
             or ("submitted" if sanitized_response.get("success") else "failed")
@@ -1511,11 +1558,13 @@ class ExecutionService:
             self._submit_semaphore = asyncio.Semaphore(cap)
 
         async with self._submit_semaphore:
+            attempted_order_ids = _seed_attempted_order_ids(existing)
             pending_since = time.time()
             await self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,
                 response=_build_pending_response(pending_since=pending_since, config=self._config),
+                attempted_order_ids=attempted_order_ids,
             )
 
             gateway_request = MarketableOrderRequest(
@@ -1538,6 +1587,7 @@ class ExecutionService:
                         idempotency_key=idem_key,
                         request=request_doc,
                         response={"success": False, "status": task_denial, "non_retryable": True},
+                        attempted_order_ids=attempted_order_ids,
                     )
                     return ExecutionResult(
                         accepted=False,
@@ -1565,6 +1615,7 @@ class ExecutionService:
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
+                            attempted_order_ids=attempted_order_ids,
                         )
                         return ExecutionResult(
                             accepted=False,
@@ -1579,12 +1630,17 @@ class ExecutionService:
                 try:
                     submit_result = await self._submit_gateway(gateway_request)
                     response = _submit_result_to_response(submit_result)
+                    if submit_result.order_id:
+                        candidate_id = str(submit_result.order_id)
+                        if candidate_id not in attempted_order_ids:
+                            attempted_order_ids.append(candidate_id)
                     if submit_result.success:
                         self.circuit_breaker.record_success()
                         await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
+                            attempted_order_ids=attempted_order_ids,
                         )
                         log_api_response(
                             logger,
@@ -1602,6 +1658,7 @@ class ExecutionService:
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
+                            attempted_order_ids=attempted_order_ids,
                         )
                         logger.warning(
                             "ambiguous post failure (timeout/connection after POST): %s",
@@ -1628,6 +1685,7 @@ class ExecutionService:
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
+                            attempted_order_ids=attempted_order_ids,
                         )
                         logger.warning(
                             "non-retryable CLOB rejection, skipping retries: %s%s",
@@ -1668,6 +1726,7 @@ class ExecutionService:
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
+                        attempted_order_ids=attempted_order_ids,
                     )
                     logger.warning(
                         "non-retryable CLOB rejection, skipping retries: %s",
@@ -1687,6 +1746,7 @@ class ExecutionService:
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
+                        attempted_order_ids=attempted_order_ids,
                     )
                     log_api_response(
                         logger,
@@ -1723,6 +1783,7 @@ class ExecutionService:
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
+                        attempted_order_ids=attempted_order_ids,
                     )
                     logger.warning(
                         "unclassified gateway exception (treating as ambiguous): %s",
@@ -1744,6 +1805,7 @@ class ExecutionService:
                     request=request_doc,
                     response=response
                     or {"success": False, "error": last_error, "status": "failed"},
+                    attempted_order_ids=attempted_order_ids,
                 )
                 log_api_error(
                     logger,

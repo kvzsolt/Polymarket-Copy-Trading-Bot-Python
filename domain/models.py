@@ -31,6 +31,7 @@ class TradeSignal:
     event_slug: str = ""
     outcome: str = ""
     submarket: str = ""
+    source_action_id: str | None = None
 
 
 @dataclass

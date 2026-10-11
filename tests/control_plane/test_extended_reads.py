@@ -913,3 +913,35 @@ def test_metrics_snapshot_exposes_counters_gauges_and_histograms() -> None:
     assert isinstance(histograms, list)
     assert histograms[0]["name"] == "copy_latency_seconds"
     assert histograms[0]["count"] == 1
+
+
+async def test_detection_projects_configured_and_effective_owner_state_without_fabrication() -> (
+    None
+):
+    """A pending preference is distinct from actual mined coverage and unknown receipt."""
+    from domain.grouped_detection import TraderDetectionState
+
+    state = TraderDetectionState(
+        wallet="0x" + "11" * 20,
+        desired_mode="pending",
+        effective_mode="mined",
+        provider="alchemy",
+        on_budget_exhausted="pause",
+        enabled=True,
+        degraded_reason="pending_disabled",
+        last_observation_ms=None,
+    )
+    service = DetectionQueryService(
+        counters=DetectionTelemetryEmitter(None, clock=lambda: SIGNAL_EPOCH),
+        readiness=ReadinessTracker(),
+        metrics=MetricsRegistry(),
+        detection_mode="polling",
+        pending_stats=None,
+        clock=FixedClock(),
+        native_states=lambda: (state,),
+    )
+    view = await service.get()
+    assert view.mode == "native_owner_grouped"
+    assert view.traders == (state,)
+    assert view.traders[0].last_observation_ms is None
+    assert view.traders[0].restart_required is True

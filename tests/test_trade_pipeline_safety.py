@@ -1942,6 +1942,26 @@ async def test_full_flow_persisted_token_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_immediate_fill_preserves_unknown_fee_and_native_action(tmp_path):
+    """A confirmed venue fill never turns an absent fee into measured zero."""
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        result = _exec_result()
+        result.fees_paid = None
+        exec_svc.execute.return_value = result
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+        ctx.fills_repo.append_fill_and_apply = AsyncMock(return_value=(1, None))
+        raw = _signal() | {"source_action_id": "native-action"}
+
+        results = await execute_trades(ctx, "leader1", [raw], time.time())
+
+        assert results[0].status == "executed"
+        record = ctx.fills_repo.append_fill_and_apply.await_args.args[0]
+        assert record.fee is None
+        assert record.source_action_id == "native-action"
+
+
+@pytest.mark.asyncio
 async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
     """N1 regression — two immediately-filled BUYs must each consume the daily
     ledger exactly once. The old double-``record_buy`` bug counted each fill

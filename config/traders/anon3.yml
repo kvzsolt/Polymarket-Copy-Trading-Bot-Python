@@ -31,14 +31,23 @@
 # higher bankroll and I/O pressure. Inverted reactions and expired markets carry
 # materially higher semantic, liquidity, and settlement risk.
 #
-# Followed trader: beta-quiet.
+# Followed trader: gamma-aggressive.
 #
-# Single source of truth for following this wallet. See alpha-steady.yml for
-# the full field-by-field explanation; the same schema applies here.
+# Single source of truth for following this wallet. This leader takes
+# aggressively and sweeps the top of the book; the next resting ask after
+# their own fill sits well above the price they paid (measured 2026-08-27:
+# median +2.2%, p75 +7.4%, max +15.9% across 20 buys). A 5% entry band left
+# every copied FAK below the ask and the venue killed all of them with
+# "no orders found to match with FAK order", so max_entry_price_drift_pct is
+# widened to 10% for this leader only.
 
-name: beta-quiet
-wallet: "0x31864feb9d25dee93728c6225ba891530967e9ca"
-enabled: false
+name: 0x322e713038d4174394c7302aa42e04db60b2ef2c
+wallet: "0x322e713038d4174394c7302aa42e04db60b2ef2c"
+enabled: true
+
+# Per-leader copy-admission gate: widen the one-shot copy-entry FAK band for
+# this leader alone. Unset values inherit from config/copy_trading.yml.
+max_entry_price_drift_pct: 8.0
 
 task:
   monitoring_mode: normal
@@ -46,15 +55,19 @@ task:
   notifications_muted: false
 
   trigger:
-    enabled: true
+    # false bypasses this task's min/max-notional trigger gate; it does not
+    # disable the whole task. true would apply the two bounds below.
+    enabled: false
     min_notional: 0
     max_notional: 0
 
   spend:
+    # false bypasses task-local spend/one-entry gates. Account-level risk and
+    # execution limits remain; true would enforce this section's caps.
     enabled: true
-    max_total: 0
-    max_daily: 0
-    max_per_market: 0
+    max_total: 1000
+    max_daily: 500
+    max_per_market: 25
     one_entry_per_market: false
     global_one_entry_per_market: false
     one_entry_per_sports_type: false
@@ -62,11 +75,11 @@ task:
   price:
     enabled: true
     min_price: 0.20
-    max_price: 0.80
-    offset_mode: disabled
+    max_price: 0.85
+    offset_mode: fixed
     offset_direction: above
-    offset: 0
-    max_slippage_percent: 5
+    offset: 0.05
+    max_slippage_percent: 8
 
   reaction:
     enabled: true
@@ -100,13 +113,15 @@ task:
   sizing:
     enabled: true
     mode: proportional
-    percentage: 5
+    percentage: 8
     fixed_amount: 3
     trade_multiplier: 1
     weighted_multiplier: 1
     buy_min_amount: 5
-    buy_max_amount: 17.5
-    copyable_balance_percent: 75
+    buy_max_amount: 12.5
+    # This trader may use at most 50% of follower balance in task sizing; lower
+    # preserves more reserve than the other checked-in profiles.
+    copyable_balance_percent: 25
     proportional_balance_cap_enabled: true
     require_leader_balance: true
     strict_fixed_amount: true

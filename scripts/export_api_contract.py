@@ -98,6 +98,7 @@ from scripts.api_contract_tables import (  # noqa: E402
     WEBSOCKET_SUBPROTOCOL_MARKER,
     RouteSpec,
 )
+from scripts.api_contract_wire import ApiWireSchemaExporter  # noqa: E402
 from services.control_plane import contracts as rest_contracts  # noqa: E402
 from services.control_plane import contracts_reads as rest_read_contracts  # noqa: E402
 from services.control_plane.contracts import ControlPlaneError, ControlPlaneReason  # noqa: E402
@@ -410,6 +411,11 @@ class ApiContractExporter:
         problems = self.verify()
         if problems:
             raise RuntimeError("; ".join(problems))
+        wire = ApiWireSchemaExporter(
+            views=self._view_types(),
+            decimal_fields=self._decimal_fields,
+            vocabularies=self.resolved_vocabularies(),
+        ).build(self._sorted_routes())
         return {
             "api_prefix": API_PREFIX,
             "authentication": self._authentication(),
@@ -431,11 +437,16 @@ class ApiContractExporter:
                     permission.value for permission in READ_ONLY_CONTROL_PLANE_PERMISSIONS
                 ),
             },
-            "routes": [route.to_json() for route in self._sorted_routes()],
+            "routes": wire["routes"],
+            "json_schema": wire["json_schema"],
             "schema_version": SCHEMA_VERSION,
             "telemetry": self._telemetry(),
             "views": self._views(),
-            "websocket": self._websocket(),
+            "websocket": self._websocket()
+            | {
+                "server_frame_schemas": wire["server_frame_schemas"],
+                "client_frame_schemas": wire["client_frame_schemas"],
+            },
         }
 
     def render(self) -> str:
@@ -698,11 +709,23 @@ class ApiContractExporter:
                 },
                 "pong": {"type": "pong"},
                 "resync_required": {"dropped_count": "integer", "type": "resync_required"},
-                "stream_ready": {"type": "stream_ready"},
-                "telemetry_event": {"data": "TelemetryEvent", "type": "telemetry_event"},
+                "stream_ready": {
+                    "type": "stream_ready",
+                    "stream_boot_id": "string",
+                    "ordering": "session_per_producer",
+                    "durable_replay": False,
+                    "resync_required": True,
+                },
+                "telemetry_event": {
+                    "data": "TelemetryEvent",
+                    "type": "telemetry_event",
+                    "stream_boot_id": "string",
+                },
                 "telemetry_snapshot": {
                     "data": "TelemetrySnapshot | null",
                     "type": "telemetry_snapshot",
+                    "stream_boot_id": "string | null",
+                    "authoritative_financial_state": False,
                 },
             },
             "text_only": True,

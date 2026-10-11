@@ -140,7 +140,10 @@ def _get_balance_sync(address: str, fallback_rpc_url: str = "") -> Decimal | Non
     return None
 
 
-async def get_my_balance(address: str) -> Decimal | None:
+async def get_my_balance(address: str, *, provider_runtime: Any = None) -> Decimal | None:
+    """Delegate production reads to the injected shared provider runtime."""
+    if provider_runtime is not None:
+        return await provider_runtime.balances.collateral(address)
     if not address:
         logger.error("Balance lookup failed: wallet address is missing")
         return None
@@ -156,7 +159,12 @@ async def get_my_balance(address: str) -> Decimal | None:
         return None
 
 
-async def get_native_balance_wei(address: str, fallback_rpc_url: str = "") -> int | None:
+async def get_native_balance_wei(
+    address: str, fallback_rpc_url: str = "", *, provider_runtime: Any = None
+) -> int | None:
+    """Delegate production native reads to the same admission ledger."""
+    if provider_runtime is not None:
+        return await provider_runtime.balances.native(address)
     rpc_url = _RPC_URL
     if not rpc_url:
         return None

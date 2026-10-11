@@ -697,7 +697,7 @@ def test_the_confidence_parse_sits_outside_the_onchain_start_guard() -> None:
 
     source = inspect.getsource(app._run_application)
     parse_at = source.index("_validate_detection_confidence_floor(")
-    guard_at = source.index("onchain_detection_start_failed")
+    guard_at = source.index("native_detection_paused")
     try_at = source.rindex("try:", 0, guard_at)
 
     assert parse_at < try_at, (
@@ -907,7 +907,7 @@ def _call_lines(node: ast.AST, func_name: str) -> list[int]:
 
 @pytest.mark.parametrize(
     "builder",
-    ("_build_pending_copy_tracker", "_build_onchain_ws_health_reporter"),
+    ("OnchainSignalDispatchAdapter",),
 )
 def test_observability_collaborators_are_built_under_the_shutdown_guard(builder: str) -> None:
     """A construction failure must still tear down the runtimes already started.

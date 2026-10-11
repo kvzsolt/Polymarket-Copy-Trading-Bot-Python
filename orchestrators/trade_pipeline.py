@@ -105,6 +105,7 @@ def _copy_entry_price_plan(
     leader_price = Decimal(str(signal.price or 0))
     app_config = getattr(context, "config", None)
     execution_config = getattr(app_config, "execution", None)
+    execution_mode = getattr(execution_config, "trading_mode", "unknown")
     drift_pct = Decimal(str(_resolve_entry_drift_pct(app_config, leader_id)))
     band = LeaderPriceBand(leader_price=leader_price, drift_pct=drift_pct)
     unclamped_price_limit = band.limit_for(side)
@@ -115,6 +116,7 @@ def _copy_entry_price_plan(
         "leader_price": str(leader_price),
         "price_drift_pct": str(drift_pct),
         "unclamped_price_limit": str(unclamped_price_limit),
+        "execution_mode": execution_mode if execution_mode in {"paper", "live"} else "unknown",
     }
     if side.upper() == "BUY":
         max_share_price = Decimal(
@@ -131,6 +133,9 @@ def _copy_entry_price_plan(
         metadata["max_share_price"] = str(max_share_price)
     metadata["price_limit"] = str(price_limit)
     metadata["leader_id"] = str(leader_id)
+    source_action_id = getattr(signal, "source_action_id", None)
+    if source_action_id is not None:
+        metadata["source_action_id"] = source_action_id
     return price_limit, metadata
 
 
@@ -1532,6 +1537,7 @@ def normalize_signals(
             event_slug=str(raw.get("eventSlug") or raw.get("slug") or ""),
             outcome=_extract_trade_outcome(raw),
             submarket=_extract_trade_submarket(raw),
+            source_action_id=raw.get("source_action_id"),
         )
         out.append((signal, raw))
     return out
@@ -3573,7 +3579,9 @@ async def _execute_trades_impl(
 
             fill_price = exec_result.avg_price or signal.price
             fill_size = Decimal(str(exec_result.filled_amount))
-            fee_paid = Decimal(str(exec_result.fees_paid or 0))
+            fee_paid = (
+                None if exec_result.fees_paid is None else Decimal(str(exec_result.fees_paid))
+            )
             try:
                 # Atomic fill + position write — PR #108 finding: the
                 # previous two-call sequence (append_fill auto-commit +
@@ -3599,6 +3607,7 @@ async def _execute_trades_impl(
                         price=Decimal(str(fill_price or 0)),
                         fee=fee_paid,
                         fill_ts=int(now_ts),
+                        source_action_id=signal.source_action_id,
                     ),
                     context.positions_repo,
                     raw_payload={
@@ -3743,7 +3752,7 @@ async def _execute_trades_impl(
                     "leader_id": leader_id,
                     "copyOrderId": exec_result.order_id,
                     "order_id": exec_result.order_id,
-                    "fee_paid": float(fee_paid),
+                    "fee_paid": None if fee_paid is None else float(fee_paid),
                     "title": signal.title,
                     "submarket": signal.submarket,
                     "outcome": signal.outcome,
@@ -3765,7 +3774,7 @@ async def _execute_trades_impl(
                     "leader_id": leader_id,
                     "copyOrderId": exec_result.order_id,
                     "order_id": exec_result.order_id,
-                    "fee_paid": float(fee_paid),
+                    "fee_paid": None if fee_paid is None else float(fee_paid),
                     "status": exec_result.status,
                     "title": signal.title,
                     "submarket": signal.submarket,

@@ -95,6 +95,7 @@ async def test_v1_migration_is_idempotent_across_two_runs() -> None:
                 "20260908_06_partial_protective_layers",
                 "20260908_07_fill_fee_evidence",
                 "20260916_08_position_lifecycle",
+                "20260916_09_redemption_attempts",
                 "20260916_10_auto_trader",
                 "trader_discovery_single_generation_20260713",
             }

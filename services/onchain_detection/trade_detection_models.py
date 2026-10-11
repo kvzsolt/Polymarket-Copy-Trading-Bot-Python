@@ -76,6 +76,7 @@ class OnchainTradeSignal:
     leader_sell_fraction: Decimal | None = None
     sell_fraction_resolution: str = ""
     source_receipt: TransportReceipt | None = None
+    source_action_id: str | None = None
 
     def as_raw_signal_dict(self) -> dict[str, object]:
         """Render as a raw signal dict shaped for the copy pipeline.
@@ -112,6 +113,7 @@ class OnchainTradeSignal:
                 else "unknown"
             ),
             "_source_receipt": self.source_receipt,
+            "source_action_id": self.source_action_id,
             "detection_confidence": str(self.confidence),
             "log_index": self.log_index,
             "provisional": self.provisional,

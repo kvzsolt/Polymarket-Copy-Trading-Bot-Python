@@ -20,20 +20,23 @@ def test_app_injects_existing_and_dynamic_contexts_into_v1_runtime() -> None:
     assert source.index("blocked_wallets = _wallets_blocked_by_reconcile_failures") < source.index(
         "v1_runtime.add_contexts(unblocked_contexts)"
     )
-    assert "monitor_wallet_by_task[monitor_task] = wallet" in source
-    assert "task_monitoring_state.remove((crashed_wallet,))" in source
+    assert "task_monitoring_state.add(active_owners)" in source
+    assert "task_monitoring_state.remove(monitored_leaders)" in source
+    assert "native_detection_roster_awaiting_restart" in source
     assert "LeaderRegistryDiscoveryRunner(" in source
     assert source.index("await discovery_command_queue.start()") < source.index(
         "await _start_control_plane_runtime("
     )
 
 
-def test_app_routes_polling_and_onchain_sources_to_v1_without_legacy_duplication() -> None:
+def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> None:
     """Make v1 ingress the sole copy authority while it is enabled."""
 
     source = Path("app.py").read_text(encoding="utf-8")
 
-    assert source.count("v1_sink=v1_runtime.submit_raw_batch") >= 2
+    assert "run_leader_monitor(" not in source
+    assert "v1_sink=v1_runtime.submit_raw_batch" not in source
+    assert "NativeDetectionRuntime.compose(" in source
     # On-chain signals reach v1 through ``OnchainSignalDispatchAdapter``
     # (``tests/test_onchain_signal_dispatch.py::test_prefers_v1_runtime_when_present``);
     # the app must hand it the same v1 runtime instance.

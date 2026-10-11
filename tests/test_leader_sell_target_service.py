@@ -303,6 +303,61 @@ async def test_malformed_released_size_fails_closed_without_claim_or_submission(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "manual_resolution:canceled",
+        "manual_resolution:expired",
+        "manual_resolution:confirmed_absent",
+    ],
+)
+async def test_manual_resolution_no_fill_reasons_are_eligible(reason: str) -> None:
+    """Operator-applied terminal no-fill proof re-drives the newer target once."""
+
+    repository = _TargetRepository()
+    coordinator = _Coordinator()
+    service = LeaderSellTargetService(
+        repository=repository,
+        position_reader=_PositionReader(Decimal("62.2902")),
+        coordinator=coordinator,
+    )
+    await service.record_fresh_target(_intent("leader-sell-1", fraction="0.8"))
+    await service.record_fresh_target(_intent("leader-sell-2", fraction="1"))
+
+    attempted = await service.redrive_after_terminal_no_fill(
+        _released_record("leader-sell-1", "reservation-manual", generation=1),
+        reason=reason,
+    )
+
+    assert attempted is True
+    assert len(coordinator.intents) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_resolution_filled_is_never_eligible() -> None:
+    """A manually confirmed fill frees no shares and must never re-drive."""
+
+    repository = _TargetRepository()
+    coordinator = _Coordinator()
+    service = LeaderSellTargetService(
+        repository=repository,
+        position_reader=_PositionReader(Decimal("62.2902")),
+        coordinator=coordinator,
+    )
+    await service.record_fresh_target(_intent("leader-sell-1", fraction="0.8"))
+    await service.record_fresh_target(_intent("leader-sell-2", fraction="1"))
+
+    attempted = await service.redrive_after_terminal_no_fill(
+        _released_record("leader-sell-1", "reservation-filled", generation=1),
+        reason="manual_resolution:filled",
+    )
+
+    assert attempted is False
+    assert repository.claims == set()
+    assert coordinator.intents == []
+
+
+@pytest.mark.asyncio
 async def test_latest_or_automatic_cancellation_never_loops_same_target() -> None:
     """The target's own cancellation and an auto attempt cannot repost it."""
 

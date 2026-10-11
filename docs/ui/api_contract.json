@@ -415,6 +415,5545 @@
       }
     }
   },
+  "json_schema": {
+    "$defs": {
+      "AccountView": {
+        "additionalProperties": false,
+        "properties": {
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "wallet_address": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "wallet_address",
+          "leader_count"
+        ],
+        "type": "object"
+      },
+      "ActivityView": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "activity_id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_id",
+          "actor",
+          "action",
+          "target_type",
+          "target_id",
+          "outcome",
+          "reason_code",
+          "occurred_at"
+        ],
+        "type": "object"
+      },
+      "AmbiguousEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "ambiguous",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "order_submission",
+              "order_cancel",
+              "fill_reconciliation"
+            ],
+            "type": "string"
+          },
+          "order_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reconciliation_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation",
+          "order_ref",
+          "reconciliation_required",
+          "category"
+        ],
+        "type": "object"
+      },
+      "AutoTraderEvaluationView": {
+        "additionalProperties": false,
+        "properties": {
+          "degradation_reason": {
+            "type": "string"
+          },
+          "falcon_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "falcon_score": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CopyPerformanceView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paper": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CopyPerformanceView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "status",
+          "falcon_score",
+          "falcon_observed_at",
+          "degradation_reason",
+          "paper",
+          "live"
+        ],
+        "type": "object"
+      },
+      "AutoTraderPerformanceView": {
+        "additionalProperties": false,
+        "properties": {
+          "activation_source": {
+            "type": "string"
+          },
+          "active_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "degradation_reason": {
+            "type": "string"
+          },
+          "entry_block_reason": {
+            "type": "string"
+          },
+          "falcon_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "falcon_score": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/AutoTraderEvaluationView"
+            },
+            "type": "array"
+          },
+          "leader_wallet": {
+            "type": "string"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CopyPerformanceView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paper": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CopyPerformanceView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "qualification_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "target_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "trading_mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "trading_mode",
+          "leader_wallet",
+          "status",
+          "revision",
+          "target_count",
+          "active_count",
+          "activation_source",
+          "entry_block_reason",
+          "falcon_score",
+          "falcon_observed_at",
+          "degradation_reason",
+          "qualification_reasons",
+          "paper",
+          "live",
+          "history"
+        ],
+        "type": "object"
+      },
+      "BulkTaskItemRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "action",
+          "expected_version"
+        ],
+        "type": "object"
+      },
+      "BulkTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/BulkTaskItemRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "BulkTaskResult": {
+        "additionalProperties": false,
+        "properties": {
+          "atomic": {
+            "type": "boolean"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/$defs/TaskView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tasks",
+          "atomic"
+        ],
+        "type": "object"
+      },
+      "CapabilitiesView": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capabilities",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "CopyPerformanceView": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_episodes": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "drawdown": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evaluation_id": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "realized_pnl": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "recent_pnl": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evaluation_id",
+          "observed_at",
+          "started_at",
+          "closed_episodes",
+          "realized_pnl",
+          "recent_pnl",
+          "drawdown",
+          "complete"
+        ],
+        "type": "object"
+      },
+      "CopyTaskConfigurationPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "market_filter": {
+            "$ref": "#/$defs/TaskMarketFilterView"
+          },
+          "price": {
+            "$ref": "#/$defs/TaskPriceView"
+          },
+          "protective_risk": {
+            "$ref": "#/$defs/TaskProtectiveRiskView"
+          },
+          "reaction": {
+            "$ref": "#/$defs/TaskReactionView"
+          },
+          "schedule": {
+            "$ref": "#/$defs/TaskScheduleView"
+          },
+          "sizing": {
+            "$ref": "#/$defs/TaskSizingView"
+          },
+          "spend": {
+            "$ref": "#/$defs/TaskSpendView"
+          },
+          "trigger": {
+            "$ref": "#/$defs/TaskTriggerView"
+          }
+        },
+        "required": [
+          "trigger",
+          "spend",
+          "price",
+          "reaction",
+          "market_filter",
+          "schedule",
+          "sizing"
+        ],
+        "type": "object"
+      },
+      "CopyTaskCreatePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration": {
+            "$ref": "#/$defs/CopyTaskConfigurationPayload"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "type": "string"
+          },
+          "monitoring_mode": {
+            "enum": [
+              "normal",
+              "priority"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notifications_muted": {
+            "type": "boolean"
+          },
+          "sizing_mode": {
+            "enum": [
+              "fixed",
+              "exact_mirror",
+              "proportional",
+              "balance_weighted",
+              "portfolio_weighted",
+              "adaptive",
+              "tiered"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "configuration",
+          "follower_account",
+          "leader_wallet",
+          "monitoring_mode",
+          "name",
+          "notifications_muted",
+          "sizing_mode",
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "CopyTaskUpdatePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration": {
+            "$ref": "#/$defs/CopyTaskConfigurationPayload"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "type": "string"
+          },
+          "monitoring_mode": {
+            "enum": [
+              "normal",
+              "priority"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notifications_muted": {
+            "type": "boolean"
+          },
+          "sizing_mode": {
+            "enum": [
+              "fixed",
+              "exact_mirror",
+              "proportional",
+              "balance_weighted",
+              "portfolio_weighted",
+              "adaptive",
+              "tiered"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "configuration",
+          "follower_account",
+          "leader_wallet",
+          "monitoring_mode",
+          "name",
+          "notifications_muted",
+          "sizing_mode"
+        ],
+        "type": "object"
+      },
+      "DetectionSourceStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "deduplicated_total": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "last_signal_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signals_total": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "signals_total",
+          "deduplicated_total",
+          "last_signal_at"
+        ],
+        "type": "object"
+      },
+      "DetectionStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "leader_ws_connected": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "market_ws_ok": {
+            "type": "boolean"
+          },
+          "market_ws_reconnects": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pending_confirmations": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PendingConfirmationStatsView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/$defs/DetectionSourceStatusView"
+            },
+            "type": "array"
+          },
+          "traders": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/TraderDetectionState"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_ws_ok": {
+            "type": "boolean"
+          },
+          "user_ws_reconnects": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "watched_leader_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "sources",
+          "leader_ws_connected",
+          "market_ws_ok",
+          "user_ws_ok",
+          "market_ws_reconnects",
+          "user_ws_reconnects",
+          "pending_confirmations",
+          "watched_leader_count",
+          "observed_at",
+          "traders"
+        ],
+        "type": "object"
+      },
+      "DiscoveryCandidateView": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "score": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "wallet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet",
+          "score",
+          "accepted",
+          "reason_code",
+          "cycle_id"
+        ],
+        "type": "object"
+      },
+      "DiscoveryCycleView": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config_revision": {
+            "type": "string"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "kept_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cycle_id",
+          "status",
+          "started_at",
+          "completed_at",
+          "candidate_count",
+          "kept_count",
+          "config_revision"
+        ],
+        "type": "object"
+      },
+      "DiscoveryEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "discovery",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "request",
+              "failure",
+              "schema",
+              "completed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "candidate_count",
+          "category"
+        ],
+        "type": "object"
+      },
+      "DiscoveryRosterView": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "score": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "tier": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "wallet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet",
+          "tier",
+          "active",
+          "score",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "DiscoveryRunReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "accepted",
+          "reason_code"
+        ],
+        "type": "object"
+      },
+      "DiscoveryRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "DiscoveryStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "current_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_cycle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "current_run_id",
+          "last_cycle_id",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "EntryControlState": {
+        "additionalProperties": false,
+        "properties": {
+          "entries_paused": {
+            "type": "boolean"
+          },
+          "full_stop": {
+            "type": "boolean"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entries_paused",
+          "full_stop",
+          "revision",
+          "reason_code",
+          "updated_at",
+          "updated_by"
+        ],
+        "type": "object"
+      },
+      "FailureEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "failure",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "component": {
+            "enum": [
+              "detection",
+              "normalization",
+              "worker",
+              "copy_decision",
+              "sizing",
+              "risk",
+              "execution",
+              "reconciliation",
+              "protective_exit",
+              "discovery",
+              "wss",
+              "runtime",
+              "telemetry"
+            ],
+            "type": "string"
+          },
+          "order_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "canceled",
+                  "rejected",
+                  "not_fillable",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "component",
+          "code",
+          "retryable",
+          "order_outcome",
+          "category"
+        ],
+        "type": "object"
+      },
+      "FillEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "fill",
+            "type": "string"
+          },
+          "fill_ref": {
+            "type": "string"
+          },
+          "order_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "observed",
+              "duplicate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "order_ref",
+          "fill_ref",
+          "category"
+        ],
+        "type": "object"
+      },
+      "FillView": {
+        "additionalProperties": false,
+        "properties": {
+          "condition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fee": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fill_id": {
+            "type": "string"
+          },
+          "filled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "token_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "fill_id",
+          "follower_account",
+          "leader_wallet",
+          "order_id",
+          "condition_id",
+          "token_id",
+          "side",
+          "size",
+          "price",
+          "fee",
+          "filled_at",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "JsonValue": {
+        "anyOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "items": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "array"
+          },
+          {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          }
+        ]
+      },
+      "LeaderEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "leader",
+            "type": "string"
+          },
+          "leader_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "received",
+              "dedup",
+              "pending",
+              "promoted",
+              "demoted",
+              "retracted"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "leader_ref",
+          "source",
+          "category"
+        ],
+        "type": "object"
+      },
+      "LeaderPromoteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "follower_account": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "evaluation_id",
+          "request_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "LeaderView": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "deduplicated_total": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "last_signal_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "monitored": {
+            "type": "boolean"
+          },
+          "open_position_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "score": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signals_total": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trade_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "wallet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet",
+          "configured",
+          "monitored",
+          "tier",
+          "score",
+          "signals_total",
+          "deduplicated_total",
+          "last_signal_at",
+          "trade_count",
+          "open_position_count"
+        ],
+        "type": "object"
+      },
+      "LockEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "lock",
+            "type": "string"
+          },
+          "lock_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "created",
+              "blocked",
+              "reset"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "lock_ref",
+          "category"
+        ],
+        "type": "object"
+      },
+      "LockResetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "follower_account": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "leader_wallet": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "market_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "reason_code": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "task_id",
+          "leader_wallet",
+          "market_id",
+          "reason_code",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "LockResetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "outcome": {
+            "enum": [
+              "reset",
+              "not_found",
+              "revision_mismatch"
+            ],
+            "type": "string"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "released_at"
+        ],
+        "type": "object"
+      },
+      "MetricsSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "counters": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "gauges": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "histograms": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "buckets": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "count": {
+                        "anyOf": [
+                          {
+                            "maximum": 9007199254740991,
+                            "minimum": -9007199254740991,
+                            "type": "integer"
+                          },
+                          {
+                            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                            "type": "string",
+                            "x-large-integer": true
+                          }
+                        ]
+                      },
+                      "le": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "le",
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "count": {
+                  "anyOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    {
+                      "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                      "type": "string",
+                      "x-large-integer": true
+                    }
+                  ]
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "p50": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "p95": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "p99": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sum": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "labels",
+                "count",
+                "sum",
+                "buckets",
+                "p50",
+                "p95",
+                "p99"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "counters",
+          "gauges",
+          "histograms"
+        ],
+        "type": "object"
+      },
+      "OrderView": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "matched_total": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price_limit": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key",
+          "follower_account",
+          "leader_wallet",
+          "order_id",
+          "status",
+          "side",
+          "amount",
+          "price_limit",
+          "matched_total",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PendingConfirmationStatsView": {
+        "additionalProperties": false,
+        "properties": {
+          "deadline_seconds": {
+            "type": "number"
+          },
+          "max_tracked": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "tracked": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "tracked",
+          "running",
+          "deadline_seconds",
+          "max_tracked"
+        ],
+        "type": "object"
+      },
+      "PnlPositionView": {
+        "additionalProperties": false,
+        "properties": {
+          "avg_entry_price": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "condition_id": {
+            "type": "string"
+          },
+          "cost_basis_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "leader_wallet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mark_price": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "market_value_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "unrealized_pnl_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "condition_id",
+          "token_id",
+          "leader_wallet",
+          "size",
+          "avg_entry_price",
+          "cost_basis_usdc",
+          "mark_price",
+          "market_value_usdc",
+          "unrealized_pnl_usdc"
+        ],
+        "type": "object"
+      },
+      "PnlSummaryView": {
+        "additionalProperties": false,
+        "properties": {
+          "buy_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "loss_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "max_drawdown_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "net_realized_pnl_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "realized_basis": {
+            "type": "string"
+          },
+          "realized_pnl_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sell_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "session_started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "total_invested_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "total_returned_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "trade_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "win_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "realized_pnl_usdc",
+          "total_invested_usdc",
+          "total_returned_usdc",
+          "max_drawdown_usdc",
+          "trade_count",
+          "buy_count",
+          "sell_count",
+          "win_count",
+          "loss_count",
+          "session_started_at",
+          "realized_basis",
+          "net_realized_pnl_usdc"
+        ],
+        "type": "object"
+      },
+      "PnlView": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_basis_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "marked_position_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "position_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/$defs/PnlPositionView"
+            },
+            "type": "array"
+          },
+          "realized": {
+            "$ref": "#/$defs/PnlSummaryView"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "unrealized_basis": {
+            "enum": [
+              "wss_mid",
+              "partial_wss_mid",
+              "truncated",
+              "unavailable",
+              "unknown_cost_basis"
+            ],
+            "type": "string"
+          },
+          "unrealized_pnl_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "follower_account",
+          "realized",
+          "positions",
+          "position_count",
+          "truncated",
+          "cost_basis_usdc",
+          "unrealized_pnl_usdc",
+          "unrealized_basis",
+          "marked_position_count",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "PortfolioView": {
+        "additionalProperties": false,
+        "properties": {
+          "cash_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "copyable_balance_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "equity_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "position_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "positions_cost_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "positions_value_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reserved_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "unrealized_pnl_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valuation_basis": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "cash_usdc",
+          "reserved_usdc",
+          "positions_value_usdc",
+          "equity_usdc",
+          "observed_at",
+          "stale",
+          "copyable_balance_usdc",
+          "position_count",
+          "valuation_basis",
+          "unrealized_pnl_usdc",
+          "positions_cost_usdc"
+        ],
+        "type": "object"
+      },
+      "PositionView": {
+        "additionalProperties": false,
+        "properties": {
+          "avg_entry_price": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "condition_id": {
+            "type": "string"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "condition_id",
+          "token_id",
+          "leader_wallet",
+          "size",
+          "avg_entry_price",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ProtectiveExitEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "protective",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "triggered",
+              "filled"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "task_ref",
+          "category"
+        ],
+        "type": "object"
+      },
+      "ProtectiveLevelView": {
+        "additionalProperties": false,
+        "properties": {
+          "exit_fraction": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "trigger_percent": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          }
+        },
+        "required": [
+          "trigger_percent",
+          "exit_fraction"
+        ],
+        "type": "object"
+      },
+      "ReadinessView": {
+        "additionalProperties": false,
+        "properties": {
+          "active_leader_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "active_task_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "circuit_breaker_state": {
+            "type": "string"
+          },
+          "control_plane_ok": {
+            "type": "boolean"
+          },
+          "copy_workers_ok": {
+            "type": "boolean"
+          },
+          "detection_ok": {
+            "type": "boolean"
+          },
+          "discovery_ok": {
+            "type": "boolean"
+          },
+          "failed_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "last_reconciliation": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_source_event": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pending_intents": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "reconciliation_ok": {
+            "type": "boolean"
+          },
+          "reservations": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "stale_locks": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "telemetry_ok": {
+            "type": "boolean"
+          },
+          "wss_market_ok": {
+            "type": "boolean"
+          },
+          "wss_user_ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "live",
+          "ready",
+          "failed_checks",
+          "observed_at",
+          "circuit_breaker_state",
+          "wss_market_ok",
+          "wss_user_ok",
+          "reconciliation_ok",
+          "detection_ok",
+          "discovery_ok",
+          "copy_workers_ok",
+          "control_plane_ok",
+          "telemetry_ok",
+          "active_leader_count",
+          "active_task_count",
+          "pending_intents",
+          "reservations",
+          "stale_locks",
+          "last_reconciliation",
+          "last_source_event"
+        ],
+        "type": "object"
+      },
+      "ReconciliationEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "reconciliation",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "run",
+              "drift"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "affected_count",
+          "category"
+        ],
+        "type": "object"
+      },
+      "ReentryLockView": {
+        "additionalProperties": false,
+        "properties": {
+          "fill_id": {
+            "type": "string"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "type": "string"
+          },
+          "lock_id": {
+            "type": "string"
+          },
+          "locked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "market_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "task_id",
+          "leader_wallet",
+          "market_id",
+          "reason",
+          "fill_id",
+          "locked_at",
+          "revision",
+          "lock_id"
+        ],
+        "type": "object"
+      },
+      "ReservationView": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "market_id": {
+            "type": "string"
+          },
+          "reservation_id": {
+            "type": "string"
+          },
+          "reserved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reservation_id",
+          "follower_account",
+          "task_id",
+          "market_id",
+          "amount",
+          "status",
+          "reserved_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "RiskBlockView": {
+        "additionalProperties": false,
+        "properties": {
+          "condition_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "triggered_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "follower_account",
+          "condition_id",
+          "token_id",
+          "reason",
+          "source",
+          "leader_wallet",
+          "triggered_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "RiskEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "risk",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "approved",
+              "rejected",
+              "limit_reached",
+              "exit_triggered"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "task_ref",
+          "category"
+        ],
+        "type": "object"
+      },
+      "RiskHeadroomView": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "cap_notional_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "daily_loss_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "equity_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "free_cash_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "open_position_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "policy_name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowed",
+          "reason",
+          "policy_name",
+          "cap_notional_usdc",
+          "equity_usdc",
+          "free_cash_usdc",
+          "daily_loss_usdc",
+          "open_position_count"
+        ],
+        "type": "object"
+      },
+      "RiskPolicyView": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_partial_exits": {
+            "type": "boolean"
+          },
+          "allow_pyramiding": {
+            "type": "boolean"
+          },
+          "hard_cap_ceiling_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "hard_cap_pct": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "kill_switch": {
+            "type": "boolean"
+          },
+          "max_category_exposure_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_daily_drawdown_pct": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_leader_exposure_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_market_exposure_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_open_positions": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "reserve_floor_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "reserve_pct": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "risk_management_enabled": {
+            "type": "boolean"
+          },
+          "tiered_policy_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "risk_management_enabled",
+          "tiered_policy_enabled",
+          "kill_switch",
+          "max_open_positions",
+          "max_market_exposure_usdc",
+          "max_category_exposure_usdc",
+          "max_leader_exposure_usdc",
+          "max_daily_drawdown_pct",
+          "reserve_pct",
+          "reserve_floor_usdc",
+          "hard_cap_pct",
+          "hard_cap_ceiling_usdc",
+          "allow_partial_exits",
+          "allow_pyramiding"
+        ],
+        "type": "object"
+      },
+      "RiskStateView": {
+        "additionalProperties": false,
+        "properties": {
+          "active_blocks": {
+            "items": {
+              "$ref": "#/$defs/RiskBlockView"
+            },
+            "type": "array"
+          },
+          "day_start_equity_usdc": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "headroom": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RiskHeadroomView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/$defs/RiskPolicyView"
+          },
+          "recent_triggers": {
+            "items": {
+              "$ref": "#/$defs/RiskTriggerView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "follower_account",
+          "policy",
+          "active_blocks",
+          "recent_triggers",
+          "headroom",
+          "day_start_equity_usdc",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "RiskTriggerView": {
+        "additionalProperties": false,
+        "properties": {
+          "condition_id": {
+            "type": "string"
+          },
+          "fill_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fill_status": {
+            "type": "string"
+          },
+          "follower_account": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "trigger_id": {
+            "type": "string"
+          },
+          "triggered_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trigger_id",
+          "follower_account",
+          "condition_id",
+          "token_id",
+          "reason",
+          "source",
+          "fill_status",
+          "fill_order_id",
+          "triggered_at"
+        ],
+        "type": "object"
+      },
+      "RosterEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "active_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "roster",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "updated",
+              "empty",
+              "unchanged"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "active_count",
+          "category"
+        ],
+        "type": "object"
+      },
+      "RuntimeControlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "reason_code": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "reason_code"
+        ],
+        "type": "object"
+      },
+      "RuntimeEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "runtime",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "started",
+              "ready",
+              "degraded",
+              "stopping",
+              "stopped"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "category"
+        ],
+        "type": "object"
+      },
+      "RuntimeView": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_control": {
+            "$ref": "#/$defs/EntryControlState"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "queue_depth": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "worker_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "entry_control",
+          "worker_count",
+          "queue_depth",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "SettingsApplyMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "applied_by": {
+            "type": "string"
+          },
+          "live_applied": {
+            "const": false,
+            "type": "boolean"
+          },
+          "previous_revision": {
+            "type": "string"
+          },
+          "restart_required": {
+            "const": true,
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "previous_revision",
+          "revision",
+          "applied_at",
+          "applied_by",
+          "restart_required",
+          "live_applied"
+        ],
+        "type": "object"
+      },
+      "SettingsDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/SettingsPath"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "path",
+          "values",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "SettingsPath": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "environment",
+          "section"
+        ],
+        "type": "object"
+      },
+      "SettingsWriteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "values",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "SettingsWriteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "$ref": "#/$defs/SettingsDocument"
+          },
+          "metadata": {
+            "$ref": "#/$defs/SettingsApplyMetadata"
+          }
+        },
+        "required": [
+          "document",
+          "metadata"
+        ],
+        "type": "object"
+      },
+      "SkipEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "skip",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TaskDecisionDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "enum": [
+              "duplicate",
+              "risk_rejected",
+              "task_inactive",
+              "schedule_closed",
+              "market_not_allowed",
+              "reentry_locked",
+              "budget_exhausted",
+              "insufficient_balance",
+              "below_minimum_size",
+              "stale_market_data",
+              "price_limit",
+              "capacity",
+              "finality_retracted",
+              "unsupported",
+              "paper_only",
+              "other"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "task_ref",
+          "decision",
+          "category"
+        ],
+        "type": "object"
+      },
+      "StreamClientPing": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "ping",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "StreamClientResync": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "resync",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "StreamError": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_stream_message",
+                  "unsupported_stream_message"
+                ],
+                "type": "string"
+              },
+              "type": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "const": "rate_limited",
+                "type": "string"
+              },
+              "retry_after_seconds": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "code",
+              "retry_after_seconds"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StreamPong": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "pong",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "StreamResyncRequired": {
+        "additionalProperties": false,
+        "properties": {
+          "dropped_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "const": "resync_required",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "dropped_count"
+        ],
+        "type": "object"
+      },
+      "StreamStreamReady": {
+        "additionalProperties": false,
+        "properties": {
+          "durable_replay": {
+            "const": false,
+            "type": "boolean"
+          },
+          "ordering": {
+            "const": "session_per_producer",
+            "type": "string"
+          },
+          "resync_required": {
+            "const": true,
+            "type": "boolean"
+          },
+          "stream_boot_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "stream_ready",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "stream_boot_id",
+          "ordering",
+          "durable_replay",
+          "resync_required"
+        ],
+        "type": "object"
+      },
+      "StreamTelemetryEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TelemetryEvent"
+          },
+          "stream_boot_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "telemetry_event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "stream_boot_id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "StreamTelemetrySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "authoritative_financial_state": {
+            "const": false,
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TelemetrySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream_boot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "telemetry_snapshot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "stream_boot_id",
+          "authoritative_financial_state",
+          "data"
+        ],
+        "type": "object"
+      },
+      "SystemStatusView": {
+        "additionalProperties": false,
+        "properties": {
+          "readiness": {
+            "$ref": "#/$defs/ReadinessView"
+          },
+          "system": {
+            "$ref": "#/$defs/SystemView"
+          }
+        },
+        "required": [
+          "system",
+          "readiness"
+        ],
+        "type": "object"
+      },
+      "SystemView": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "type": "number"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "version",
+          "environment",
+          "observed_at",
+          "mode",
+          "backend",
+          "uptime_seconds"
+        ],
+        "type": "object"
+      },
+      "TaskConfigurationView": {
+        "additionalProperties": false,
+        "properties": {
+          "market_filter": {
+            "$ref": "#/$defs/TaskMarketFilterView"
+          },
+          "price": {
+            "$ref": "#/$defs/TaskPriceView"
+          },
+          "protective_risk": {
+            "$ref": "#/$defs/TaskProtectiveRiskView"
+          },
+          "reaction": {
+            "$ref": "#/$defs/TaskReactionView"
+          },
+          "schedule": {
+            "$ref": "#/$defs/TaskScheduleView"
+          },
+          "sizing": {
+            "$ref": "#/$defs/TaskSizingView"
+          },
+          "spend": {
+            "$ref": "#/$defs/TaskSpendView"
+          },
+          "trigger": {
+            "$ref": "#/$defs/TaskTriggerView"
+          }
+        },
+        "required": [
+          "trigger",
+          "spend",
+          "price",
+          "reaction",
+          "market_filter",
+          "schedule",
+          "sizing",
+          "protective_risk"
+        ],
+        "type": "object"
+      },
+      "TaskCreateRequest": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "task": {
+                "$ref": "#/$defs/CopyTaskCreatePayload"
+              }
+            },
+            "required": [
+              "task"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/CopyTaskCreatePayload"
+          }
+        ]
+      },
+      "TaskDecisionDetails": {
+        "additionalProperties": false,
+        "properties": {
+          "account_ref": {
+            "type": "string"
+          },
+          "evaluated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "max_signal_age_seconds": {
+            "type": "number"
+          },
+          "policy_revision": {
+            "type": "string"
+          },
+          "price_limit": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "source_price": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "source_shares": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "source_timestamp": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_ref",
+          "task_version",
+          "reason_code",
+          "source_price",
+          "source_shares",
+          "source_timestamp",
+          "evaluated_at",
+          "max_signal_age_seconds",
+          "price_limit",
+          "policy_revision"
+        ],
+        "type": "object"
+      },
+      "TaskDetailView": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration": {
+            "$ref": "#/$defs/TaskConfigurationView"
+          },
+          "task": {
+            "$ref": "#/$defs/TaskView"
+          }
+        },
+        "required": [
+          "task",
+          "configuration"
+        ],
+        "type": "object"
+      },
+      "TaskDuplicateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "new_name": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "new_task_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "new_task_id",
+          "new_name"
+        ],
+        "type": "object"
+      },
+      "TaskEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "task",
+            "type": "string"
+          },
+          "leader_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "enqueued",
+              "admitted",
+              "started",
+              "completed",
+              "canceled",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "task_ref",
+          "leader_ref",
+          "category"
+        ],
+        "type": "object"
+      },
+      "TaskMarketFilterView": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_expired_unresolved": {
+            "type": "boolean"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "exclude_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_days_until_close": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "min_liquidity_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "min_volume_24h_usdc": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "timeframes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tokens": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "include_keywords",
+          "exclude_keywords",
+          "categories",
+          "tokens",
+          "timeframes",
+          "min_liquidity_usdc",
+          "min_volume_24h_usdc",
+          "max_days_until_close",
+          "allow_expired_unresolved"
+        ],
+        "type": "object"
+      },
+      "TaskPriceView": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_price": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_slippage_percent": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "min_price": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "offset": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "offset_direction": {
+            "enum": [
+              "above",
+              "below"
+            ],
+            "type": "string"
+          },
+          "offset_mode": {
+            "enum": [
+              "disabled",
+              "fixed",
+              "percentage"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "min_price",
+          "max_price",
+          "offset_mode",
+          "offset_direction",
+          "offset",
+          "max_slippage_percent"
+        ],
+        "type": "object"
+      },
+      "TaskProtectiveRiskView": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "layered_stop_loss": {
+            "items": {
+              "$ref": "#/$defs/ProtectiveLevelView"
+            },
+            "type": "array"
+          },
+          "layered_take_profit": {
+            "items": {
+              "$ref": "#/$defs/ProtectiveLevelView"
+            },
+            "type": "array"
+          },
+          "stop_loss_percent": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stop_loss_price": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "take_profit_percent": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "take_profit_price": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trailing_stop_percent": {
+            "anyOf": [
+              {
+                "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+                "type": "string",
+                "x-decimal": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "stop_loss_percent",
+          "stop_loss_price",
+          "take_profit_percent",
+          "take_profit_price",
+          "trailing_stop_percent",
+          "layered_stop_loss",
+          "layered_take_profit"
+        ],
+        "type": "object"
+      },
+      "TaskReactionView": {
+        "additionalProperties": false,
+        "properties": {
+          "buy_on_sells": {
+            "type": "boolean"
+          },
+          "copy_conversions": {
+            "type": "boolean"
+          },
+          "copy_merges": {
+            "type": "boolean"
+          },
+          "copy_sells": {
+            "type": "boolean"
+          },
+          "copy_side": {
+            "enum": [
+              "both",
+              "yes_only",
+              "no_only"
+            ],
+            "type": "string"
+          },
+          "copy_splits": {
+            "type": "boolean"
+          },
+          "counter_trade": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "follow_buys": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "follow_buys",
+          "copy_sells",
+          "buy_on_sells",
+          "counter_trade",
+          "copy_side",
+          "copy_merges",
+          "copy_splits",
+          "copy_conversions"
+        ],
+        "type": "object"
+      },
+      "TaskScheduleView": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "end": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          },
+          "timezone_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "timezone_name",
+          "start",
+          "end"
+        ],
+        "type": "object"
+      },
+      "TaskSizingView": {
+        "additionalProperties": false,
+        "properties": {
+          "buy_max_amount": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "buy_min_amount": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "copyable_balance_percent": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fixed_amount": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "mode": {
+            "enum": [
+              "fixed",
+              "exact_mirror",
+              "proportional",
+              "balance_weighted",
+              "portfolio_weighted",
+              "adaptive",
+              "tiered"
+            ],
+            "type": "string"
+          },
+          "percentage": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "proportional_balance_cap_enabled": {
+            "type": "boolean"
+          },
+          "require_leader_balance": {
+            "type": "boolean"
+          },
+          "strict_exact_mirror": {
+            "type": "boolean"
+          },
+          "strict_fixed_amount": {
+            "type": "boolean"
+          },
+          "trade_multiplier": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "weighted_multiplier": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          }
+        },
+        "required": [
+          "enabled",
+          "mode",
+          "percentage",
+          "fixed_amount",
+          "trade_multiplier",
+          "weighted_multiplier",
+          "buy_min_amount",
+          "buy_max_amount",
+          "copyable_balance_percent",
+          "proportional_balance_cap_enabled",
+          "require_leader_balance",
+          "strict_fixed_amount",
+          "strict_exact_mirror"
+        ],
+        "type": "object"
+      },
+      "TaskSpendView": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "global_one_entry_per_market": {
+            "type": "boolean"
+          },
+          "max_daily": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_per_market": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "max_total": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "one_entry_per_market": {
+            "type": "boolean"
+          },
+          "one_entry_per_sports_type": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "max_total",
+          "max_daily",
+          "max_per_market",
+          "one_entry_per_market",
+          "global_one_entry_per_market",
+          "one_entry_per_sports_type"
+        ],
+        "type": "object"
+      },
+      "TaskTriggerView": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_notional": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          },
+          "min_notional": {
+            "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$",
+            "type": "string",
+            "x-decimal": true
+          }
+        },
+        "required": [
+          "enabled",
+          "min_notional",
+          "max_notional"
+        ],
+        "type": "object"
+      },
+      "TaskUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "$ref": "#/$defs/CopyTaskUpdatePayload"
+          }
+        },
+        "required": [
+          "task",
+          "expected_version"
+        ],
+        "type": "object"
+      },
+      "TaskVersionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "type": "object"
+      },
+      "TaskView": {
+        "additionalProperties": false,
+        "properties": {
+          "follower_account": {
+            "type": "string"
+          },
+          "leader_wallet": {
+            "type": "string"
+          },
+          "monitoring_mode": {
+            "enum": [
+              "normal",
+              "priority"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notifications_muted": {
+            "type": "boolean"
+          },
+          "sizing_mode": {
+            "enum": [
+              "fixed",
+              "exact_mirror",
+              "proportional",
+              "balance_weighted",
+              "portfolio_weighted",
+              "adaptive",
+              "tiered"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "paused",
+              "deleted"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "task_id",
+          "name",
+          "leader_wallet",
+          "follower_account",
+          "status",
+          "monitoring_mode",
+          "sizing_mode",
+          "version",
+          "notifications_muted"
+        ],
+        "type": "object"
+      },
+      "TelemetryEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "leader_signal",
+              "task_decision",
+              "trade_submitted",
+              "trade_fill",
+              "trade_skip",
+              "trade_failure",
+              "ambiguous_order",
+              "protective_exit",
+              "reentry_lock",
+              "reconciliation",
+              "discovery_cycle",
+              "leader_promoted",
+              "leader_demoted",
+              "wss_state",
+              "runtime_state",
+              "risk_state"
+            ],
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LeaderEvent"
+              },
+              {
+                "$ref": "#/$defs/TaskEvent"
+              },
+              {
+                "$ref": "#/$defs/TradeEvent"
+              },
+              {
+                "$ref": "#/$defs/FillEvent"
+              },
+              {
+                "$ref": "#/$defs/SkipEvent"
+              },
+              {
+                "$ref": "#/$defs/FailureEvent"
+              },
+              {
+                "$ref": "#/$defs/AmbiguousEvent"
+              },
+              {
+                "$ref": "#/$defs/ProtectiveExitEvent"
+              },
+              {
+                "$ref": "#/$defs/LockEvent"
+              },
+              {
+                "$ref": "#/$defs/ReconciliationEvent"
+              },
+              {
+                "$ref": "#/$defs/DiscoveryEvent"
+              },
+              {
+                "$ref": "#/$defs/RosterEvent"
+              },
+              {
+                "$ref": "#/$defs/WssEvent"
+              },
+              {
+                "$ref": "#/$defs/RuntimeEvent"
+              },
+              {
+                "$ref": "#/$defs/RiskEvent"
+              }
+            ]
+          },
+          "producer": {
+            "enum": [
+              "detection",
+              "normalization",
+              "worker",
+              "copy_decision",
+              "sizing",
+              "risk",
+              "execution",
+              "reconciliation",
+              "protective_exit",
+              "discovery",
+              "wss",
+              "runtime",
+              "control_plane"
+            ],
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "severity": {
+            "enum": [
+              "debug",
+              "info",
+              "notice",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "event_type",
+          "timestamp",
+          "severity",
+          "correlation_id",
+          "payload",
+          "producer",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/$defs/TelemetrySnapshotEvent"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": false,
+            "properties": {
+              "counters": {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              "gauges": {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              "histograms": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "buckets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "count": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              {
+                                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                                "type": "string",
+                                "x-large-integer": true
+                              }
+                            ]
+                          },
+                          "le": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "le",
+                          "count"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "count": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": -9007199254740991,
+                          "type": "integer"
+                        },
+                        {
+                          "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                          "type": "string",
+                          "x-large-integer": true
+                        }
+                      ]
+                    },
+                    "labels": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "p50": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "p95": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "p99": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "sum": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "labels",
+                    "count",
+                    "sum",
+                    "buckets",
+                    "p50",
+                    "p95",
+                    "p99"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "counters",
+              "gauges",
+              "histograms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "generated_at",
+          "events",
+          "metrics"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotAmbiguousEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "ambiguous",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "order_submission",
+              "order_cancel",
+              "fill_reconciliation"
+            ],
+            "type": "string"
+          },
+          "order_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reconciliation_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "category",
+          "operation",
+          "order_ref",
+          "reconciliation_required"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotDiscoveryEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "discovery",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "request",
+              "failure",
+              "schema",
+              "completed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "candidate_count"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "leader_signal",
+              "task_decision",
+              "trade_submitted",
+              "trade_fill",
+              "trade_skip",
+              "trade_failure",
+              "ambiguous_order",
+              "protective_exit",
+              "reentry_lock",
+              "reconciliation",
+              "discovery_cycle",
+              "leader_promoted",
+              "leader_demoted",
+              "wss_state",
+              "runtime_state",
+              "risk_state"
+            ],
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TelemetrySnapshotLeaderEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotTaskEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotTradeEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotFillEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotSkipEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotFailureEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotAmbiguousEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotProtectiveExitEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotLockEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotReconciliationEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotDiscoveryEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotRosterEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotWssEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotRuntimeEvent"
+              },
+              {
+                "$ref": "#/$defs/TelemetrySnapshotRiskEvent"
+              }
+            ]
+          },
+          "producer": {
+            "enum": [
+              "detection",
+              "normalization",
+              "worker",
+              "copy_decision",
+              "sizing",
+              "risk",
+              "execution",
+              "reconciliation",
+              "protective_exit",
+              "discovery",
+              "wss",
+              "runtime",
+              "control_plane"
+            ],
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "severity": {
+            "enum": [
+              "debug",
+              "info",
+              "notice",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "event_type",
+          "timestamp",
+          "severity",
+          "correlation_id",
+          "payload",
+          "producer",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotFailureEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "failure",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "component": {
+            "enum": [
+              "detection",
+              "normalization",
+              "worker",
+              "copy_decision",
+              "sizing",
+              "risk",
+              "execution",
+              "reconciliation",
+              "protective_exit",
+              "discovery",
+              "wss",
+              "runtime",
+              "telemetry"
+            ],
+            "type": "string"
+          },
+          "order_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "canceled",
+                  "rejected",
+                  "not_fillable",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "category",
+          "component",
+          "code",
+          "retryable",
+          "order_outcome"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotFillEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "fill",
+            "type": "string"
+          },
+          "fill_ref": {
+            "type": "string"
+          },
+          "order_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "observed",
+              "duplicate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "order_ref",
+          "fill_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotLeaderEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "leader",
+            "type": "string"
+          },
+          "leader_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "received",
+              "dedup",
+              "pending",
+              "promoted",
+              "demoted",
+              "retracted"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "leader_ref",
+          "source"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotLockEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "lock",
+            "type": "string"
+          },
+          "lock_ref": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "created",
+              "blocked",
+              "reset"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "lock_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotProtectiveExitEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "protective",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "triggered",
+              "filled"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "task_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotReconciliationEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "reconciliation",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "run",
+              "drift"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "affected_count"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotRiskEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "risk",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "approved",
+              "rejected",
+              "limit_reached",
+              "exit_triggered"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "task_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotRosterEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "active_count": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-large-integer": true
+              }
+            ]
+          },
+          "category": {
+            "const": "roster",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "updated",
+              "empty",
+              "unchanged"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "active_count"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotRuntimeEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "runtime",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "started",
+              "ready",
+              "degraded",
+              "stopping",
+              "stopped"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotSkipEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "skip",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "duplicate",
+              "risk_rejected",
+              "task_inactive",
+              "schedule_closed",
+              "market_not_allowed",
+              "reentry_locked",
+              "budget_exhausted",
+              "insufficient_balance",
+              "below_minimum_size",
+              "stale_market_data",
+              "price_limit",
+              "capacity",
+              "finality_retracted",
+              "unsupported",
+              "paper_only",
+              "other"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "reason",
+          "task_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotTaskEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "task",
+            "type": "string"
+          },
+          "leader_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "enqueued",
+              "admitted",
+              "started",
+              "completed",
+              "canceled",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "task_ref",
+          "leader_ref"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotTradeEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "trade",
+            "type": "string"
+          },
+          "order_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "canceled",
+                  "rejected",
+                  "not_fillable",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "candidate_evaluated",
+              "submitted",
+              "executed",
+              "partial",
+              "skipped",
+              "failed",
+              "ambiguous"
+            ],
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "BUY",
+              "SELL"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "task_ref",
+          "side",
+          "order_ref",
+          "order_outcome"
+        ],
+        "type": "object"
+      },
+      "TelemetrySnapshotWssEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "wss",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "connected",
+              "disconnected",
+              "reconnected",
+              "stalled"
+            ],
+            "type": "string"
+          },
+          "stream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "outcome",
+          "stream"
+        ],
+        "type": "object"
+      },
+      "TradeEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "trade",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TaskDecisionDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "canceled",
+                  "rejected",
+                  "not_fillable",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "candidate_evaluated",
+              "submitted",
+              "executed",
+              "partial",
+              "skipped",
+              "failed",
+              "ambiguous"
+            ],
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "BUY",
+              "SELL"
+            ],
+            "type": "string"
+          },
+          "task_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "task_ref",
+          "side",
+          "order_ref",
+          "order_outcome",
+          "decision",
+          "category"
+        ],
+        "type": "object"
+      },
+      "TraderDetectionState": {
+        "additionalProperties": false,
+        "properties": {
+          "degraded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "desired_mode": {
+            "enum": [
+              "mined",
+              "pending"
+            ],
+            "type": "string"
+          },
+          "effective_mode": {
+            "enum": [
+              "mined",
+              "pending",
+              "paused"
+            ],
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "last_observation_ms": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer"
+                  },
+                  {
+                    "pattern": "^-?(?:0|[1-9][0-9]*)$",
+                    "type": "string",
+                    "x-large-integer": true
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "on_budget_exhausted": {
+            "enum": [
+              "mined",
+              "pause"
+            ],
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "alchemy",
+              "infura"
+            ],
+            "type": "string"
+          },
+          "restart_required": {
+            "enum": [
+              true
+            ],
+            "type": "boolean"
+          },
+          "wallet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet",
+          "desired_mode",
+          "effective_mode",
+          "provider",
+          "on_budget_exhausted",
+          "enabled",
+          "degraded_reason",
+          "last_observation_ms",
+          "restart_required"
+        ],
+        "type": "object"
+      },
+      "WssEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "const": "wss",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "connected",
+              "disconnected",
+              "reconnected",
+              "stalled"
+            ],
+            "type": "string"
+          },
+          "stream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "stream",
+          "category"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Self-contained supported wire schemas. Route response_schema describes data inside the success envelope; request_schema null means no JSON request body. Closed client schemas exclude server-owned actor/lifecycle fields. Semantic domain validation and capability/permission checks remain authoritative."
+  },
   "limits": {
     "_note": "Transport limits are the ControlPlaneHttpConfig defaults, which a deployment may override in config/control_plane.yml; treat them as the expected shape, not as constants. websocket_max_inbound_message_bytes bounds client-to-server frames only - server-to-client frames such as telemetry_snapshot are not capped by it.",
     "bulk_items_max": 100,
@@ -487,8 +6026,16 @@
       "optional_query": [],
       "path": "/api/v1/accounts",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "AccountView[]",
+      "response_schema": {
+        "items": {
+          "$ref": "#/$defs/AccountView"
+        },
+        "type": "array"
+      },
       "status": 200,
       "summary": "Follower accounts this process composed, projected per request."
     },
@@ -504,8 +6051,40 @@
       ],
       "path": "/api/v1/activity",
       "permission": "activity.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "Page<ActivityView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ActivityView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Sanitized operator activity, optionally follower-scoped."
     },
@@ -517,8 +6096,13 @@
       "optional_query": [],
       "path": "/api/v1/capabilities",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "CapabilitiesView",
+      "response_schema": {
+        "$ref": "#/$defs/CapabilitiesView"
+      },
       "status": 200,
       "summary": "Capabilities this exact composition backs; drives what the UI shows."
     },
@@ -530,8 +6114,13 @@
       "optional_query": [],
       "path": "/api/v1/detection",
       "permission": "runtime.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "DetectionStatusView",
+      "response_schema": {
+        "$ref": "#/$defs/DetectionStatusView"
+      },
       "status": 200,
       "summary": "Local detection-source counters and observable WSS health."
     },
@@ -546,8 +6135,40 @@
       ],
       "path": "/api/v1/discovery/candidates",
       "permission": "discovery.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "Page<DiscoveryCandidateView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/DiscoveryCandidateView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Evaluated discovery candidates and their scores."
     },
@@ -562,8 +6183,40 @@
       ],
       "path": "/api/v1/discovery/cycles",
       "permission": "discovery.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "Page<DiscoveryCycleView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/DiscoveryCycleView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Completed discovery cycles."
     },
@@ -578,8 +6231,40 @@
       ],
       "path": "/api/v1/discovery/roster",
       "permission": "discovery.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "Page<DiscoveryRosterView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/DiscoveryRosterView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Active and inactive discovery roster entries."
     },
@@ -593,8 +6278,15 @@
       "optional_query": [],
       "path": "/api/v1/discovery/run",
       "permission": "discovery.run",
+      "request_schema": {
+        "$ref": "#/$defs/DiscoveryRunRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "DiscoveryRunReceipt",
+      "response_schema": {
+        "$ref": "#/$defs/DiscoveryRunReceipt"
+      },
       "status": 202,
       "summary": "Queue at most one discovery cycle and return immediately."
     },
@@ -606,8 +6298,13 @@
       "optional_query": [],
       "path": "/api/v1/discovery/status",
       "permission": "discovery.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "DiscoveryStatusView",
+      "response_schema": {
+        "$ref": "#/$defs/DiscoveryStatusView"
+      },
       "status": 200,
       "summary": "Current discovery scheduler state."
     },
@@ -622,10 +6319,42 @@
       ],
       "path": "/api/v1/fills",
       "permission": "fill.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<FillView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/FillView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Durable fills, newest first, for one follower account."
     },
@@ -637,8 +6366,16 @@
       "optional_query": [],
       "path": "/api/v1/leaders",
       "permission": "leader.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "LeaderView[]",
+      "response_schema": {
+        "items": {
+          "$ref": "#/$defs/LeaderView"
+        },
+        "type": "array"
+      },
       "status": 200,
       "summary": "Merged leader identities, capped at 500 rows."
     },
@@ -650,10 +6387,15 @@
       "optional_query": [],
       "path": "/api/v1/leaders/{wallet}/performance",
       "permission": "leader.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "AutoTraderPerformanceView",
+      "response_schema": {
+        "$ref": "#/$defs/AutoTraderPerformanceView"
+      },
       "status": 200,
       "summary": "Saved Falcon and source-separated copy results."
     },
@@ -670,8 +6412,15 @@
       "optional_query": [],
       "path": "/api/v1/leaders/{wallet}/promote",
       "permission": "leader.promote",
+      "request_schema": {
+        "$ref": "#/$defs/LeaderPromoteRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "AutoTraderPerformanceView",
+      "response_schema": {
+        "$ref": "#/$defs/AutoTraderPerformanceView"
+      },
       "status": 200,
       "summary": "Approve qualified paper evidence; fill only a vacant slot."
     },
@@ -686,10 +6435,42 @@
       ],
       "path": "/api/v1/locks",
       "permission": "lock.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<ReentryLockView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ReentryLockView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Protective-exit reentry locks for one follower account."
     },
@@ -708,8 +6489,15 @@
       "optional_query": [],
       "path": "/api/v1/locks/reset",
       "permission": "lock.reset",
+      "request_schema": {
+        "$ref": "#/$defs/LockResetRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "LockResetResult",
+      "response_schema": {
+        "$ref": "#/$defs/LockResetResult"
+      },
       "status": 200,
       "summary": "Reset one reentry lock by its complete identity; on the {lock_id} spelling that path segment must equal the body identity."
     },
@@ -721,8 +6509,13 @@
       "optional_query": [],
       "path": "/api/v1/metrics/snapshot",
       "permission": "telemetry.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "MetricsSnapshot",
+      "response_schema": {
+        "$ref": "#/$defs/MetricsSnapshot"
+      },
       "status": 200,
       "summary": "Counters, gauges, and histograms without the event ring."
     },
@@ -737,10 +6530,42 @@
       ],
       "path": "/api/v1/orders",
       "permission": "order.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<OrderView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/OrderView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Durable orders for one follower account."
     },
@@ -752,10 +6577,15 @@
       "optional_query": [],
       "path": "/api/v1/orders/{order_id}",
       "permission": "order.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "OrderView",
+      "response_schema": {
+        "$ref": "#/$defs/OrderView"
+      },
       "status": 200,
       "summary": "One durable order; still follower-scoped by query parameter."
     },
@@ -767,10 +6597,15 @@
       "optional_query": [],
       "path": "/api/v1/pnl",
       "permission": "portfolio.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "PnlView",
+      "response_schema": {
+        "$ref": "#/$defs/PnlView"
+      },
       "status": 200,
       "summary": "Session realized ledger plus honestly marked open positions."
     },
@@ -782,10 +6617,15 @@
       "optional_query": [],
       "path": "/api/v1/portfolio",
       "permission": "portfolio.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "PortfolioView",
+      "response_schema": {
+        "$ref": "#/$defs/PortfolioView"
+      },
       "status": 200,
       "summary": "Cached portfolio snapshot; never triggers a venue call."
     },
@@ -800,10 +6640,42 @@
       ],
       "path": "/api/v1/positions",
       "permission": "position.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<PositionView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PositionView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Open positions for one follower account."
     },
@@ -815,10 +6687,15 @@
       "optional_query": [],
       "path": "/api/v1/positions/{position_id}",
       "permission": "position.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "PositionView",
+      "response_schema": {
+        "$ref": "#/$defs/PositionView"
+      },
       "status": 200,
       "summary": "One open position; still follower-scoped by query parameter."
     },
@@ -830,8 +6707,13 @@
       "optional_query": [],
       "path": "/api/v1/readiness",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "ReadinessView",
+      "response_schema": {
+        "$ref": "#/$defs/ReadinessView"
+      },
       "status": 200,
       "summary": "Readiness half of the system status projection."
     },
@@ -846,10 +6728,42 @@
       ],
       "path": "/api/v1/reentry-locks",
       "permission": "lock.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<ReentryLockView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ReentryLockView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Alias of GET /locks."
     },
@@ -868,8 +6782,15 @@
       "optional_query": [],
       "path": "/api/v1/reentry-locks/{lock_id}/reset",
       "permission": "lock.reset",
+      "request_schema": {
+        "$ref": "#/$defs/LockResetRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "LockResetResult",
+      "response_schema": {
+        "$ref": "#/$defs/LockResetResult"
+      },
       "status": 200,
       "summary": "Alias of POST /locks/reset."
     },
@@ -884,10 +6805,42 @@
       ],
       "path": "/api/v1/reservations",
       "permission": "reservation.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<ReservationView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ReservationView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Collateral reservations for one follower account."
     },
@@ -899,10 +6852,15 @@
       "optional_query": [],
       "path": "/api/v1/risk",
       "permission": "risk.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "RiskStateView",
+      "response_schema": {
+        "$ref": "#/$defs/RiskStateView"
+      },
       "status": 200,
       "summary": "Configured policy, active blocks, recent triggers, and headroom."
     },
@@ -914,8 +6872,13 @@
       "optional_query": [],
       "path": "/api/v1/runtime",
       "permission": "runtime.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "RuntimeView",
+      "response_schema": {
+        "$ref": "#/$defs/RuntimeView"
+      },
       "status": 200,
       "summary": "Entry-control safety state, worker count, and queue depth."
     },
@@ -930,8 +6893,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/full-stop",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Halt entries and protective exits, then cancel resting orders."
     },
@@ -946,8 +6916,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/pause",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Pause new entries while protective exits keep running."
     },
@@ -962,8 +6939,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/resume",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Resume entries; cannot override an active full stop."
     },
@@ -975,8 +6959,13 @@
       "optional_query": [],
       "path": "/api/v1/runtime/safety",
       "permission": "runtime.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "RuntimeView",
+      "response_schema": {
+        "$ref": "#/$defs/RuntimeView"
+      },
       "status": 200,
       "summary": "Alias of GET /runtime."
     },
@@ -991,8 +6980,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/safety/full-stop",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Alias of POST /runtime/full-stop."
     },
@@ -1007,8 +7003,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/safety/pause-entries",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Alias of POST /runtime/pause."
     },
@@ -1023,8 +7026,15 @@
       "optional_query": [],
       "path": "/api/v1/runtime/safety/resume-entries",
       "permission": "runtime.write",
+      "request_schema": {
+        "$ref": "#/$defs/RuntimeControlRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "EntryControlState",
+      "response_schema": {
+        "$ref": "#/$defs/EntryControlState"
+      },
       "status": 200,
       "summary": "Alias of POST /runtime/resume."
     },
@@ -1036,8 +7046,16 @@
       "optional_query": [],
       "path": "/api/v1/settings",
       "permission": "settings.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SettingsDocument[]",
+      "response_schema": {
+        "items": {
+          "$ref": "#/$defs/SettingsDocument"
+        },
+        "type": "array"
+      },
       "status": 200,
       "summary": "Every operator-editable settings section and its revision."
     },
@@ -1049,8 +7067,13 @@
       "optional_query": [],
       "path": "/api/v1/settings/{environment}/{section}",
       "permission": "settings.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SettingsDocument",
+      "response_schema": {
+        "$ref": "#/$defs/SettingsDocument"
+      },
       "status": 200,
       "summary": "One settings section in an explicitly named environment."
     },
@@ -1065,8 +7088,15 @@
       "optional_query": [],
       "path": "/api/v1/settings/{environment}/{section}",
       "permission": "settings.write",
+      "request_schema": {
+        "$ref": "#/$defs/SettingsWriteRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "SettingsWriteResult",
+      "response_schema": {
+        "$ref": "#/$defs/SettingsWriteResult"
+      },
       "status": 200,
       "summary": "Replace one settings section in an explicitly named environment."
     },
@@ -1078,8 +7108,13 @@
       "optional_query": [],
       "path": "/api/v1/settings/{section}",
       "permission": "settings.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SettingsDocument",
+      "response_schema": {
+        "$ref": "#/$defs/SettingsDocument"
+      },
       "status": 200,
       "summary": "One settings section in this process's own environment."
     },
@@ -1094,8 +7129,15 @@
       "optional_query": [],
       "path": "/api/v1/settings/{section}",
       "permission": "settings.write",
+      "request_schema": {
+        "$ref": "#/$defs/SettingsWriteRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "SettingsWriteResult",
+      "response_schema": {
+        "$ref": "#/$defs/SettingsWriteResult"
+      },
       "status": 200,
       "summary": "Replace one section in this process's environment; restart-required."
     },
@@ -1107,8 +7149,13 @@
       "optional_query": [],
       "path": "/api/v1/status",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SystemStatusView",
+      "response_schema": {
+        "$ref": "#/$defs/SystemStatusView"
+      },
       "status": 200,
       "summary": "Process identity paired with authoritative readiness."
     },
@@ -1120,8 +7167,11 @@
       "optional_query": [],
       "path": "/api/v1/stream",
       "permission": "telemetry.stream",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "WebSocket",
+      "response_schema": null,
       "status": 200,
       "summary": "Authenticated telemetry WebSocket upgrade; the credential may come from the Authorization header or the bearer subprotocol carrier."
     },
@@ -1133,8 +7183,13 @@
       "optional_query": [],
       "path": "/api/v1/system",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SystemView",
+      "response_schema": {
+        "$ref": "#/$defs/SystemView"
+      },
       "status": 200,
       "summary": "Process identity, environment, trading mode, and uptime."
     },
@@ -1146,8 +7201,13 @@
       "optional_query": [],
       "path": "/api/v1/system/capabilities",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "CapabilitiesView",
+      "response_schema": {
+        "$ref": "#/$defs/CapabilitiesView"
+      },
       "status": 200,
       "summary": "Alias of GET /capabilities."
     },
@@ -1159,8 +7219,13 @@
       "optional_query": [],
       "path": "/api/v1/system/readiness",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "ReadinessView",
+      "response_schema": {
+        "$ref": "#/$defs/ReadinessView"
+      },
       "status": 200,
       "summary": "Alias of GET /readiness."
     },
@@ -1172,8 +7237,13 @@
       "optional_query": [],
       "path": "/api/v1/system/status",
       "permission": "system.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "SystemStatusView",
+      "response_schema": {
+        "$ref": "#/$defs/SystemStatusView"
+      },
       "status": 200,
       "summary": "Alias of GET /status."
     },
@@ -1188,10 +7258,42 @@
       ],
       "path": "/api/v1/tasks",
       "permission": "task.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [
         "follower_account"
       ],
       "response": "Page<TaskView>",
+      "response_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/TaskView"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "status": 200,
       "summary": "Copy tasks for one follower account."
     },
@@ -1205,8 +7307,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskCreateRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 201,
       "summary": "Create one paused copy task."
     },
@@ -1220,8 +7329,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/bulk",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/BulkTaskRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "BulkTaskResult",
+      "response_schema": {
+        "$ref": "#/$defs/BulkTaskResult"
+      },
       "status": 200,
       "summary": "Apply one all-or-none batch of 1..100 versioned task actions."
     },
@@ -1235,8 +7351,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskVersionRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 200,
       "summary": "Soft-delete one task; positions are never closed implicitly."
     },
@@ -1248,8 +7371,13 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}",
       "permission": "task.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "TaskDetailView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskDetailView"
+      },
       "status": 200,
       "summary": "One task summary plus its complete typed configuration."
     },
@@ -1264,8 +7392,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskUpdateRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 200,
       "summary": "Same handler and same complete body as PUT /tasks/{task_id}."
     },
@@ -1280,8 +7415,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskUpdateRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 200,
       "summary": "Replace one task configuration under its expected version."
     },
@@ -1296,8 +7438,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}/duplicate",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskDuplicateRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 201,
       "summary": "Duplicate one task into a new paused task."
     },
@@ -1311,8 +7460,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}/pause",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskVersionRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 200,
       "summary": "Pause one task under its expected version."
     },
@@ -1326,8 +7482,15 @@
       "optional_query": [],
       "path": "/api/v1/tasks/{task_id}/resume",
       "permission": "task.write",
+      "request_schema": {
+        "$ref": "#/$defs/TaskVersionRequest"
+      },
+      "request_unknown_fields": "HTTP wrapper ignores undeclared keys; task payload/configuration rejects them. The published client schema allows only supported keys.",
       "required_query": [],
       "response": "TaskView",
+      "response_schema": {
+        "$ref": "#/$defs/TaskView"
+      },
       "status": 200,
       "summary": "Resume one task; fails closed without a live execution binding."
     },
@@ -1341,8 +7504,13 @@
       ],
       "path": "/api/v1/telemetry",
       "permission": "telemetry.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "TelemetrySnapshot",
+      "response_schema": {
+        "$ref": "#/$defs/TelemetrySnapshot"
+      },
       "status": 200,
       "summary": "Bounded newest-first event history plus the metrics block."
     },
@@ -1356,8 +7524,13 @@
       ],
       "path": "/api/v1/telemetry/snapshot",
       "permission": "telemetry.read",
+      "request_schema": null,
+      "request_unknown_fields": null,
       "required_query": [],
       "response": "TelemetrySnapshot",
+      "response_schema": {
+        "$ref": "#/$defs/TelemetrySnapshot"
+      },
       "status": 200,
       "summary": "Alias of GET /telemetry."
     }
@@ -2699,6 +8872,13 @@
           "name": "observed_at",
           "nullable": false,
           "type": "timestamp",
+          "vocabulary": null
+        },
+        {
+          "decimal": false,
+          "name": "traders",
+          "nullable": true,
+          "type": "array<TraderDetectionState>",
           "vocabulary": null
         }
       ]
@@ -5425,6 +11605,14 @@
         "response_header": "Sec-WebSocket-Protocol: bearer"
       }
     },
+    "client_frame_schemas": {
+      "ping": {
+        "$ref": "#/$defs/StreamClientPing"
+      },
+      "resync": {
+        "$ref": "#/$defs/StreamClientResync"
+      }
+    },
     "client_frames": {
       "ping": {
         "type": "ping"
@@ -5439,6 +11627,26 @@
       "unsupported_stream_message": "Client frame type is neither ping nor resync."
     },
     "path": "/api/v1/stream",
+    "server_frame_schemas": {
+      "error": {
+        "$ref": "#/$defs/StreamError"
+      },
+      "pong": {
+        "$ref": "#/$defs/StreamPong"
+      },
+      "resync_required": {
+        "$ref": "#/$defs/StreamResyncRequired"
+      },
+      "stream_ready": {
+        "$ref": "#/$defs/StreamStreamReady"
+      },
+      "telemetry_event": {
+        "$ref": "#/$defs/StreamTelemetryEvent"
+      },
+      "telemetry_snapshot": {
+        "$ref": "#/$defs/StreamTelemetrySnapshot"
+      }
+    },
     "server_frames": {
       "error": {
         "code": "string",
@@ -5453,14 +11661,21 @@
         "type": "resync_required"
       },
       "stream_ready": {
+        "durable_replay": false,
+        "ordering": "session_per_producer",
+        "resync_required": true,
+        "stream_boot_id": "string",
         "type": "stream_ready"
       },
       "telemetry_event": {
         "data": "TelemetryEvent",
+        "stream_boot_id": "string",
         "type": "telemetry_event"
       },
       "telemetry_snapshot": {
+        "authoritative_financial_state": false,
         "data": "TelemetrySnapshot | null",
+        "stream_boot_id": "string | null",
         "type": "telemetry_snapshot"
       }
     },

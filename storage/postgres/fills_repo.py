@@ -25,6 +25,7 @@ import asyncpg
 from ports.repositories import AbstractFillRepository
 from services.execution.fill_accounting import AccountedOrderFill, FillAccountingConflict
 from storage.postgres.task_fill_projection import PostgresTaskFillProjection
+from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
 
 if TYPE_CHECKING:
     from storage.postgres.positions_repo import PositionRecord, PositionsRepo
@@ -49,14 +50,20 @@ class FillRecord:
     # ``None`` for non-reconciler fills (partial index excludes them).
     dedup_key: str | None = None
     accounted_shares: Decimal | None = None
+    source_action_id: str | None = None
 
 
 class FillsRepo(AbstractFillRepository):
     def __init__(
-        self, pool: asyncpg.Pool, *, task_projection: PostgresTaskFillProjection | None = None
+        self,
+        pool: asyncpg.Pool,
+        *,
+        task_projection: PostgresTaskFillProjection | None = None,
+        evidence_projection: PostgresFillEvidenceProjection | None = None,
     ):
         self._pool = pool
         self._task_projection = task_projection
+        self._evidence_projection = evidence_projection
 
     async def accounted_order_fill(self, user_id: str, order_id: str) -> AccountedOrderFill:
         """Read confirmed ledger totals scoped to one follower and venue order."""
@@ -89,40 +96,44 @@ class FillsRepo(AbstractFillRepository):
         }
 
         async with self._pool.acquire() as conn:
-            # ON CONFLICT DO NOTHING + RETURNING id is the Postgres-native
-            # equivalent of SQLite's INSERT OR IGNORE + lastrowid. When the
-            # unique index (user_id, order_id, condition_id, side, fill_ts)
-            # already covers this row, RETURNING yields nothing → fetchval
-            # is None → return 0 so callers can distinguish duplicate from
-            # fresh insert.
-            new_id = await conn.fetchval(
-                """
-                INSERT INTO fills (
-                    user_id, leader_id, order_id, condition_id, token_id, side,
-                    size_tokens, price, fee, fill_ts, fill_json, dedup_key, fee_evidence_known
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
-                ON CONFLICT DO NOTHING
-                RETURNING id
-                """,
-                record.user_id,
-                record.leader_id,
-                record.order_id,
-                record.condition_id,
-                record.token_id,
-                record.side,
-                str(record.size_tokens),
-                str(record.price),
-                None if record.fee is None else str(record.fee),
-                # cubic P2: ``record.fill_ts or time.time()`` would
-                # overwrite a legitimate ``fill_ts == 0`` epoch with the
-                # current time. ``is None`` preserves a deliberately-set
-                # zero while still falling back when the field is unset.
-                int(record.fill_ts if record.fill_ts is not None else time.time()),
-                json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
-                record.dedup_key,
-                record.fee is not None,
-            )
-            return int(new_id) if new_id is not None else 0
+            async with conn.transaction():
+                # ON CONFLICT DO NOTHING + RETURNING id is the Postgres-native
+                # equivalent of SQLite's INSERT OR IGNORE + lastrowid. When the
+                # unique index (user_id, order_id, condition_id, side, fill_ts)
+                # already covers this row, RETURNING yields nothing → fetchval
+                # is None → return 0 so callers can distinguish duplicate from
+                # fresh insert.
+                new_id = await conn.fetchval(
+                    """
+                    INSERT INTO fills (
+                        user_id, leader_id, order_id, condition_id, token_id, side,
+                        size_tokens, price, fee, fill_ts, fill_json, dedup_key, fee_evidence_known
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id
+                    """,
+                    record.user_id,
+                    record.leader_id,
+                    record.order_id,
+                    record.condition_id,
+                    record.token_id,
+                    record.side,
+                    str(record.size_tokens),
+                    str(record.price),
+                    None if record.fee is None else str(record.fee),
+                    # cubic P2: ``record.fill_ts or time.time()`` would
+                    # overwrite a legitimate ``fill_ts == 0`` epoch with the
+                    # current time. ``is None`` preserves a deliberately-set
+                    # zero while still falling back when the field is unset.
+                    int(record.fill_ts if record.fill_ts is not None else time.time()),
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+                    record.dedup_key,
+                    record.fee is not None,
+                )
+                fill_id = int(new_id) if new_id is not None else 0
+                if fill_id and self._evidence_projection is not None:
+                    await self._evidence_projection.apply(conn, fill_id, record)
+                return fill_id
 
     async def append_fill_and_apply(
         self,
@@ -267,6 +278,8 @@ class FillsRepo(AbstractFillRepository):
                     )
                 if self._task_projection is not None:
                     await self._task_projection.apply(conn, fill_id, record)
+                if self._evidence_projection is not None:
+                    await self._evidence_projection.apply(conn, fill_id, record)
                 return fill_id, updated
 
     async def list_fills_for_user(self, user_id: str) -> list[dict]:

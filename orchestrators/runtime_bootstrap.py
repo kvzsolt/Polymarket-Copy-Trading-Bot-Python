@@ -1,13 +1,17 @@
 """Compose per-user trading dependencies behind venue-neutral ports."""
 
 from __future__ import annotations
+
+from functools import partial
 from services.telemetry.latency import PipelineLatency
 
+import asyncio
 import inspect
 from dataclasses import dataclass, field
+from datetime import timedelta
 from urllib.parse import urlencode
-from decimal import Decimal
-from collections.abc import Sized
+from decimal import Decimal, InvalidOperation
+from collections.abc import Mapping, Sized
 from typing import TYPE_CHECKING, Any
 
 from application.trading_context import TradingContext
@@ -51,7 +55,9 @@ from collections.abc import Awaitable, Callable
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
     from services.manual_sync_service import ManualSyncService
+    from services.execution.ambiguous_recovery import AmbiguousSubmissionRecoveryService
     from config.app_config import AppConfig
     from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
     from integrations.polymarket.venue_runtime import PolymarketVenueRuntime
@@ -202,6 +208,9 @@ class UserRuntimeState:
     # fixtures keep constructing state without telemetry.
     telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
     leader_performance: LeaderPerformanceReader | None = None
+    # Bounded, read-only recovery for no-order-id lost-POST rows. Optional so
+    # paper / wallet-less test contexts keep constructing state without it.
+    ambiguous_recovery: "AmbiguousSubmissionRecoveryService | None" = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -262,6 +271,8 @@ def build_user_state(
     clob_gateway: "ClobGateway | None" = None,
     telemetry: TelemetryEmitters | None = None,
     copy_admission: CopyAdmission | None = None,
+    provider_runtime: Any = None,
+    evidence_projection: PostgresFillEvidenceProjection | None = None,
 ) -> UserRuntimeState:
     """Build one follower runtime from injected configuration and ports.
 
@@ -288,7 +299,9 @@ def build_user_state(
 
     order_repo = OrdersRepo(pool)
     fills_repo = FillsRepo(
-        pool, task_projection=PostgresTaskFillProjection(PostgresRiskLotRepository(pool))
+        pool,
+        task_projection=PostgresTaskFillProjection(PostgresRiskLotRepository(pool)),
+        evidence_projection=evidence_projection,
     )
     positions_repo = PositionsRepo(pool)
     risk_blocks_repo = RiskBlocksRepo(pool)
@@ -385,6 +398,7 @@ def build_user_state(
         execution_service=execution_service,
         funder_address=runtime_user.wallet.funder_address,
         config=config,
+        provider_runtime=provider_runtime,
         latency=emitters.latency,
         copy_admission=copy_admission,
     )
@@ -425,6 +439,17 @@ def build_user_state(
         on_positions_synced=inventory_refresh.refresh,
     )
 
+    ambiguous_recovery = _build_ambiguous_recovery_service(
+        user_id=runtime_user.user_id,
+        funder_address=runtime_user.wallet.funder_address,
+        gateway=clob_gateway,
+        orders_repo=order_repo,
+        positions_repo=positions_repo,
+        pool=pool,
+        config=config,
+        provider_runtime=provider_runtime,
+    )
+
     return UserRuntimeState(
         user=runtime_user,
         client=client,
@@ -448,6 +473,7 @@ def build_user_state(
         trading_permission=trading_permission,
         telemetry=emitters,
         leader_performance=PostgresLeaderPerformanceReader(pool),
+        ambiguous_recovery=ambiguous_recovery,
     )
 
 
@@ -524,6 +550,154 @@ def _build_manual_sync_service(
     )
 
 
+def _build_ambiguous_recovery_service(
+    *,
+    user_id: str,
+    funder_address: str | None,
+    gateway: ClobGateway | None,
+    orders_repo: OrdersRepo,
+    positions_repo: PositionsRepo,
+    pool,
+    config: AppConfig,
+    provider_runtime: Any = None,
+) -> "AmbiguousSubmissionRecoveryService | None":
+    """Build per-user no-ID ambiguous recovery with read-only venue evidence.
+
+    Returns None when the wallet or venue gateway is missing, when recovery is
+    disabled, or when any collaborator cannot be constructed. A missing service
+    only means the lost-POST rows stay duplicate-blocking (the historical
+    behaviour); it never weakens a block.
+    """
+    if not funder_address or gateway is None:
+        return None
+    recovery_cfg = getattr(getattr(config, "reconciliation", None), "ambiguous_recovery", None)
+    if recovery_cfg is None or not bool(getattr(recovery_cfg, "enabled", True)):
+        return None
+    try:
+        from integrations.polymarket.ccxt_ambiguous_evidence import (
+            CcxtAmbiguousEvidenceSource,
+        )
+        from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
+        from services.execution.ambiguous_recovery import AmbiguousSubmissionRecoveryService
+        from storage.postgres.reservations_repo import ReservationsRepo
+        from utils.getMyBalance import get_my_balance
+    except Exception as exc:
+        logger.warning("ambiguous_recovery_unwired error=%r", exc)
+        return None
+
+    reservations_repo = ReservationsRepo(pool)
+
+    async def _local_shares(uid: str, condition_id: str, token_id: str) -> Decimal | None:
+        """Persisted (confirmed-only) shares; None means unknown evidence."""
+        try:
+            record = await positions_repo.get_position(uid, condition_id, token_id=token_id)
+        except Exception as exc:
+            logger.warning(
+                "ambiguous_recovery_local_position_unavailable | user=%s error_type=%s",
+                uid,
+                type(exc).__name__,
+            )
+            return None
+        if record is None:
+            return Decimal("0")
+        try:
+            return Decimal(str(getattr(record, "size_tokens", 0) or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    async def _reserved_quote(uid: str) -> Decimal | None:
+        """Active BUY quote reservation floor; None means unknown evidence."""
+        try:
+            total = await reservations_repo.sum_active_quote_for_user(uid)
+        except Exception as exc:
+            logger.warning(
+                "ambiguous_recovery_reserved_quote_unavailable | user=%s error_type=%s",
+                uid,
+                type(exc).__name__,
+            )
+            return None
+        try:
+            return Decimal(str(total or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    async def _balance(address: str) -> Decimal | None:
+        return await get_my_balance(address, provider_runtime=provider_runtime)
+
+    wallet_by_user = {user_id: funder_address}
+
+    evidence_source = CcxtAmbiguousEvidenceSource(
+        private_history=gateway,
+        shares_reader=DataApiPositionSizeReader(_get_http_client),
+        balance_reader=_balance,
+        local_shares_reader=_local_shares,
+        reserved_quote_reader=_reserved_quote,
+        wallet_for_user=wallet_by_user.get,
+        read_timeout_seconds=float(getattr(recovery_cfg, "read_timeout_seconds", 10.0) or 10.0),
+        match_window=timedelta(
+            seconds=float(getattr(recovery_cfg, "match_window_seconds", 900.0) or 0.0)
+        ),
+    )
+    return AmbiguousSubmissionRecoveryService(
+        repository=orders_repo,
+        evidence_source=evidence_source,
+        grace_period=timedelta(seconds=float(getattr(recovery_cfg, "grace_seconds", 120.0) or 0.0)),
+        required_absence_scans=int(getattr(recovery_cfg, "required_absence_scans", 3) or 3),
+        batch_size=int(getattr(recovery_cfg, "batch_size", 100) or 100),
+        evidence_history_limit=int(getattr(recovery_cfg, "evidence_history_limit", 8) or 8),
+    )
+
+
+async def ambiguous_recovery_loop(
+    services: Mapping[str, Any],
+    *,
+    interval_seconds: float,
+) -> None:
+    """Run the bounded no-ID recovery sweep for every wired follower.
+
+    A failing scan fails closed: the exception is logged and the row keeps
+    blocking, while the loop itself survives so the next tick can retry.
+    """
+    interval = max(1.0, float(interval_seconds))
+    while True:
+        for user_id, service in services.items():
+            recover_once = getattr(service, "recover_once", None)
+            if not callable(recover_once):
+                continue
+            try:
+                results = await recover_once()
+            except Exception as exc:
+                logger.warning(
+                    "ambiguous_recovery_scan_failed | user=%s error_type=%s",
+                    user_id,
+                    type(exc).__name__,
+                )
+                continue
+            _log_ambiguous_recovery_results(user_id, results)
+        await asyncio.sleep(interval)
+
+
+def _log_ambiguous_recovery_results(user_id: str, results: Any) -> None:
+    """Emit one operator-visible line per resolved or progressing row."""
+    try:
+        entries = tuple(results or ())
+    except TypeError:
+        return
+    resolved = []
+    for result in entries:
+        disposition = str(getattr(getattr(result, "disposition", None), "value", ""))
+        if disposition in {"recovered_order_id", "confirmed_absent"}:
+            resolved.append((getattr(result, "idempotency_key", "?"), disposition))
+    if not resolved:
+        return
+    logger.info(
+        "ambiguous_recovery_resolved | user=%s count=%d resolutions=%s",
+        user_id,
+        len(resolved),
+        ";".join(f"{key}:{disposition}" for key, disposition in resolved),
+    )
+
+
 def _build_position_drift_service(
     *,
     pool,
@@ -571,6 +745,7 @@ def _build_execution_coordinator(
     config: "AppConfig | None" = None,
     latency: PipelineLatency | None = None,
     copy_admission: CopyAdmission | None = None,
+    provider_runtime: Any = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -598,7 +773,9 @@ def _build_execution_coordinator(
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
-        get_balance_func=get_my_balance,
+        get_balance_func=partial(get_my_balance, provider_runtime=provider_runtime)
+        if provider_runtime is not None
+        else get_my_balance,
         funder_address=funder_address,
         ttl_seconds=_reservation_ttl,
         enabled=reservations_enabled,

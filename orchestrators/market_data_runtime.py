@@ -9,8 +9,8 @@ This module wires together:
 
 It does not make trading decisions. It only keeps token market state fresh.
 
-Trade detection remains HTTP polling. Market WSS is only for quote/book/tick/
-market-state data.
+Native owner detection is composed separately. Market WSS supplies quote/book/
+tick state and an optional durable raw evidence tap.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from interfaces.readiness import ReadinessWriter
 from services.telemetry import WssTelemetryEmitter
 from services.telemetry.latency import PipelineLatency
 from services.metrics import LatencyPhase
+from services.market_evidence import MarketEvidenceTap
 from utils.logger import get_logger
 
 logger = get_logger("MarketDataRuntime")
@@ -107,6 +108,7 @@ class MarketDataRuntime:
     latency: PipelineLatency | None = None
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    evidence: MarketEvidenceTap | None = None
     _recovery_started: TransportReceipt | None = field(default=None, init=False)
 
     _ws_client: MarketWebSocket | None = field(default=None, init=False)
@@ -128,8 +130,8 @@ class MarketDataRuntime:
         """Start market WSS runtime.
 
         The WSS connection is opened unconditionally, even with zero initial
-        tokens. Trade detection is HTTP-polled, so token ids only become known
-        when a trade is observed; the connection must already be live so that
+        tokens. Token ids may only become known when a native owner fill is
+        observed; the connection must already be live so that
         dynamic ``subscribe_tokens`` / ``ensure_token_ready_or_bootstrapped``
         calls can attach tokens and REST-bootstrap them. Returning early on an
         empty token set would leave ``_ws_client`` unset and permanently block
@@ -153,6 +155,7 @@ class MarketDataRuntime:
             on_disconnected=self._on_wss_disconnected,
             on_state_change=self._on_market_state_change,
             on_quote_invalidated=self._on_quote_invalidated,
+            evidence=self.evidence,
         )
 
         self._ws_task = asyncio.create_task(
@@ -579,6 +582,8 @@ class MarketDataRuntime:
         self._emit_wss_connected()
 
     async def _on_wss_disconnected(self) -> None:
+        if self.evidence is not None:
+            self.evidence.disconnected()
         if self.latency is not None and self._recovery_started is None:
             self._recovery_started = self.latency.capture()
         self._wss_connected = False

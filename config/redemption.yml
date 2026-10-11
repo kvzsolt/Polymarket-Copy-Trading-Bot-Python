@@ -1,0 +1,15 @@
+# Configuration guide
+# Purpose: optional credentials for the standalone gasless redemption command.
+# Normal startup and previews work without these credentials. Nothing here
+# enables automatic settlement or changes execution.trading_mode.
+# Options:
+#   relayer_api_key: secret from PMCOPY__REDEMPTION__RELAYER_API_KEY only.
+#   relayer_api_key_address: owning/signing EOA, configured locally through
+#     PMCOPY__REDEMPTION__RELAYER_API_KEY_ADDRESS in mode-0600 secrets.env.
+#   The default for both is empty; --execute requires both to be valid.
+# Trade-offs:
+#   Gasless settlement needs an authorized Polymarket Relayer API key and
+#   provider availability. It avoids keeping native gas in the follower wallet.
+#   Explicit --execute plus live mode protects previews from changing balances.
+#   Never place the Relayer API key in this tracked YAML file.
+{}

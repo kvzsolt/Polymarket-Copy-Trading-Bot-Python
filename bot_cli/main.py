@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+from bot_cli.commands.history_import import register_history_import_command, run_history_import
+
 from bot_cli.commands import (
     register_doctor_command,
     run_doctor,
@@ -28,9 +30,14 @@ from bot_cli.commands import (
     run_profile_leader,
     register_trading_command,
     run_trading,
+    register_redeem_command,
+    run_redeem,
+    register_resolve_command,
+    run_resolve,
 )
 
 _COMMANDS = [
+    ("history-import", register_history_import_command, run_history_import),
     ("doctor", register_doctor_command, run_doctor),
     ("status", register_status_command, run_status),
     ("orders", register_orders_command, run_orders),
@@ -44,6 +51,8 @@ _COMMANDS = [
     ("rotate-traders", register_rotate_traders_command, run_rotate_traders),
     ("profile-leader", register_profile_leader_command, run_profile_leader),
     ("trading", register_trading_command, run_trading),
+    ("redeem", register_redeem_command, run_redeem),
+    ("resolve", register_resolve_command, run_resolve),
 ]
 
 _COMMAND_RUNNERS = {name: runner for name, _, runner in _COMMANDS}

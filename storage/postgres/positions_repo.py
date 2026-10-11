@@ -341,7 +341,13 @@ class PositionsRepo(AbstractPositionRepository):
                           AND status NOT IN (
                             'filled', 'filled_reconciled', 'cancelled', 'canceled', 'rejected', 'expired',
                             'failed', 'submission_failed', 'terminal_failed',
-                            'confirmed_absent', 'duplicate_ignored', 'cross_source_claimed'
+                            'confirmed_absent', 'duplicate_ignored', 'cross_source_claimed',
+                            'auto_released_ambiguous',
+                            -- Operator-validated terminal resolutions written by
+                            -- ``bot.py resolve --apply`` (bot_cli/commands/resolve.py
+                            -- _TERMINAL_STATUS_BY_RESOLUTION). Without these the
+                            -- sanctioned unblock path could never prune.
+                            'manually_canceled', 'manually_expired', 'manually_confirmed_absent'
                           )
                     )
                     """,

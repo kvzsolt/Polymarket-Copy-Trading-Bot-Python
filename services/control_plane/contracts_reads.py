@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from domain.grouped_detection import TraderDetectionState
 
 from services.control_plane.contracts import (
     ContractValidation,
@@ -108,6 +109,7 @@ class DetectionStatusView:
     pending_confirmations: PendingConfirmationStatsView | None
     watched_leader_count: int
     observed_at: datetime
+    traders: tuple[TraderDetectionState, ...] | None = None
 
     def __post_init__(self) -> None:
         """Validate the mode, bounded source list, and counters."""

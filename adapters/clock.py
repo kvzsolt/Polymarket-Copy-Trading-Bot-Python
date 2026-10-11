@@ -28,8 +28,13 @@ class SystemReceiptClock:
         self._boot_id = f"{_PROCESS_RECEIPT_BOOT_ID}_{getpid()}" if boot_id is None else boot_id
 
     def capture(self) -> TransportReceipt:
-        """Return wall milliseconds and monotonic nanoseconds at application ingress."""
-        return TransportReceipt(time_ns() // 1_000_000, monotonic_ns(), self._boot_id)
+        """Retain the actual wall sample and its compatible millisecond projection.
+
+        Nanosecond units describe the sampled clock value, not an assertion of
+        nanosecond physical accuracy or kernel packet-arrival precision.
+        """
+        wall_ns = time_ns()
+        return TransportReceipt(wall_ns // 1_000_000, monotonic_ns(), self._boot_id, wall_ns)
 
 
 __all__ = ["SystemClock", "SystemReceiptClock"]

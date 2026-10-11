@@ -29,6 +29,8 @@ from bot_cli.commands.profile_leader import (
     run_profile_leader,
 )
 from bot_cli.commands.trading import register_trading_command, run_trading
+from bot_cli.commands.redeem import register_redeem_command, run_redeem
+from bot_cli.commands.resolve import register_resolve_command, run_resolve
 
 __all__ = [
     "register_doctor_command",
@@ -57,4 +59,8 @@ __all__ = [
     "run_profile_leader",
     "register_trading_command",
     "run_trading",
+    "register_redeem_command",
+    "run_redeem",
+    "register_resolve_command",
+    "run_resolve",
 ]

@@ -5,12 +5,28 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from config.evidence import EvidenceConfig
+
 
 _APP_PY = Path(__file__).resolve().parents[1] / "app.py"
+
+
+@pytest.fixture
+def admitted_provider(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Keep startup ordering tests isolated from real provider configuration/network."""
+    runtime = SimpleNamespace(close=Mock())
+    monkeypatch.setattr(
+        "orchestrators.provider_runtime.ProviderRuntime.from_config", lambda _config: runtime
+    )
+    evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(
+        "orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda _config: evidence
+    )
+    return runtime
 
 
 def _app_source() -> str:
@@ -72,12 +88,15 @@ def test_paper_mode_skips_live_doctor():
 
 
 @pytest.mark.asyncio
-async def test_live_doctor_runs_before_build_app(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_live_doctor_runs_before_build_app(
+    monkeypatch: pytest.MonkeyPatch, admitted_provider
+) -> None:
     """The doctor receives default manual mode before runtime composition."""
     import app as app_module
 
     events: list[str] = []
     fake_config = SimpleNamespace(
+        evidence=EvidenceConfig(),
         execution=SimpleNamespace(paper_trade_only=False),
         network=SimpleNamespace(enforce_geoblock=False),
         logging=SimpleNamespace(
@@ -89,14 +108,18 @@ async def test_live_doctor_runs_before_build_app(monkeypatch: pytest.MonkeyPatch
         ),
     )
 
-    async def _fake_doctor(_mode: str, *, config=None, auto_trader: bool = False):
+    async def _fake_doctor(
+        _mode: str, *, config=None, auto_trader: bool = False, provider_runtime=None
+    ):
         assert config is fake_config
+        assert provider_runtime is admitted_provider
         assert auto_trader is False
         events.append("doctor")
         return {"status": "ok", "checks": []}
 
-    async def _fake_build_app(*, config=None):
+    async def _fake_build_app(*, config=None, provider_runtime=None):
         assert config is fake_config
+        assert provider_runtime is admitted_provider
         events.append("build_app")
         raise RuntimeError("stop_after_build")
 
@@ -108,16 +131,19 @@ async def test_live_doctor_runs_before_build_app(monkeypatch: pytest.MonkeyPatch
         await app_module.main()
 
     assert events == ["doctor", "build_app"]
+    admitted_provider.close.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_blocked_live_doctor_short_circuits_before_build_app(
     monkeypatch: pytest.MonkeyPatch,
+    admitted_provider,
 ) -> None:
     """A blocked doctor result still prevents application construction."""
     import app as app_module
 
     fake_config = SimpleNamespace(
+        evidence=EvidenceConfig(),
         execution=SimpleNamespace(paper_trade_only=False),
         network=SimpleNamespace(enforce_geoblock=False),
         logging=SimpleNamespace(
@@ -130,8 +156,11 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(
     )
     build_app = AsyncMock()
 
-    async def _fake_doctor(_mode: str, *, config=None, auto_trader: bool = False):
+    async def _fake_doctor(
+        _mode: str, *, config=None, auto_trader: bool = False, provider_runtime=None
+    ):
         assert config is fake_config
+        assert provider_runtime is admitted_provider
         assert auto_trader is False
         return {
             "status": "blocked",
@@ -152,13 +181,15 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(
     await app_module.main()
 
     build_app.assert_not_called()
+    admitted_provider.close.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
+async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch, admitted_provider):
     import app as app_module
 
     fake_config = SimpleNamespace(
+        evidence=EvidenceConfig(),
         execution=SimpleNamespace(paper_trade_only=True),
         network=SimpleNamespace(enforce_geoblock=True),
         logging=SimpleNamespace(
@@ -171,8 +202,9 @@ async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
     )
     geoblock = AsyncMock()
 
-    async def _stop_after_gate(*, config=None):
+    async def _stop_after_gate(*, config=None, provider_runtime=None):
         assert config is fake_config
+        assert provider_runtime is admitted_provider
         raise RuntimeError("stop_after_gate")
 
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
@@ -183,3 +215,4 @@ async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
         await app_module.main()
 
     geoblock.assert_not_awaited()
+    admitted_provider.close.assert_called_once()

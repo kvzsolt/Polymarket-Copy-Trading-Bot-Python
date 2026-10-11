@@ -106,6 +106,7 @@ class LeaderTradeEvent:
     order_hash: str | None = None
     source_identity: str = ""
     source_receipt: TransportReceipt | None = None
+    source_action_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.source_receipt is not None and not isinstance(

@@ -36,6 +36,7 @@ HEARTBEAT_INTERVAL = MARKET_HEARTBEAT_INTERVAL
 
 if TYPE_CHECKING:
     from cache.market_state_store import MarketStateStore
+    from services.market_evidence import MarketEvidenceTap
 
 logger = get_logger("MarketWS")
 
@@ -74,6 +75,7 @@ class MarketWebSocket:
         on_state_change: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
         on_quote_invalidated: Callable[[str], None] | None = None,
         max_pending_callbacks: int = 128,
+        evidence: MarketEvidenceTap | None = None,
     ) -> None:
         if (
             isinstance(max_pending_callbacks, bool)
@@ -110,6 +112,7 @@ class MarketWebSocket:
         self._tasks: set[asyncio.Task[None]] = set()
         self._max_pending_callbacks = max_pending_callbacks
         self._closed = False
+        self._evidence = evidence
 
     async def connect(self, asset_ids: list[str]) -> None:
         """Open the market WebSocket connection."""
@@ -340,6 +343,8 @@ class MarketWebSocket:
         async for raw_msg in ws:
             if not self._running:
                 break
+            if self._evidence is not None:
+                self._evidence.observe(raw_msg)
             msg = (
                 raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
             )

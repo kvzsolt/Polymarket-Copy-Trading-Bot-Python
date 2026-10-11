@@ -1,0 +1,128 @@
+# Configuration guide — one followed leader and its v1 copy-task strategy.
+# Purpose: keep wallet identity, enablement, optional admission overrides, and
+# the complete per-leader reaction/filter/sizing policy in one auditable file.
+# Options:
+# - name is a short file/task slug; wallet is a 42-character 0x address; enabled
+#   pauses/resumes the leader without deleting history.
+# - optional copy_decision_min_score [0,1], copy_max_price_drift_pct,
+#   copy_max_edge_decay_pct, copy_max_signal_age_seconds,
+#   copy_liquidity_target_usdc, and max_entry_price_drift_pct override global
+#   copy_trading/execution values; omission inherits the global setting.
+# - monitoring_mode is normal | priority; notifications_muted is true | false.
+# - sizing_mode and sizing.mode must agree: fixed | exact_mirror | proportional |
+#   balance_weighted | portfolio_weighted | adaptive | tiered.
+# - trigger limits source notional; 0 disables each min/max bound.
+# - spend caps lifetime/daily/per-market USDC; 0 disables a cap. one_entry flags
+#   restrict duplicates per task, globally, or sports type.
+# - price band is [0,1]; offset_mode is disabled | fixed | percentage;
+#   offset_direction is above | below; max_slippage_percent is non-negative.
+# - reaction selects BUY/SELL behavior; copy_side is both | yes_only | no_only.
+#   buy_on_sells/counter_trade invert intent and are high-risk; merge/split/
+#   conversion switches opt into those source activity types.
+# - market_filter lists are allow/deny selectors; numeric liquidity/volume/close
+#   limits use 0 to disable; allow_expired_unresolved is true | false.
+# - schedule false means always open; true uses an IANA timezone and HH:MM
+#   start/end (start later than end means overnight).
+# - sizing percentage/fixed amount/multipliers and min/max bounds are pUSD BUY
+#   controls; proportional balance caps need leader balance; strict fixed/exact
+#   modes reject when the requested amount cannot fit instead of clamping.
+# Trade-offs: stricter filters, lower caps, and strict sizing reduce exposure but
+# skip more leader actions; priority/larger sizing follows faster/more closely at
+# higher bankroll and I/O pressure. Inverted reactions and expired markets carry
+# materially higher semantic, liquidity, and settlement risk.
+#
+# Followed trader: gamma-aggressive.
+#
+# Single source of truth for following this wallet. This leader takes
+# aggressively and sweeps the top of the book; the next resting ask after
+# their own fill sits well above the price they paid (measured 2026-08-27:
+# median +2.2%, p75 +7.4%, max +15.9% across 20 buys). A 5% entry band left
+# every copied FAK below the ask and the venue killed all of them with
+# "no orders found to match with FAK order", so max_entry_price_drift_pct is
+# widened to 10% for this leader only.
+
+name: 101456
+wallet: "0x8de0771af4eb2785fe64eab139399abd30bd7f22"
+enabled: true
+
+# Per-leader copy-admission gate: widen the one-shot copy-entry FAK band for
+# this leader alone. Unset values inherit from config/copy_trading.yml.
+max_entry_price_drift_pct: 8.0
+
+task:
+  monitoring_mode: normal
+  sizing_mode: proportional
+  notifications_muted: false
+
+  trigger:
+    # false bypasses this task's min/max-notional trigger gate; it does not
+    # disable the whole task. true would apply the two bounds below.
+    enabled: false
+    min_notional: 0
+    max_notional: 0
+
+  spend:
+    # false bypasses task-local spend/one-entry gates. Account-level risk and
+    # execution limits remain; true would enforce this section's caps.
+    enabled: false
+    max_total: 0
+    max_daily: 0
+    max_per_market: 0
+    one_entry_per_market: false
+    global_one_entry_per_market: false
+    one_entry_per_sports_type: false
+
+  price:
+    enabled: true
+    min_price: 0.20
+    max_price: 0.90
+    offset_mode: fixed
+    offset_direction: above
+    offset: 0.04
+    max_slippage_percent: 8
+
+  reaction:
+    enabled: true
+    follow_buys: true
+    copy_sells: true
+    buy_on_sells: false
+    counter_trade: false
+    copy_side: both
+    copy_merges: false
+    copy_splits: false
+    copy_conversions: false
+
+  market_filter:
+    enabled: true
+    include_keywords: []
+    exclude_keywords: []
+    categories: []
+    tokens: []
+    timeframes: []
+    min_liquidity_usdc: 0
+    min_volume_24h_usdc: 0
+    max_days_until_close: 0
+    allow_expired_unresolved: false
+
+  schedule:
+    enabled: false
+    timezone_name: UTC
+    start: "00:00"
+    end: "00:00"
+
+  sizing:
+    enabled: true
+    mode: proportional
+    percentage: 5
+    fixed_amount: 3
+    trade_multiplier: 1
+    weighted_multiplier: 1
+    buy_min_amount: 5
+    buy_max_amount: 12.5
+    # This trader may use at most 50% of follower balance in task sizing; lower
+    # preserves more reserve than the other checked-in profiles.
+    copyable_balance_percent: 25
+    proportional_balance_cap_enabled: true
+    require_leader_balance: true
+    strict_fixed_amount: true
+    strict_exact_mirror: true

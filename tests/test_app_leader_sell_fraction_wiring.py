@@ -26,6 +26,7 @@ def test_builds_historical_and_data_fallback_resolver_from_runtime_config() -> N
     data_fallback = object()
     buy_scope_guard = object()
     resolver = object()
+    provider_runtime = object()
 
     with (
         patch(
@@ -45,6 +46,7 @@ def test_builds_historical_and_data_fallback_resolver_from_runtime_config() -> N
         result = app._build_leader_sell_fraction_resolver(
             config,
             buy_scope_guard=buy_scope_guard,
+            provider_runtime=provider_runtime,
         )
 
     assert result is resolver
@@ -52,6 +54,7 @@ def test_builds_historical_and_data_fallback_resolver_from_runtime_config() -> N
         "https://polygon.example.invalid/private",
         "https://fallback.example.invalid/private",
         request_timeout_seconds=2.5,
+        provider_runtime=provider_runtime,
     )
     assert callable(build_fallback.call_args.kwargs["fetch_json"])
     build_resolver.assert_called_once_with(

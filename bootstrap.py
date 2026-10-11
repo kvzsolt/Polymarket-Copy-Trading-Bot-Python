@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 from orchestrators.auto_trader_runtime import AutoTraderRuntime
 
@@ -42,6 +43,7 @@ class Application:
     registry: LeaderRegistry
     falcon_client: FalconClient | None
     auto_traders: AutoTraderRuntime | None = None
+    provider_runtime: Any = None
 
     async def aclose(self) -> None:
         """Close application-owned external clients idempotently."""
@@ -53,6 +55,7 @@ async def build_app(
     overrides: Mapping[str, Any] | None = None,
     *,
     config: AppConfig | None = None,
+    provider_runtime: Any = None,
 ) -> Application:
     """Build one application object graph from validated configuration.
 
@@ -113,7 +116,9 @@ async def build_app(
     funder_address = str(getattr(config.wallet, "funder_address", "") or "").strip().lower()
     get_funds = build_discovery_funds_callable(
         funder_address,
-        get_balance=get_my_balance,
+        get_balance=partial(get_my_balance, provider_runtime=provider_runtime)
+        if provider_runtime is not None
+        else get_my_balance,
     )
     discovery_service = FalconDiscoveryService(
         service=candidate_service,
@@ -137,4 +142,5 @@ async def build_app(
         discovery_service=discovery_service,
         registry=registry,
         falcon_client=falcon_client,
+        provider_runtime=provider_runtime,
     )

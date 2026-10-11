@@ -233,6 +233,19 @@ _TERMINAL_NO_FILL_STATUSES = frozenset(
 # order: a missing order lookup plus missing fallback evidence is inconclusive.
 _VENUE_ORDER_NOT_FOUND_THRESHOLD = 3
 
+# Market trade-history attribution (2026-09-19 incident class): an ambiguous
+# POST retry signs a fresh venue order hash, so every direct probe keyed on the
+# locally persisted order_id can be absent while the venue trade history for
+# the market holds the actual fill. Attribution is only allowed for a settled
+# order (min age), a bounded submission window, and an exact Decimal amount
+# match, and only when exactly one candidate trade survives.
+_MARKET_ATTRIBUTION_MIN_AGE_SECONDS = 30.0
+_MARKET_ATTRIBUTION_PRE_WINDOW_SECONDS = 60.0
+_MARKET_ATTRIBUTION_POST_WINDOW_SECONDS = 300.0
+# Bounded number of order ids probed per reconciliation pass: the row's own
+# order hash plus every persisted attempted id (2026-09-19 incident class).
+_MAX_PROBE_ORDER_ID_CANDIDATES = 8
+
 _FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "confirmed"})
 # Risk reconcile historically treated empty status + matched > 0 as final fill
 # (see services/riskMonitor.reconcile_unconfirmed_risk_orders) — preserve.
@@ -347,6 +360,85 @@ def _decimal_or_zero(value: Any) -> Decimal:
         return Decimal("0")
 
 
+# Statuses that mean the order can still rest on the book. A fully matched
+# order is not resting, even when the venue text is still "live".
+_RESTING_ORDER_STATUSES = frozenset(
+    {
+        "live",
+        "unmatched",
+        "partially_filled",
+        "order_live",
+        "order_status_live",
+    }
+)
+_TERMINAL_FILLED_SUBMISSION_STATUSES = frozenset(
+    {
+        "filled_reconciled",
+        "confirmed",
+        "filled",
+    }
+)
+
+
+def _state_value(state: Any, *names: str) -> Any:
+    if state is None:
+        return None
+    if isinstance(state, dict):
+        for name in names:
+            if state.get(name) is not None:
+                return state.get(name)
+        return None
+    for name in names:
+        value = getattr(state, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _state_original_size(state: Any) -> Decimal:
+    return _decimal_or_zero(_state_value(state, "size", "original_size", "amount"))
+
+
+def _state_filled_size(state: Any) -> Decimal:
+    if isinstance(state, dict):
+        # ``size`` on an order is the original amount, not the matched amount.
+        return _decimal_or_zero(
+            state.get("size_matched")
+            or state.get("filled_size")
+            or state.get("matched_size")
+            or state.get("matched_amount")
+            or state.get("sizeMatched")
+            or state.get("filledSize")
+            or 0
+        )
+    return _decimal_or_zero(getattr(state, "filled_size", None))
+
+
+def _order_is_fully_filled(state: Any) -> bool:
+    """Return whether the venue order has no remaining size."""
+
+    size = _state_original_size(state)
+    if size <= 0:
+        return False
+    return _state_filled_size(state) >= size
+
+
+def _order_is_resting(state: Any) -> bool:
+    """Return whether the order can still match more size."""
+
+    if state is None or _order_is_fully_filled(state):
+        return False
+    status = _normalize_venue_status(_state_value(state, "status"))
+    return status in _RESTING_ORDER_STATUSES
+
+
+def _fills_cover_order(matched: Decimal, state: Any) -> bool:
+    """Return whether confirmed trade size accounts for the whole order."""
+
+    size = _state_original_size(state)
+    return size > 0 and matched >= size
+
+
 def _matched_amount_from_response(payload: dict[str, Any] | None) -> Decimal:
     if not isinstance(payload, dict):
         return Decimal("0")
@@ -376,6 +468,45 @@ def _order_id_candidates(order_id: Any) -> list[str]:
     if raw not in candidates:
         candidates.insert(0, raw)
     return candidates
+
+
+def _probe_order_id_candidates(record: dict[str, Any] | None, order_id: str | None) -> list[str]:
+    """Return the bounded order ids a reconciliation pass may probe.
+
+    The row's own order hash comes first, then every persisted
+    ``attempted_order_ids`` entry (deduped, capped). A sibling attempt's hash is
+    never the row's order id, so it can only be probed from this list.
+    """
+    candidates: list[str] = []
+    raw_order_id = str(order_id or "").strip()
+    if raw_order_id:
+        candidates.append(raw_order_id)
+    response = record.get("response") if isinstance(record, dict) else None
+    if isinstance(response, dict):
+        raw = response.get("attempted_order_ids")
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.split(",")]
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                candidate = str(item or "").strip()
+                if candidate and candidate not in candidates:
+                    candidates.append(candidate)
+    return candidates[:_MAX_PROBE_ORDER_ID_CANDIDATES]
+
+
+def _order_id_set(orders: Any) -> set[str]:
+    """Return the order ids present in a venue open-order batch."""
+    ids: set[str] = set()
+    for order in orders or []:
+        value = (
+            order.get("order_id") or order.get("id")
+            if isinstance(order, dict)
+            else getattr(order, "order_id", None) or getattr(order, "id", "")
+        )
+        text = str(value or "").strip()
+        if text:
+            ids.add(text)
+    return ids
 
 
 ConfirmFillCallable = Callable[[str], Awaitable[dict[str, Any]]]
@@ -766,6 +897,172 @@ class ReconciliationService:
         self._record_poll_success(source)
         return "ok", value, ""
 
+    async def _attribute_market_trade_fills(
+        self,
+        record: dict[str, Any],
+        market_id: str | None,
+        order_id: str,
+    ) -> dict[str, Any] | None:
+        """Attribute a unique matching venue trade when direct probes are empty.
+
+        Last-resort positive evidence for sibling-hash ambiguity: the venue
+        trade history for the market is scanned for one trade that matches the
+        requested side, respects the order's price bound, falls inside a bounded
+        submission window, and sums to the exact requested amount (BUY cost in
+        USDC with one share-step of rounding headroom; SELL shares exactly).
+        Legs whose order hash belongs to any locally known orders row are never
+        attributed. Zero or multiple surviving trades return ``None`` so the
+        caller keeps its existing fail-closed behaviour untouched.
+        """
+        gateway = self.clob_gateway
+        if gateway is None or not market_id:
+            return None
+        request_value = record.get("request")
+        request = request_value if isinstance(request_value, dict) else {}
+        side = str(request.get("side") or "").strip().upper()
+        if side not in {"BUY", "SELL"}:
+            return None
+        try:
+            requested = Decimal(str(request.get("amount") or ""))
+            price_limit = Decimal(str(request.get("price_limit") or ""))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if requested <= 0 or not price_limit.is_finite() or price_limit <= 0:
+            return None
+        created_ts = _record_created_at(record)
+        if created_ts is None:
+            return None
+        if time.time() - created_ts < _MARKET_ATTRIBUTION_MIN_AGE_SECONDS:
+            return None
+        window_start = created_ts - _MARKET_ATTRIBUTION_PRE_WINDOW_SECONDS
+        window_end = created_ts + _MARKET_ATTRIBUTION_POST_WINDOW_SECONDS
+
+        market_probe, market_fills, _market_reason = await self._poll_source(
+            "market_fills",
+            order_id,
+            lambda: gateway.get_fills(market=market_id),
+        )
+        if market_probe != "ok":
+            return None
+
+        claimed_cache: dict[str, bool] = {}
+        candidates: dict[str, list[Any]] = {}
+        for fill in market_fills or []:
+            leg_order_id = str(self._fill_value(fill, "order_id", "") or "")
+            if not leg_order_id or leg_order_id == order_id:
+                continue
+            leg_side = str(self._fill_value(fill, "side", "") or "").upper()
+            if leg_side != side:
+                continue
+            size = _decimal_or_zero(self._fill_value(fill, "size", 0))
+            price = _decimal_or_zero(self._fill_value(fill, "price", 0))
+            if size <= 0 or price <= 0:
+                continue
+            if side == "BUY" and price > price_limit:
+                continue
+            if side == "SELL" and price < price_limit:
+                continue
+            try:
+                fill_ts = float(self._fill_value(fill, "timestamp"))
+            except (TypeError, ValueError):
+                continue
+            if not window_start <= fill_ts <= window_end:
+                continue
+            fill_id = str(self._fill_value(fill, "fill_id", "") or "")
+            if not fill_id:
+                continue
+            if leg_order_id not in claimed_cache:
+                # Fail closed on ownership doubt: a leg whose hash is (or may
+                # be) claimed by another orders row is never attributable.
+                claimed = True
+                getter = getattr(self.orders_repo, "get_by_order_id", None)
+                if callable(getter):
+                    try:
+                        claimed = (await getter(leg_order_id)) is not None
+                    except Exception:
+                        claimed = True
+                claimed_cache[leg_order_id] = claimed
+            if claimed_cache[leg_order_id]:
+                continue
+            candidates.setdefault(fill_id, []).append(fill)
+
+        matches: list[tuple[str, list[Any], Decimal, Decimal]] = []
+        for fill_id, legs in candidates.items():
+            total_size = Decimal("0")
+            cost = Decimal("0")
+            for leg in legs:
+                size = _decimal_or_zero(self._fill_value(leg, "size", 0))
+                price = _decimal_or_zero(self._fill_value(leg, "price", 0))
+                total_size += size
+                cost += size * price
+            if side == "BUY":
+                tolerance = Decimal("0.01") * price_limit + Decimal("1e-9")
+                if abs(cost - requested) > tolerance:
+                    continue
+            elif total_size != requested:
+                continue
+            matches.append((fill_id, legs, total_size, cost))
+
+        if len(matches) != 1:
+            _log.debug(
+                "confirm_fill market attribution inconclusive | order_id=%s market=%s "
+                "candidates=%d matches=%d",
+                order_id,
+                market_id,
+                len(candidates),
+                len(matches),
+            )
+            return None
+        _fill_id, legs, total_size, cost = matches[0]
+        statuses = {_normalize_trade_status(self._fill_value(leg, "status", "")) for leg in legs}
+        status = "confirmed" if statuses and statuses <= {"confirmed"} else "matched"
+        aggregate = self._aggregate_fills(
+            legs,
+            status=status,
+            source="market_trade_attribution",
+        )
+        aggregate["attributed_order_ids"] = sorted(
+            {str(self._fill_value(leg, "order_id", "") or "") for leg in legs} - {""}
+        )
+        aggregate["attribution"] = {
+            "side": side,
+            "requested_amount": str(requested),
+            "price_limit": str(price_limit),
+            "matched_shares": str(total_size),
+            "matched_cost": str(cost),
+            "window_start": window_start,
+            "window_end": window_end,
+            "candidate_trades": len(candidates),
+        }
+        _log.info(
+            "confirm_fill market trade attribution | order_id=%s market=%s side=%s "
+            "trade_ids=%s matched_shares=%s matched_cost=%s requested=%s "
+            "attributed_order_ids=%s",
+            order_id,
+            market_id,
+            side,
+            aggregate.get("trade_ids"),
+            str(total_size),
+            str(cost),
+            str(requested),
+            aggregate["attributed_order_ids"],
+        )
+        self._audit(
+            "reconciliation_market_trade_attribution",
+            {
+                "order_id": order_id,
+                "market": market_id,
+                "side": side,
+                "trade_ids": aggregate.get("trade_ids"),
+                "attributed_order_ids": aggregate["attributed_order_ids"],
+                "matched_shares": str(total_size),
+                "matched_cost": str(cost),
+                "requested_amount": str(requested),
+                "price_limit": str(price_limit),
+            },
+        )
+        return aggregate
+
     async def confirm_fill(self, order_id: str) -> dict[str, Any]:
         """Resolve an order from independent authenticated venue evidence.
 
@@ -812,6 +1109,7 @@ class ReconciliationService:
             )
             or None
         )
+        probe_candidates = _probe_order_id_candidates(record, order_id)
         unavailable: list[tuple[str, str]] = []
         direct: dict[str, Any] | None = None
 
@@ -820,6 +1118,22 @@ class ReconciliationService:
             order_id,
             lambda: gateway.get_order(order_id),
         )
+        if order_probe == "not_found":
+            # Sibling-attempt ids (2026-09-19): the row's own hash is absent on
+            # the venue, but a persisted attempted-order id may still resolve.
+            # A miss on every candidate keeps the existing absent handling.
+            for candidate in probe_candidates[1:]:
+                (
+                    order_probe,
+                    venue_state,
+                    reason,
+                ) = await self._poll_source(
+                    "order",
+                    order_id,
+                    lambda candidate_id=candidate: gateway.get_order(candidate_id),
+                )
+                if order_probe != "not_found":
+                    break
         if order_probe == "ok":
             self._venue_not_found_counts.pop(order_id, None)
             # Venue is answering for this order again: drop the escalated
@@ -853,10 +1167,22 @@ class ReconciliationService:
             for trade_id in trade_ids:
 
                 async def _get_trade_fills(tid: str = trade_id) -> list[Any]:
-                    return await gateway.get_fills(
+                    related = await gateway.get_fills(
                         market=market_id,
                         trade_id=tid,
                         order_id=order_id,
+                    )
+                    if related:
+                        return related
+                    # Sibling-hash evidence (2026-09-19): a persisted trade id
+                    # may belong to legs whose order hash is not this row's
+                    # order_id (attributed or retried submissions). Retry
+                    # without the order filter so the trade itself still
+                    # counts as confirmation evidence; an absent trade stays
+                    # missing exactly as before.
+                    return await gateway.get_fills(
+                        market=market_id,
+                        trade_id=tid,
                     )
 
                 probe, fills, reason = await self._poll_source(
@@ -894,16 +1220,21 @@ class ReconciliationService:
 
         async def _list_open_orders() -> list[Any]:
             try:
-                return await gateway.list_open_orders(
-                    order_id=order_id,
-                    market=market_id,
-                )
+                for candidate in probe_candidates:
+                    orders = await gateway.list_open_orders(
+                        order_id=candidate,
+                        market=market_id,
+                    )
+                    if orders:
+                        return orders
+                return []
             except TypeError:
                 orders = await gateway.list_open_orders()
+                candidate_set = set(probe_candidates)
                 return [
                     item
                     for item in orders or []
-                    if str(self._fill_value(item, "order_id", "")) == order_id
+                    if str(self._fill_value(item, "order_id", "")) in candidate_set
                 ]
 
         open_probe, open_orders, reason = await self._poll_source(
@@ -912,28 +1243,34 @@ class ReconciliationService:
         if open_probe != "ok":
             unavailable.append(("open_orders", reason))
             open_orders = []
-        directly_open = direct is not None and _normalize_venue_status(direct.get("status")) in {
-            "live",
-            "unmatched",
-            "partially_filled",
-            "order_live",
-            "order_status_live",
-        }
-        is_open = bool(open_orders) or directly_open
-        order_closed = open_probe == "ok" and not is_open
+        else:
+            # An id-filtered orders query can still return a fully matched
+            # order. That row is not resting size, so it must not keep a
+            # confirmed fill pending forever.
+            open_orders = [item for item in (open_orders or []) if _order_is_resting(item)]
+        direct_state = venue_state if order_probe == "ok" else None
+        directly_resting = _order_is_resting(direct_state)
+        is_open = bool(open_orders) or directly_resting
+        order_closed = (open_probe == "ok" and not is_open) or _order_is_fully_filled(direct_state)
 
         async def _get_order_fills() -> list[Any]:
+            related: list[Any] = []
             try:
-                return await gateway.get_fills(
-                    market=market_id,
-                    order_id=order_id,
-                )
+                for candidate in probe_candidates:
+                    related.extend(
+                        await gateway.get_fills(
+                            market=market_id,
+                            order_id=candidate,
+                        )
+                    )
+                return related
             except TypeError:
                 fills = await gateway.get_fills(market=market_id)
+                candidate_set = set(probe_candidates)
                 return [
                     fill
                     for fill in fills or []
-                    if str(self._fill_value(fill, "order_id", "")) == order_id
+                    if str(self._fill_value(fill, "order_id", "")) in candidate_set
                 ]
 
         fill_probe, account_fills, reason = await self._poll_source(
@@ -958,9 +1295,17 @@ class ReconciliationService:
         if confirmed:
             aggregate = self._aggregate_fills(
                 confirmed,
-                status="confirmed" if order_closed and not pending_statuses else "live",
+                status="live",
                 source="account_trades",
             )
+            confirmed_amount = _matched_amount_from_response(aggregate)
+            # Confirmed trades that cover the order are terminal even when the
+            # venue order text is still "live". A smaller confirmed size leaves
+            # the remainder open.
+            if not pending_statuses and (
+                order_closed or _fills_cover_order(confirmed_amount, direct_state)
+            ):
+                aggregate["status"] = "confirmed"
             direct_matched = _matched_amount_from_response(direct or {})
             known_matched = (
                 _matched_amount_from_response(
@@ -969,11 +1314,29 @@ class ReconciliationService:
                 if confirmed_trade_fills
                 else Decimal("0")
             )
-            if _matched_amount_from_response(aggregate) < max(direct_matched, known_matched):
+            if confirmed_amount < max(direct_matched, known_matched):
                 aggregate["status"] = "live"
             return aggregate
         if confirmed_trade_fills:
-            return self._aggregate_fills(confirmed_trade_fills, status="live", source="trade_ids")
+            # A row previously resolved through market attribution carries the
+            # attributed sibling ids on its persisted response. When every
+            # probed trade id resolved confirmed, the trade evidence is terminal
+            # instead of eternally "live"; anything less keeps existing
+            # behaviour. Trade ids that themselves cover the order size are
+            # terminal too; a smaller confirmed slice is not.
+            is_attributed = "attributed_order_ids" in response
+            trade_evidence_terminal = bool(trade_states) and set(trade_states) <= {"confirmed"}
+            aggregate = self._aggregate_fills(
+                confirmed_trade_fills,
+                status="live",
+                source="trade_ids",
+            )
+            if trade_evidence_terminal and (
+                is_attributed
+                or _fills_cover_order(_matched_amount_from_response(aggregate), direct_state)
+            ):
+                aggregate["status"] = "confirmed"
+            return aggregate
         if pending_statuses:
             pending = next(
                 (s for s in ("retrying", "mined", "matched") if s in pending_statuses),
@@ -1027,6 +1390,21 @@ class ReconciliationService:
             direct["size_matched"] = "0"
             direct["confirmation_source"] = "order"
             return direct
+        if (
+            direct is None
+            and not related_fills
+            and not confirmed_trade_fills
+            and not pending_statuses
+            and not trade_states
+            and not is_open
+        ):
+            # Sibling-hash ambiguity (2026-09-19): every direct probe is empty,
+            # so positive evidence can only come from a unique match in the
+            # venue trade history for the market. Failure keeps the existing
+            # fail-closed fallthrough below.
+            attributed = await self._attribute_market_trade_fills(record, market_id, order_id)
+            if attributed is not None:
+                return attributed
         if unavailable:
             return {
                 "status": "poll_unavailable",
@@ -1405,6 +1783,8 @@ class ReconciliationService:
         expected_size: Decimal,
         side: str = "",
         pre_submit_position_size: Decimal | None = None,
+        order_id_candidates: list[str] | None = None,
+        created_ts: float | None = None,
     ) -> dict[str, Any]:
         """Run every independent safety probe and classify its outcome.
 
@@ -1417,6 +1797,12 @@ class ReconciliationService:
             "clean": 0,
             "details": {},
         }
+        candidates: list[str] = []
+        for candidate in [venue_order_id or order_id, order_id, *(order_id_candidates or [])]:
+            text = str(candidate or "").strip()
+            if text and text not in candidates:
+                candidates.append(text)
+        candidate_set = set(candidates)
 
         gw = self.clob_gateway
         if gw is None:
@@ -1435,57 +1821,68 @@ class ReconciliationService:
                 result["details"]["deferred_reason"] = reason
                 return result
 
-        # Probe 1: get_order
-        try:
-            venue_state = await gw.get_order(venue_order_id or order_id)
-            status = _normalize_venue_status(
-                getattr(venue_state, "status", None)
-                if not isinstance(venue_state, dict)
-                else venue_state.get("status")
-            )
-            if status in _TERMINAL_NO_FILL_STATUSES or status in {
-                "",
-                "absent",
-                "not_found",
-            }:
-                result["clean"] += 1
-                result["details"]["get_order"] = status or "absent"
-            else:
-                result["inconclusive"] += 1
-                result["details"]["get_order"] = status
-        except Exception as exc:
-            kind = self._classify_probe_exception(exc)
-            if kind == "clean":
-                result["clean"] += 1
-                result["details"]["get_order"] = "absent"
-            elif kind == "inconclusive":
-                self._record_poll_failure("order", order_id, exc)
-                result["inconclusive"] += 1
-                result["details"]["get_order"] = "venue_unavailable"
-            else:
-                result["errors"] += 1
-                result["details"]["get_order_error"] = redact_error_detail(exc)
+        # Probe 1: get_order across every known candidate id.
+        found_status: str | None = None
+        absent_status: str | None = None
+        unavailable_order = False
+        order_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                venue_state = await gw.get_order(candidate)
+                status = _normalize_venue_status(
+                    getattr(venue_state, "status", None)
+                    if not isinstance(venue_state, dict)
+                    else venue_state.get("status")
+                )
+                if status in _TERMINAL_NO_FILL_STATUSES or status in {
+                    "",
+                    "absent",
+                    "not_found",
+                }:
+                    absent_status = status or "absent"
+                    continue
+                found_status = status
+                break
+            except Exception as exc:
+                kind = self._classify_probe_exception(exc)
+                if kind == "clean":
+                    absent_status = "absent"
+                    continue
+                if kind == "inconclusive":
+                    self._record_poll_failure("order", order_id, exc)
+                    unavailable_order = True
+                    break
+                order_error = exc
+                break
+        if found_status is not None:
+            result["inconclusive"] += 1
+            result["details"]["get_order"] = found_status
+        elif unavailable_order:
+            result["inconclusive"] += 1
+            result["details"]["get_order"] = "venue_unavailable"
+        elif order_error is not None:
+            result["errors"] += 1
+            result["details"]["get_order_error"] = redact_error_detail(order_error)
+        else:
+            result["clean"] += 1
+            result["details"]["get_order"] = absent_status or "absent"
 
         # Probe 2: exact authenticated open-order lookup.
         list_orders = getattr(gw, "list_open_orders", None)
         if callable(list_orders):
             try:
+                ids: set[str] = set()
                 try:
-                    orders = await cast(Callable[..., Awaitable[Any]], list_orders)(
-                        order_id=venue_order_id or order_id,
-                        market=market_id,
-                    )
+                    for candidate in candidates:
+                        orders = await cast(Callable[..., Awaitable[Any]], list_orders)(
+                            order_id=candidate,
+                            market=market_id,
+                        )
+                        ids.update(_order_id_set(orders))
                 except TypeError:
                     orders = await cast(Callable[..., Awaitable[Any]], list_orders)()
-                ids = {
-                    str(
-                        o.get("order_id") or o.get("id")
-                        if isinstance(o, dict)
-                        else getattr(o, "order_id", None) or getattr(o, "id", "")
-                    )
-                    for o in orders or []
-                }
-                if order_id in ids or (venue_order_id and venue_order_id in ids):
+                    ids = _order_id_set(orders)
+                if ids & candidate_set:
                     result["inconclusive"] += 1
                     result["details"]["list_open_orders"] = "order_present"
                 else:
@@ -1535,20 +1932,24 @@ class ReconciliationService:
                     result["errors"] += 1
                     result["details"][f"trade:{trade_id}:error"] = redact_error_detail(exc)
 
-        # Probe 4: exact account fills for the order.
+        # Probe 4: exact account fills for the order (every candidate id).
         try:
             try:
-                fills = await gw.get_fills(
-                    market=market_id,
-                    order_id=venue_order_id or order_id,
-                )
+                fills = []
+                for candidate in candidates:
+                    fills.extend(
+                        await gw.get_fills(
+                            market=market_id,
+                            order_id=candidate,
+                        )
+                    )
             except TypeError:
                 fills = await gw.get_fills(market=market_id)
             related = [
                 f
                 for f in fills or []
                 if str(f.get("order_id") if isinstance(f, dict) else getattr(f, "order_id", ""))
-                in {order_id, venue_order_id}
+                in candidate_set
             ]
             if related:
                 result["inconclusive"] += 1
@@ -1577,11 +1978,81 @@ class ReconciliationService:
                 result["baseline_missing"] = True
                 result["details"]["position_delta"] = "pre_submit_baseline_missing"
             elif local_size != pre_submit_position_size:
-                result["inconclusive"] += 1
-                result["details"]["position_delta"] = (
-                    f"side={side.upper() or 'UNKNOWN'} baseline={pre_submit_position_size} "
-                    f"local_size={local_size}"
-                )
+                # Other-order explanation (2026-09-19): a changed local position
+                # is only a clean signal when every same-side venue leg in the
+                # bounded submission window is claimed by a *different* known
+                # orders row and their exact sum equals the delta — i.e. this
+                # order provably did not move the position. Any unattributed,
+                # own-order, malformed or unverifiable leg keeps the original
+                # inconclusive fail-closed result.
+                delta = abs(local_size - pre_submit_position_size)
+                explained_by_other_orders = False
+                if created_ts is not None:
+                    try:
+                        market_probe, market_fills, _ = await self._poll_source(
+                            "market_fills",
+                            order_id,
+                            lambda: gw.get_fills(market=market_id),
+                        )
+                        if market_probe == "ok":
+                            other_order_fills_total = Decimal("0")
+                            has_unattributed = False
+                            window_start = created_ts - _MARKET_ATTRIBUTION_PRE_WINDOW_SECONDS
+                            getter = getattr(self.orders_repo, "get_by_order_id", None)
+                            for fill in market_fills or []:
+                                leg_side = str(self._fill_value(fill, "side", "") or "").upper()
+                                if leg_side != side.upper():
+                                    continue
+                                if (
+                                    _normalize_trade_status(self._fill_value(fill, "status", ""))
+                                    == "failed"
+                                ):
+                                    # A failed trade moved no inventory.
+                                    continue
+                                try:
+                                    fill_ts = float(self._fill_value(fill, "timestamp"))
+                                except (TypeError, ValueError):
+                                    has_unattributed = True
+                                    break
+                                if fill_ts < window_start:
+                                    continue
+                                leg_order_id = str(self._fill_value(fill, "order_id", "") or "")
+                                if not leg_order_id or leg_order_id == order_id:
+                                    has_unattributed = True
+                                    break
+                                claimed_by_other = False
+                                if callable(getter):
+                                    try:
+                                        claimed_by_other = (await getter(leg_order_id)) is not None
+                                    except Exception:
+                                        claimed_by_other = False
+                                if claimed_by_other:
+                                    other_order_fills_total += _decimal_or_zero(
+                                        self._fill_value(fill, "size", 0)
+                                    )
+                                else:
+                                    has_unattributed = True
+                                    break
+                            if (
+                                not has_unattributed
+                                and other_order_fills_total > 0
+                                and other_order_fills_total == delta
+                            ):
+                                explained_by_other_orders = True
+                    except Exception:
+                        explained_by_other_orders = False
+
+                if explained_by_other_orders:
+                    result["clean"] += 1
+                    result["details"]["position_delta"] = (
+                        f"sibling_attributed delta={delta} side={side.upper() or 'UNKNOWN'}"
+                    )
+                else:
+                    result["inconclusive"] += 1
+                    result["details"]["position_delta"] = (
+                        f"side={side.upper() or 'UNKNOWN'} baseline={pre_submit_position_size} "
+                        f"local_size={local_size}"
+                    )
             else:
                 result["clean"] += 1
                 result["details"]["position_delta"] = (
@@ -1716,6 +2187,8 @@ class ReconciliationService:
             expected_size=expected_size,
             side=side,
             pre_submit_position_size=pre_submit_position_size,
+            order_id_candidates=_probe_order_id_candidates(record, venue_order_id),
+            created_ts=_record_created_at(record),
         )
 
         if probe.get("deferred"):
@@ -1838,6 +2311,10 @@ class ReconciliationService:
             combined,
             order_confirmation_cfg=cfg,
         ):
+            return False, False
+
+        if str(combined.get("status") or "") in _TERMINAL_FILLED_SUBMISSION_STATUSES:
+            # A skipped or empty poll must not reopen a sell that already settled.
             return False, False
 
         if str(combined.get("status") or "") != "ambiguous_timeout":
@@ -2232,6 +2709,11 @@ class ReconciliationService:
 
         order_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
+        # poll_deferred means this pass did not ask the venue. It is not
+        # evidence of an unfilled order, and treating it as one rewrites a
+        # settled or live row to ambiguous_timeout on the next tick.
+        if order_status == "poll_deferred":
+            return False
         if not order_status and current_matched <= 0:
             if logger is not None:
                 logger.warning(
@@ -2290,6 +2772,15 @@ class ReconciliationService:
         # mutation beyond status — the existing terminal branches do the
         # fill/release work.
         if order_status in _VENUE_NON_TERMINAL and delta_matched <= 0:
+            # Already-settled idempotency (2026-09-19 incident): a row that
+            # already reached a terminal filled state at exactly this
+            # cumulative matched total must not be downgraded to a live-family
+            # status or churned forever by re-reconciliation — e.g. trade-id
+            # evidence for a sibling-attributed order legitimately returns a
+            # non-terminal "live" status while account fills stay empty.
+            # Nothing new to apply; the settlement is complete.
+            if current_matched > 0 and str(record.get("status") or "") == "filled_reconciled":
+                return True
             mapped = _VENUE_TO_LIFECYCLE.get(order_status)
             if mapped is not None:
                 local_status, lifecycle_status = mapped
@@ -2786,6 +3277,8 @@ class ReconciliationService:
 
         venue_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
+        if venue_status == "poll_deferred":
+            return False
         unresolved_status = (
             venue_status not in _FINAL_FILL_STATUSES_RISK
             and venue_status not in _TERMINAL_NO_FILL_STATUSES

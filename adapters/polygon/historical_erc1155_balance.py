@@ -78,6 +78,7 @@ class Web3HistoricalErc1155BalanceReader:
         fallback: str = "",
         *,
         request_timeout_seconds: float = 2.5,
+        provider_runtime=None,
     ) -> "Web3HistoricalErc1155BalanceReader":
         """Build the reader over the existing primary/fallback RPC provider.
 
@@ -97,11 +98,15 @@ class Web3HistoricalErc1155BalanceReader:
             raise ValueError("a primary RPC endpoint is required for historical balances")
         if request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
-        web3 = FallbackWeb3Provider(
-            str(primary).strip(),
-            str(fallback or "").strip(),
-            request_timeout_seconds=request_timeout_seconds,
-        ).get_web3()
+        web3 = (
+            provider_runtime.web3()
+            if provider_runtime is not None
+            else FallbackWeb3Provider(
+                str(primary).strip(),
+                str(fallback or "").strip(),
+                request_timeout_seconds=request_timeout_seconds,
+            ).get_web3()
+        )
         contract = web3.eth.contract(
             address=Web3.to_checksum_address(POLYMARKET_CONDITIONAL_TOKENS_ADDRESS),
             abi=list(_BALANCE_OF_ABI),

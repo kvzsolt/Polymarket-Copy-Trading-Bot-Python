@@ -54,6 +54,10 @@ from pydantic import (
 )
 from config.auto_follow import AutoFollowConfig
 from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
+from config.redemption import RedemptionConfig, RedemptionSecretBoundary
+from config.provider_budget import ProviderBudgetConfig
+from config.evidence import EvidenceConfig, EvidenceSecretBoundary
+from config.native_detection import NativeDetectionConfig
 from config.trader_config import (
     TraderConfig,
     TraderTaskConfig,
@@ -90,11 +94,13 @@ __all__ = [
     "LoggingConfig",
     "MarketDataConfig",
     "OnchainDetectionConfig",
+    "AmbiguousRecoveryConfig",
     "OrderConfirmationConfig",
     "PolymarketConfig",
     "PositionDriftConfig",
     "ProtectiveExitsConfig",
     "ReconciliationConfig",
+    "RedemptionConfig",
     "RiskConfig",
     "SignatureType",
     "SizingConfig",
@@ -222,14 +228,11 @@ class ControlPlaneConfig:
 
 @dataclass(frozen=True)
 class DetectionConfig:
-    """Leader-signal detection cadence and on-chain detection policy.
+    """Native-owner production policy and retained offline compatibility settings.
 
-    ``mode`` selects the single on-chain detection source (``polling`` keeps
-    REST polling only; ``on_chain_pending`` adds the provisional mempool
-    path; ``on_chain_confirmed`` adds the mempool-observed, receipt-confirmed
-    path). REST polling keeps running as a parallel fallback in every mode.
-    The legacy ``onchain.enable_onchain_*`` booleans are deprecated and only
-    consulted by ``DetectionModeResolver`` when ``mode`` is absent.
+    Production uses ``native`` grouped mined subscriptions exclusively. The
+    legacy mode/onchain fields remain readable by compatibility tools and tests;
+    they never enable REST trade polling or provisional copying in app.py.
     """
 
     fetch_interval: float = 0.50
@@ -239,6 +242,7 @@ class DetectionConfig:
     trade_queue_max_batches: int = 64
     mode: Literal["polling", "on_chain_pending", "on_chain_confirmed"] = "polling"
     onchain: "OnchainDetectionConfig" = field(default_factory=lambda: OnchainDetectionConfig())
+    native: NativeDetectionConfig = field(default_factory=NativeDetectionConfig)
 
     @property
     def detection_mode(self) -> DetectionMode:
@@ -702,6 +706,48 @@ class OrderConfirmationConfig:
 
 
 @dataclass(frozen=True)
+class AmbiguousRecoveryConfig:
+    """Bounded recovery policy for no-order-id ``submitted_unconfirmed`` rows.
+
+    A lost POST response leaves a row with no venue identity. The bounded
+    evidence scan resolves it either by recovering an authoritative venue
+    order id or by proving repeated complete absence. Defaults match the
+    recovery service thresholds exactly; the loader must never silently widen
+    them.
+    """
+
+    enabled: bool = True
+    # Cadence of the supervised recovery loop (seconds).
+    interval_seconds: float = 300.0
+    # Grace before the first private-history scan for a fresh row.
+    grace_seconds: float = 120.0
+    # Consecutive complete-absence scans required before resolution.
+    required_absence_scans: int = 3
+    batch_size: int = 100
+    evidence_history_limit: int = 8
+    # How long after ``submitted_at`` a fill/order may still be attributed.
+    match_window_seconds: float = 900.0
+    # Upper bound on every single venue/account read inside one scan.
+    read_timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        if self.interval_seconds <= 0:
+            raise ValueError("ambiguous recovery interval_seconds must be positive")
+        if self.grace_seconds < 0:
+            raise ValueError("ambiguous recovery grace_seconds cannot be negative")
+        if not 1 <= self.required_absence_scans <= 100:
+            raise ValueError("ambiguous recovery required_absence_scans must be between 1 and 100")
+        if not 1 <= self.batch_size <= 1000:
+            raise ValueError("ambiguous recovery batch_size must be between 1 and 1000")
+        if not 1 <= self.evidence_history_limit <= 100:
+            raise ValueError("ambiguous recovery evidence_history_limit must be between 1 and 100")
+        if self.match_window_seconds < 0:
+            raise ValueError("ambiguous recovery match_window_seconds cannot be negative")
+        if self.read_timeout_seconds <= 0:
+            raise ValueError("ambiguous recovery read_timeout_seconds must be positive")
+
+
+@dataclass(frozen=True)
 class ReconciliationConfig:
     """Reconciliation cadence plus the confirmation-delay and drift policies
     it owns (formerly the top-level ``order_confirmation``/``position_drift``
@@ -718,6 +764,8 @@ class ReconciliationConfig:
     reconcile_interval_seconds: int = 300
     order_confirmation: OrderConfirmationConfig = field(default_factory=OrderConfirmationConfig)
     position_drift: PositionDriftConfig = field(default_factory=PositionDriftConfig)
+    # Bounded no-order-id recovery for lost-POST rows.
+    ambiguous_recovery: AmbiguousRecoveryConfig = field(default_factory=AmbiguousRecoveryConfig)
 
 
 class _FrozenSettingsModel(BaseModel):
@@ -1204,6 +1252,9 @@ class AppConfig:
     reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     control_plane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig)
+    redemption: RedemptionConfig = field(default_factory=RedemptionConfig)
+    provider_budget: ProviderBudgetConfig = field(default_factory=ProviderBudgetConfig)
+    evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     # Derived loader metadata used by the operator API to select the exact
     # environment override directory. It is not a service-owned YAML section.
     environment: str = "paper"
@@ -1420,6 +1471,17 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
             )
     if cfg.reconciliation.order_confirmation.auto_release_baseline_missing_after_seconds < 0:
         errors.append("AUTO_RELEASE_BASELINE_MISSING_AFTER_SECONDS must be >= 0.")
+    ambiguous_recovery = cfg.reconciliation.ambiguous_recovery
+    if ambiguous_recovery.interval_seconds <= 0:
+        errors.append("AMBIGUOUS_RECOVERY.INTERVAL_SECONDS must be > 0.")
+    if ambiguous_recovery.grace_seconds < 0:
+        errors.append("AMBIGUOUS_RECOVERY.GRACE_SECONDS must be >= 0.")
+    if not 1 <= ambiguous_recovery.required_absence_scans <= 100:
+        errors.append("AMBIGUOUS_RECOVERY.REQUIRED_ABSENCE_SCANS must be between 1 and 100.")
+    if not 1 <= ambiguous_recovery.batch_size <= 1000:
+        errors.append("AMBIGUOUS_RECOVERY.BATCH_SIZE must be between 1 and 1000.")
+    if not 1 <= ambiguous_recovery.evidence_history_limit <= 100:
+        errors.append("AMBIGUOUS_RECOVERY.EVIDENCE_HISTORY_LIMIT must be between 1 and 100.")
     if e.venue_metadata_ttl_seconds < 0:
         errors.append("VENUE_METADATA_TTL_SECONDS must be >= 0.")
     if e.pending_submission_ttl_seconds <= 0:
@@ -1842,6 +1904,9 @@ SERVICE_CONFIG_FILES: tuple[str, ...] = (
     "reconciliation",
     "logging",
     "control_plane",
+    "redemption",
+    "provider_budget",
+    "evidence",
 )
 
 
@@ -1891,6 +1956,9 @@ class _LayeredModel(BaseModel):
     reconciliation: ReconciliationConfig = ReconciliationConfig()
     logging: LoggingConfig = LoggingConfig()
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
+    redemption: RedemptionConfig = RedemptionConfig()
+    provider_budget: ProviderBudgetConfig = ProviderBudgetConfig()
+    evidence: EvidenceConfig = EvidenceConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -1913,6 +1981,7 @@ class _LayeredModel(BaseModel):
         if not isinstance(values, dict):
             return values
         structured_paths = (
+            ("detection", "native", "traders"),
             ("copy_trading", "wallets"),
             ("copy_trading", "traders"),
             ("reconciliation", "order_confirmation", "token_delay_overrides"),
@@ -1964,6 +2033,7 @@ _LEGACY_SECTION_ROUTES: dict[str, tuple[str, ...]] = {
     "features": ("protective_exits",),
     "order_confirmation": ("reconciliation", "order_confirmation"),
     "position_drift": ("reconciliation", "position_drift"),
+    "ambiguous_recovery": ("reconciliation", "ambiguous_recovery"),
     "global": ("app",),
     "files": ("app",),
 }
@@ -2083,6 +2153,9 @@ def _translate_legacy_payload(payload: Mapping[str, Any], *, source: str) -> dic
     dropped with a warning instead of failing so an operator's un-migrated
     ``runtime.local.yml``/``secrets.env`` cannot brick startup.
     """
+    if source == "runtime.local.yml":
+        RedemptionSecretBoundary.reject_yaml(payload)
+        EvidenceSecretBoundary.reject_yaml(payload)
     output: dict[str, Any] = {}
     for raw_section, content in payload.items():
         section = str(raw_section)
@@ -2161,6 +2234,8 @@ def _read_service_files(directory: Path) -> dict[str, Any]:
         data = _read_yaml(directory / f"{service}.yml", required=False)
         if data:
             payload[service] = data
+    RedemptionSecretBoundary.reject_yaml(payload)
+    EvidenceSecretBoundary.reject_yaml(payload)
     return payload
 
 

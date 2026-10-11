@@ -303,6 +303,7 @@ class LeaderEventNormalizer:
             finality=finality,
             detected_at=receipt.received_at if receipt is not None else now,
             source_receipt=receipt,
+            source_action_id=self._first_text(raw, "source_action_id") or None,
             venue_timestamp=venue_timestamp,
             transaction_hash=(
                 self._first_text(
@@ -707,6 +708,8 @@ class TradingContextTaskExecutionAdapter:
                 TaskExecutionDisposition.PRE_POST_REJECTED,
                 reason="market_metadata_unavailable",
             )
+        execution_config = getattr(getattr(context, "config", None), "execution", None)
+        execution_mode = getattr(execution_config, "trading_mode", "unknown")
         recovery_metadata: dict[str, object] = {
             "order_type": command.order_type,
             "price_limit": format(command.price_limit, "f"),
@@ -716,7 +719,10 @@ class TradingContextTaskExecutionAdapter:
             "protective_risk": RiskLotCodec().encode_policy(command.task.protective_risk),
             "source_promotion_id": command.source_promotion_id,
             "source_is_provisional": command.source_event.trade.is_provisional,
+            "execution_mode": execution_mode if execution_mode in {"paper", "live"} else "unknown",
         }
+        if command.source_event.trade.source_action_id is not None:
+            recovery_metadata["source_action_id"] = command.source_event.trade.source_action_id
         if command.task_budget_reservation_id is not None:
             recovery_metadata["task_budget_reservation_id"] = command.task_budget_reservation_id
         leader_sell_fraction = command.source_event.leader_sell_fraction

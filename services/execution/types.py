@@ -55,6 +55,15 @@ _PERSISTED_RESPONSE_FIELDS = (
     "pending_ttl_seconds",
     "pending_expires_at",
     "expired_at",
+    # Every venue order id handed back during submission attempts (2026-09-19
+    # sibling-hash ambiguity): the row's own ``order_id`` can be replaced
+    # between attempts, so attempted ids are preserved here for reconciliation
+    # probes.
+    "attempted_order_ids",
+    # Venue-provided trade identities from a successful submission; probed by
+    # confirmation instead of being discarded.
+    "trade_ids",
+    "transactions_hashes",
 )
 
 _RETRY_BLOCKING_STATUSES = {

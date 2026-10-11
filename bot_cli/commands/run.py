@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 
 
 def register_run_command(subparsers: argparse._SubParsersAction) -> None:
@@ -32,7 +31,6 @@ async def _run_bot(*, auto_trader: bool = False) -> int:
     always remains paper mode; live also requires the database control to be
     explicitly resumed.
     """
-    # Import and run app.main() — it handles its own event loop lifecycle.
     # Propagate app.main()'s exit code so a non-zero (fail-closed) app exit
     # surfaces through ``run_run`` → CLI runner → ``sys.exit`` instead of
     # being swallowed and reported as success (P2-q).
@@ -54,14 +52,10 @@ def run_run(args: argparse.Namespace) -> int:
 
     Returns:
         Process exit code from the asynchronous application entrypoint; ``0``
-        when the operator stops the loop with Ctrl-C (``asyncio.Runner``
-        re-raises ``KeyboardInterrupt`` / ``CancelledError`` after graceful
-        teardown, mirroring the handler in ``app.py``'s ``__main__`` path).
+        when the operator requests shutdown with SIGINT or SIGTERM. Repeated
+        signals leave asynchronous cleanup running to completion.
     """
+    from utils.application_runner import ApplicationRunner
     from utils.event_loop import new_event_loop
 
-    try:
-        with asyncio.Runner(loop_factory=new_event_loop) as runner:
-            return runner.run(_run_run_async(args))
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        return 0
+    return ApplicationRunner(loop_factory=new_event_loop).run(_run_run_async(args))

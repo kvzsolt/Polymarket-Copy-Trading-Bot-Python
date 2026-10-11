@@ -101,7 +101,29 @@ patch explanation. PATCHES TO SECRET KEYS ARE NEVER MUTATED — see
 idempotency-key set + lock in the on-chain dispatcher (`PR2 follow-up`)
 do not interact with this surface.
 
-## 5. KNOWN_LIMITATIONS scan contract
+## 5. lost-POST recovery needs a stored market identity
+
+A submission whose POST response was lost is persisted as
+`submitted_unconfirmed` with no venue order id, and the runtime resolves it
+through bounded, read-only evidence scans (see
+`docs/recovery_playbook.md` §4 and
+`integrations/polymarket/ccxt_ambiguous_evidence.py`).
+
+Limitations:
+
+- Recovery needs the persisted `token_id` and `condition_id`. Legacy rows
+  whose sanitized request payload lacks either fail closed on every cycle
+  and stay duplicate-blocking until an operator resolves them with
+  `python bot.py resolve`.
+- Absence is only accepted after repeated *consecutive* complete scans; a
+  venue outage, an incomplete page, or a concurrent copy trade that moves
+  the token position resets that counter. Slow resolution is the intended
+  fail-closed behaviour, not a stall.
+- The scan is corroborative, not a second execution path: it never submits,
+  cancels, or retries the ambiguous order. Pinned by
+  `tests/test_ccxt_ambiguous_evidence.py`.
+
+## 6. KNOWN_LIMITATIONS scan contract
 
 The release contract (`scripts/rc1_check.sh`) does NOT scan for any of
 the literals in this document; the integrity of these limitations is
@@ -110,7 +132,7 @@ execution.py::test_rest_primary_executes_with_wss_down`,
 `tests/test_execution_coordinator_production.py::*`). If you add a new
 limitation here, add a corresponding regression test to the unit suite.
 
-## 6. Related docs
+## 7. Related docs
 
 - `docs/live_runbook.md` — daily operator workflow including the pre-
   flight gate that enforces these limitations.

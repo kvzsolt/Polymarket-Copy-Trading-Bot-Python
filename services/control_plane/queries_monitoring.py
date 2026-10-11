@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
+from domain.grouped_detection import TraderDetectionState
 
 from services.control_plane.contracts import ControlPlaneError, ControlPlaneReason
 from services.control_plane.contracts_reads import (
@@ -258,6 +259,7 @@ class DetectionQueryService:
         detection_mode: str,
         pending_stats: Callable[[], PendingConfirmationStatsView | None] | None,
         clock: Clock,
+        native_states: Callable[[], tuple[TraderDetectionState, ...] | None] | None = None,
     ) -> None:
         """Store the local-only collaborators for one detection read.
 
@@ -276,6 +278,7 @@ class DetectionQueryService:
         self._detection_mode = str(detection_mode)
         self._pending_stats = pending_stats
         self._clock = clock
+        self._native_states = native_states
 
     async def get(self) -> DetectionStatusView:
         """Return the current detection-source health projection."""
@@ -293,7 +296,9 @@ class DetectionQueryService:
             for name, row in sorted(snapshot.sources.items())
         )
         return DetectionStatusView(
-            mode=self._detection_mode,
+            mode="native_owner_grouped"
+            if self._native_states is not None
+            else self._detection_mode,
             sources=sources,
             leader_ws_connected=snapshot.leader_ws_connected,
             market_ws_ok=bool(readiness.get("wss_market_ok")),
@@ -303,6 +308,7 @@ class DetectionQueryService:
             pending_confirmations=self._pending(),
             watched_leader_count=self._watched(snapshot, readiness),
             observed_at=self._clock.now(),
+            traders=self._native_states() if self._native_states is not None else None,
         )
 
     def _pending(self) -> PendingConfirmationStatsView | None:

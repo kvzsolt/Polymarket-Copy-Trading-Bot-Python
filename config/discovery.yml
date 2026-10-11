@@ -69,7 +69,7 @@ shortlist:
   # Pages per sort mode. Higher broadens search at greater provider cost.
   max_pages: 5
   # Deduplicated shortlist bound. Higher feeds more deep evaluations and cost.
-  candidate_pool_size: 250
+  candidate_pool_size: 150
 wallet360:
   # Evidence windows; valid values are '1','3','7','15', unique, and '15' is
   # required. More windows improve stability proof but cost more provider calls.
@@ -178,7 +178,7 @@ scoring:
   # 15-day volume producing full volume-fit score. Higher favors scalable leaders.
   volume_target_15d: 50000.0
   # Rank at/inside which rank quality saturates. Lower rewards only top leaders.
-  rank_target: 100
+  rank_target: 80
   # Copyable recent-trade count producing full copyability sample score.
   copyability_trade_target: 50
   # Drawdown percentage mapped to worst inverse-risk score. Lower penalizes risk
@@ -273,11 +273,11 @@ hysteresis:
 scheduler:
   # Background roster maintenance. true adds recurring provider/database work;
   # Automatic mode uses its own targeted evaluation lifecycle regardless of this flag.
-  enabled: false
+  enabled: true
   # Full rediscovery and cheaper rescore cadences (>=30s). Shorter adapts faster
   # but spends more provider quota.
-  rediscover_seconds: 1800
-  rescore_seconds: 900
+  rediscover_seconds: 1200
+  rescore_seconds: 7200
   # Wallet evaluations in parallel. Higher shortens cycles and risks throttling.
   evaluation_concurrency: 2
   # Maximum failed-evaluation fraction [0,1] before a cycle fails closed. Lower is
@@ -408,7 +408,7 @@ falcon:
   specialist_min_dominant_share: '0.80'
   specialist_min_win_rate: '0.57'
   # Additive specialist score weight [0,1]. Higher has more ranking influence.
-  specialist_bonus_weight: '0.10'
+  specialist_bonus_weight: '0.15'
   # 15-day provider leaderboard admission band: win rates [0,1], minimum ROI,
   # trade-count range, and minimum PnL. Stricter bounds improve sample/quality
   # selectivity while reducing and potentially biasing the candidate pool.

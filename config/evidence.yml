@@ -1,0 +1,26 @@
+# Configuration guide: original observations are persisted locally before dispatch.
+# Options: set the private PMCOPY__EVIDENCE__TOKEN environment value separately;
+# the default receiver is the Finland-local ingestion-only pmrecon service.
+# Trade-offs: receiver outages accumulate a bounded queue; exhausting local storage
+# invalidates evidence and pauses observation, while existing risk exits remain local.
+#
+# enabled is the only supported opt-out, and the code default stays true so a
+# deployment that omits this file still fails closed on a missing credential.
+# Operator decision: the pmrecon receiver is not deployed here, so durable
+# capture and publication are switched off and `bot.py run` does not require
+# PMCOPY__EVIDENCE__TOKEN to boot. Native-owner detection, the sole production
+# leader-entry source, still runs: raw observations are discarded instead of
+# being persisted or published. Only pending evaluation needs a durable sink
+# and refuses to compose without one. Re-arm by setting enabled: true and
+# providing a token matching the receiver's write token
+# (see docs/aethertrade-evidence-publisher.md).
+enabled: false
+outbox_path: data/evidence-outbox.sqlite3
+max_events: 10000
+max_bytes: 67108864
+max_history: 1000000
+origin: http://127.0.0.1:9104
+timeout_seconds: 5
+batch_size: 100
+retry_delay_seconds: 5
+history_journal_path: null

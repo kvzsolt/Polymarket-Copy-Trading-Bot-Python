@@ -1,0 +1,760 @@
+{
+  "additive_models_sha256": {
+    "pmrecon.integration.block_headers": "0fc8b9ec0e1a09d8b284ed49b39f12bc6f2b31fd3a29abc92ff3a4bf2a317fbf",
+    "pmrecon.integration.follower_models": "a9073dfc6f8c0a9e582e9d1be782c9743fd98f0c715fdf126698aafc02567fbe",
+    "pmrecon.integration.market_frames": "7d814209affb543daa848fb5c6169d45d4496930e7ad0eaccc4aa30c43faeaf5",
+    "pmrecon.integration.pending_bodies": "1451dc07b0d8ca3c766b0e0a4a0e1b8f64eca7896f84b9ba58174439fd8ec513",
+    "pmrecon.integration.pending_observations": "c73797007b30da0dd3a4daf6466f689457249ce358f58506b421864a3652a6fc",
+    "pmrecon.integration.protocol_models": "841c9928813ab93f0a032eb413c5d816fe02266752b71f812115eccb9a9cc5c6"
+  },
+  "cases": [
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "997b2ff7ef832ca67e2276b5dea4f632654f5494dc62dc31efcc7daea74cf33d",
+        "seq": 1
+      },
+      "canonical": "{\"chain_id\":137,\"clock_id\":\"finland-test\",\"kind\":\"chain_log\",\"log\":{\"address\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"blockHash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"blockNumber\":\"0x10\",\"data\":\"0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"logIndex\":\"0x3\",\"removed\":false,\"topics\":[\"0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee\",\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x0000000000000000000000001111111111111111111111111111111111111111\",\"0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b\"],\"transactionHash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"provider\":\"alchemy\",\"received_ns\":\"1800000000123456789\",\"recovery\":false}",
+      "event_id": "997b2ff7ef832ca67e2276b5dea4f632654f5494dc62dc31efcc7daea74cf33d",
+      "input": {
+        "clock_id": "finland-test",
+        "kind": "chain_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": false,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "alchemy",
+        "received_ns": "1800000000123456789"
+      },
+      "wire": {
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "kind": "chain_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": false,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "alchemy",
+        "received_ns": "1800000000123456789",
+        "recovery": false
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "f5a730b9a3bc1da3b6a73c831cf398987bcd909d078d65125b4c73376e93a58f",
+        "seq": 2
+      },
+      "canonical": "{\"chain_id\":137,\"clock_id\":\"finland-test\",\"kind\":\"chain_log\",\"log\":{\"address\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"blockHash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"blockNumber\":\"0x10\",\"data\":\"0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"logIndex\":\"0x3\",\"removed\":true,\"topics\":[\"0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee\",\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x0000000000000000000000001111111111111111111111111111111111111111\",\"0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b\"],\"transactionHash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"provider\":\"infura\",\"received_ns\":\"1800000000123456790\",\"recovery\":true}",
+      "event_id": "f5a730b9a3bc1da3b6a73c831cf398987bcd909d078d65125b4c73376e93a58f",
+      "input": {
+        "clock_id": "finland-test",
+        "kind": "chain_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": true,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "infura",
+        "received_ns": "1800000000123456790",
+        "recovery": true
+      },
+      "wire": {
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "kind": "chain_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": true,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "infura",
+        "received_ns": "1800000000123456790",
+        "recovery": true
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "30a5105733848e2f3e997da0b6245c84b5467bcaf9d5ce1318e2e71a6220f167",
+        "seq": 3
+      },
+      "canonical": "{\"body_received_ns\":\"1800000000123456790\",\"calldata\":\"0x\",\"clock_id\":\"finland-test\",\"hash_received_ns\":\"1800000000123456789\",\"kind\":\"pending_body\",\"nonce\":1,\"provider\":\"alchemy\",\"received_ns\":\"1800000000123456791\",\"recovery\":false,\"sender\":\"0x1111111111111111111111111111111111111111\",\"target\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"transaction_hash\":\"0xabababababababababababababababababababababababababababababababab\"}",
+      "event_id": "30a5105733848e2f3e997da0b6245c84b5467bcaf9d5ce1318e2e71a6220f167",
+      "input": {
+        "body_received_ns": "1800000000123456790",
+        "calldata": "0x",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_body",
+        "nonce": 1,
+        "received_ns": "1800000000123456791",
+        "sender": "0x1111111111111111111111111111111111111111",
+        "target": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "wire": {
+        "body_received_ns": "1800000000123456790",
+        "calldata": "0x",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_body",
+        "nonce": 1,
+        "provider": "alchemy",
+        "received_ns": "1800000000123456791",
+        "recovery": false,
+        "sender": "0x1111111111111111111111111111111111111111",
+        "target": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "184b77813f9549610adab1daf5f2b9bcbbb2c03fa52a219f265c9496b6739d25",
+        "seq": 4
+      },
+      "canonical": "{\"asset_id\":\"123\",\"clock_id\":\"finland-test\",\"fill_id\":\"fill-a\",\"follower_account\":\"follower-a\",\"kind\":\"follower_fill\",\"price\":\"0.5000\",\"received_ns\":\"1800000000123456792\",\"recovery\":false,\"side\":\"BUY\",\"size\":\"2.0100\",\"source_action_id\":\"observed-action-a\"}",
+      "event_id": "184b77813f9549610adab1daf5f2b9bcbbb2c03fa52a219f265c9496b6739d25",
+      "input": {
+        "asset_id": "123",
+        "clock_id": "finland-test",
+        "fee": null,
+        "fill_id": "fill-a",
+        "follower_account": "follower-a",
+        "kind": "follower_fill",
+        "price": "0.5000",
+        "received_ns": "1800000000123456792",
+        "side": "BUY",
+        "size": "2.0100",
+        "source_action_id": "observed-action-a"
+      },
+      "wire": {
+        "asset_id": "123",
+        "clock_id": "finland-test",
+        "fill_id": "fill-a",
+        "follower_account": "follower-a",
+        "kind": "follower_fill",
+        "price": "0.5000",
+        "received_ns": "1800000000123456792",
+        "recovery": false,
+        "side": "BUY",
+        "size": "2.0100",
+        "source_action_id": "observed-action-a"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "3fe8b749dec62b687070d4bbd53bd7bdc322433df35ea1eb2b50820a5c819436",
+        "seq": 5
+      },
+      "canonical": "{\"asks\":[[\"0.5000\",\"2.0100\"]],\"asset_id\":\"123\",\"bids\":[],\"clock_id\":\"finland-test\",\"kind\":\"book\",\"received_ns\":\"1800000000123456793\",\"recovery\":false,\"safe\":true}",
+      "event_id": "3fe8b749dec62b687070d4bbd53bd7bdc322433df35ea1eb2b50820a5c819436",
+      "input": {
+        "asks": [
+          [
+            "0.5000",
+            "2.0100"
+          ]
+        ],
+        "asset_id": "123",
+        "bids": [],
+        "clock_id": "finland-test",
+        "kind": "book",
+        "received_ns": "1800000000123456793",
+        "recovery": false,
+        "safe": true
+      },
+      "wire": {
+        "asks": [
+          [
+            "0.5000",
+            "2.0100"
+          ]
+        ],
+        "asset_id": "123",
+        "bids": [],
+        "clock_id": "finland-test",
+        "kind": "book",
+        "received_ns": "1800000000123456793",
+        "recovery": false,
+        "safe": true
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "3d16fcf19bfa26e7509d6f23e7d7ab45b2d65d17d1a98cfea4624db6936573f2",
+        "seq": 6
+      },
+      "canonical": "{\"clock_id\":\"finland-test\",\"kind\":\"gap\",\"provider\":\"clob\",\"reason\":\"disconnected\",\"received_ns\":\"1800000000123456794\",\"recovery\":false}",
+      "event_id": "3d16fcf19bfa26e7509d6f23e7d7ab45b2d65d17d1a98cfea4624db6936573f2",
+      "input": {
+        "clock_id": "finland-test",
+        "kind": "gap",
+        "provider": "clob",
+        "reason": "disconnected",
+        "received_ns": "1800000000123456794",
+        "recovery": false
+      },
+      "wire": {
+        "clock_id": "finland-test",
+        "kind": "gap",
+        "provider": "clob",
+        "reason": "disconnected",
+        "received_ns": "1800000000123456794",
+        "recovery": false
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "40f845811bcb820e8f94c90659b629da9308bab9c764435a480aa55da5ab3634",
+        "seq": 7
+      },
+      "canonical": "{\"chain_id\":137,\"clock_id\":\"finland-test\",\"header\":{\"hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"number\":\"0x10\",\"parentHash\":\"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"timestamp\":\"0x65000000\"},\"kind\":\"block_header\",\"provider\":\"infura\",\"raw_header\":{\"gasUsed\":\"0x1\",\"hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"number\":\"0x10\",\"parentHash\":\"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"timestamp\":\"0x65000000\",\"transactions\":[\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]},\"received_ns\":\"1800000000123456795\",\"recovery\":true,\"schema_version\":2}",
+      "event_id": "40f845811bcb820e8f94c90659b629da9308bab9c764435a480aa55da5ab3634",
+      "input": {
+        "clock_id": "finland-test",
+        "header": {
+          "hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "number": "0x10",
+          "parentHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "timestamp": "0x65000000"
+        },
+        "kind": "block_header",
+        "provider": "infura",
+        "raw_header": {
+          "gasUsed": "0x1",
+          "hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "number": "0x10",
+          "parentHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "timestamp": "0x65000000",
+          "transactions": [
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          ]
+        },
+        "received_ns": "1800000000123456795",
+        "recovery": true
+      },
+      "wire": {
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "header": {
+          "hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "number": "0x10",
+          "parentHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "timestamp": "0x65000000"
+        },
+        "kind": "block_header",
+        "provider": "infura",
+        "raw_header": {
+          "gasUsed": "0x1",
+          "hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "number": "0x10",
+          "parentHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "timestamp": "0x65000000",
+          "transactions": [
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          ]
+        },
+        "received_ns": "1800000000123456795",
+        "recovery": true,
+        "schema_version": 2
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "a17d7b96f2149d4908fb5b5e48bffdba94db600a1d0a213b1778246b6df12b83",
+        "seq": 8
+      },
+      "canonical": "{\"clock_id\":\"finland-test\",\"frame\":\" { \\\"event_type\\\": \\\"book\\\", \\\"asset_id\\\":\\\"123\\\", \\\"bids\\\":[], \\\"asks\\\":[] } \",\"kind\":\"market_frame\",\"received_ns\":\"1800000000123456796\",\"recovery\":false,\"schema_version\":2,\"sequence\":1,\"stream_id\":\"market-session-a\"}",
+      "event_id": "a17d7b96f2149d4908fb5b5e48bffdba94db600a1d0a213b1778246b6df12b83",
+      "input": {
+        "clock_id": "finland-test",
+        "frame": " { \"event_type\": \"book\", \"asset_id\":\"123\", \"bids\":[], \"asks\":[] } ",
+        "kind": "market_frame",
+        "received_ns": "1800000000123456796",
+        "sequence": 1,
+        "stream_id": "market-session-a"
+      },
+      "wire": {
+        "clock_id": "finland-test",
+        "frame": " { \"event_type\": \"book\", \"asset_id\":\"123\", \"bids\":[], \"asks\":[] } ",
+        "kind": "market_frame",
+        "received_ns": "1800000000123456796",
+        "recovery": false,
+        "schema_version": 2,
+        "sequence": 1,
+        "stream_id": "market-session-a"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "b8fded7ec3da590a6ff11098cb6240b349cf5b5387b478c2248e5eb7ef55d2f6",
+        "seq": 9
+      },
+      "canonical": "{\"asset_id\":\"123\",\"clock_id\":\"finland-test\",\"execution_mode\":\"unknown\",\"fill_id\":\"fill-unattributed\",\"follower_account\":\"follower-a\",\"kind\":\"follower_fill_observed\",\"price\":\"0.5000\",\"received_ns\":\"1800000000123456797\",\"recovery\":false,\"schema_version\":2,\"side\":\"SELL\",\"size\":\"2.0100\"}",
+      "event_id": "b8fded7ec3da590a6ff11098cb6240b349cf5b5387b478c2248e5eb7ef55d2f6",
+      "input": {
+        "asset_id": "123",
+        "clock_id": "finland-test",
+        "fill_id": "fill-unattributed",
+        "follower_account": "follower-a",
+        "kind": "follower_fill_observed",
+        "price": "0.5000",
+        "received_ns": "1800000000123456797",
+        "side": "SELL",
+        "size": "2.0100"
+      },
+      "wire": {
+        "asset_id": "123",
+        "clock_id": "finland-test",
+        "execution_mode": "unknown",
+        "fill_id": "fill-unattributed",
+        "follower_account": "follower-a",
+        "kind": "follower_fill_observed",
+        "price": "0.5000",
+        "received_ns": "1800000000123456797",
+        "recovery": false,
+        "schema_version": 2,
+        "side": "SELL",
+        "size": "2.0100"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "b57a23ec17d1bc9077ae4b387acd4502e398bfa2d3a390dd13c1ef87eb0478f7",
+        "seq": 10
+      },
+      "canonical": "{\"chain_id\":137,\"clock_id\":\"finland-test\",\"kind\":\"protocol_log\",\"log\":{\"address\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"blockHash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"blockNumber\":\"0x10\",\"data\":\"0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"logIndex\":\"0x3\",\"removed\":false,\"topics\":[\"0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee\",\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x0000000000000000000000001111111111111111111111111111111111111111\",\"0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b\"],\"transactionHash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"provider\":\"infura\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2}",
+      "event_id": "b57a23ec17d1bc9077ae4b387acd4502e398bfa2d3a390dd13c1ef87eb0478f7",
+      "input": {
+        "clock_id": "finland-test",
+        "kind": "protocol_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": false,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "infura",
+        "received_ns": "1800000000123456798"
+      },
+      "wire": {
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "kind": "protocol_log",
+        "log": {
+          "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "logIndex": "0x3",
+          "removed": false,
+          "topics": [
+            "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+            "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+          ],
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "0cf782befbed02577afc7de46d7824469a2a1ef8158e6ea6bbdba412e42032b9",
+        "seq": 11
+      },
+      "canonical": "{\"chain_id\":137,\"clock_id\":\"finland-test\",\"kind\":\"receipt\",\"provider\":\"alchemy\",\"receipt\":{\"blockHash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"blockNumber\":\"0x10\",\"logs\":[{\"address\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"blockHash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"blockNumber\":\"0x10\",\"data\":\"0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"logIndex\":\"0x3\",\"removed\":false,\"topics\":[\"0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee\",\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x0000000000000000000000001111111111111111111111111111111111111111\",\"0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b\"],\"transactionHash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}],\"status\":\"0x1\",\"transactionHash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"transactionIndex\":\"0x0\"},\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2}",
+      "event_id": "0cf782befbed02577afc7de46d7824469a2a1ef8158e6ea6bbdba412e42032b9",
+      "input": {
+        "clock_id": "finland-test",
+        "kind": "receipt",
+        "provider": "alchemy",
+        "receipt": {
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "logs": [
+            {
+              "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+              "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "blockNumber": "0x10",
+              "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+              "logIndex": "0x3",
+              "removed": false,
+              "topics": [
+                "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x0000000000000000000000001111111111111111111111111111111111111111",
+                "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+              ],
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "status": "0x1",
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactionIndex": "0x0"
+        },
+        "received_ns": "1800000000123456798"
+      },
+      "wire": {
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "kind": "receipt",
+        "provider": "alchemy",
+        "receipt": {
+          "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "blockNumber": "0x10",
+          "logs": [
+            {
+              "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+              "blockHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "blockNumber": "0x10",
+              "data": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007b0000000000000000000000000000000000000000000000000000000002dc6c000000000000000000000000000000000000000000000000000000000005f5e10000000000000000000000000000000000000000000000000000000000000003e800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+              "logIndex": "0x3",
+              "removed": false,
+              "topics": [
+                "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x0000000000000000000000001111111111111111111111111111111111111111",
+                "0x000000000000000000000000e111180000d2663c0091e4f400237545b87b996b"
+              ],
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "status": "0x1",
+          "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "transactionIndex": "0x0"
+        },
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "3979c9ad5c1ed2bcacae6aae6592a0465e8f1104248b091ece5c679a83c8d4bc",
+        "seq": 12
+      },
+      "canonical": "{\"arguments\":[\"0x1111111111111111111111111111111111111111\",\"123\"],\"block_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"block_number\":16,\"chain_id\":137,\"clock_id\":\"finland-test\",\"contract\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"kind\":\"contract_state\",\"method\":\"balanceOf\",\"provider\":\"infura\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2,\"value\":\"100000000\"}",
+      "event_id": "3979c9ad5c1ed2bcacae6aae6592a0465e8f1104248b091ece5c679a83c8d4bc",
+      "input": {
+        "arguments": [
+          "0x1111111111111111111111111111111111111111",
+          "123"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "balanceOf",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "value": "100000000"
+      },
+      "wire": {
+        "arguments": [
+          "0x1111111111111111111111111111111111111111",
+          "123"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "balanceOf",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2,
+        "value": "100000000"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "19bf4ca1ebfb7e87a279fe7209cb4674813e03274111909aa02e2d36c4121b8d",
+        "seq": 13
+      },
+      "canonical": "{\"authority_status\":\"unknown\",\"clock_id\":\"finland-test\",\"domain\":{\"chain_id\":137,\"name\":\"Polymarket CTF Exchange\",\"verifying_contract\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"version\":\"2\"},\"hash_status\":\"verified\",\"input_hashes\":{\"calldata\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"},\"kind\":\"order_verification\",\"order_hash\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"order_index\":0,\"order_role\":\"maker\",\"owner\":\"0x1111111111111111111111111111111111111111\",\"preapproval_status\":\"unknown\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2,\"signature_status\":\"unknown\",\"signature_type\":0,\"signer\":\"0x1111111111111111111111111111111111111111\",\"source_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"source_event_id\":\"pending-source\",\"verification_basis\":\"producer_verified\",\"verifier_version\":\"fixture-v1\"}",
+      "event_id": "19bf4ca1ebfb7e87a279fe7209cb4674813e03274111909aa02e2d36c4121b8d",
+      "input": {
+        "authority_status": "unknown",
+        "clock_id": "finland-test",
+        "domain": {
+          "name": "Polymarket CTF Exchange",
+          "verifying_contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "version": "2"
+        },
+        "hash_status": "verified",
+        "input_hashes": {
+          "calldata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "kind": "order_verification",
+        "order_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "order_index": 0,
+        "order_role": "maker",
+        "owner": "0x1111111111111111111111111111111111111111",
+        "preapproval_status": "unknown",
+        "received_ns": "1800000000123456798",
+        "signature_status": "unknown",
+        "signature_type": 0,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_event_id": "pending-source",
+        "verifier_version": "fixture-v1"
+      },
+      "wire": {
+        "authority_status": "unknown",
+        "clock_id": "finland-test",
+        "domain": {
+          "chain_id": 137,
+          "name": "Polymarket CTF Exchange",
+          "verifying_contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+          "version": "2"
+        },
+        "hash_status": "verified",
+        "input_hashes": {
+          "calldata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "kind": "order_verification",
+        "order_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "order_index": 0,
+        "order_role": "maker",
+        "owner": "0x1111111111111111111111111111111111111111",
+        "preapproval_status": "unknown",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2,
+        "signature_status": "unknown",
+        "signature_type": 0,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_event_id": "pending-source",
+        "verification_basis": "producer_verified",
+        "verifier_version": "fixture-v1"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "22a695511bcaac23f9781673abcf9fdda48a7afa7754c092d849375b3f827366",
+        "seq": 14
+      },
+      "canonical": "{\"body_received_ns\":\"1800000000123456790\",\"calldata\":\"0x\",\"clock_id\":\"finland-test\",\"hash_received_ns\":\"1800000000123456789\",\"kind\":\"pending_body_observed\",\"nonce\":1,\"provider\":\"alchemy\",\"received_ns\":\"1800000000123456790\",\"recovery\":false,\"schema_version\":2,\"sender\":\"0x1111111111111111111111111111111111111111\",\"target\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"transaction_hash\":\"0xabababababababababababababababababababababababababababababababab\"}",
+      "event_id": "22a695511bcaac23f9781673abcf9fdda48a7afa7754c092d849375b3f827366",
+      "input": {
+        "body_received_ns": "1800000000123456790",
+        "calldata": "0x",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_body_observed",
+        "nonce": 1,
+        "received_ns": "1800000000123456790",
+        "sender": "0x1111111111111111111111111111111111111111",
+        "target": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "wire": {
+        "body_received_ns": "1800000000123456790",
+        "calldata": "0x",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_body_observed",
+        "nonce": 1,
+        "provider": "alchemy",
+        "received_ns": "1800000000123456790",
+        "recovery": false,
+        "schema_version": 2,
+        "sender": "0x1111111111111111111111111111111111111111",
+        "target": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "fb17ea3ef92334a6b603d24e947dc8b534b4440b380d6b3f69c9d03624197948",
+        "seq": 15
+      },
+      "canonical": "{\"attributable_received_ns\":\"1800000000123456798\",\"body_received_ns\":\"1800000000123456790\",\"clock_id\":\"finland-test\",\"hash_received_ns\":\"1800000000123456789\",\"kind\":\"pending_observation\",\"provider\":\"alchemy\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2,\"source_event_id\":\"22a695511bcaac23f9781673abcf9fdda48a7afa7754c092d849375b3f827366\",\"stage\":\"attributed\",\"transaction_hash\":\"0xabababababababababababababababababababababababababababababababab\"}",
+      "event_id": "fb17ea3ef92334a6b603d24e947dc8b534b4440b380d6b3f69c9d03624197948",
+      "input": {
+        "attributable_received_ns": "1800000000123456798",
+        "body_received_ns": "1800000000123456790",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_observation",
+        "received_ns": "1800000000123456798",
+        "source_event_id": "22a695511bcaac23f9781673abcf9fdda48a7afa7754c092d849375b3f827366",
+        "stage": "attributed",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "wire": {
+        "attributable_received_ns": "1800000000123456798",
+        "body_received_ns": "1800000000123456790",
+        "clock_id": "finland-test",
+        "hash_received_ns": "1800000000123456789",
+        "kind": "pending_observation",
+        "provider": "alchemy",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2,
+        "source_event_id": "22a695511bcaac23f9781673abcf9fdda48a7afa7754c092d849375b3f827366",
+        "stage": "attributed",
+        "transaction_hash": "0xabababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "b3d82937aaa9d3c84a58e0ac92a7b92d4507daa924aa1dca428acd8da4083429",
+        "seq": 16
+      },
+      "canonical": "{\"arguments\":[\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"1\"],\"block_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"block_number\":16,\"chain_id\":137,\"clock_id\":\"finland-test\",\"contract\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"kind\":\"contract_state\",\"method\":\"getCollectionId\",\"provider\":\"infura\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2,\"value\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "event_id": "b3d82937aaa9d3c84a58e0ac92a7b92d4507daa924aa1dca428acd8da4083429",
+      "input": {
+        "arguments": [
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "1"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "getCollectionId",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "value": "0x2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "wire": {
+        "arguments": [
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "1"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "getCollectionId",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2,
+        "value": "0x2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    {
+      "ack": {
+        "duplicate": false,
+        "event_id": "ab762df36f8858177c3af79e8af5f12f4be452971bb98e047f49c099c2626fa8",
+        "seq": 17
+      },
+      "canonical": "{\"arguments\":[\"0x1111111111111111111111111111111111111111111111111111111111111111\"],\"block_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"block_number\":16,\"chain_id\":137,\"clock_id\":\"finland-test\",\"contract\":\"0xe111180000d2663c0091e4f400237545b87b996b\",\"kind\":\"contract_state\",\"method\":\"getOutcomeSlotCount\",\"provider\":\"infura\",\"received_ns\":\"1800000000123456798\",\"recovery\":false,\"schema_version\":2,\"value\":\"2\"}",
+      "event_id": "ab762df36f8858177c3af79e8af5f12f4be452971bb98e047f49c099c2626fa8",
+      "input": {
+        "arguments": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "getOutcomeSlotCount",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "value": "2"
+      },
+      "wire": {
+        "arguments": [
+          "0x1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "block_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "block_number": 16,
+        "chain_id": 137,
+        "clock_id": "finland-test",
+        "contract": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "kind": "contract_state",
+        "method": "getOutcomeSlotCount",
+        "provider": "infura",
+        "received_ns": "1800000000123456798",
+        "recovery": false,
+        "schema_version": 2,
+        "value": "2"
+      }
+    }
+  ],
+  "models_sha256": "8c8a42005ef2e72622054413efca49a6d50a83240254d8444b2276d464575791",
+  "protocol_version": "aethertrade.evidence.v1"
+}

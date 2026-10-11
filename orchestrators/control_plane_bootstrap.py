@@ -426,6 +426,7 @@ class ControlPlaneRuntimeFactory:
                     metrics=reads.metrics,  # type: ignore[arg-type]
                     detection_mode=config.detection.detection_mode.value,
                     pending_stats=reads.pending_stats,
+                    native_states=reads.native_states,
                     clock=self._clock,
                 )
                 if reads is not None and reads.detection_supported
