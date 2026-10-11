@@ -94,3 +94,8 @@ pytest_output.txt
 .serena
 .mimosa/
 .jez/
+
+# Local agent workspaces
+.worktrees/
+.superpowers/
+.zcode/

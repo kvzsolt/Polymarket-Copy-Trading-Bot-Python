@@ -13,6 +13,17 @@ from domain.observed_rpc import ObservedRpcResult
 from domain.source_time import TransportReceipt
 
 
+def _page_cap_pragma(page_count: int) -> str:
+    """Render the SQLite page-cap PRAGMA for one int-validated page count.
+
+    PRAGMA statements cannot bind parameters (sqlite3 rejects '?' in PRAGMA),
+    so the count is rendered through an integer-only %d format. The count is
+    derived only from the plan's int-validated bounds, so no text input can
+    alter the statement structure.
+    """
+    return "PRAGMA max_page_count=%d" % page_count
+
+
 class HistoryImportJournal:
     """One exact reviewed plan owns a local journal; no method contacts a provider."""
 
@@ -48,7 +59,9 @@ class HistoryImportJournal:
         self._db.execute("PRAGMA journal_mode=DELETE")
         self._db.execute("PRAGMA synchronous=FULL")
         pages = (plan.max_bytes * 3 + plan.max_requests * 4096 + 2_000_000) // 4096 + 1
-        self._db.execute(f"PRAGMA max_page_count={pages}")
+        # The int-only PRAGMA renderer documents why this cannot be a bound
+        # parameter; see _page_cap_pragma.
+        self._db.execute(_page_cap_pragma(pages))
         self._db.executescript("""
             CREATE TABLE IF NOT EXISTS history_job (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), digest TEXT NOT NULL,

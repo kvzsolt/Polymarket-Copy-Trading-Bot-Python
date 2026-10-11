@@ -24,6 +24,17 @@ from integrations.pmrecon.codec import PmreconEvidenceCodec
 from interfaces.evidence import EvidenceClock
 
 
+def _page_cap_pragma(page_count: int) -> str:
+    """Render the SQLite page-cap PRAGMA for one int-validated page count.
+
+    PRAGMA statements cannot bind parameters (sqlite3 rejects '?' in PRAGMA),
+    so the count is rendered through an integer-only %d format. Every caller
+    derives the count from int-validated capacities, so no text input can
+    alter the statement structure.
+    """
+    return "PRAGMA max_page_count=%d" % page_count
+
+
 class SqliteEvidenceOutbox:
     """One process owns a bounded durable FIFO; no method performs remote I/O."""
 
@@ -71,7 +82,9 @@ class SqliteEvidenceOutbox:
             self._db.execute("PRAGMA journal_mode=DELETE")
             self._db.execute("PRAGMA synchronous=FULL")
             pages = (max_bytes * 2 + max_history * 1024 + 131072) // 4096 + 1
-            self._db.execute(f"PRAGMA max_page_count={pages}")
+            # The int-only PRAGMA renderer documents why this cannot be a
+            # bound parameter; see _page_cap_pragma.
+            self._db.execute(_page_cap_pragma(pages))
             self._db.executescript("""
                 CREATE TABLE IF NOT EXISTS evidence_outbox (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL,

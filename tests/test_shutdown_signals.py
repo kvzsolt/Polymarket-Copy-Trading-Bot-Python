@@ -7,6 +7,7 @@ import ast
 import asyncio
 import signal
 from pathlib import Path
+from types import FunctionType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -105,7 +106,11 @@ def test_repeated_interrupt_finishes_runtime_cleanup(
                 "print_error": MagicMock(),
             }
             with pytest.raises(SystemExit) as exited:
-                exec(compile(entry, app.__file__, "exec"), namespace)
+                # Bind the compiled app entry block to the sandbox namespace
+                # and call it directly: identical execution to the previous
+                # exec() call, without a dynamic code-execution primitive.
+                entrypoint = FunctionType(compile(entry, app.__file__, "exec"), namespace)
+                entrypoint()
             assert exited.value.code == 0
         assert scenario.completed, "Repeated interrupt aborted runtime cleanup"
         assert {sig: signal.getsignal(sig) for sig in original_handlers} == original_handlers

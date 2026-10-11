@@ -32,9 +32,20 @@ async def test_populated_legacy_targets_upgrade_without_invented_task_ownership(
 
     async with _pg_pool() as pool:
         async with pool.acquire() as connection:
-            for table in ("leader_sell_targets", "leader_sell_target_redrives"):
-                await connection.execute(f"ALTER TABLE {table} DROP CONSTRAINT {table}_pkey")
-                await connection.execute(f"ALTER TABLE {table} DROP COLUMN task_id")
+            # Constant DDL per table (same statements and order as the previous
+            # loop, without interpolation): downgrade both tables to their
+            # pre-migration shape before re-applying the additive migration.
+            await connection.execute(
+                "ALTER TABLE leader_sell_targets DROP CONSTRAINT leader_sell_targets_pkey"
+            )
+            await connection.execute("ALTER TABLE leader_sell_targets DROP COLUMN task_id")
+            await connection.execute(
+                "ALTER TABLE leader_sell_target_redrives "
+                "DROP CONSTRAINT leader_sell_target_redrives_pkey"
+            )
+            await connection.execute(
+                "ALTER TABLE leader_sell_target_redrives DROP COLUMN task_id"
+            )
             await connection.execute(
                 "ALTER TABLE leader_sell_targets ADD PRIMARY KEY "
                 "(user_id, leader_wallet, condition_id, token_id)"

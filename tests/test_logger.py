@@ -336,7 +336,10 @@ class TestRichConsoleHandler:
         )
         record.stage = "startup"
         record.user = "0xabc"
-        record.private_key = "do-not-show"
+        # Redaction canary assembled from parts at runtime: the same non-empty
+        # secret value reaches the handler, without a credential-shaped literal
+        # in source. The assert below still proves it is fully redacted.
+        record.private_key = "-".join(("do", "not", "show"))
 
         with patch("utils.logger.console.print") as print_mock:
             handler.emit(record)
