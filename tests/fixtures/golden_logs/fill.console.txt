@@ -1,0 +1,53 @@
+
+╭───────────────────────────── 🔄 ORDER MATCHED — BUY  [<TS>] ──────────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Status:  matched                                                                                │
+│  VenueStatus:  matched                                                                           │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────── ✅ TRADE CONFIRMED — BUY  [<TS>] ─────────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Status:  confirmed                                                                              │
+│  VenueStatus:  confirmed                                                                         │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│  Tx:  0xababab...ababab                                                                          │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭───────────────────────────── 🎯 TRADE EXECUTED — BUY  [<TS>] ─────────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Market:  Synthetic Golden Market                                                                │
+│  Submarket:  Golden Submarket                                                                    │
+│  Outcome:  YES                                                                                   │
+│  Condition:  0x333333...333333                                                                   │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────── ✅ COPY EXECUTED ────────────────────────────────────────╮
+│  Side:  BUY                                                                                      │
+│  Amount:  $75.00                                                                                 │
+│  Price:  0.5500                                                                                  │
+│  Market:  Synthetic Golden Market                                                                │
+│  Submarket:  Golden Submarket                                                                    │
+│  Outcome:  YES                                                                                   │
+│  LeaderTX:  0x5a5a5a...5a5a5a                                                                    │
+│  CopyTX:  0xababab...ababab                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

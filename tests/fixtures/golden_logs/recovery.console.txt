@@ -1,0 +1,17 @@
+[<TS>] coordinator.reservation_pending reservation_id=res-golden-000001 
+status=submitted_unconfirmed — awaiting reconciliation
+
+╭────────────────────────── ♻️ ORDER AUTO-RELEASED — BUY  [<TS>] ───────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Status:  auto_released_ambiguous                                                                │
+│  VenueStatus:  ambiguous_timeout                                                                 │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+[<TS>] coordinator.reservation_released reservation_id=res-golden-000001 reason=cancelled

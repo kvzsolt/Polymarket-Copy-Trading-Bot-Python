@@ -1,0 +1,21 @@
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚡ NEW TRADE DETECTED  [<TS>]
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+╭───────────────────────────────────── 📋 NEW TRADE DETECTED ──────────────────────────────────────╮
+│                                                                                                  │
+│  Trader:  0x1111...1111                                                                          │
+│  Side:    BUY                                                                                    │
+│  Title:   Synthetic Golden Market                                                                │
+│  Submarket:  Golden Submarket                                                                    │
+│  Outcome:  YES                                                                                   │
+│  Amount:  $120.00                                                                                │
+│  Price:   0.8000                                                                                 │
+│  Merged fills:  2                                                                                │
+│  Market:  https://polymarket.com/event/synthetic-golden-event                                    │
+│  TX:                                                                                             │
+│  https://polygonscan.com/tx/0xabababababababababababababababababababababababababababababababab   │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+

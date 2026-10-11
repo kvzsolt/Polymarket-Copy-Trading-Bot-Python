@@ -1,0 +1,14 @@
+
+╭──────────────────────────── ❌ ORDER CANCELLED — SELL  [<TS>] ────────────────────────────╮
+│                                                                                                  │
+│  Side:  SELL                                                                                     │
+│  Status:  cancelled                                                                              │
+│  VenueStatus:  order_status_canceled                                                             │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.4800                                                                                  │
+│  Value:  $65.45                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

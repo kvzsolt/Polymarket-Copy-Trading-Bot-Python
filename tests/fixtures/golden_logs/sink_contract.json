@@ -1,0 +1,46 @@
+{
+  "app_name": "PolymarketCopyTradingBot",
+  "propagate": false,
+  "defaults": {
+    "log_subdir": "log",
+    "max_bytes": 5242880,
+    "backup_count": 3
+  },
+  "console_sink": {
+    "handler_class": "RichConsoleHandler",
+    "level": "INFO",
+    "formatter": "%(message)s"
+  },
+  "jsonl_sink": {
+    "handler_class": "RotatingFileHandler",
+    "level": "DEBUG",
+    "formatter_class": "JsonFormatter",
+    "max_bytes": 5242880,
+    "backup_count": 3,
+    "encoding": "utf-8",
+    "filename": "PolymarketCopyTradingBot.jsonl"
+  },
+  "jsonl_only_types": [
+    "book_quality_gate_no_book",
+    "book_quality_gate_thin_book",
+    "book_quality_gate_wide_spread",
+    "http_request_complete",
+    "monitor_heartbeat",
+    "sizing_audit",
+    "sizing_final",
+    "startup_health_check",
+    "startup_summary",
+    "tier_gate_paper",
+    "tier_gate_watchlist",
+    "trade_batch_summary",
+    "trade_copy_failed",
+    "trade_decision",
+    "trade_detected",
+    "trade_quality_decision",
+    "trade_quality_execution",
+    "trade_skip"
+  ],
+  "jsonl_only_messages": [
+    "orderbook_capture_failed"
+  ]
+}

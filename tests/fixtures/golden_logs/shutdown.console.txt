@@ -1,0 +1,4 @@
+[<TS>] onchain_runtime_shutdown_failed | error=RuntimeError
+[<TS>] user_data_runtime_shutdown_failed | error=unknown_error
+[<TS>] failed_to_close_http_session | error=OSError
+[<TS>] db_pool_shutdown_failed | error=RuntimeError

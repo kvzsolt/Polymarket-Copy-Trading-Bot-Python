@@ -1,0 +1,17 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Polymarket Copy Trading Bot                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ℹ️ RPC:  ✅  RPC endpoint responding
+ℹ️ Balance:  ✅  $250.00
+ℹ️ Polymarket API:  ✅  API responding
+ℹ️ Database:  ✅  Database ready
+
+ℹ️ Starting trade monitor...
+ℹ️ Starting trade executor...
+✅ Trade executor ready for 2 trader(s)
+
+✅ Monitoring 2 trader(s) every 30s
+
+[<TS>] startup_stage | stage=startup_health_started user=user_golden

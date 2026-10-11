@@ -1,0 +1,4 @@
+{"ts": "<TS>", "level": "WARNING", "name": "PolymarketCopyTradingBot", "message": "onchain_runtime_shutdown_failed", "module": "<module>", "funcName": "<funcName>", "lineno": "<lineno>", "error": "RuntimeError"}
+{"ts": "<TS>", "level": "WARNING", "name": "PolymarketCopyTradingBot", "message": "user_data_runtime_shutdown_failed", "module": "<module>", "funcName": "<funcName>", "lineno": "<lineno>", "error": "unknown_error"}
+{"ts": "<TS>", "level": "WARNING", "name": "PolymarketCopyTradingBot", "message": "failed_to_close_http_session", "module": "<module>", "funcName": "<funcName>", "lineno": "<lineno>", "error": "OSError"}
+{"ts": "<TS>", "level": "WARNING", "name": "PolymarketCopyTradingBot", "message": "db_pool_shutdown_failed", "module": "<module>", "funcName": "<funcName>", "lineno": "<lineno>", "error": "RuntimeError"}

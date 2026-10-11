@@ -1,0 +1,28 @@
+
+╭───────────────────────────── ✅ POSITION DRIFT CLEAN  [<TS>] ─────────────────────────────╮
+│                                                                                                  │
+│  User:  user_golden                                                                              │
+│  Status:  clean                                                                                  │
+│  Action:  no_action                                                                              │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  LocalSize:  136.3600                                                                            │
+│  VenueSize:  136.3600                                                                            │
+│  DriftSize:  0.0000                                                                              │
+│  Reason:  sizes agree within tolerance                                                           │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭───────────────────────── 🛑 TRADING PAUSED FOR POSITION  [<TS>] ──────────────────────────╮
+│                                                                                                  │
+│  User:  user_golden                                                                              │
+│  Status:  size_mismatch_positive                                                                 │
+│  Action:  pause_scope                                                                            │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  LocalSize:  100.0000                                                                            │
+│  VenueSize:  136.3600                                                                            │
+│  DriftSize:  36.3600                                                                             │
+│  Reason:  venue size exceeds local ledger by tolerance                                           │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,29 @@
+
+╭─────────────────────────── ⏳ ORDER UNCONFIRMED — BUY  [<TS>] ────────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Status:  submitted_unconfirmed                                                                  │
+│  VenueStatus:  processed                                                                         │
+│  State:  submitted_unconfirmed                                                                   │
+│  Estimated Size:  136.3600 tokens                                                                │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─────────────────────── ⚠️ ORDER AMBIGUOUS — TIMEOUT — BUY  [<TS>] ────────────────────────╮
+│                                                                                                  │
+│  Side:  BUY                                                                                      │
+│  Status:  ambiguous_timeout                                                                      │
+│  VenueStatus:  matched                                                                           │
+│  Size:  136.3600 tokens                                                                          │
+│  Price:  0.5500                                                                                  │
+│  Value:  $75.00                                                                                  │
+│  Condition:  0x333333...333333                                                                   │
+│  Asset:  0x444444...444444                                                                       │
+│  OrderID:  0xcdcdcd...cdcdcd                                                                     │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
