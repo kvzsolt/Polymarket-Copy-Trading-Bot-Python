@@ -1623,8 +1623,9 @@ class ReconciliationService:
         """Emit an order_lifecycle log via the canonical helper.
 
         Best-effort: never breaks reconciliation. The helper deduplicates by
-        (order_id|signal_id|condition_id, status), so repeated reconciliation
-        passes never re-render the same panel.
+        (order_id|signal_id|condition_id, status), scoped per account when no
+        venue order id exists, so repeated reconciliation passes never
+        re-render the same panel.
         """
         try:
             from utils.logger import log_order_lifecycle as _log_lc
@@ -1641,6 +1642,7 @@ class ReconciliationService:
                 usdc_value=float(usdc_value) if usdc_value is not None else None,
                 venue_status=venue_status,
                 signal_id=signal_id or record.get("trade_key") or record.get("signal_id"),
+                account=str(record.get("user_id") or "") or None,
                 meta=meta,
             )
         except Exception:

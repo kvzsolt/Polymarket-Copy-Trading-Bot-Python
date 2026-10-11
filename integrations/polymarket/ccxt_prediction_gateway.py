@@ -83,10 +83,12 @@ _INVALID_ERRORS = {
     "BadSymbol",
     "InvalidOrder",
 }
-# Venue rejection detail kept for the operator. `utils.logger` has no
-# message-level secret scrubber (``redact_error_detail`` collapses to a
-# category, ``safe_error_detail`` truncates only), so the patterns below are
-# the local guard for a venue body echoing a signed URL or key material.
+# Venue rejection detail kept for the operator. `utils.logger` now scrubs
+# messages at emit time (registered secret values + credential
+# URL/header/key patterns via `utils.log_redaction`), but the venue
+# boundary keeps these local patterns as defence in depth for a venue body
+# echoing a signed URL or key material into reason text before it ever
+# reaches a sink.
 _MAX_VENUE_REASON_CHARS = 300
 _REDACTED = "***"
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+\S+")

@@ -110,6 +110,7 @@ from services.multiUserConfig import (
 )
 from storage.postgres.leaders_repo import LeadersRepo
 from utils.getMyBalance import get_my_balance
+from utils.log_redaction import register_config_secrets
 from utils.logger import (
     configure_logging,
     get_logger,
@@ -1645,6 +1646,13 @@ async def _run_application(
     except EnvValidationError as exc:
         print_error(str(exc))
         return 1
+
+    # Populate the logging secret-value registry from the validated config
+    # (wallet private key, DB DSN, Falcon/control-plane/relayer tokens).
+    # This is the single registration seam: it never logs what it collects,
+    # and logging stays safe by default via key/pattern redaction even when
+    # it registers nothing (e.g. tests or pre-config logging).
+    register_config_secrets(startup_config)
 
     configure_logging(
         level=startup_config.logging.level,

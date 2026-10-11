@@ -16,10 +16,18 @@ from rich.console import Console
 from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 from rich.traceback import Traceback
 from rich.theme import Theme
+
+from utils.log_redaction import (
+    REDACTED_PLACEHOLDER,
+    is_secret_key,
+    redact_object,
+    redact_text,
+)
 
 APP_NAME = "PolymarketCopyTradingBot"
 DEFAULT_LOG_SUBDIR = "log"
@@ -82,7 +90,13 @@ _STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), 
 
 
 class JsonFormatter(logging.Formatter):
-    """Render structured log records without exposing secrets."""
+    """Render structured log records without exposing secrets.
+
+    Defense in depth: even when a handler is attached without the global
+    ``_SecretRedactionFilter`` installed by ``configure_logging``, this
+    formatter redacts message text, serializable extras (nested values
+    included), and the rendered exception traceback itself.
+    """
 
     def format(self, record: LogRecord) -> str:
         """Format a record as bounded secret-safe structured JSON."""
@@ -90,7 +104,7 @@ class JsonFormatter(logging.Formatter):
             "ts": self.formatTime(record, datefmt="%Y-%m-%d %H:%M:%S"),
             "level": record.levelname,
             "name": record.name,
-            "message": record.getMessage(),
+            "message": redact_text(record.getMessage()),
             "module": record.module,
             "funcName": record.funcName,
             "lineno": record.lineno,
@@ -100,14 +114,21 @@ class JsonFormatter(logging.Formatter):
                 continue
             try:
                 json.dumps(value)
-                payload[key] = value
             except (TypeError, ValueError):
-                pass
+                continue
+            if is_secret_key(key):
+                payload[key] = REDACTED_PLACEHOLDER
+            else:
+                payload[key] = redact_object(value)
         if record.exc_info:
             exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
             payload["exc_type"] = exc_type
             payload["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
+
+    def formatException(self, ei) -> str:
+        """Render the exception chain with secret redaction applied."""
+        return redact_text(super().formatException(ei))
 
 
 _POSITION_DRIFT_PANEL: dict[str, tuple[str, str, str]] = {
@@ -156,8 +177,20 @@ def _lifecycle_dedup_key(
     order_id: str | None,
     signal_id: str | None,
     condition_id: str | None,
+    account: str | None = None,
 ) -> str:
-    return order_id or signal_id or condition_id or ""
+    """Build the lifecycle dedup key.
+
+    A venue order id is globally unique and wins unchanged (legacy key).
+    When no venue order id exists, an optional stable account identifier
+    scopes the key so two copiers reacting to the same signal/condition do
+    not collapse each other's lifecycle events. ``account=None`` reproduces
+    the exact legacy single-copier key.
+    """
+    base = order_id or signal_id or condition_id or ""
+    if not account or order_id:
+        return base
+    return f"{account}|{base}"
 
 
 def _lifecycle_should_emit(key: str, status: str) -> bool:
@@ -181,16 +214,23 @@ def _lifecycle_should_emit(key: str, status: str) -> bool:
 def _extra_value_text(value: Any) -> str:
     """Render one log-extra value as a safe, bounded console string."""
     if isinstance(value, str):
-        return _escape_markup(value)
+        return _escape_markup(redact_text(value))
     if isinstance(value, (bool, int, float, type(None))):
         return str(value)
     if isinstance(value, (list, tuple)):
         return _escape_markup("[" + ", ".join(_extra_value_text(item) for item in value) + "]")
     if isinstance(value, dict):
         return _escape_markup(
-            "{" + ", ".join(f"{k}={_extra_value_text(v)}" for k, v in value.items()) + "}"
+            "{"
+            + ", ".join(
+                f"{k}={REDACTED_PLACEHOLDER if is_secret_key(k) else _extra_value_text(v)}"
+                for k, v in value.items()
+            )
+            + "}"
         )
-    return _escape_markup(str(value))
+    # Arbitrary object: never trust a raw repr/str in the console path —
+    # redact any registered secret values or credential patterns it embeds.
+    return _escape_markup(redact_text(str(value)))
 
 
 def _record_extra_fields(record: LogRecord) -> dict[str, Any]:
@@ -207,21 +247,31 @@ def _append_extra_fields(msg: str, record: LogRecord) -> str:
     extras = _record_extra_fields(record)
     if not extras:
         return msg
-    _SECRET_KEY_FRAGMENTS = (
-        "token",
-        "secret",
-        "password",
-        "private_key",
-        "api_key",
-        "authorization",
-    )
     parts: list[str] = []
     for key, value in extras.items():
-        if any(fragment in key.lower() for fragment in _SECRET_KEY_FRAGMENTS):
-            parts.append(f"{key}=***REDACTED***")
+        if is_secret_key(key):
+            parts.append(f"{key}={REDACTED_PLACEHOLDER}")
         else:
             parts.append(f"{key}={_extra_value_text(value)}")
     return f"{msg} | " + " | ".join(parts)
+
+
+class _RedactedRenderable:
+    """Wrap a Rich renderable and scrub secret material from rendered segments.
+
+    Preserves segment styles (colors/panels) while replacing registered
+    secret values and credential patterns in every text segment.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __rich_console__(self, console: Any, options: Any):
+        for segment in console.render(self._inner, options):
+            if segment.text and segment.control is None:
+                yield Segment(redact_text(segment.text), segment.style)
+            else:
+                yield segment
 
 
 class RichConsoleHandler(logging.Handler):
@@ -273,7 +323,7 @@ class RichConsoleHandler(logging.Handler):
 
             # Default: plain styled text with all structured extra fields
             # visible in the console, not only in the JSONL file.
-            msg = _append_extra_fields(self.format(record), record)
+            msg = _append_extra_fields(redact_text(self.format(record)), record)
             ts = time.strftime("%I:%M:%S %p")
             style = _LEVEL_STYLES.get(record.levelname, "info")
             prefix = Text(f"[{ts}] ", style="muted")
@@ -281,16 +331,31 @@ class RichConsoleHandler(logging.Handler):
             console.print(prefix + body, highlight=False)
             exc_info = record.exc_info
             if exc_info and exc_info[0] and exc_info[1] and not record.exc_text:
-                console.print(
-                    Traceback.from_exception(
-                        exc_info[0],
-                        exc_info[1],
-                        exc_info[2],
-                        max_frames=12,
-                    )
-                )
+                console.print(self._exception_renderable(exc_info))
         except Exception:
             self.handleError(record)
+
+    def _exception_renderable(self, exc_info) -> Any:
+        """Return a Traceback renderable, wrapped for redaction when needed.
+
+        The common path (nothing redactable in the exception chain) passes
+        the ``Traceback`` through untouched so panel styling is preserved.
+        When the rendered exception text contains secret material, wrap it
+        in ``_RedactedRenderable`` which scrubs each rendered segment.
+        """
+        traceback = Traceback.from_exception(
+            exc_info[0],
+            exc_info[1],
+            exc_info[2],
+            max_frames=12,
+        )
+        try:
+            rendered = logging.Formatter().formatException(exc_info)
+        except Exception:
+            return traceback
+        if redact_text(rendered) == rendered:
+            return traceback
+        return _RedactedRenderable(traceback)
 
     def _render_structured(self, record: LogRecord, log_type: str) -> bool:
         """Render structured log types as Rich panels/lines. Returns True if handled."""
@@ -341,7 +406,7 @@ class RichConsoleHandler(logging.Handler):
             border, icon = "cyan", "ℹ️"
 
         title_label = str(log_type).replace("_", " ").upper()
-        message = self.format(record)
+        message = redact_text(self.format(record))
         extras = _record_extra_fields(record)
         lines: list[str] = []
         if message and message != title_label.lower():
@@ -349,18 +414,8 @@ class RichConsoleHandler(logging.Handler):
         for key, value in extras.items():
             if key == "type":
                 continue
-            if any(
-                fragment in key.lower()
-                for fragment in (
-                    "token",
-                    "secret",
-                    "password",
-                    "private_key",
-                    "api_key",
-                    "authorization",
-                )
-            ):
-                value_text = "***REDACTED***"
+            if is_secret_key(key):
+                value_text = REDACTED_PLACEHOLDER
             else:
                 value_text = _extra_value_text(value)
             label = " ".join(part.capitalize() for part in str(key).replace("_", " ").split())
@@ -453,7 +508,10 @@ class RichConsoleHandler(logging.Handler):
     def _render_api_error(self, record: LogRecord, ts: str) -> None:
         side = getattr(record, "side", "?")
         error_detail = getattr(record, "error_detail", None)
-        error = error_detail or getattr(record, "error", "")
+        error_raw = (
+            error_detail if error_detail is not None else getattr(record, "error", None)
+        )
+        error = redact_text(str(error_raw)) if error_raw else error_raw
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
         asset = shorten_addr(getattr(record, "asset", None), 8, 6)
         retry = getattr(record, "retry", 0)
@@ -481,10 +539,10 @@ class RichConsoleHandler(logging.Handler):
 
     def _render_api_response(self, record: LogRecord, ts: str) -> None:
         method = getattr(record, "httpMethod", "?")
-        url = getattr(record, "url", "")
+        url = redact_text(str(getattr(record, "url", "") or ""))
         status = getattr(record, "httpStatus", 0)
         data_summary = getattr(record, "data_summary", None)
-        error = getattr(record, "error", None)
+        error = redact_text(str(getattr(record, "error", None) or "")) or None
         ok = 200 <= status < 400
 
         # Shorten URL for display
@@ -500,7 +558,7 @@ class RichConsoleHandler(logging.Handler):
         )
         if data_summary and isinstance(data_summary, dict):
             for k, v in data_summary.items():
-                lines.append(f"  [dim]{k}:[/dim] {v}")
+                lines.append(f"  [dim]{k}:[/dim] {redact_text(str(v))}")
         if error:
             lines.append(f"  [dim]error:[/dim] {error}")
 
@@ -774,6 +832,58 @@ class _ManagedHandlerMixin:
     _pm_bot_managed = True
 
 
+class _SecretRedactionFilter(logging.Filter):
+    """Apply the single emit-time redaction pass for every sink.
+
+    Installed on each managed HANDLER (not the logger): handler-level
+    filters run for every record the handler processes, including records
+    emitted through child loggers obtained via ``get_logger(name)`` whose
+    own filter chain is never consulted. The mutation below is therefore
+    visible to the Rich console renderer, the rotating JSONL sink, and the
+    stderr fallback alike. The formatters add their own defense in depth
+    for handlers attached without this filter.
+    """
+
+    def filter(self, record: LogRecord) -> bool:
+        """Redact the record in place; never suppress and never raise."""
+        try:
+            _redact_record(record)
+        except Exception:
+            pass
+        return True
+
+
+def _redact_record(record: LogRecord) -> None:
+    """Redact message text, args, extras, and cached exception text in place."""
+    try:
+        merged = record.getMessage()
+    except Exception:
+        merged = None
+    if merged is not None:
+        record.msg = redact_text(merged)
+        record.args = ()
+    else:
+        if isinstance(record.msg, str):
+            record.msg = redact_text(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_text(arg) if isinstance(arg, str) else arg for arg in record.args
+            )
+    for key, value in list(vars(record).items()):
+        if key in _STANDARD_RECORD_ATTRS or key in ("message", "exc_info"):
+            continue
+        if key.startswith("_"):
+            continue
+        if key == "exc_text":
+            if isinstance(value, str):
+                setattr(record, key, redact_text(value))
+            continue
+        if is_secret_key(key):
+            setattr(record, key, REDACTED_PLACEHOLDER)
+            continue
+        setattr(record, key, redact_object(value))
+
+
 class _ManagedRichConsoleHandler(_ManagedHandlerMixin, RichConsoleHandler):
     """Rich console handler owned by this logging configuration."""
 
@@ -828,6 +938,9 @@ def configure_logging(
     ch = _ManagedRichConsoleHandler()
     ch.setLevel(resolved_level)
     ch.setFormatter(logging.Formatter("%(message)s"))
+    # Emit-time secret redaction, applied per handler so child loggers
+    # (get_logger("Component")) are covered exactly like the app logger.
+    ch.addFilter(_SecretRedactionFilter())
     logger.addHandler(ch)
 
     try:
@@ -842,6 +955,7 @@ def configure_logging(
         file_handler = _ManagedStreamHandler(sys.stderr)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(JsonFormatter())
+    file_handler.addFilter(_SecretRedactionFilter())
     logger.addHandler(file_handler)
 
     _CONFIGURED_LOGGERS[name] = logger
@@ -1513,7 +1627,9 @@ def safe_error_detail(error: Any) -> str:
     Unlike ``redact_error_detail`` (which strips DB/runtime messages to just
     the class name), this keeps the first 300 chars of ``str(error)`` so that
     constraint names, table names, and similar non-secret context survive into
-    the structured log.
+    the structured log. The text is passed through the redaction engine
+    (registered secret values plus credential URL/header patterns) before the
+    truncation bounds are applied, honouring the no-secret-leak promise.
 
     When the error message is blank (e.g. IntegrityError with empty args),
     the traceback is appended so the originating line is still visible.
@@ -1523,13 +1639,13 @@ def safe_error_detail(error: Any) -> str:
     if error is None:
         return "unknown_error"
     cls = type(error).__name__ if isinstance(error, BaseException) else "Error"
-    msg = str(error).strip()
+    msg = redact_text(str(error).strip())
     if not msg and isinstance(error, BaseException):
         # Blank message — include args repr and last 3 traceback frames
         frames = _tb.format_exception(type(error), error, error.__traceback__)
-        tail = "".join(frames[-3:]) if len(frames) > 3 else "".join(frames)
+        tail = redact_text("".join(frames[-3:]) if len(frames) > 3 else "".join(frames))
         tail = tail.strip()
-        args_repr = repr(error.args) if error.args else "()"
+        args_repr = redact_text(repr(error.args)) if error.args else "()"
         detail = f"{cls} args={args_repr}"
         if tail:
             detail += f" | tb: {tail}"
@@ -1961,6 +2077,7 @@ def log_order_lifecycle(
     tx_hash: str | None = None,
     event_slug: str | None = None,
     signal_id: str | None = None,
+    account: str | None = None,
     meta: dict[str, Any] | None = None,
     force: bool = False,
 ) -> None:
@@ -1969,9 +2086,14 @@ def log_order_lifecycle(
     The handler renders this as a Rich panel (status → color/icon defined in
     _ORDER_LIFECYCLE_PANEL). Repeat calls with the same dedup key + status are
     suppressed unless ``force=True``.
+
+    ``account`` is an optional stable account/user identifier that scopes the
+    dedup key when no venue order id exists, so two copiers reacting to the
+    same signal/condition keep independent lifecycle streams. Omitted
+    (``None``), the legacy single-copier key and payload are produced exactly.
     """
     canonical = (status or "").strip().lower()
-    key = _lifecycle_dedup_key(order_id, signal_id, condition_id)
+    key = _lifecycle_dedup_key(order_id, signal_id, condition_id, account)
     if not force and not _lifecycle_should_emit(key, canonical):
         return
 
@@ -1990,6 +2112,8 @@ def log_order_lifecycle(
         "txHash": tx_hash,
         "signalId": signal_id,
     }
+    if account:
+        payload["account"] = account
     ev_url = event_link(event_slug)
     if ev_url:
         payload["eventUrl"] = ev_url
@@ -2240,7 +2364,10 @@ def log_api_response(
 
     if error:
         extras["error"] = redact_error_detail(error)
-        extras["error_detail"] = error
+        # Never write the raw error string into the audit log: provider
+        # error bodies can echo signed URLs, Authorization headers, or key
+        # material. Route through the redacting safe detail helper.
+        extras["error_detail"] = safe_error_detail(error)
     if meta:
         extras.update(meta)
 

@@ -2263,6 +2263,7 @@ class ExecutionService:
                 venue_status=venue_status,
                 submission_state=lifecycle_status,
                 signal_id=getattr(req, "signal_id", None),
+                account=getattr(req, "user_id", None),
                 meta={
                     "sizeEstimated": projection.token_size_estimated,
                     "requestAmount": str(projection.request_amount),
