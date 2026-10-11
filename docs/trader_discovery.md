@@ -226,9 +226,11 @@ window is used, falling back to 7 days; an empty profile skips the gate.
 ### Specialist bonus
 
 `specialist_bonus_enabled` (default on) adds `specialist_bonus_weight` (default
-`0.10`) to the composite score when the **dominant specialty bucket** holds at
-least `specialist_min_dominant_share` (default `0.80`) of the wallet's trades and
-the recent win rate reaches `specialist_min_win_rate` (default `0.57`). The
+`0.10`; the packaged `config/discovery.yml` ships `0.15` as intended operator
+policy, decided 2026-10-11) to the composite score when the **dominant specialty
+bucket** holds at least `specialist_min_dominant_share` (default `0.80`) of the
+wallet's trades and the recent win rate reaches `specialist_min_win_rate`
+(default `0.57`). The
 30-day win rate is preferred, falling back to the 15-day window. A specialty
 bucket is a sub-category row such as `Sports / Soccer` or `Esports / MOBA`
 (deeper rows fold into it); a top-level category without sub-rows is its own

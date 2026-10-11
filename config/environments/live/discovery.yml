@@ -6,10 +6,8 @@
 # Trade-offs: disabled is deterministic and free of provider dependency; enabled
 # adapts the roster but adds API cost, latency, and scoring/model risk.
 # Live profile: the leader roster comes from config/traders/<fantasy-name>.yml.
-# Automatic discovery (scheduler) and the Falcon provider both stay off.
-scheduler:
-  # No recurring live rediscovery; --auto-trader can still force it for one run.
-  enabled: false
+# Discovery policy is identical to paper (operator decision 2026-10-11): the
+# scheduler override was removed so live discovery equals the paper profile.
 falcon:
   # No normal Falcon evaluation without explicit process override.
   enabled: false

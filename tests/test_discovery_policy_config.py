@@ -23,11 +23,14 @@ DELIBERATE_OVERRIDES: dict[str, Any] = {"candidate_concurrency": 12}
 
 # Packaged YAML values that additionally diverge from the pydantic default: one
 # full leaderboard sweep is capped at 50 wallets because the `--auto-trader`
-# startup burst re-checks the persisted roster before it ever sweeps.
+# startup burst re-checks the persisted roster before it ever sweeps, and the
+# specialist bonus weight is 0.15 by intended operator policy (decided
+# 2026-10-11); the FalconDiscoveryPolicy dataclass default stays 0.10.
 PACKAGED_OVERRIDES: dict[str, Any] = {
     **DELIBERATE_OVERRIDES,
     "candidate_limit": 50,
     "enable_price_jump_risk": False,
+    "specialist_bonus_weight": Decimal("0.15"),
 }
 
 

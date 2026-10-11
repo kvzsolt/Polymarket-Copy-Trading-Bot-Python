@@ -156,7 +156,10 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "enable_leader_divergence_exit",
     }
     assert set(sizing) == {"enable_trust_size_multipliers"}
-    assert set(discovery) == {"scheduler", "falcon"}
+    # Live discovery equals paper (operator decision 2026-10-11): the former
+    # `scheduler.enabled: false` override was removed, so the file carries only
+    # the falcon keys, which already match the packaged base values.
+    assert set(discovery) == {"falcon"}
     assert discovery["falcon"]["candidate_limit"] == 50
     assert set(market_data) == {
         "rest_snapshot_max_spread_bps",
@@ -188,7 +191,8 @@ def test_live_environment_control_plane_needs_no_credential_while_disabled() -> 
     assert config.control_plane.enabled is False
 
 
-#: The operator's live profile: risk management on, every other engine off.
+#: The operator's live profile: risk management on, every other engine off,
+#: except discovery which equals the paper profile (decision 2026-10-11).
 #: Each entry is a dotted path into the loaded :class:`AppConfig`.
 LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
     ("execution.trading_mode", "live"),
@@ -212,7 +216,9 @@ LIVE_PROFILE_MATRIX: tuple[tuple[str, object], ...] = (
     ("execution.max_entry_price_drift_pct", 5.0),
     ("execution.kill_switch", False),
     ("sizing.enable_trust_size_multipliers", False),
-    ("discovery.scheduler.enabled", False),
+    # Live discovery equals paper (operator decision 2026-10-11): the scheduler
+    # override is gone, so live inherits the packaged base value like paper.
+    ("discovery.scheduler.enabled", True),
     ("discovery.falcon.enabled", False),
     ("discovery.falcon.candidate_limit", 50),
     ("copy_trading.copy_tasks.enabled", False),
