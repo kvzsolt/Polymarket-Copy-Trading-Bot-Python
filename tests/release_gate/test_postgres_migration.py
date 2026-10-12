@@ -426,16 +426,14 @@ async def test_guarded_prune_uses_durable_order_scope_and_retains_pending_orders
 
 
 @pytest.mark.asyncio
-async def test_active_sql_consumers_exclude_settled_and_retain_unknown(_pg_container):
-    """Actual query results and market capacity agree on settled holdings."""
+async def test_market_capacity_sql_excludes_settled_holdings(_pg_container):
+    """Held-inventory capacity over the real schema ignores settled holdings."""
     import asyncpg
     from decimal import Decimal
     from domain.position_lifecycle import PositionLifecycle
     from storage.postgres.migrations import apply_migrations
     from storage.postgres.positions_repo import PositionRecord, PositionsRepo
-    from storage.postgres.control_plane_query_repository import PostgresControlPlaneQueryRepository
     from storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
-    from services.control_plane.contracts import PageRequest
     from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason
     from tests.test_active_position_query_contract import FixedClock
 
@@ -460,11 +458,6 @@ async def test_active_sql_consumers_exclude_settled_and_retain_unknown(_pg_conta
                     Decimal("1") if state is PositionLifecycle.SETTLED else None,
                 )
             )
-        reads = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
-        page = await reads.list_positions("mixed", PageRequest(limit=10))
-        assert len(page.items) == 2
-        assert await reads.get_position("mixed", "settled") is None
-        assert (await reads.leader_open_position_counts())["mixed-leader"] == 2
         intent = OrderIntent(
             key=OrderIntentKey(
                 user_id="mixed",

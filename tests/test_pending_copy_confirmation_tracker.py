@@ -572,7 +572,7 @@ def test_a_non_positive_poll_interval_is_rejected() -> None:
 
 
 def test_the_configured_bounds_are_readable() -> None:
-    """The control plane reads these; they must not require private access."""
+    """Read-side consumers read these; they must not require private access."""
     tracker, _fetcher, _metrics, _clock = _tracker(deadline_seconds=42.0, max_tracked=7)
 
     assert tracker.deadline_seconds == 42.0

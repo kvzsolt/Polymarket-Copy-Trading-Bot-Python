@@ -572,7 +572,7 @@ async def test_snapshot_uses_task_leader_specific_trust_context() -> None:
 
 
 def test_task_binding_requires_exact_leader_evidence_and_account_execution() -> None:
-    """Expose a side-effect-free activation check for control-plane resume."""
+    """Expose a side-effect-free activation check for task resume admission."""
 
     follower = context()
     provider = TradingContextTaskSnapshotProvider(

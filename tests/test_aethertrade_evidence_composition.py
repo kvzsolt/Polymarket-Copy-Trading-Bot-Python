@@ -38,7 +38,6 @@ class TestEvidenceComposition:
         monkeypatch.setattr(app, "load_config", lambda: config)
         monkeypatch.setattr(app, "configure_logging", lambda **kwargs: None)
         monkeypatch.setattr(app, "_validate_detection_confidence_floor", lambda config: None)
-        monkeypatch.setattr(app, "SystemMonotonicClock", lambda: SimpleNamespace(monotonic=lambda: 0))
         monkeypatch.setattr("orchestrators.provider_runtime.ProviderRuntime.from_config", lambda config: provider)
         policy = SimpleNamespace(validate=lambda config: None, effective_config=lambda config: config)
         return app, config, provider, policy

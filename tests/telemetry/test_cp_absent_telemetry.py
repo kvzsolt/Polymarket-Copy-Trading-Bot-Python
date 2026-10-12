@@ -1,17 +1,15 @@
-"""Telemetry survives without the control plane (Task 11 decision guard).
+"""Telemetry survives without the control plane (Task 11/12 decision guard).
 
-Decision: the bounded in-process telemetry hub stays exactly as composed. The
-only external hub subscriber and the only query-service consumer are the
-control-plane WebSocket stream and read routes, which Task 12 deletes. With
-the control plane absent the hub simply runs subscriber-less: emits stay
-bounded, non-blocking, and never break the trading path, while the metrics
-registry and readiness check keep their observability value. No code change
-was needed; these tests pin the invariants the decision depends on.
+Decision: the bounded in-process telemetry hub stays exactly as composed. Its
+only external subscriber and query-service consumers were the control-plane
+WebSocket stream and read routes, which Task 12 deleted. With the control
+plane absent the hub simply runs subscriber-less: emits stay bounded,
+non-blocking, and never break the trading path, while the metrics registry and
+readiness check keep their observability value. No code change was needed;
+these tests pin the invariants the decision depends on.
 """
 
 from __future__ import annotations
-
-import inspect
 
 from services.healthServer import ReadinessTracker
 from services.metrics import MetricsRegistry
@@ -52,19 +50,6 @@ def test_disabled_bundle_is_a_total_null_object() -> None:
     assert emitters.detection.signal_received(
         "polling", "0x" + "ab" * 20, "0x" + "cd" * 32
     ) is False
-
-
-def test_telemetry_runtime_composition_is_not_gated_by_control_plane() -> None:
-    """Telemetry is composed before, and independently of, any CP gate."""
-
-    import app
-
-    source = inspect.getsource(app._run_application)
-
-    assert "_start_telemetry_runtime(" in source
-    assert source.index("_start_telemetry_runtime(") < source.index(
-        "control_plane.enabled"
-    ), "telemetry composition must precede any control-plane gating"
 
 
 async def test_telemetry_runtime_owns_the_readiness_check_without_subscribers() -> None:

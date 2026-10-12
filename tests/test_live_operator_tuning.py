@@ -36,9 +36,6 @@ def _overrides() -> dict:
         "detection": {
             "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
         },
-        # live/control_plane.yml enables the operator API, which fails closed
-        # without the bearer credential from secrets.env.
-        "control_plane": {"auth": {"token": "test-control-credential"}},
     }
 
 

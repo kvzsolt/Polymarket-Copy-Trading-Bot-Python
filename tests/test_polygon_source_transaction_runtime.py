@@ -104,7 +104,7 @@ def test_head_fixture_is_timezone_aware() -> None:
 
 
 def test_connected_probe_reports_manager_state_and_tolerates_absence() -> None:
-    """The control-plane probe never invents a confirmed-detection state."""
+    """The health probe never invents a confirmed-detection state."""
 
     class _ProbingManager(FakeConnectionManager):
         connected = True

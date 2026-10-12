@@ -189,8 +189,8 @@ async def _seed_tasks_from_trader_configs(
     """Seed file-defined copy tasks from ``config/traders/*.yml``.
 
     Existing task ids are never overwritten: file-defined tasks are a startup
-    seed, and a task already created through the control plane keeps its
-    current configuration. Returns the number of tasks created.
+    seed, and an existing durable task keeps its current configuration.
+    Returns the number of tasks created.
     """
 
     codec = CopyTaskCodec()

@@ -40,6 +40,17 @@ def register_trading_command(subparsers: argparse._SubParsersAction) -> None:
     resume.add_argument("--reason", required=True)
     resume.add_argument("--operator", default=os.getenv("USER", "cli"))
 
+    clear_stop = actions.add_parser(
+        "clear-full-stop",
+        help=(
+            "Explicitly clear a durable runtime full stop and allow live "
+            "venue submissions again (resume refuses while it is active)"
+        ),
+    )
+    clear_stop.add_argument("--confirm", required=True, help="Must be exactly LIVE")
+    clear_stop.add_argument("--reason", required=True)
+    clear_stop.add_argument("--operator", default=os.getenv("USER", "cli"))
+
 
 def _json_state(state) -> str:
     payload = asdict(state)
@@ -140,11 +151,38 @@ async def _run_trading_async(args: argparse.Namespace) -> int:
             if args.confirm != "LIVE":
                 print("Refusing resume: --confirm must be exactly LIVE")
                 return 2
+            current = await repo.get()
+            if not current.enabled and current.reason == FULL_STOP_REASON:
+                # Controller ruling: resume alone must never silently clear a
+                # durable money-path full stop; only the explicit dedicated
+                # action may, so a routine resume cannot reopen live flow.
+                print(
+                    "Refusing resume: a durable full stop is active "
+                    f"(reason={FULL_STOP_REASON}). Run "
+                    "'trading clear-full-stop --confirm LIVE --reason ...' "
+                    "to clear it explicitly."
+                )
+                return 2
             state = await repo.set_enabled(
                 True,
                 reason=args.reason,
                 updated_by=args.operator,
             )
+        elif args.trading_action == "clear-full-stop":
+            if args.confirm != "LIVE":
+                print("Refusing clear-full-stop: --confirm must be exactly LIVE")
+                return 2
+            current = await repo.get()
+            if current.enabled or current.reason != FULL_STOP_REASON:
+                # No durable full stop is active: read-only no-op so the
+                # explicit clear action stays idempotent.
+                state = current
+            else:
+                state = await repo.set_enabled(
+                    True,
+                    reason=args.reason,
+                    updated_by=args.operator,
+                )
         else:  # argparse enforces this; defensive for direct callers
             return 2
         print(_json_state(state))

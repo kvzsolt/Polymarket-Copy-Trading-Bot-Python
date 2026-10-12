@@ -83,7 +83,7 @@ def test_environment_override_beats_canonical(tmp_path: Path) -> None:
 
 
 def test_selected_environment_is_runtime_metadata_not_service_yaml(tmp_path: Path) -> None:
-    """The control plane can identify its layer without persisting a fake section."""
+    """Callers can identify the selected layer without persisting a fake section."""
 
     config_dir = _tree(tmp_path, {})
 

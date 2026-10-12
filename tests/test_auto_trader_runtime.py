@@ -109,21 +109,6 @@ async def test_provider_block_persists_across_runtime_restart_but_allows_owned_e
     assert await runtime.admit("follower", A, "SELL")
 
 
-async def test_explicit_manual_discovery_updates_automatic_store_without_replacing_healthy():
-    from orchestrators.auto_trader_runtime import AutomaticDiscoveryRunner
-    from tests.test_auto_trader_service import Provider, NOW
-
-    repo = MemoryRepository(
-        AutoRoster(initialized=True, traders=(Trader(A, status=TraderStatus.ACTIVE),))
-    )
-    provider = Provider()
-    runtime = AutoTraderRuntime(services={SCOPE: service(repo, provider)})
-    runner = AutomaticDiscoveryRunner(runtime=runtime, clock=lambda: NOW)
-    assert await runner.run(force=True) == 2
-    assert repo.roster.traders[0].status is TraderStatus.ACTIVE
-    assert provider.calls[0] is None
-
-
 async def test_monitor_set_keeps_owned_exits_and_drops_flat_former_members():
     from tests.test_auto_trader_service import NOW
 

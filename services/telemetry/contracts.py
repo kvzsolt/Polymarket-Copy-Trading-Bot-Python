@@ -1,4 +1,4 @@
-"""Immutable, secret-safe event contracts for the telemetry control plane."""
+"""Immutable, secret-safe telemetry event contracts."""
 
 from __future__ import annotations
 
@@ -111,7 +111,6 @@ class TelemetryProducer(StrEnum):
     DISCOVERY = "discovery"
     WSS = "wss"
     RUNTIME = "runtime"
-    CONTROL_PLANE = "control_plane"
 
 
 class TelemetrySeverity(StrEnum):

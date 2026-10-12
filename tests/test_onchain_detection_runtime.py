@@ -602,7 +602,7 @@ async def test_mined_condition_id_resolver_invoked() -> None:
 
 
 async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> None:
-    """The control-plane probe reads composed socket state in constant time."""
+    """The health probe reads composed socket state in constant time."""
 
     class _ProbeSocket(_NoopWebSocket):
         def __init__(self, connected: bool) -> None:

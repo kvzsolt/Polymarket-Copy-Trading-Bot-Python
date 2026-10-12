@@ -474,15 +474,6 @@ def test_secrets_template_omits_runtime_derived_clob_auth() -> None:
     assert "PMCOPY__CLOB__API_PASSPHRASE=" not in template
 
 
-def test_secrets_template_lists_both_control_plane_credential_names() -> None:
-    """The template carries names only: the live environment enables the API."""
-
-    template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
-
-    assert "PMCOPY__CONTROL_PLANE__AUTH__TOKEN=\n" in template
-    assert "PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN=\n" in template
-
-
 def test_validation_error_never_echoes_secret(
     tmp_path: Path,
 ) -> None:
@@ -909,9 +900,6 @@ def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
     overrides["detection"] = {
         "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
     }
-    # live/control_plane.yml enables the operator API, which fails closed
-    # without the credential the operator keeps in secrets.env.
-    overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
     config = load_config(overrides, environment="live")
 
     assert config.environment == "live"
@@ -932,7 +920,6 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
     """Selecting an on-chain mode in live without a WS endpoint is a startup error."""
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
-    overrides["control_plane"] = {"auth": {"token": "test-control-credential"}}
     with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
         load_config(overrides, environment="live")
 

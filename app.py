@@ -7,14 +7,11 @@ from services.market_readiness import MarketReadinessGroup
 from services.user_readiness import UserReadinessGroup
 
 import asyncio
-from functools import partial
 import functools
 import inspect
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence, Sized
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sized
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from importlib import metadata
-from pathlib import Path
 
 from typing import TYPE_CHECKING, Any
 
@@ -35,38 +32,10 @@ if TYPE_CHECKING:
 
 from bootstrap import build_app
 from orchestrators.account_inventory_startup import InitialInventorySync
-from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidationError, load_config
+from config.app_config import AppConfig, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
-from domain.grouped_detection import TraderDetectionState
-from adapters.clock import SystemMonotonicClock
 from integrations.polymarket.venue_runtime import build_polymarket_runtime
-from orchestrators.control_plane_bootstrap import (
-    AiohttpControlPlaneServerFactory,
-    ControlPlaneDatabasePool,
-    ControlPlaneRuntime,
-    ControlPlaneRuntimeFactory,
-)
-from orchestrators.control_plane_reads import (
-    ControlPlaneRuntimeReads,
-    FollowerScopedPositions,
-)
-from orchestrators.control_plane_runtime import (
-    InactiveWorkerStateReader,
-    WorkerStateReader,
-)
-from orchestrators.control_plane_discovery import (
-    DiscoveryRunQueue,
-    LeaderRegistryDiscoveryRunner,
-)
-from orchestrators.control_plane_portfolio import (
-    PortfolioAccountBinding,
-    PortfolioRuntimeFactory,
-)
-from orchestrators.control_plane_tasks import (
-    LeaderMonitoringState,
-    RuntimeTaskActivationGuard,
-)
 from orchestrators.leader_registry import LeaderRegistry, LeaderRegistryState
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -89,19 +58,14 @@ from orchestrators.runtime_discovery import (
     wait_for_active_leaders as _wait_for_active_leaders_impl,
 )
 from orchestrators.trader_startup_policy import TraderStartupPolicy
-from orchestrators.auto_trader_runtime import AutoTraderRuntime, AutomaticDiscoveryRunner
+from orchestrators.auto_trader_runtime import AutoTraderRuntime
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.telemetry_bootstrap import TelemetryRuntime
 from orchestrators.user_data_runtime import UserDataRuntime
-from services.healthServer import ReadinessTracker, start_health_server
+from services.healthServer import start_health_server
 from services.metrics import MetricsRegistry, metrics
-from services.trading_control import OpenOrderControlGateway
-from services.control_plane.commands import DiscoveryCommandPort
-from services.control_plane.contracts_reads import AccountView
-from services.control_plane.queries import CachedPortfolioQueryPort
-from services.control_plane.tasks import TaskActivationGuard
-from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
+from services.telemetry import TelemetryEmitters, WssTelemetryEmitter
 from services.multiUserConfig import (
     RuntimeUser,
     UserFollowConfig,
@@ -118,7 +82,6 @@ from utils.logger import (
 )
 
 logger = get_logger("Main")
-_CONFIG_ROOT = Path(__file__).resolve().parent / "config"
 
 
 async def _wait_for_active_leaders(
@@ -1261,7 +1224,7 @@ async def _start_telemetry_runtime(
         metrics_registry: Existing process-wide metrics truth source.
 
     Returns:
-        The started telemetry runtime used by later control-plane composition.
+        The started telemetry runtime used by detection and readiness probes.
     """
 
     readiness = getattr(application, "readiness", None)
@@ -1301,10 +1264,10 @@ def _build_telemetry_emitters(telemetry_runtime: TelemetryRuntime | None) -> Tel
 def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
     """Return an O(1) transport-health probe for one detection runtime.
 
-    The control plane starts before the detection source exists, so the
-    telemetry emitter is given this probe only after the runtime started. A
-    runtime that exposes no connection state reports ``None`` (unknown) rather
-    than a fabricated ``False``.
+    Detection sources start after the telemetry emitters exist, so the emitter
+    is given this probe only after the runtime started. A runtime that exposes
+    no connection state reports ``None`` (unknown) rather than a fabricated
+    ``False``.
 
     Args:
         runtime: Started detection source runtime.
@@ -1318,174 +1281,6 @@ def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
         return state if isinstance(state, bool) else None
 
     return probe
-
-
-def _build_control_plane_reads(
-    *,
-    readiness: ReadinessTracker,
-    metrics_registry: MetricsRegistry,
-    contexts_by_leader: Mapping[str, Sequence[Any]],
-    risk_contexts_by_user: Mapping[str, Any],
-    user_states: Mapping[str, Any],
-    configured_leaders: tuple[str, ...],
-    monitored_leaders: Callable[[], Iterable[str]],
-    detection_counters: Any,
-    portfolio_cache: CachedPortfolioQueryPort | None,
-    native_states: Callable[[], tuple[TraderDetectionState, ...] | None] | None = None,
-) -> ControlPlaneRuntimeReads:
-    """Bundle the local runtime state the extended operator reads may observe.
-
-    Only state this process actually composed is published: a follower without
-    a market store contributes no quote source, and a leader with no bound
-    context is not counted for any account.
-
-    Args:
-        readiness: Canonical process readiness truth.
-        metrics_registry: Process metrics registry backing WSS reconnects.
-        contexts_by_leader: Bound trading contexts per leader wallet.
-        risk_contexts_by_user: One canonical trading context per follower.
-        user_states: Composed follower runtimes exposing market stores.
-        configured_leaders: Operator-configured leader wallets.
-        monitored_leaders: Late-bound reader of monitored leader wallets.
-        detection_counters: Detection telemetry emitter counter source.
-        portfolio_cache: Optional local-only follower portfolio cache.
-
-    Returns:
-        One immutable read bundle for the control-plane factory.
-    """
-
-    pnl_trackers: dict[str, Any] = {}
-    positions: dict[str, Any] = {}
-    market_stores: dict[str, Any] = {}
-    for user_id, context in risk_contexts_by_user.items():
-        tracker = getattr(context, "pnl_tracker", None)
-        if tracker is not None:
-            pnl_trackers[user_id] = tracker
-        positions_repo = getattr(context, "positions_repo", None)
-        if positions_repo is not None:
-            positions[user_id] = positions_repo
-        market_store = getattr(user_states.get(user_id), "market_store", None)
-        if market_store is not None:
-            market_stores[user_id] = market_store
-
-    def _accounts() -> tuple[AccountView, ...]:
-        """Project the live follower/leader binding on every request.
-
-        ``contexts_by_leader`` changes while the process runs (discovery
-        promotions, roster refreshes), so a snapshot taken at composition
-        would report a stale ``leader_count`` for the life of the process.
-        """
-
-        leader_counts: dict[str, int] = {}
-        for contexts in contexts_by_leader.values():
-            for context in contexts:
-                bound_user = str(getattr(context, "user_id", "") or "")
-                if bound_user:
-                    leader_counts[bound_user] = leader_counts.get(bound_user, 0) + 1
-        views: list[AccountView] = []
-        for account_id, account_context in risk_contexts_by_user.items():
-            wallet = str(getattr(account_context, "wallet_address", "") or "")
-            if wallet:
-                views.append(
-                    AccountView(
-                        follower_account=account_id,
-                        wallet_address=wallet,
-                        leader_count=leader_counts.get(account_id, 0),
-                    )
-                )
-        return tuple(views)
-
-    return ControlPlaneRuntimeReads(
-        accounts=_accounts,
-        detection_counters=detection_counters,
-        native_states=native_states,
-        pnl_trackers=pnl_trackers,
-        positions=FollowerScopedPositions(positions),
-        market_stores=market_stores,
-        monitored_leaders=monitored_leaders,
-        configured_leaders=tuple(configured_leaders),
-        portfolio=portfolio_cache,
-        readiness=readiness,
-        metrics=metrics_registry,
-    )
-
-
-async def _start_control_plane_runtime(
-    *,
-    application: object,
-    pool: ControlPlaneDatabasePool,
-    telemetry: TelemetryRuntime,
-    worker_state: WorkerStateReader,
-    runtime_gateways: tuple[OpenOrderControlGateway, ...],
-    task_activation_guard: TaskActivationGuard | None,
-    discovery_command_port: DiscoveryCommandPort | None,
-    client_registry: list[Any],
-    factory: ControlPlaneRuntimeFactory,
-    portfolio_cache: CachedPortfolioQueryPort | None = None,
-    reads: ControlPlaneRuntimeReads | None = None,
-) -> ControlPlaneRuntime | None:
-    """Build, register, and start the optional privileged adapter safely.
-
-    Args:
-        application: Composed application exposing config and readiness.
-        pool: Existing shared PostgreSQL pool.
-        telemetry: Existing process-wide telemetry runtime.
-        worker_state: Local bounded copy-worker statistics source.
-        runtime_gateways: One canonical live gateway per follower account.
-        task_activation_guard: Optional fail-closed task resume policy.
-        discovery_command_port: Optional started manual-discovery queue.
-        client_registry: Outer lifecycle registry closed from ``main``.
-        factory: Injected application-service and transport composition root.
-        portfolio_cache: Optional local-only follower portfolio cache.
-        reads: Optional local runtime state backing the extended reads.
-
-    Returns:
-        The owned runtime when enabled, otherwise ``None``.
-
-    Notes:
-        Transport startup failure is isolated from trading. The runtime stays
-        registered so outer shutdown can close any partially started adapter,
-        while its optional readiness check remains false.
-    """
-
-    config = getattr(application, "config", None)
-    readiness = getattr(application, "readiness", None)
-    if config is None or readiness is None:
-        raise TypeError("application config and readiness are required")
-    from services.control_plane.auto_traders import AutoTraderControlService
-
-    automatic = getattr(application, "auto_traders", None)
-    automatic_control = (
-        AutoTraderControlService(services=automatic.services, clock=AutoTraderRuntime.now)
-        if automatic is not None
-        else None
-    )
-    runtime = factory.build(
-        auto_traders=automatic_control,
-        config=config,
-        pool=pool,
-        readiness=readiness,
-        telemetry_query=telemetry.query,
-        telemetry_hub=telemetry.hub,
-        telemetry_service=telemetry.service,
-        worker_state=worker_state,
-        runtime_gateways=runtime_gateways,
-        task_activation_guard=task_activation_guard,
-        discovery_command_port=discovery_command_port,
-        portfolio_cache=portfolio_cache,
-        reads=reads,
-    )
-    if runtime is None:
-        return None
-    client_registry.append(runtime)
-    try:
-        await runtime.start()
-    except Exception as exc:
-        logger.error(
-            "control_plane_start_failed",
-            extra={"error": redact_error_detail(exc)},
-        )
-    return runtime
 
 
 @dataclass
@@ -1639,8 +1434,6 @@ async def _run_application(
     """Run one fully composed application under a leader startup policy."""
     startup_policy = startup_policy or TraderStartupPolicy()
     configure_logging(level="INFO")
-    monotonic_clock = SystemMonotonicClock()
-    process_started_monotonic = monotonic_clock.monotonic()
 
     try:
         startup_config = load_config()
@@ -1652,7 +1445,7 @@ async def _run_application(
         return 1
 
     # Populate the logging secret-value registry from the validated config
-    # (wallet private key, DB DSN, Falcon/control-plane/relayer tokens).
+    # (wallet private key, DB DSN, Falcon/relayer tokens).
     # This is the single registration seam: it never logs what it collects,
     # and logging stays safe by default via key/pattern redaction even when
     # it registers nothing (e.g. tests or pre-config logging).
@@ -2143,10 +1936,7 @@ async def _run_application(
     # Prepare the task lifecycle before startup reconciliation so orders-table
     # evidence can settle retained task budgets. Workers remain stopped until
     # account state and drift have converged and no detection source exists yet.
-    from orchestrators.v1_runtime_bootstrap import (
-        RuntimeFollowerBalanceReader,
-        start_v1_copy_task_runtime,
-    )
+    from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
 
     logger.info("startup_stage | stage=v1_copy_task_restoration_started")
     initial_v1_contexts = _copy_task_contexts(contexts_by_leader, risk_contexts_by_user)
@@ -2282,107 +2072,7 @@ async def _run_application(
     if v1_runtime is not None:
         await v1_runtime.start()
 
-    task_monitoring_state = LeaderMonitoringState(())
-    task_activation_guard = (
-        RuntimeTaskActivationGuard(
-            bindings=v1_runtime,
-            monitoring=task_monitoring_state,
-            protective_management_enabled=application.config.risk.enable_risk_mgmt,
-        )
-        if v1_runtime is not None
-        else None
-    )
-    discovery_command_queue = None
-    portfolio_runtime = None
-    if application.config.control_plane.enabled:
-        discovery_command_queue = DiscoveryRunQueue(
-            runner=(
-                AutomaticDiscoveryRunner(runtime=auto_traders, clock=AutoTraderRuntime.now)
-                if auto_traders is not None
-                else LeaderRegistryDiscoveryRunner(
-                    registry=registry, configured_leaders=tuple(configured)
-                )
-            ),
-            telemetry=telemetry_runtime.service,
-        )
-        await discovery_command_queue.start()
-        client_registry.append(discovery_command_queue)
-
-        portfolio_bindings = []
-        for context in risk_contexts_by_user.values():
-            reservations = context.extra.get("reservations_repo")
-            if reservations is None:
-                continue
-            portfolio_bindings.append(
-                PortfolioAccountBinding(
-                    follower_account=context.user_id,
-                    wallet=context.wallet_address,
-                    positions=context.positions_repo,
-                    reservations=reservations,
-                    quotes=user_states[context.user_id].market_store,
-                    quote_max_age_seconds=(
-                        application.config.market_data.executable_quote_max_age_seconds
-                    ),
-                )
-            )
-        portfolio_runtime = PortfolioRuntimeFactory(
-            clock=SystemClock(),
-            balance=RuntimeFollowerBalanceReader(
-                partial(get_my_balance, provider_runtime=provider_runtime)
-            ),
-        ).build(
-            bindings=tuple(portfolio_bindings),
-            refresh_interval_seconds=(
-                application.config.control_plane.portfolio_refresh_interval_seconds
-            ),
-            stale_after_seconds=(application.config.control_plane.portfolio_stale_after_seconds),
-        )
-        if portfolio_runtime is not None:
-            await portfolio_runtime.refresh.start()
-            client_registry.append(portfolio_runtime.refresh)
-
-    try:
-        backend_version = metadata.version("polymarket-copy-trading-bot")
-    except metadata.PackageNotFoundError:
-        backend_version = "0.1.0"
     onchain_runtime = None
-    control_plane_reads = _build_control_plane_reads(
-        readiness=application.readiness,
-        metrics_registry=metrics,
-        contexts_by_leader=contexts_by_leader,
-        risk_contexts_by_user=risk_contexts_by_user,
-        user_states=user_states,
-        configured_leaders=tuple(configured),
-        monitored_leaders=lambda: tuple(
-            wallet for wallet in monitored_leaders if task_monitoring_state.is_monitored(wallet)
-        ),
-        native_states=lambda: onchain_runtime.states() if onchain_runtime is not None else None,
-        detection_counters=telemetry_emitters.detection,
-        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
-    )
-    await _start_control_plane_runtime(
-        application=application,
-        pool=_pool,
-        telemetry=telemetry_runtime,
-        worker_state=v1_runtime if v1_runtime is not None else InactiveWorkerStateReader(),
-        runtime_gateways=tuple(
-            state.clob_gateway for state in user_states.values() if state.clob_gateway is not None
-        ),
-        task_activation_guard=task_activation_guard,
-        discovery_command_port=discovery_command_queue,
-        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
-        reads=control_plane_reads,
-        client_registry=client_registry,
-        factory=ControlPlaneRuntimeFactory(
-            server_factory=AiohttpControlPlaneServerFactory(),
-            config_root=_CONFIG_ROOT,
-            version=backend_version,
-            clock=SystemClock(),
-            monotonic_clock=monotonic_clock,
-            semantic_validator=AppConfigSemanticValidator(),
-            started_monotonic=process_started_monotonic,
-        ),
-    )
 
     # Start market-data WSS only after portfolio/database convergence. Starting
     # it earlier can subscribe/probe stale tokens that manual_sync has not yet
@@ -2610,7 +2300,6 @@ async def _run_application(
                 monitor_tasks.remove(task)
         for wallet in retired:
             contexts_by_leader.pop(wallet, None)
-        task_monitoring_state.remove(retired)
         monitored_leaders[:] = [wallet for wallet in monitored_leaders if wallet not in retired]
         remaining = monitored_set - retired
         _refresh_onchain_watched_wallets(onchain_runtime, remaining)
@@ -2825,8 +2514,6 @@ async def _run_application(
 
         def _native_source_changed() -> None:
             active_owners = onchain_runtime.active_wallets() if onchain_runtime is not None else ()
-            task_monitoring_state.remove(monitored_leaders)
-            task_monitoring_state.add(active_owners)
             application.readiness.update(monitored_leader_count=len(active_owners))
             telemetry_emitters.detection.roster_updated(len(active_owners))
 
@@ -2918,9 +2605,7 @@ async def _run_application(
                             "monitor_task_crashed",
                             extra={"error": redact_error_detail(task_error)},
                         )
-                    crashed_wallet = monitor_wallet_by_task.pop(task, None)
-                    if crashed_wallet is not None:
-                        task_monitoring_state.remove((crashed_wallet,))
+                    monitor_wallet_by_task.pop(task, None)
                     metrics.inc("leader_monitor_crashed_total")
                     application.readiness.update(
                         monitored_leader_count=_live_monitor_count(monitor_tasks)

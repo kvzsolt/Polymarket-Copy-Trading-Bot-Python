@@ -4,7 +4,7 @@ Design (A07, standalone-refactor task 5):
 
 - **Value-based redaction** — a process-wide registry of known secret
   *values* (the configured wallet private key, the Falcon analytics token,
-  control-plane bearer tokens, the Relayer API key, the database DSN).
+  the Relayer API key, the database DSN).
   Registration happens once, after configuration load, via
   :func:`register_config_secrets` (called from ``app.py`` right after
   ``load_config()`` — the composition point where the validated config is
@@ -133,8 +133,6 @@ def register_config_secrets(config: object) -> int:
     - ``wallet.private_key`` — EOA signing key,
     - ``database.dsn`` — embeds the Postgres password,
     - ``discovery.api.token`` — Falcon analytics bearer token,
-    - ``control_plane.auth.token`` / ``viewer_token`` — operator API
-      bearer credentials,
     - ``redemption.relayer_api_key`` — Relayer API key.
 
     RPC/WSS endpoint URLs are deliberately NOT registered: their public
@@ -151,9 +149,6 @@ def register_config_secrets(config: object) -> int:
         candidates.append(getattr(database, "dsn", None))
         discovery_api = getattr(getattr(config, "discovery", None), "api", None)
         candidates.append(getattr(discovery_api, "token", None))
-        control_auth = getattr(getattr(config, "control_plane", None), "auth", None)
-        candidates.append(getattr(control_auth, "token", None))
-        candidates.append(getattr(control_auth, "viewer_token", None))
         redemption = getattr(config, "redemption", None)
         candidates.append(getattr(redemption, "relayer_api_key", None))
         return register_secret_values(*[c for c in candidates if c is not None])

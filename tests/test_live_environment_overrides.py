@@ -70,11 +70,6 @@ def _overrides() -> dict:
         "detection": {
             "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
         },
-        # The live environment enables the operator API, which fails closed
-        # without the bearer credential the operator keeps in ``secrets.env``
-        # (``PMCOPY__CONTROL_PLANE__AUTH__TOKEN``). This placeholder exists only
-        # here; no live YAML file may carry credential material.
-        "control_plane": {"auth": {"token": "test-control-credential"}},
     }
 
 
@@ -94,7 +89,6 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     values hide inside another service's environment file."""
     assert {path.name for path in LIVE_DIR.glob("*.yml")} == {
         "app.yml",
-        "control_plane.yml",
         "copy_trading.yml",
         "detection.yml",
         "discovery.yml",
@@ -109,7 +103,6 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     copy_trading = yaml.safe_load((LIVE_DIR / "copy_trading.yml").read_text())
     app_cfg = yaml.safe_load((LIVE_DIR / "app.yml").read_text())
     detection = yaml.safe_load((LIVE_DIR / "detection.yml").read_text())
-    control_plane = yaml.safe_load((LIVE_DIR / "control_plane.yml").read_text())
     risk = yaml.safe_load((LIVE_DIR / "risk.yml").read_text())
     protective_exits = yaml.safe_load((LIVE_DIR / "protective_exits.yml").read_text())
     sizing = yaml.safe_load((LIVE_DIR / "sizing.yml").read_text())
@@ -136,10 +129,6 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "metrics_bind_host",
         "metrics_port",
     }
-    assert set(control_plane) == {"enabled"}
-    # The operator API stays off in live until its credential rotation lands;
-    # nothing else in the live profile depends on it.
-    assert control_plane["enabled"] is False
     assert set(risk) == {
         "enable_risk_mgmt",
         "enable_balance_tiered_policy",
@@ -167,28 +156,6 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
         "rest_snapshot_request_timeout_ms",
         "rest_snapshot_total_budget_ms",
     }
-
-
-def test_live_environment_keeps_the_loopback_operator_api_off() -> None:
-    """The live overlay pins the control plane off without moving the bind."""
-
-    config = load_config(_overrides(), environment="live")
-
-    assert config.control_plane.enabled is False
-    assert config.control_plane.host == "127.0.0.1"
-    assert config.control_plane.port == 9103
-    assert config.control_plane.require_authentication is True
-
-
-def test_live_environment_control_plane_needs_no_credential_while_disabled() -> None:
-    """A disabled API has nothing to authenticate; startup must not fail."""
-
-    overrides = _overrides()
-    overrides.pop("control_plane")
-
-    config = load_config(overrides, environment="live")
-
-    assert config.control_plane.enabled is False
 
 
 #: The operator's live profile: risk management on, every other engine off,

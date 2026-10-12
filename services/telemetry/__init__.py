@@ -1,4 +1,4 @@
-"""Public telemetry control-plane contracts and services."""
+"""Public telemetry contracts and services."""
 
 from services.metrics import (
     ActiveEntity,

@@ -5,23 +5,21 @@ from decimal import Decimal
 
 import pytest
 
-from orchestrators.control_plane_tasks import LeaderMonitoringState, RuntimeTaskActivationGuard
-from services.control_plane.contracts import ControlPlaneError
+from services.copy_tasks.domain import CopyTask
 from services.copy_tasks.entry_permission import TaskEntryPermissionService
 from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
 from services.copy_tasks.service import InMemoryCopyTaskRepository
-from tests.control_plane.test_task_activation import FixedTaskBindingReader, task
 
 
-def test_protected_task_cannot_activate_without_protective_management():
-    protected = replace(task(), protective_risk=ProtectiveRiskPolicy(stop_loss_percent=Decimal(10)))
-    guard = RuntimeTaskActivationGuard(
-        bindings=FixedTaskBindingReader(True),
-        monitoring=LeaderMonitoringState((protected.leader_wallet,)),
+def task() -> CopyTask:
+    """Return one valid task identity for permission tests."""
+
+    return CopyTask(
+        task_id="task-a",
+        name="Primary",
+        leader_wallet="0x1111111111111111111111111111111111111111",
+        follower_account="account-a",
     )
-    with pytest.raises(ControlPlaneError) as error:
-        guard.ensure_available(protected)
-    assert error.value.reason.value == "task_protection_unavailable"
 
 
 @pytest.mark.asyncio

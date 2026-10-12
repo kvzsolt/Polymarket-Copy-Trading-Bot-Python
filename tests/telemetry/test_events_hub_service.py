@@ -1,4 +1,4 @@
-"""Characterization tests for the bounded v1 telemetry control plane."""
+"""Characterization tests for the bounded v1 telemetry service."""
 
 from __future__ import annotations
 

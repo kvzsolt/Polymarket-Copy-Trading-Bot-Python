@@ -60,12 +60,3 @@ def test_invalid_money_does_not_mutate_tracker(tmp_path, value):
     with pytest.raises(ValueError):
         tracker.record_buy("market", value, "1", "1")
     assert tracker.metrics()["total_trades"] == 0
-
-
-@pytest.mark.asyncio
-async def test_local_pnl_query_preserves_unobserved_drawdown(tmp_path):
-    from tests.control_plane.test_extended_reads import pnl_service
-
-    tracker = PnLTracker(str(tmp_path / "pnl.jsonl"))
-    service = pnl_service(quotes={}, positions=(), tracker=tracker)
-    assert (await service.get("account-a")).realized.max_drawdown_usdc is None

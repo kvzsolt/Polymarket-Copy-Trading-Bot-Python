@@ -276,7 +276,7 @@ async def test_telemetry_service_owns_exact_counter_latency_and_gauge_updates() 
         WssEvent(outcome=WssOutcome.RECONNECTED, stream="market"),
     )
     for payload in payloads:
-        result = service.emit(producer=TelemetryProducer.CONTROL_PLANE, payload=payload)
+        result = service.emit(producer=TelemetryProducer.WORKER, payload=payload)
         assert result.accepted is True
 
     service.observe_latency(phase=LatencyPhase.RISK, seconds=0.25)

@@ -202,7 +202,7 @@ class PostgresAutoTraderRepository:
             )
 
     async def history(self, scope: AutoTraderScope, *, limit: int = 50) -> tuple[AutoRoster, ...]:
-        """Return bounded immutable evaluation revisions for control-plane review."""
+        """Return bounded immutable evaluation revisions for operator review."""
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
                 """SELECT snapshot::text FROM auto_trader_events

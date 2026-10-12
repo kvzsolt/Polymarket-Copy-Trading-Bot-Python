@@ -157,11 +157,10 @@ class OnchainDetectionRuntime:
     def connected(self) -> bool | None:
         """Return whether any composed detection socket is subscribed.
 
-        The operator control plane reads this as a late-bound health probe, so
-        it must stay O(1) and must never claim a state it cannot observe:
-        before ``start`` (and after ``stop``) no socket exists and the answer
-        is ``None``, which the read surface renders as "unknown" rather than
-        "disconnected".
+        The telemetry health probe reads this late-bound, so it must stay O(1)
+        and must never claim a state it cannot observe: before ``start`` (and
+        after ``stop``) no socket exists and the answer is ``None``, which the
+        read surface renders as "unknown" rather than "disconnected".
 
         Returns:
             ``True`` when at least one composed socket is subscribed, ``False``

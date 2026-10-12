@@ -303,22 +303,17 @@ class TestValueRegistry:
 
         wallet_key = _canary("wallet")
         falcon_token = _canary("falcon")
-        operator_token = _canary("operator")
-        viewer_token = _canary("viewer")
         relayer_key = _canary("relayer")
         dsn = f"postgresql://bot:{_canary('dsn')}@db.internal:5432/trades"
         config = SimpleNamespace(
             wallet=SimpleNamespace(private_key=wallet_key),
             database=SimpleNamespace(dsn=dsn),
             discovery=SimpleNamespace(api=SimpleNamespace(token=falcon_token)),
-            control_plane=SimpleNamespace(
-                auth=SimpleNamespace(token=operator_token, viewer_token=viewer_token)
-            ),
             redemption=SimpleNamespace(relayer_api_key=relayer_key),
         )
         count = register_config_secrets(config)
-        assert count >= 6
-        for value in (wallet_key, falcon_token, operator_token, viewer_token, relayer_key, dsn):
+        assert count >= 4
+        for value in (wallet_key, falcon_token, relayer_key, dsn):
             assert value not in redact_text(f"context {value} context")
 
     def test_register_config_secrets_never_raises_on_broken_config(self):

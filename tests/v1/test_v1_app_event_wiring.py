@@ -20,13 +20,7 @@ def test_app_injects_existing_and_dynamic_contexts_into_v1_runtime() -> None:
     assert source.index("blocked_wallets = _wallets_blocked_by_reconcile_failures") < source.index(
         "v1_runtime.add_contexts(unblocked_contexts)"
     )
-    assert "task_monitoring_state.add(active_owners)" in source
-    assert "task_monitoring_state.remove(monitored_leaders)" in source
     assert "native_detection_roster_awaiting_restart" in source
-    assert "LeaderRegistryDiscoveryRunner(" in source
-    assert source.index("await discovery_command_queue.start()") < source.index(
-        "await _start_control_plane_runtime("
-    )
 
 
 def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> None:
@@ -51,18 +45,3 @@ def test_app_projects_market_wss_quotes_into_the_shared_v1_cache() -> None:
     source = Path("app.py").read_text(encoding="utf-8")
 
     assert "quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None" in source
-
-
-def test_app_starts_cached_portfolio_refresh_before_control_plane() -> None:
-    """GUI portfolio reads use the isolated cache composed from runtime repos."""
-
-    source = Path("app.py").read_text(encoding="utf-8")
-
-    assert "PortfolioRuntimeFactory(" in source
-    assert "PortfolioAccountBinding(" in source
-    assert "await portfolio_runtime.refresh.start()" in source
-    assert "client_registry.append(portfolio_runtime.refresh)" in source
-    assert "portfolio_cache=" in source
-    assert source.index("await portfolio_runtime.refresh.start()") < source.index(
-        "await _start_control_plane_runtime("
-    )

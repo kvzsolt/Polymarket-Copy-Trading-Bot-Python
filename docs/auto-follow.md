@@ -31,7 +31,7 @@ a stable follower `funder_address` before automatic startup.
 
 An initialized roster restores directly from the DB without calling Falcon.
 Legacy active leaders are imported once with `activation_source: legacy`.
-An initialized empty roster remains empty and available for control-plane action.
+An initialized empty roster remains empty and available for operator action.
 A genuinely new roster performs a bounded Falcon shortlist and targeted
 qualification checks. The best candidates passing the current bankroll-aware
 Falcon gates are automatically selected after the configured qualification
@@ -67,8 +67,8 @@ Degraded traders stop receiving new entries. Qualified saved reserves fill their
 slots first. Only when a degraded incumbent leaves an unfilled slot can the
 runtime request a replacement shortlist. Discovery jobs are scoped and leased:
 at most three attempts for one initialization/degradation event, with one-hour
-retry spacing. A successful zero-safe result remains zero. The existing explicit
-control-plane discovery command can request a new operator-directed cycle.
+retry spacing. A successful zero-safe result remains zero. The local
+`rotate-traders` CLI command can request a new operator-directed cycle.
 
 ## Paper evidence and recovery
 
@@ -97,48 +97,16 @@ virtual allocation; previous snapshots remain in audit history. Therefore a
 restart can delay qualification instead of claiming continuous observation while
 the bot was offline. Saved live and paper results remain separate.
 
-## Control-plane review and promotion
+## Operator review
 
-With the control plane enabled, the existing roster/leader reads reflect automatic
-membership. Fetch saved evidence without triggering provider work:
-
-```http
-GET /api/v1/leaders/{wallet}/performance?follower_account={account}
-```
-
-The response includes membership revision, target/active counts, activation source,
-entry-block reason, Falcon score and age, qualification reasons, separate paper
-and live results, and up to 50 saved roster revisions of evaluation history.
-Monetary fields are decimal strings; unavailable live drawdown is `null`.
-
-Promotion requires `leader.promote` permission; a read-only token cannot promote.
-Use the current candidate `revision` and `paper.evaluation_id` from the GET:
-
-```http
-POST /api/v1/leaders/{wallet}/promote
-Content-Type: application/json
-Authorization: Bearer <operator-token>
-
-{
-  "follower_account": "<account>",
-  "expected_revision": 7,
-  "evaluation_id": "<paper-evaluation-id>",
-  "request_id": "<unique-command-id>"
-}
-```
-
-Defaults require seven days of observed paper evidence, at least 20 closed
-copy episodes, positive net realized PnL, drawdown below 10%, and fresh passing
-Falcon qualification. Evidence limits can be adjusted under `auto_follow` in
-`config/discovery.yml` (`paper_days`, `minimum_episodes`, `max_paper_drawdown`).
-There is no second trader-count setting.
-
-An available slot activates the approved candidate. A full roster records an
-approved reserve and preserves healthy incumbents. The command is audited and
-idempotent for the same actor, request ID, and payload. A reused request ID with
-a different payload is rejected. Changed revisions or evaluation IDs require a
-fresh review. Command responses contain the committed result; refresh the GET to
-obtain current state and history.
+The remote HTTP review and promotion surface
+(`GET/POST /api/v1/leaders/...`) was removed together with the operator
+control plane; there is no bearer-token promotion command anymore. Promotion
+follows the automatic path described above: evidence defaults require seven
+days of observed paper evidence, at least 20 closed copy episodes, positive
+net realized PnL, drawdown below 10%, and fresh passing Falcon qualification,
+subject to the shipped evidence limits. Roster history and audit records
+remain queryable from the database directly.
 
 ## Verification
 

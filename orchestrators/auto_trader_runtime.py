@@ -346,22 +346,3 @@ class AutomaticLeaderView:
             row.observed_at.timestamp() if row.observed_at else None,
             "automatic",
         )
-
-
-class AutomaticDiscoveryRunner:
-    """Route explicit control-plane discovery into the durable automatic roster."""
-
-    def __init__(self, *, runtime: AutoTraderRuntime, clock: Callable[[], datetime]) -> None:
-        """Inject the running scoped services and manual-job identity clock."""
-        self._runtime = runtime
-        self._clock = clock
-
-    async def run(self, *, force: bool) -> int:
-        """Run an explicitly requested sweep without replacing healthy incumbents."""
-        del force
-        event = "manual:" + self._clock().isoformat()
-        count = 0
-        for scope, service in self._runtime.services.items():
-            roster = await service.discover(scope, event=event)
-            count += len(roster.traders)
-        return count

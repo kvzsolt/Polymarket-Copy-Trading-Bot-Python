@@ -539,7 +539,6 @@ TELEMETRY_PRODUCER_LABEL_VALUES = (
     "discovery",
     "wss",
     "runtime",
-    "control_plane",
 )
 
 # Copy-level outcomes. Mirrors ``TradeOutcome`` minus ``candidate_evaluated``,

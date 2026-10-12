@@ -12,9 +12,7 @@ import pytest
 from config.app_config import AppConfig
 from domain.position_lifecycle import PositionLifecycle
 from orchestrators import runtime_summary, trade_pipeline
-from orchestrators.control_plane_portfolio import PortfolioAccountBinding, PortfolioRuntimeFactory
 from services.risk.account_snapshot import AccountRiskSnapshotBuilder
-from tests.control_plane.test_portfolio_runtime import MutableClock
 from tests.test_legacy_marked_risk_snapshot import FixedQuote
 
 
@@ -140,51 +138,6 @@ async def test_buy_admission_reads_complete_held_inventory(monkeypatch: pytest.M
     assert snapshot.equity_usdc == Decimal(110)
     held.assert_awaited_once_with("account")
     opened.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("payout", [Decimal(0), Decimal(1), None])
-async def test_portfolio_preserves_settled_equity_and_active_unrealized_pnl(
-    payout: Decimal | None,
-) -> None:
-    """Only active holdings count toward exposure cost and unrealized PnL."""
-    active = Holding("active", Decimal(10), Decimal("0.4"), PositionLifecycle.ACTIVE)
-    settled = Holding("settled", Decimal(20), Decimal(0), PositionLifecycle.SETTLED, payout)
-    positions = SimpleNamespace(
-        list_open_positions=AsyncMock(return_value=[active]),
-        list_held_positions=AsyncMock(return_value=[active, settled]),
-    )
-    quotes = Quotes(FixedQuote())
-    bundle = PortfolioRuntimeFactory(
-        clock=MutableClock(), balance=SimpleNamespace(read=AsyncMock(return_value=Decimal(100)))
-    ).build(
-        bindings=(
-            PortfolioAccountBinding(
-                "account",
-                "wallet",
-                positions,
-                SimpleNamespace(sum_active_quote_for_user=AsyncMock(return_value=Decimal(2))),
-                quotes=quotes,
-            ),
-        ),
-        refresh_interval_seconds=10,
-        stale_after_seconds=30,
-    )
-    assert bundle is not None
-
-    result = await bundle.refresh.refresh_once()
-    view = await bundle.cache.get_cached_portfolio("account")
-
-    assert result.updated_count == 1
-    assert view is not None
-    assert view.equity_usdc == (None if payout is None else str(Decimal("105.50") + 20 * payout))
-    assert view.positions_cost_usdc == "4.0"
-    assert view.position_count == 1
-    assert view.copyable_balance_usdc == "98"
-    assert view.unrealized_pnl_usdc == (None if payout is None else "1.50")
-    assert quotes.requested == ["active"]
-    positions.list_held_positions.assert_awaited_once_with("account")
-    positions.list_open_positions.assert_not_awaited()
 
 
 def test_startup_summary_separates_76_settled_holdings_from_active_positions(
