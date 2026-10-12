@@ -9,7 +9,7 @@ from services.execution.coordinator import ExecutionCoordinator, ExecutionIntent
 
 async def test_copy_admission_rejects_before_reservation_or_venue_submission():
     guard = SimpleNamespace(admit=AsyncMock(return_value=False))
-    coordinator = ExecutionCoordinator(None, None, None, None, copy_admission=guard)
+    coordinator = ExecutionCoordinator(None, None, copy_admission=guard)
     coordinator._submit_with_reservation = AsyncMock()
     intent = ExecutionIntent(
         "account",
@@ -29,7 +29,7 @@ async def test_copy_admission_rejects_before_reservation_or_venue_submission():
 
 async def test_qualified_owned_sell_continues_through_existing_execution():
     guard = SimpleNamespace(admit=AsyncMock(return_value=True))
-    coordinator = ExecutionCoordinator(None, None, None, None, copy_admission=guard)
+    coordinator = ExecutionCoordinator(None, None, copy_admission=guard)
     coordinator._submit_with_reservation = AsyncMock(return_value="delegated")
     intent = ExecutionIntent(
         "account",

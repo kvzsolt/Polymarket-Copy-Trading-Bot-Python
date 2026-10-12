@@ -10,8 +10,6 @@ import pytest
 from domain.order_lifecycle import IntentSide
 from orchestrators.runtime_bootstrap import _build_execution_coordinator
 from services.execution.reservation_service import InsufficientFreeQuote
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
 from tests.config_helpers import load_test_config
 from tests.test_reservation_service import _pg_pool, create_mock_intent
@@ -30,8 +28,6 @@ async def test_distinct_tasks_cannot_exceed_combined_market_cap(monkeypatch):
         coordinator = _build_execution_coordinator(
             pool=pool,
             positions_repo=PositionsRepo(pool),
-            order_repo=OrdersRepo(pool),
-            fills_repo=FillsRepo(pool),
             execution_service=AsyncMock(),
             funder_address="0x" + "2" * 40,
             config=config,

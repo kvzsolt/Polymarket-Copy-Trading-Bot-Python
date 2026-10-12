@@ -1705,6 +1705,109 @@ async def test_sell_insufficient_balance_deletes_local_position_when_live_holdin
 
 
 @pytest.mark.asyncio
+async def test_buy_insufficient_balance_does_not_trigger_drift_reconciliation(
+    tmp_path,
+):
+    """Drift reconciliation is SELL-gated: a BUY balance failure must not
+    touch the local position.
+
+    Ported from the removed V2 ``execute_intent`` drift-trigger tests — the
+    production trigger lives in this pipeline's failure branch, so the
+    side-gating invariant is pinned here.
+    """
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False,
+            filled=Decimal("0"),
+            status="rejected",
+            order_id=None,
+            error="insufficient_balance | not enough balance",
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        from storage.postgres.positions_repo import PositionRecord
+
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("35.8759"),
+                avg_entry_price=Decimal("0.40"),
+            )
+        )
+
+        signal = _signal(side="BUY")
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+        assert len(results) == 1
+        assert results[0].status == "failed"
+        assert "drift_reconciled" not in str(results[0].reason)
+        pos = await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.size_tokens == Decimal("35.8759")
+
+
+@pytest.mark.asyncio
+async def test_sell_non_balance_error_does_not_trigger_drift_reconciliation(
+    tmp_path,
+):
+    """Only insufficient-balance SELL failures trigger drift reconciliation.
+
+    Ported from the removed V2 ``execute_intent`` drift-trigger tests: a SELL
+    rejected for a non-balance reason must leave the local position alone.
+    """
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False,
+            filled=Decimal("0"),
+            status="rejected",
+            order_id=None,
+            error="invalid order: tick size violation",
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        from storage.postgres.positions_repo import PositionRecord
+
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("35.8759"),
+                avg_entry_price=Decimal("0.40"),
+            )
+        )
+
+        signal = _signal(side="SELL", price=0.999, size=35.0)
+        signal["_leader_sell_fraction"] = 1.0
+
+        ctx.holdings_reader = DataApiPositionSizeReader(
+            lambda: SimpleNamespace(
+                get_json=AsyncMock(
+                    return_value=[
+                        {"asset": FAKE_TOKEN_ID, "size": "35.8759", "currentValue": "35"}
+                    ]
+                )
+            )
+        )
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+        assert len(results) == 1
+        assert results[0].status == "failed"
+        reason = str(results[0].reason)
+        assert "drift_reconciled" not in reason
+        assert "tick size violation" in reason
+        pos = await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.size_tokens == Decimal("35.8759")
+
+
+@pytest.mark.asyncio
 async def test_sell_realized_pnl_uses_known_updated_position_cost(
     tmp_path,
 ):

@@ -56,7 +56,7 @@ def test_known_limitations_lists_expected_items(repo_root: Path) -> None:
     lowered = text.lower()
     for token in (
         "http polling",
-        "execute_intent",
+        "submit_copy_trade",
         "external",
     ):
         assert token in lowered, token

@@ -5,8 +5,11 @@ Pins the post-Review-B behavior so regressions get caught:
   * C1 — reconcile_submitted_unconfirmed must not silently drop rows whose
     identity is missing; it emits a hard metric and falls back to a sentinel
     scope so the row still reconciles.
-  * C3 — execute_intent must fail closed in live mode if the PositionScope
-    import fails (no silent no-lock SELL).
+  * C3 — (superseded) the former V2 ``execute_intent`` path failed closed in
+    live mode when the PositionScope import failed; that dead path has been
+    removed, and live-mode serialization is enforced by the production
+    ``execution_coordinator_missing`` guards plus per-scope locks around the
+    ``submit_*`` surface.
   * C6 contract — two scopes that share (condition_id, token_id) but differ
     on user_id must not collide in the coordinator's lock registry.
   * C7 — (superseded by A04) the execution coordinator is now BORN with the
@@ -234,8 +237,6 @@ def _make_coordinator(*, config):
     execution_service = SimpleNamespace(_config=config)
     return ExecutionCoordinator(
         reservation_service=MagicMock(),
-        orders_repo=MagicMock(),
-        fills_repo=MagicMock(),
         positions_repo=MagicMock(),
         execution_service=execution_service,
         position_coordinator=PositionActionCoordinator(),
@@ -298,8 +299,6 @@ def test_runtime_bootstrap_helper_wires_account_coordinator_at_construction():
     coord = _build_execution_coordinator(
         pool=MagicMock(),
         positions_repo=MagicMock(),
-        order_repo=MagicMock(),
-        fills_repo=MagicMock(),
         execution_service=MagicMock(),
         funder_address="0x" + "9" * 40,
         position_coordinator=pos_coord,

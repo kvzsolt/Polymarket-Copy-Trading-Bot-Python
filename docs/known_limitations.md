@@ -33,11 +33,13 @@ Limitations:
   operator setting `MARKET_DATA_PRIMARY_SOURCE` to a streaming mode;
   default config keeps http polling as the executive source of truth.
 
-## 2. execute_intent is the single live-entry surface
+## 2. the coordinator submit surface is the single live-entry surface
 
-External code paths that want to suggest a trade MUST route through
-`execute_intent`. Any other call to `execution_service.execute` is
-forbidden by `scripts/rc1_check.sh`'s forbid scan (it Greps production
+External code paths that want to suggest a trade MUST route through the
+execution coordinator's `submit_copy_trade` / `submit_risk_exit` /
+`submit_protective_exit` funnel (`services/execution/coordinator.py`). Any
+other call to `execution_service.execute` is forbidden by
+`scripts/rc1_check.sh`'s forbid scan (it Greps production
 code for `execution_service.execute`, the `getattr` aliases, and rejects
 any file that lacks the `execution_coordinator_missing` guard). The
 single permitted call site is `services/execution/coordinator.py` — the
@@ -47,13 +49,13 @@ is a deliberate architectural limitation, not a missing feature.
 Limitations:
 
 - The single entry-point does not enforce policy (slippage, max sizing);
-  that policy layer is upstream of `execute_intent` and must always be
-  invoked before reaching this surface. The bot enforces this ordering
-  via the orchestrator pipeline (`orchestrators/trade_pipeline.py`).
+  that policy layer is upstream of the coordinator submit surface and must
+  always be invoked before reaching this surface. The bot enforces this
+  ordering via the orchestrator pipeline (`orchestrators/trade_pipeline.py`).
 - The single entry-point also means recovery paths (rollback, canary,
-  cancel-and-resubmit) MUST go through `execute_intent` — they cannot
-  bypass it through a helper. The audit log surfaces this because each
-  executed order carries the same canonical idempotency key.
+  cancel-and-resubmit) MUST go through the coordinator submit surface —
+  they cannot bypass it through a helper. The audit log surfaces this
+  because each executed order carries the same canonical idempotency key.
 
 ## 3. external integrations
 

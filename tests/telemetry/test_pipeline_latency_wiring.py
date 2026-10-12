@@ -168,8 +168,6 @@ async def test_canonical_coordinator_measures_atomic_reservation() -> None:
     coordinator = ExecutionCoordinator(
         reservation_service,
         MagicMock(),
-        MagicMock(),
-        MagicMock(),
         execution_service=execution,
         latency=timing,
     )

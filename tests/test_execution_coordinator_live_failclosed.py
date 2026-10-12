@@ -283,8 +283,6 @@ async def test_runtime_bootstrap_helper_returns_coordinator():
         coord = _build_execution_coordinator(
             pool=pool,
             positions_repo=PositionsRepo(pool),
-            order_repo=MagicMock(),
-            fills_repo=MagicMock(),
             execution_service=MagicMock(),
             funder_address="0xfunder",
         )
@@ -302,8 +300,6 @@ def test_runtime_bootstrap_helper_returns_none_without_funder():
     coord = _build_execution_coordinator(
         pool=MagicMock(),
         positions_repo=MagicMock(),
-        order_repo=MagicMock(),
-        fills_repo=MagicMock(),
         execution_service=MagicMock(),
         funder_address="",
     )

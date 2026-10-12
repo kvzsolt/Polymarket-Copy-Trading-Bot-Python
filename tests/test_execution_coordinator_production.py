@@ -96,8 +96,6 @@ def _make_coordinator(
     execution_service.execute = AsyncMock(return_value=execute_return)
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
-        orders_repo=MagicMock(),
-        fills_repo=MagicMock(),
         positions_repo=MagicMock(),
         execution_service=execution_service,
     )
@@ -396,6 +394,36 @@ async def test_submit_protective_exit_uses_protective_source():
 
     exec_request = execution_service.execute.await_args.args[0]
     assert exec_request.recovery_metadata["source"] == "protective_exit"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_idempotency_outcome_is_audited() -> None:
+    """Coordinator outcomes are audit-logged on the production funnel.
+
+    Ported from the removed V2 ``execute_intent`` audit tests: the invariant
+    (coordinator audit-logs key outcomes, and an audit-sink failure must
+    never break a submission) survives on the ``submit_*`` surface.
+    """
+    reservation = _make_reservation("res-audit")
+    coord, _reservation_service, _execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(
+            status="duplicate_ignored", accepted=True, order_id="ord-existing"
+        ),
+    )
+    audit = MagicMock()
+    coord.audit_logger = audit
+
+    result = await coord.submit_copy_trade(_intent())
+
+    assert result.skip_code == "idempotency_duplicate"
+    event_names = [call.args[0] for call in audit.log_event.call_args_list]
+    assert "coordinator_duplicate_idempotency" in event_names
+
+    # Audit sink failures must never break the funnel.
+    audit.log_event.side_effect = RuntimeError("sink down")
+    result_after_sink_failure = await coord.submit_copy_trade(_intent())
+    assert result_after_sink_failure.skip_code == "idempotency_duplicate"
 
 
 @pytest.mark.asyncio

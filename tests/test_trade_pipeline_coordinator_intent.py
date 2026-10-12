@@ -77,8 +77,6 @@ class _RecordingExecutionService:
 def _coordinator(execution_service) -> ExecutionCoordinator:
     return ExecutionCoordinator(
         reservation_service=_RecordingReservationService(),
-        orders_repo=None,
-        fills_repo=None,
         positions_repo=None,
         execution_service=execution_service,
     )

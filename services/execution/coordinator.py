@@ -4,25 +4,18 @@ from __future__ import annotations
 
 import logging
 from contextlib import nullcontext
-from inspect import isawaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Awaitable, Callable, Dict, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from domain.order_lifecycle import (
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
-    OrderLifecycleStatus,
-    classify_venue_status,
 )
 from domain.execution import ExecutionOrderType
-from integrations.polymarket.errors import (
-    RetryableVenueError,
-    TerminalVenueError,
-)
 from utils.logger import redact_error_detail
 from services.execution.reservation_service import (
     Clock,
@@ -32,23 +25,10 @@ from services.execution.reservation_service import (
     ReservationConflict,
     ReservationService,
 )
-from services.execution.state_machine import assert_transition_allowed
 from services.metrics import LatencyPhase
 from services.telemetry.latency import PipelineLatency
 
 logger = logging.getLogger(__name__)
-
-_INSUFFICIENT_BALANCE_PATTERNS = (
-    "insufficient_balance",
-    "insufficient balance",
-    "not enough balance",
-    "allowance",
-)
-
-
-def _is_insufficient_balance_error(msg: str) -> bool:
-    lower = msg.lower()
-    return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -58,8 +38,8 @@ class ExecutionIntent:
     Carries everything the coordinator needs to build a production
     ``ExecutionRequest`` and a ``services.execution.reservation_service``
     ``OrderIntent``. ``source`` drives the ``IntentReason`` mapping used by
-    the reservation key. Distinct from the V2-shaped ``OrderIntent`` consumed
-    by ``ExecutionCoordinator.execute_intent``.
+    the reservation key. Distinct from the reservation layer's share-shaped
+    ``OrderIntent`` built internally by ``_build_order_intent``.
     """
 
     user_id: str
@@ -176,62 +156,6 @@ _TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class VenueSubmitResult:
-    """Describe the immediate result of one venue submission attempt."""
-
-    order_id: str
-    status: str
-    error_msg: str = ""
-    raw: dict | None = None
-    trade_ids: list[str] | None = None
-    transactions_hashes: list[str] | None = None
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    """Describe the durable result of guarded execution."""
-
-    order_id: str
-    status: OrderLifecycleStatus
-    error: str = ""
-
-    @classmethod
-    def retryable_failed(cls, order_id: str, error: str) -> ExecutionResult:
-        """Build a retryable failure result for a request not submitted."""
-        return cls(order_id=order_id, status=OrderLifecycleStatus.RETRYABLE_FAILED, error=error)
-
-    @classmethod
-    def filled(cls, order_id: str) -> ExecutionResult:
-        """Build a filled terminal execution result."""
-        return cls(order_id=order_id, status=OrderLifecycleStatus.FILLED)
-
-    @classmethod
-    def unconfirmed(cls, order_id: str, status: OrderLifecycleStatus) -> ExecutionResult:
-        """Build a result that retains an ambiguous venue submission."""
-        return cls(order_id=order_id, status=status)
-
-
-# NOTE: The canonical CLOB venue gateway Protocol lives in
-# ``interfaces.clob_gateway.ClobGateway`` and exposes venue-shaped methods
-# (``submit_marketable_order(MarketableOrderRequest)``, ``get_order``,
-# ``get_fills``, etc.). ``OrderSubmitter`` below is a higher-level,
-# intent-shaped adapter satisfied by the execution-coordinator's binding glue;
-# do not confuse the two. See issue #66 for context.
-class OrderSubmitter(Protocol):
-    """Define the OrderSubmitter port used by application services."""
-
-    async def submit_order(self, intent: OrderIntent) -> VenueSubmitResult:
-        """Submit a validated intent and return normalized venue evidence."""
-        ...
-
-
-# Backward-compatible alias for any out-of-tree imports that referenced the
-# previous local name. New code should import ``OrderSubmitter`` directly or
-# the canonical ``interfaces.clob_gateway.ClobGateway``.
-ClobGateway = OrderSubmitter
-
-
 class Reconciler(Protocol):
     """Define the Reconciler port used by application services."""
 
@@ -262,35 +186,31 @@ class ExecutionCoordinator:
     def __init__(
         self,
         reservation_service: ReservationService,
-        orders_repo: Any,
-        fills_repo: Any,
         positions_repo: Any,
-        clob_gateway: OrderSubmitter | None = None,
         reconciler: Reconciler | None = None,
         audit_logger: AuditLogger | None = None,
         clock: Clock | None = None,
-        reconciliation_service: Any | None = None,
-        live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
         execution_service: Any | None = None,
         position_coordinator: Any | None = None,
         latency: PipelineLatency | None = None,
         copy_admission: CopyAdmission | None = None,
     ) -> None:
         self.reservation_service = reservation_service
-        self.orders_repo = orders_repo
-        self.fills_repo = fills_repo
         self.positions_repo = positions_repo
-        self.clob_gateway = clob_gateway
         self.reconciler = reconciler
         self.audit_logger = audit_logger
         # Mutable default DefaultClock() removed — Python anti-pattern. If
         # Clock ever gains state, the shared instance would silently leak
         # across constructors.
         self.clock = clock if clock is not None else DefaultClock()
-        self.reconciliation_service = reconciliation_service
-        self.live_position_fetcher = live_position_fetcher
-        # Production wrapper deps. ``execute_intent`` (V2) does not use these.
+        # Production wrapper deps used by the submit_* funnel.
         self.execution_service = execution_service
+        # A04 wiring contract: the execution coordinator is BORN with the
+        # account-owned position coordinator so the execution funnel shares
+        # the same lock map as every per-binding TradingContext (production
+        # scopes serialize via ``context.position_coordinator`` around the
+        # submit_* calls; post-construction rewiring of this attribute is
+        # forbidden).
         self.position_coordinator = position_coordinator
         self._latency = latency
         self._copy_admission = copy_admission
@@ -304,348 +224,10 @@ class ExecutionCoordinator:
             else getattr(reservation_service, "reservations_repo", None)
         )
 
-    async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
-        """V2 entry point: acquire per-scope lock, then run the execution body.
-
-        Acquires per-scope lock so concurrent V2 intents on the same
-        ``(user_id, condition_id, token_id)`` scope serialize against each
-        other and against the production wrapper paths.
-        """
-        if self.position_coordinator is None:
-            # Fail-closed in live mode: serialization is a correctness
-            # requirement, never a best-effort optimization. Two
-            # concurrent same-scope intents on the V2 path with no
-            # coordinator would race through reserve_for_intent and both
-            # POST to the venue (review finding #15). Mirror the
-            # PositionScope-import fail-closed branch below.
-            if is_live_mode(getattr(self.execution_service, "_config", None)):
-                raise RuntimeError(
-                    "ExecutionCoordinator.execute_intent: position_coordinator is None; "
-                    "refusing to bypass per-scope serialization in live mode"
-                )
-            return await self._execute_intent_locked(intent)
-        try:
-            from services.positionActionCoordinator import PositionScope
-        except Exception as exc:
-            # Fail-closed in live mode: serialization is a correctness
-            # requirement, never a best-effort optimization.
-            if is_live_mode(getattr(self.execution_service, "_config", None)):
-                raise RuntimeError(
-                    "ExecutionCoordinator.execute_intent: cannot import PositionScope; "
-                    "refusing to bypass per-scope serialization in live mode"
-                ) from exc
-            return await self._execute_intent_locked(intent)
-        scope = PositionScope(
-            user_id=intent.key.user_id,
-            condition_id=intent.key.condition_id,
-            token_id=intent.key.token_id,
-        )
-        async with self.position_coordinator.acquire(scope):
-            return await self._execute_intent_locked(intent)
-
-    async def _execute_intent_locked(self, intent: OrderIntent) -> ExecutionResult:
-        clob_gateway = self.clob_gateway
-        if clob_gateway is None:
-            raise RuntimeError("ExecutionCoordinator requires an injected CLOB gateway")
-        reservation = await self.reservation_service.reserve_for_intent(intent)
-        logger.info(
-            "coordinator.reservation_acquired reservation_id=%s key=%s side=%s",
-            reservation.id,
-            intent.key.stable_key(),
-            intent.key.side.value,
-        )
-
-        # C2: track release state so a stray exception cannot leak the
-        # reservation. ``released`` flips true on every explicit release;
-        # ``keep_reservation`` marks non-release returns (retryable / pending
-        # reconciliation) so the cleanup branch knows not to release.
-        released = False
-        keep_reservation = False
-
-        async def _release(reason: str) -> None:
-            nonlocal released
-            if released:
-                return
-            try:
-                await self.reservation_service.release_terminal(reservation.id, reason)
-            finally:
-                released = True
-
-        try:
-            try:
-                order = await self.orders_repo.create_from_intent(
-                    intent=intent,
-                    reservation_id=reservation.id,
-                    status=OrderLifecycleStatus.RESERVED,
-                )
-            except Exception as exc:
-                await _release(f"create_failed:{exc}")
-                self._log_audit(
-                    "execution_create_failed",
-                    intent,
-                    "none",
-                    reservation.id,
-                    error=str(exc),
-                )
-                raise
-
-            await self._link_reservation_order(reservation.id, order_id=order.id)
-
-            await self._transition_order(
-                order.id,
-                from_status=OrderLifecycleStatus.RESERVED,
-                to_status=OrderLifecycleStatus.SUBMITTING,
-            )
-
-            try:
-                venue_result = await clob_gateway.submit_order(intent)
-            except RetryableVenueError as exc:
-                # Issue #98: RetryableVenueError before a live venue_order_id
-                # exists means there is no durable retry owner for the
-                # reservation — leaving it locked would strand capital/shares
-                # indefinitely. Release immediately; the order stays in
-                # RETRYABLE_FAILED for telemetry/sweeper pickup.
-                await _release(f"retryable_venue_error:{exc}")
-                await self._transition_order(
-                    order.id,
-                    from_status=OrderLifecycleStatus.SUBMITTING,
-                    to_status=OrderLifecycleStatus.RETRYABLE_FAILED,
-                    metadata={"error": str(exc)},
-                )
-                self._log_audit(
-                    "execution_retryable_failed", intent, order.id, reservation.id, str(exc)
-                )
-                return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
-            except TerminalVenueError as exc:
-                await self._transition_order(
-                    order.id,
-                    from_status=OrderLifecycleStatus.SUBMITTING,
-                    to_status=OrderLifecycleStatus.TERMINAL_FAILED,
-                    metadata={"error": str(exc)},
-                )
-                await _release("terminal_failed")
-                self._log_audit(
-                    "execution_terminal_failed", intent, order.id, reservation.id, str(exc)
-                )
-                if (
-                    intent.key.side.value == "SELL"
-                    and self.reconciliation_service is not None
-                    and self.live_position_fetcher is not None
-                    and _is_insufficient_balance_error(str(exc))
-                ):
-                    await self._reconcile_drift_from_intent(intent)
-                raise
-            except Exception as exc:
-                await self._transition_order(
-                    order.id,
-                    from_status=OrderLifecycleStatus.SUBMITTING,
-                    to_status=OrderLifecycleStatus.TERMINAL_FAILED,
-                    metadata={"error": str(exc)},
-                )
-                await _release("terminal_failed")
-                self._log_audit(
-                    "execution_terminal_failed", intent, order.id, reservation.id, str(exc)
-                )
-                raise  # Reraise unknown errors, but ensure reservation is released
-
-            await self._link_reservation_order(
-                reservation.id, order_id=order.id, venue_order_id=venue_result.order_id
-            )
-
-            status = classify_venue_status(venue_result.status)
-
-            if status == OrderLifecycleStatus.FILLED:
-                fill = await self.fills_repo.persist_from_venue_result(
-                    order_id=order.id,
-                    venue_result=venue_result,
-                )
-                await self.positions_repo.upsert_position(fill)
-                await _release("filled")
-                await self._transition_order(
-                    order.id,
-                    from_status=OrderLifecycleStatus.SUBMITTING,
-                    to_status=OrderLifecycleStatus.FILLED,
-                    venue_order_id=venue_result.order_id,
-                )
-                self._log_audit(
-                    "execution_filled",
-                    intent,
-                    order.id,
-                    reservation.id,
-                    venue_order_id=venue_result.order_id,
-                )
-                return ExecutionResult.filled(order_id=order.id)
-
-            # Preserve UNKNOWN_UNCONFIRMED distinctly from ordinary submitted/live
-            # statuses. Unknown venue responses are ambiguous and must stay visible
-            # to reconciliation/telemetry instead of being collapsed into
-            # SUBMITTED_UNCONFIRMED.
-            unresolved_status = status
-
-            metadata_dict = {"raw_status": venue_result.status}
-            if venue_result.raw or venue_result.trade_ids or venue_result.transactions_hashes:
-                metadata_dict["response"] = {
-                    "raw": venue_result.raw,
-                    "trade_ids": venue_result.trade_ids,
-                    "transactions_hashes": venue_result.transactions_hashes,
-                }
-            await self._transition_order(
-                order.id,
-                from_status=OrderLifecycleStatus.SUBMITTING,
-                to_status=unresolved_status,
-                venue_order_id=venue_result.order_id,
-                metadata=metadata_dict,
-            )
-
-            if unresolved_status in {
-                OrderLifecycleStatus.CANCELLED,
-                OrderLifecycleStatus.REJECTED,
-                OrderLifecycleStatus.EXPIRED,
-                OrderLifecycleStatus.TERMINAL_FAILED,
-            }:
-                await _release(str(unresolved_status.value))
-                logger.info(
-                    "coordinator.reservation_released reservation_id=%s reason=%s",
-                    reservation.id,
-                    unresolved_status.value,
-                )
-            else:
-                # C4: reconciler may be unset in test/partial wiring contexts.
-                if self.reconciler is not None:
-                    await self.reconciler.enqueue(order.id)
-                else:
-                    logger.warning(
-                        "coordinator.reconciler_missing order_id=%s status=%s — "
-                        "reservation will remain pending without reconciliation",
-                        order.id,
-                        unresolved_status.value,
-                    )
-                keep_reservation = True
-                logger.info(
-                    "coordinator.reservation_pending reservation_id=%s "
-                    "status=%s — awaiting reconciliation",
-                    reservation.id,
-                    unresolved_status.value,
-                )
-
-            self._log_audit(
-                f"execution_{unresolved_status.value}",
-                intent,
-                order.id,
-                reservation.id,
-                venue_order_id=venue_result.order_id,
-            )
-
-            return ExecutionResult.unconfirmed(
-                order_id=order.id,
-                status=unresolved_status,
-            )
-        except BaseException:
-            # C2 safety net: any path that escapes via exception must not leak
-            # the reservation unless we explicitly chose to keep it (retryable).
-            if not released and not keep_reservation:
-                try:
-                    await self.reservation_service.release_terminal(
-                        reservation.id, "execute_intent_unexpected_failure"
-                    )
-                except Exception:
-                    logger.warning(
-                        "coordinator.cleanup_release_failed reservation_id=%s",
-                        reservation.id,
-                        exc_info=True,
-                    )
-            raise
-
-    async def _link_reservation_order(
-        self,
-        reservation_id: str,
-        *,
-        order_id: str | None = None,
-        venue_order_id: str | None = None,
-    ) -> None:
-        if getattr(self.reservation_service, "enabled", True) is False:
-            return
-        repo = getattr(self.reservation_service, "reservations_repo", None)
-        linker = getattr(repo, "link_order", None)
-        if linker is not None:
-            result = linker(reservation_id, order_id=order_id, venue_order_id=venue_order_id)
-            if isawaitable(result):
-                await result
-
-    async def _transition_order(
-        self,
-        order_id: str,
-        from_status: OrderLifecycleStatus,
-        to_status: OrderLifecycleStatus,
-        venue_order_id: str | None = None,
-        metadata: Dict[str, Any] | None = None,
-    ) -> None:
-        assert_transition_allowed(from_status, to_status)
-        await self.orders_repo.transition(
-            order_id,
-            from_status=from_status,
-            to_status=to_status,
-            venue_order_id=venue_order_id,
-            metadata=metadata,
-        )
-
-    def _log_audit(
-        self,
-        event_name: str,
-        intent: OrderIntent,
-        order_id: str,
-        reservation_id: str,
-        error: str = "",
-        venue_order_id: str = "",
-    ):
-        if self.audit_logger is None:
-            return
-        payload = {
-            "user_id": intent.key.user_id,
-            "leader_wallet": intent.key.leader_wallet,
-            "condition_id": intent.key.condition_id,
-            "token_id": intent.key.token_id,
-            "side": intent.key.side.value,
-            "intent_key": intent.key.stable_key(),
-            "order_id": order_id,
-            "reservation_id": reservation_id,
-            "venue_order_id": venue_order_id,
-            "source_signal_id": intent.source_signal_id,
-            "error": error,
-        }
-        try:
-            self.audit_logger.log_event(event_name, payload)
-        except Exception:
-            # Audit failures must never break execution.
-            logger.debug("coordinator_audit_failed event=%s", event_name, exc_info=True)
-
-    async def _reconcile_drift_from_intent(self, intent: OrderIntent) -> None:
-        try:
-            live_position_fetcher = self.live_position_fetcher
-            reconciliation_service = self.reconciliation_service
-            if live_position_fetcher is None or reconciliation_service is None:
-                return
-            user_id = intent.key.user_id
-            token_id = intent.key.token_id
-
-            async def _fetcher() -> Decimal | None:
-                return await live_position_fetcher(user_id, token_id)
-
-            await reconciliation_service.reconcile_position_drift(
-                user_id=user_id,
-                condition_id=intent.key.condition_id,
-                token_id=token_id,
-                leader_id=intent.key.leader_wallet or "",
-                live_position_fetcher=_fetcher,
-                reservation_service=self.reservation_service,
-            )
-        except Exception:
-            logger.debug("coordinator_drift_reconciliation_failed", exc_info=True)
-
     # ------------------------------------------------------------------
-    # Production wrapper around the existing ExecutionService primitive.
-    # ``execute_intent`` is the future V2 intent-shaped path; the methods
-    # below are the current production compatibility surface.
+    # Production surface around the existing ExecutionService primitive.
+    # The ``submit_*`` methods below funnel through
+    # ``_submit_with_reservation`` — the single guarded production path.
     # ------------------------------------------------------------------
     async def submit_copy_trade(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
         """Submit a copied entry through the guarded coordinator."""
@@ -939,8 +521,7 @@ class ExecutionCoordinator:
             # ack (e.g. a fully-killed FAK that returned submitted_unconfirmed)
             # is settled — and its reservation released — within the next
             # reconcile pass, rather than stranding the reservation until its
-            # TTL expires and the risk-loop reaper picks it up. Mirrors the
-            # _execute_intent_locked non-terminal path.
+            # TTL expires and the risk-loop reaper picks it up.
             if order_id and self.reconciler is not None:
                 try:
                     await self.reconciler.enqueue(order_id)

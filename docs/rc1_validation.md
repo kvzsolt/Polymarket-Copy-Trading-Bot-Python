@@ -116,7 +116,7 @@ explicit operator review because their absence breaks the RC1 release:
 
 - See `docs/known_limitations.md` for the full list — particularly
   http polling (the gamma API latency floor), the single
-  `execute_intent` entry-point invariant, and the external integration
+  coordinator submit entry-point invariant, and the external integration
   contract.
 - The Neg Risk exchange V2 readiness gate is fail-closed: operators must
   approve pUSD for BOTH the CTF and the Neg Risk exchanges before live

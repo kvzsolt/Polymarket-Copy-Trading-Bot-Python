@@ -50,8 +50,6 @@ def _make_coord(*, scope_paused: bool, exec_status: str = "submitted_unconfirmed
     )
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
-        orders_repo=MagicMock(),
-        fills_repo=MagicMock(),
         positions_repo=MagicMock(),
         execution_service=execution_service,
     )

@@ -443,8 +443,6 @@ def build_user_state(
     execution_coordinator = _build_execution_coordinator(
         pool=pool,
         positions_repo=positions_repo,
-        order_repo=order_repo,
-        fills_repo=fills_repo,
         execution_service=execution_service,
         funder_address=runtime_user.wallet.funder_address,
         config=config,
@@ -795,8 +793,6 @@ def _build_execution_coordinator(
     *,
     pool,
     positions_repo: PositionsRepo,
-    order_repo,
-    fills_repo: FillsRepo,
     execution_service: ExecutionService,
     funder_address: str,
     config: "AppConfig | None" = None,
@@ -855,8 +851,6 @@ def _build_execution_coordinator(
         )
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
-        orders_repo=order_repo,
-        fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
         position_coordinator=position_coordinator,

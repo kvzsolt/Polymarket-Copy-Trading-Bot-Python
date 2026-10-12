@@ -130,8 +130,6 @@ class TestProviderComposition:
         runtime_bootstrap._build_execution_coordinator(
             pool=Mock(),
             positions_repo=Mock(),
-            order_repo=Mock(),
-            fills_repo=Mock(),
             execution_service=Mock(),
             funder_address="0x" + "11" * 20,
             config=AppConfig(),
