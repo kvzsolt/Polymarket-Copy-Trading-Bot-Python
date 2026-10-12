@@ -123,10 +123,37 @@ class CcxtAmbiguousEvidenceSource:
         self._clock_skew = clock_skew
 
     # ------------------------------------------------------------------
+    # Account ownership (audit A01)
+    # ------------------------------------------------------------------
+    def wallet_for_user(self, user_id: str) -> str | None:
+        """Return the wallet this gateway serves for ``user_id``, if any.
+
+        The recovery service calls this before any private read to prove the
+        submission's account is served by this gateway's credentials.  A
+        foreign account resolves to ``None`` and is never scanned here.
+        """
+
+        return _text(self._wallet_for_user(user_id))
+
+    # ------------------------------------------------------------------
     # Scan
     # ------------------------------------------------------------------
     async def scan(self, submission: AmbiguousSubmission) -> AuthoritativeRecoveryScan:
         """Return one bounded, read-only evidence scan for ``submission``."""
+
+        # Ownership is verified before any private read: the gateway is
+        # authenticated for exactly the configured wallets, and enumerating
+        # private history for a submission owned by a different account would
+        # read the wrong account's fills/orders.  The token/side/time/price/
+        # size match keying cannot distinguish accounts, so a foreign scan
+        # could otherwise attach a foreign venue order id.  Fail closed.
+        if self.wallet_for_user(submission.user_id) is None:
+            logger.warning(
+                "ambiguous_evidence_account_not_served | key=%s user=%s",
+                submission.idempotency_key,
+                submission.user_id,
+            )
+            return _fail_closed_scan()
 
         token_id = _text(submission.token_id)
         condition_id = _text(submission.condition_id)

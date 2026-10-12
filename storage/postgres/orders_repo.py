@@ -166,6 +166,25 @@ class OrderSubmissionRecord:
     last_error: str | None = None
 
 
+@dataclass(frozen=True)
+class LegacyOwnershipMappingReport:
+    """Counts from the one-shot legacy-ownership mapping maintenance helper.
+
+    ``mapped`` rows received an unambiguous provenance owner; ``ambiguous``
+    rows had conflicting provenance and were skipped; ``unresolved`` rows had
+    no usable provenance and stay quarantined from automatic recovery.
+    """
+
+    orders_candidates: int = 0
+    orders_mapped: int = 0
+    orders_ambiguous: int = 0
+    orders_unresolved: int = 0
+    trades_candidates: int = 0
+    trades_mapped: int = 0
+    trades_ambiguous: int = 0
+    trades_unresolved: int = 0
+
+
 def _affected(status: str) -> int:
     if not status:
         return 0
@@ -235,6 +254,46 @@ def _bounded_positive(value: int, *, field: str, maximum: int) -> int:
     if not 1 <= parsed <= maximum:
         raise ValueError(f"{field} must be between 1 and {maximum}")
     return parsed
+
+
+def _row_to_ambiguous_submission(row: Any) -> AmbiguousSubmission:
+    """Build the immutable recovery identity from one persisted order row.
+
+    Raises ``ValueError``/``TypeError`` for rows whose identity cannot be
+    represented (blank ``user_id``, undated submission); callers quarantine
+    such rows with a logged reason instead of processing them.
+    """
+
+    request = _parse_jsonb(row["request_json"])
+    response = _parse_jsonb(row["response_json"])
+    submitted_at = (
+        _utc_datetime(response.get("pending_since"))
+        or _utc_datetime(row["created_at"])
+        or _utc_datetime(row["updated_at"])
+    )
+    if submitted_at is None:
+        # Fail closed: an undated lost-POST row cannot satisfy a grace period
+        # and must stay duplicate-blocking for operator review.
+        raise ValueError("submission timestamp unavailable")
+    raw_side = str(request.get("side") or "").strip().upper()
+    side = (
+        SubmissionSide(raw_side)
+        if raw_side in {SubmissionSide.BUY.value, SubmissionSide.SELL.value}
+        else SubmissionSide.UNKNOWN
+    )
+    return AmbiguousSubmission(
+        idempotency_key=str(row["idempotency_key"]),
+        user_id=str(row["user_id"]),
+        leader_id=(str(row["leader_id"]) if row["leader_id"] is not None else None),
+        token_id=(str(request["token_id"]) if request.get("token_id") is not None else None),
+        condition_id=(
+            str(request["condition_id"]) if request.get("condition_id") is not None else None
+        ),
+        side=side,
+        amount=_optional_decimal(request.get("amount")),
+        price_limit=_optional_decimal(request.get("price_limit")),
+        submitted_at=submitted_at,
+    )
 
 
 class OrdersRepo(AbstractOrderRepository):
@@ -654,17 +713,28 @@ class OrdersRepo(AbstractOrderRepository):
     async def list_no_id_ambiguous_submissions(
         self,
         *,
+        user_id: str,
         limit: int,
     ) -> list[AmbiguousSubmission]:
-        """Return a bounded oldest-first batch of unresolved lost-POST rows.
+        """Return a bounded oldest-first batch of one account's lost-POST rows.
 
         Only ``submitted_unconfirmed`` rows without a venue identity qualify.
-        No age predicate is applied here: the constructor-injected recovery
-        clock owns the grace-period decision, which keeps that behavior fully
-        deterministic in tests.  ``LIMIT`` still bounds the database and
-        in-memory work for every recovery cycle.
+        The ``user_id`` predicate is mandatory and applied BEFORE ``LIMIT`` so
+        one account's recovery batch is structurally scoped to its own rows:
+        with N follower accounts, N recovery loops can never race over the
+        same batch.  Legacy rows with a blank/NULL ``user_id`` are excluded
+        by the same predicate and counted once per call into a logged
+        quarantine reason pending provenance mapping
+        (``map_legacy_unowned_rows_to_provenance_owners``).  No age predicate
+        is applied here: the constructor-injected recovery clock owns the
+        grace-period decision, which keeps that behavior fully deterministic
+        in tests.  ``LIMIT`` still bounds the database and in-memory work for
+        every recovery cycle.
         """
 
+        owner = str(user_id).strip()
+        if not owner:
+            raise ValueError("user_id is required to scope ambiguous recovery")
         bounded_limit = _bounded_positive(
             limit,
             field="limit",
@@ -680,59 +750,47 @@ class OrdersRepo(AbstractOrderRepository):
                 FROM orders
                 WHERE status = 'submitted_unconfirmed'
                   AND order_id IS NULL
+                  AND user_id = $1
                 ORDER BY created_at ASC, idempotency_key ASC
-                LIMIT $1
+                LIMIT $2
                 """,
+                owner,
                 bounded_limit,
+            )
+            quarantined_legacy = await conn.fetchval(
+                """
+                SELECT count(*) FROM orders
+                WHERE status = 'submitted_unconfirmed'
+                  AND order_id IS NULL
+                  AND COALESCE(user_id, '') = ''
+                """
+            )
+        if quarantined_legacy:
+            logger.warning(
+                "ambiguous_recovery_legacy_rows_quarantined | count=%d "
+                "reason=blank_user_id pending=provenance_mapping",
+                int(quarantined_legacy),
             )
 
         submissions: list[AmbiguousSubmission] = []
         for row in rows:
-            request = _parse_jsonb(row["request_json"])
-            response = _parse_jsonb(row["response_json"])
-            submitted_at = (
-                _utc_datetime(response.get("pending_since"))
-                or _utc_datetime(row["created_at"])
-                or _utc_datetime(row["updated_at"])
-            )
-            if submitted_at is None:
-                # Fail closed: an undated lost-POST row cannot satisfy a grace
-                # period and must stay duplicate-blocking for operator review.
+            try:
+                submissions.append(_row_to_ambiguous_submission(row))
+            except (TypeError, ValueError) as exc:
+                # Quarantine a malformed legacy row (e.g. blank ``user_id``)
+                # instead of letting it poison the whole batch: the row keeps
+                # blocking duplicates while the reason stays countable.
                 logger.error(
-                    "ambiguous recovery skipped undated order row key=%s",
+                    "ambiguous_recovery_row_quarantined | key=%s reason=%s",
                     row["idempotency_key"],
+                    type(exc).__name__,
                 )
-                continue
-            raw_side = str(request.get("side") or "").strip().upper()
-            side = (
-                SubmissionSide(raw_side)
-                if raw_side in {SubmissionSide.BUY.value, SubmissionSide.SELL.value}
-                else SubmissionSide.UNKNOWN
-            )
-            submissions.append(
-                AmbiguousSubmission(
-                    idempotency_key=str(row["idempotency_key"]),
-                    user_id=str(row["user_id"]),
-                    leader_id=(str(row["leader_id"]) if row["leader_id"] is not None else None),
-                    token_id=(
-                        str(request["token_id"]) if request.get("token_id") is not None else None
-                    ),
-                    condition_id=(
-                        str(request["condition_id"])
-                        if request.get("condition_id") is not None
-                        else None
-                    ),
-                    side=side,
-                    amount=_optional_decimal(request.get("amount")),
-                    price_limit=_optional_decimal(request.get("price_limit")),
-                    submitted_at=submitted_at,
-                )
-            )
         return submissions
 
     async def record_ambiguous_scan_evidence(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         scan: AuthoritativeRecoveryScan,
         observed_at: datetime,
@@ -746,8 +804,16 @@ class OrdersRepo(AbstractOrderRepository):
         incomplete or contradictory scan resets the counter to zero.  The
         counter saturates at the configured requirement and the retained scan
         tail is bounded independently, preventing response JSON growth.
+
+        The statement compare-and-sets on the account identity: a scan
+        recorded by any other account's recovery loop finds no row and is a
+        complete no-op, so a foreign account's incomplete scan can never
+        reset the owning account's absence proof.
         """
 
+        owner = str(user_id).strip()
+        if not owner:
+            raise ValueError("user_id is required to record ambiguous scan evidence")
         required = _bounded_positive(
             required_scan_count,
             field="required_scan_count",
@@ -768,11 +834,13 @@ class OrdersRepo(AbstractOrderRepository):
                     SELECT response_json
                     FROM orders
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     FOR UPDATE
                     """,
                     idempotency_key,
+                    owner,
                 )
                 if row is None:
                     return None
@@ -821,13 +889,15 @@ class OrdersRepo(AbstractOrderRepository):
                 status = await conn.execute(
                     """
                     UPDATE orders
-                    SET response_json = $2::jsonb,
+                    SET response_json = $3::jsonb,
                         updated_at = now()
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     """,
                     idempotency_key,
+                    owner,
                     _json_str(response) or "{}",
                 )
                 if _affected(status) != 1:
@@ -841,6 +911,7 @@ class OrdersRepo(AbstractOrderRepository):
     async def attach_recovered_venue_order_id(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         venue_order_id: str,
         source: RecoveryMatchSource,
@@ -850,9 +921,16 @@ class OrdersRepo(AbstractOrderRepository):
 
         The row remains ``submitted_unconfirmed`` so normal order-id-based
         reconciliation, rather than this recovery service, determines fills
-        and terminal status.  A concurrent resolution causes a no-op.
+        and terminal status.  A concurrent resolution causes a no-op.  The
+        compare-and-set includes the account identity: an identity recovered
+        from one account's private history can only ever be attached to that
+        same account's row, making cross-account attachment structurally
+        impossible at the persistence layer.
         """
 
+        owner = str(user_id).strip()
+        if not owner:
+            raise ValueError("user_id is required to attach a recovered identity")
         order_id = str(venue_order_id).strip()
         if not order_id:
             raise ValueError("venue_order_id is required")
@@ -868,11 +946,13 @@ class OrdersRepo(AbstractOrderRepository):
                     SELECT response_json
                     FROM orders
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     FOR UPDATE
                     """,
                     idempotency_key,
+                    owner,
                 )
                 if row is None:
                     return False
@@ -898,15 +978,17 @@ class OrdersRepo(AbstractOrderRepository):
                 returned = await conn.fetchval(
                     """
                     UPDATE orders
-                    SET order_id = $2,
-                        response_json = $3::jsonb,
+                    SET order_id = $3,
+                        response_json = $4::jsonb,
                         updated_at = now()
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     RETURNING idempotency_key
                     """,
                     idempotency_key,
+                    owner,
                     order_id,
                     _json_str(response) or "{}",
                 )
@@ -915,6 +997,7 @@ class OrdersRepo(AbstractOrderRepository):
     async def mark_ambiguous_submission_confirmed_absent(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         required_scan_count: int,
         confirmed_at: datetime,
@@ -923,9 +1006,14 @@ class OrdersRepo(AbstractOrderRepository):
 
         The threshold and latest qualifying evidence are checked while holding
         the row lock, so a concurrent scan, recovered venue identity, or status
-        transition cannot race an unsafe ``confirmed_absent`` update.
+        transition cannot race an unsafe ``confirmed_absent`` update.  The
+        compare-and-set also carries the account identity, so only the owning
+        account's recovery loop can resolve its own row.
         """
 
+        owner = str(user_id).strip()
+        if not owner:
+            raise ValueError("user_id is required to confirm an ambiguous absence")
         required = _bounded_positive(
             required_scan_count,
             field="required_scan_count",
@@ -941,11 +1029,13 @@ class OrdersRepo(AbstractOrderRepository):
                     SELECT response_json
                     FROM orders
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     FOR UPDATE
                     """,
                     idempotency_key,
+                    owner,
                 )
                 if row is None:
                     return False
@@ -986,14 +1076,16 @@ class OrdersRepo(AbstractOrderRepository):
                     """
                     UPDATE orders
                     SET status = 'confirmed_absent',
-                        response_json = $2::jsonb,
+                        response_json = $3::jsonb,
                         updated_at = now()
                     WHERE idempotency_key = $1
+                      AND user_id = $2
                       AND status = 'submitted_unconfirmed'
                       AND order_id IS NULL
                     RETURNING idempotency_key
                     """,
                     idempotency_key,
+                    owner,
                     _json_str(response) or "{}",
                 )
         return returned is not None
@@ -1383,24 +1475,10 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
-        """Return unconfirmed buys."""
-        cutoff = time.time() - max_age_seconds
-        query = """
-                SELECT trade_key, user_id, leader_id, tx_hash, asset,
-                       condition_id, order_id, processed_at
-                FROM processed_trades
-                WHERE status = ANY($2::text[])
-                  AND side = 'BUY'
-                  AND (order_id IS NOT NULL OR processed_at <= $1)
-        """
-        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
-        if user_id:
-            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
-            params.append(user_id)
-        query += " ORDER BY processed_at ASC"
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(query, *params)
-        return [dict(r) for r in rows]
+        """Return unconfirmed buys for one account's pending set."""
+        return await self._unconfirmed_processed_trades(
+            side="BUY", max_age_seconds=max_age_seconds, user_id=user_id
+        )
 
     async def get_unconfirmed_sells(
         self,
@@ -1408,24 +1486,210 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
-        """Return unconfirmed sells."""
+        """Return unconfirmed sells for one account's pending set."""
+        return await self._unconfirmed_processed_trades(
+            side="SELL", max_age_seconds=max_age_seconds, user_id=user_id
+        )
+
+    async def _unconfirmed_processed_trades(
+        self,
+        *,
+        side: str,
+        max_age_seconds: float,
+        user_id: str | None,
+    ) -> list[dict]:
+        """List one account's unconfirmed processed trades.
+
+        Audit A01: when ``user_id`` is provided the scope is a strict
+        equality predicate.  Legacy NULL/''-user rows are NOT unioned into
+        every user's pending set; they are excluded and counted into a
+        logged quarantine reason pending the one-shot provenance mapping
+        helper (``map_legacy_unowned_rows_to_provenance_owners``).
+        """
+
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
                        condition_id, order_id, processed_at
                 FROM processed_trades
                 WHERE status = ANY($2::text[])
-                  AND side = 'SELL'
+                  AND side = $3
                   AND (order_id IS NOT NULL OR processed_at <= $1)
         """
-        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
+        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES), side]
+        scoped_owner: str | None = None
         if user_id:
-            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
-            params.append(user_id)
+            scoped_owner = str(user_id).strip()
+            query += f" AND user_id = ${len(params) + 1}"
+            params.append(scoped_owner)
         query += " ORDER BY processed_at ASC"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
+            if scoped_owner:
+                quarantined_legacy = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM processed_trades
+                    WHERE status = ANY($1::text[])
+                      AND side = $2
+                      AND (order_id IS NOT NULL OR processed_at <= $3)
+                      AND COALESCE(user_id, '') = ''
+                    """,
+                    list(_UNCONFIRMED_SUBMISSION_STATES),
+                    side,
+                    cutoff,
+                )
+                if quarantined_legacy:
+                    logger.warning(
+                        "unconfirmed_trades_legacy_rows_quarantined | side=%s count=%d "
+                        "reason=blank_user_id pending=provenance_mapping",
+                        side,
+                        int(quarantined_legacy),
+                    )
         return [dict(r) for r in rows]
+
+    async def map_legacy_unowned_rows_to_provenance_owners(
+        self,
+        *,
+        apply: bool = False,
+    ) -> LegacyOwnershipMappingReport:
+        """One-shot maintenance mapping of legacy unowned rows to their owners.
+
+        Audit A01 quarantines blank/NULL-``user_id`` rows from automatic
+        recovery instead of guessing an owner.  This explicit maintenance
+        helper resolves owners ONLY from durable provenance, and ONLY when
+        every provenance source agrees:
+
+        * ``orders`` rows: the persisted ``request_json->>'user_id'`` and the
+          owner of the reservation named by
+          ``request_json->'recovery_metadata'->>'reservation_id'`` (when
+          present).  Disagreement or absence leaves the row quarantined.
+        * ``processed_trades`` rows: the owning account of the single
+          ``orders`` row sharing the trade's ``order_id``.
+
+        With ``apply=False`` (default) nothing is written; the returned
+        report counts what a subsequent ``apply=True`` call would map, skip
+        as ambiguous, or leave unresolved.  Updates are compare-and-set on
+        ``COALESCE(user_id, '') = ''`` so a concurrently written owner is
+        never overwritten.  This is deliberately NOT wired into any runtime
+        loop: an operator decides when (and whether) to run it.
+        """
+
+        orders_candidates = orders_mapped = orders_ambiguous = orders_unresolved = 0
+        trades_candidates = trades_mapped = trades_ambiguous = trades_unresolved = 0
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                legacy_orders = await conn.fetch(
+                    """
+                    SELECT idempotency_key,
+                           COALESCE(request_json->>'user_id', '') AS request_user_id,
+                           COALESCE(
+                               request_json->'recovery_metadata'->>'reservation_id', ''
+                           ) AS reservation_id
+                    FROM orders
+                    WHERE COALESCE(user_id, '') = ''
+                    ORDER BY created_at ASC
+                    """
+                )
+                for row in legacy_orders:
+                    orders_candidates += 1
+                    request_owner = str(row["request_user_id"] or "").strip()
+                    reservation_owner: str | None = None
+                    reservation_id = str(row["reservation_id"] or "").strip()
+                    if reservation_id:
+                        reservation_owner = await conn.fetchval(
+                            """
+                            SELECT COALESCE(user_id, '') FROM order_reservations
+                            WHERE id = $1
+                            """,
+                            reservation_id,
+                        )
+                        reservation_owner = str(reservation_owner or "").strip() or None
+                    owners = {
+                        owner for owner in (request_owner or None, reservation_owner) if owner
+                    }
+                    if len(owners) > 1:
+                        orders_ambiguous += 1
+                        continue
+                    if not owners:
+                        orders_unresolved += 1
+                        continue
+                    owner = owners.pop()
+                    if apply:
+                        status = await conn.execute(
+                            """
+                            UPDATE orders
+                            SET user_id = $2, updated_at = now()
+                            WHERE idempotency_key = $1
+                              AND COALESCE(user_id, '') = ''
+                            """,
+                            row["idempotency_key"],
+                            owner,
+                        )
+                        if _affected(status) == 1:
+                            orders_mapped += 1
+                    else:
+                        orders_mapped += 1
+
+                legacy_trades = await conn.fetch(
+                    """
+                    SELECT trade_key, order_id
+                    FROM processed_trades
+                    WHERE COALESCE(user_id, '') = ''
+                    ORDER BY processed_at ASC
+                    """
+                )
+                for row in legacy_trades:
+                    trades_candidates += 1
+                    order_id = row["order_id"]
+                    if not order_id:
+                        trades_unresolved += 1
+                        continue
+                    owner_rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT user_id FROM orders
+                        WHERE order_id = $1 AND COALESCE(user_id, '') <> ''
+                        """,
+                        order_id,
+                    )
+                    owners = {
+                        str(record["user_id"]).strip()
+                        for record in owner_rows
+                        if str(record["user_id"] or "").strip()
+                    }
+                    if len(owners) > 1:
+                        trades_ambiguous += 1
+                        continue
+                    if not owners:
+                        trades_unresolved += 1
+                        continue
+                    owner = owners.pop()
+                    if apply:
+                        status = await conn.execute(
+                            """
+                            UPDATE processed_trades
+                            SET user_id = $2
+                            WHERE trade_key = $1
+                              AND COALESCE(user_id, '') = ''
+                            """,
+                            row["trade_key"],
+                            owner,
+                        )
+                        if _affected(status) == 1:
+                            trades_mapped += 1
+                    else:
+                        trades_mapped += 1
+
+        return LegacyOwnershipMappingReport(
+            orders_candidates=orders_candidates,
+            orders_mapped=orders_mapped,
+            orders_ambiguous=orders_ambiguous,
+            orders_unresolved=orders_unresolved,
+            trades_candidates=trades_candidates,
+            trades_mapped=trades_mapped,
+            trades_ambiguous=trades_ambiguous,
+            trades_unresolved=trades_unresolved,
+        )
 
     async def has_recent_processed_trade(
         self,

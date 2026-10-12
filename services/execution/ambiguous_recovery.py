@@ -54,6 +54,10 @@ class RecoveryDisposition(StrEnum):
     INCONCLUSIVE = "inconclusive"
     CONFIRMED_ABSENT = "confirmed_absent"
     STALE_RECORD = "stale_record"
+    # The submission belongs to a different account than this service, or the
+    # evidence gateway cannot prove it serves the submission's account.  The
+    # row is a complete no-op: no private read, no attach, no proof mutation.
+    ACCOUNT_MISMATCH = "account_mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +220,16 @@ class AmbiguousSubmissionEvidenceSource(Protocol):
     and balances.  They must never submit, cancel, or otherwise mutate a venue.
     """
 
+    def wallet_for_user(self, user_id: str) -> str | None:
+        """Return the wallet this source's gateway serves for ``user_id``.
+
+        ``None`` means the submission's account is not served by this
+        gateway, so any private history collected here would belong to a
+        different account and can never be valid evidence.
+        """
+
+        ...
+
     async def scan(self, submission: AmbiguousSubmission) -> AuthoritativeRecoveryScan:
         """Return one bounded scan for ``submission``."""
 
@@ -223,18 +237,26 @@ class AmbiguousSubmissionEvidenceSource(Protocol):
 
 
 class AmbiguousSubmissionRepository(Protocol):
-    """Guarded persistence operations required by recovery."""
+    """Guarded persistence operations required by recovery.
+
+    Every operation carries the caller's ``user_id`` and must be a no-op when
+    it does not match the row's owner: batches are scoped by account before
+    the bound is applied, and mutations compare-and-set on the account
+    identity so one account's recovery can never touch another account's
+    rows or absence proof.
+    """
 
     async def list_no_id_ambiguous_submissions(
-        self, *, limit: int
+        self, *, user_id: str, limit: int
     ) -> Sequence[AmbiguousSubmission]:
-        """List at most ``limit`` no-ID ``submitted_unconfirmed`` rows."""
+        """List at most ``limit`` no-ID rows owned by ``user_id``."""
 
         ...
 
     async def record_ambiguous_scan_evidence(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         scan: AuthoritativeRecoveryScan,
         observed_at: datetime,
@@ -248,6 +270,7 @@ class AmbiguousSubmissionRepository(Protocol):
     async def attach_recovered_venue_order_id(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         venue_order_id: str,
         source: RecoveryMatchSource,
@@ -260,6 +283,7 @@ class AmbiguousSubmissionRepository(Protocol):
     async def mark_ambiguous_submission_confirmed_absent(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         required_scan_count: int,
         confirmed_at: datetime,
@@ -276,6 +300,12 @@ class AmbiguousSubmissionRecoveryService:
     A scan failure propagates and leaves the persisted row unchanged and
     duplicate-blocking.  Incomplete or contradictory scans reset consecutive
     absence progress and likewise keep the row blocking.
+
+    The service owns exactly one account (``account_user_id``).  A submission
+    from any other account — or one whose account wallet cannot be proven to
+    be served by the injected evidence gateway — is rejected before any
+    private read or persistence mutation, so with N follower accounts each
+    recovery loop can only ever see, scan, and resolve its own rows.
     """
 
     def __init__(
@@ -283,12 +313,19 @@ class AmbiguousSubmissionRecoveryService:
         *,
         repository: AmbiguousSubmissionRepository,
         evidence_source: AmbiguousSubmissionEvidenceSource,
+        account_user_id: str,
+        account_wallet: str | None = None,
         clock: Clock | None = None,
         grace_period: timedelta = timedelta(minutes=2),
         required_absence_scans: int = 3,
         batch_size: int = 100,
         evidence_history_limit: int = 8,
     ) -> None:
+        owner = str(account_user_id).strip()
+        if not owner:
+            raise ValueError("account_user_id is required")
+        if account_wallet is not None and not str(account_wallet).strip():
+            raise ValueError("account_wallet must be a non-empty address when provided")
         if grace_period < timedelta(0):
             raise ValueError("grace_period cannot be negative")
         if not 1 <= required_absence_scans <= _MAX_REQUIRED_ABSENCE_SCANS:
@@ -304,6 +341,8 @@ class AmbiguousSubmissionRecoveryService:
 
         self._repository = repository
         self._evidence_source = evidence_source
+        self._account_user_id = owner
+        self._account_wallet = str(account_wallet).strip() if account_wallet is not None else None
         self._clock = clock if clock is not None else SystemClock()
         self._grace_period = grace_period
         self._required_absence_scans = int(required_absence_scans)
@@ -318,7 +357,8 @@ class AmbiguousSubmissionRecoveryService:
             raise ValueError("Clock.now() must return a timezone-aware datetime")
         now = now.astimezone(timezone.utc)
         submissions = await self._repository.list_no_id_ambiguous_submissions(
-            limit=self._batch_size
+            user_id=self._account_user_id,
+            limit=self._batch_size,
         )
         results: list[AmbiguousRecoveryResult] = []
         for submission in submissions:
@@ -331,12 +371,16 @@ class AmbiguousSubmissionRecoveryService:
         *,
         now: datetime,
     ) -> AmbiguousRecoveryResult:
+        if not self._evidence_serves_submission(submission):
+            return self._result(submission, RecoveryDisposition.ACCOUNT_MISMATCH)
+
         if now - submission.submitted_at < self._grace_period:
             return self._result(submission, RecoveryDisposition.WAITING_FOR_GRACE)
 
         scan = await self._evidence_source.scan(submission)
         if scan.match is not None:
             attached = await self._repository.attach_recovered_venue_order_id(
+                user_id=self._account_user_id,
                 idempotency_key=submission.idempotency_key,
                 venue_order_id=scan.match.venue_order_id,
                 source=scan.match.source,
@@ -353,6 +397,7 @@ class AmbiguousSubmissionRecoveryService:
             )
 
         progress = await self._repository.record_ambiguous_scan_evidence(
+            user_id=self._account_user_id,
             idempotency_key=submission.idempotency_key,
             scan=scan,
             observed_at=now,
@@ -377,6 +422,7 @@ class AmbiguousSubmissionRecoveryService:
             )
 
         resolved = await self._repository.mark_ambiguous_submission_confirmed_absent(
+            user_id=self._account_user_id,
             idempotency_key=submission.idempotency_key,
             required_scan_count=self._required_absence_scans,
             confirmed_at=now,
@@ -390,6 +436,28 @@ class AmbiguousSubmissionRecoveryService:
             ),
             consecutive=progress.consecutive_complete_absence_scans,
         )
+
+    def _evidence_serves_submission(self, submission: AmbiguousSubmission) -> bool:
+        """Whether this account's gateway provably owns the submission.
+
+        Two independent facts must hold before any private read: the
+        submission belongs to this service's account, and the evidence
+        gateway resolves the submission's account to the wallet this service
+        was wired for.  An evidence source that cannot declare wallets at
+        all fails closed (no wallet, no scan).
+        """
+
+        if submission.user_id != self._account_user_id:
+            return False
+        resolver = getattr(self._evidence_source, "wallet_for_user", None)
+        if not callable(resolver):
+            return False
+        wallet = resolver(submission.user_id)
+        if wallet is None:
+            return False
+        if self._account_wallet is not None and wallet != self._account_wallet:
+            return False
+        return True
 
     @staticmethod
     def _result(

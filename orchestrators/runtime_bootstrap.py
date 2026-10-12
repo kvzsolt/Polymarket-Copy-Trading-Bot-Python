@@ -641,6 +641,11 @@ def _build_ambiguous_recovery_service(
     return AmbiguousSubmissionRecoveryService(
         repository=orders_repo,
         evidence_source=evidence_source,
+        # Audit A01: the service is account-scoped end to end.  Its batch,
+        # scans, attaches, and absence proofs can only ever touch this
+        # user's rows; any other account's submission fails closed.
+        account_user_id=user_id,
+        account_wallet=funder_address,
         grace_period=timedelta(seconds=float(getattr(recovery_cfg, "grace_seconds", 120.0) or 0.0)),
         required_absence_scans=int(getattr(recovery_cfg, "required_absence_scans", 3) or 3),
         batch_size=int(getattr(recovery_cfg, "batch_size", 100) or 100),
