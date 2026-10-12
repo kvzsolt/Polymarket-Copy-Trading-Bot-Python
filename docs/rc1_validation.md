@@ -22,7 +22,7 @@ The validation contract below is enforced by `scripts/rc1_check.sh`, which:
 3. Runs the forbid scans: legacy `services.price_cache`,
    `PositionPriceCache`, `MarketMetaService`; plus the unguarded
    `execution_service.execute` alias scan (the single permitted call site
-   is `services/execution/coordinator.py`, which is deny-list-exempt
+   is `src/pmcopy/services/execution/coordinator.py`, which is deny-list-exempt
    because it carries the `execution_coordinator_missing` guard).
 4. Runs the doctor live readiness gate (`doctor --live`) when `PRIVATE_KEY`
    and `FUNDER_ADDRESS` are exported.
@@ -31,7 +31,7 @@ The validation contract below is enforced by `scripts/rc1_check.sh`, which:
 
 ### Phase 1 — Bytecode verification
 ```bash
-python -m compileall -q app.py bot_cli clients orchestrators services cache domain integrations interfaces storage utils
+python -m compileall -q src/pmcopy/app.py src/pmcopy/bot_cli src/pmcopy/clients src/pmcopy/orchestrators src/pmcopy/services src/pmcopy/cache src/pmcopy/domain src/pmcopy/integrations src/pmcopy/interfaces src/pmcopy/storage src/pmcopy/utils
 ```
 **Expected:** no output, exit 0. Syntax errors will surface here before
 `pytest` does. Catches a partial edit that imports cleanly but doesn't
@@ -60,7 +60,7 @@ The production Python source must NOT contain:
 Run:
 
 ```bash
-archs=(app.py bot_cli clients orchestrators services cache domain integrations interfaces storage utils config)
+archs=(src/pmcopy/app.py src/pmcopy/bot_cli src/pmcopy/clients src/pmcopy/orchestrators src/pmcopy/services src/pmcopy/cache src/pmcopy/domain src/pmcopy/integrations src/pmcopy/interfaces src/pmcopy/storage src/pmcopy/utils src/pmcopy/config)
 for substr in services.price_cache PositionPriceCache MarketMetaService; do
     if grep -RIn --include='*.py' "$substr" "${archs[@]}" >/dev/null 2>&1; then
         echo "FAIL forbidden substring still present: $substr"
@@ -72,7 +72,7 @@ done
 ```
 
 Plus the **unguarded execution_service.execute scan**: outside
-`services/execution/coordinator.py`, any production file containing
+`src/pmcopy/services/execution/coordinator.py`, any production file containing
 `execution_service.execute`, `getattr(execution_service, "execute"`,
 or `getattr(execution_service, 'execute'` MUST also contain the literal
 `execution_coordinator_missing` token (the guard presence string). The
@@ -106,7 +106,7 @@ explicit operator review because their absence breaks the RC1 release:
 - `docs/live_runbook.md`, `docs/emergency_shutdown.md`,
   `docs/recovery_playbook.md`, `docs/known_limitations.md`,
   `docs/rc1_validation.md`, `docs/runbooks/rollback.md` — must exist.
-- The doctor module (`bot_cli/commands/doctor.py`) and the
+- The doctor module (`src/pmcopy/bot_cli/commands/doctor.py`) and the
   `_run_doctor_checks` entry must remain coroutine-shaped and the
   live-mode invocation must short-circuit before `build_app` (the
   startup ordering test in `tests/test_doctor_app_startup.py` pins this

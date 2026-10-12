@@ -37,8 +37,6 @@ pmcopy = "pmcopy.bot_cli.main:main"
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-
 [tool.setuptools.package-data]
 "pmcopy.storage.postgres" = ["migrations/*.sql"]
 "pmcopy.config" = [
@@ -53,10 +51,6 @@ where = ["src"]
 include = ["pmcopy*"]
 exclude = ["tests*", "legacy*"]
 namespaces = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
 
 [tool.pyright]
 # LSP/type-check config: resolve imports against the project venv (Python 3.14).
