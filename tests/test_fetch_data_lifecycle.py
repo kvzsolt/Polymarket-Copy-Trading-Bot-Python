@@ -20,7 +20,7 @@ async def test_app_main_closes_shared_session_on_early_return(
     """Startup-policy injection preserves cleanup after an early return."""
     import pmcopy.app as app_module
 
-    async def _early_return(_clients, *, startup_policy=None):
+    async def _early_return(_clients, *, startup_policy=None, copier=None):
         assert startup_policy is not None
         assert startup_policy.auto_trader is False
         fetchData._get_http_client()

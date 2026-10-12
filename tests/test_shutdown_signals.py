@@ -43,7 +43,7 @@ class ShutdownScenario:
             stop=AsyncMock(side_effect=self.runtime._on_disconnected)
         )
 
-    async def run(self, *, auto_trader: bool = False) -> int:
+    async def run(self, *, auto_trader: bool = False, copier: str | None = None) -> int:
         """Interrupt once in normal operation and again during cleanup."""
         loop = asyncio.get_running_loop()
         handler = signal.getsignal(self.first_signal)
@@ -132,7 +132,7 @@ def test_cli_drains_remaining_tasks_before_restoring_signal_handlers(
     completed: list[str] = []
     original_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
-    async def application(*, auto_trader: bool) -> int:
+    async def application(*, auto_trader: bool, copier: str | None = None) -> int:
         started = asyncio.Event()
 
         async def pending_network_operation() -> None:
@@ -167,7 +167,7 @@ def test_cli_preserves_application_failure_and_restores_handlers(
     """An application failure must not be reported as an operator-requested exit."""
     original_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
-    async def failed_application(*, auto_trader: bool) -> int:
+    async def failed_application(*, auto_trader: bool, copier: str | None = None) -> int:
         raise RuntimeError("test application failed")
 
     monkeypatch.setattr(app, "main", failed_application)

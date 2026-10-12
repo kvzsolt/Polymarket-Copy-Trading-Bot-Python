@@ -1,7 +1,14 @@
-# Example schema v2 copiers roster — multi-copier configuration (Task 22).
-#
-# Enable by pointing app.copiers_config_file at a copy of this file, e.g. in
-# secrets.env:  PMCOPY__APP__COPIERS_CONFIG_FILE=/path/to/copiers.yml
+# Configuration guide — schema v2 multi-copier roster (Task 22).
+# Purpose: declare every copier account, its wallet secret references, quote
+# limits, and explicit follow whitelists in one versioned file.
+# Options: enable by pointing app.copiers_config_file at a copy of this file
+# (e.g. PMCOPY__APP__COPIERS_CONFIG_FILE in secrets.env); ids are stable
+# persisted account identities; sizing.mode is fixed (quote_amount per order)
+# or proportional (leader_share fraction of leader notional).
+# Trade-offs: one roster file is authoritative — legacy PMCOPY__WALLET__*
+# single-account values are ignored while it is set and combining it with
+# app.multi_user_config_file is an error; every copier must declare the same
+# process-wide mode as execution.trading_mode.
 #
 # SECURITY MODEL
 #   - wallet fields are environment-variable NAMES (references), never values.
@@ -17,16 +24,13 @@
 #   - Strict booleans: true/false only ("yes"/"1" are rejected).
 #   - Money is exact decimal text; quoting is optional because the loader
 #     reads every scalar as text (5.00 and "5.00" are identical and exact).
-#   - One process-wide mode: every copier's mode must equal
-#     execution.trading_mode (paper|live); mixed modes are rejected.
-#   - ids are the persisted account identity ([A-Za-z0-9][A-Za-z0-9._-]{0,63},
-#     not "default"); renaming a copier starts a NEW empty ledger.
+#   - ids match [A-Za-z0-9][A-Za-z0-9._-]{0,63} and never "default"; renaming
+#     a copier starts a NEW empty ledger.
 #   - Duplicate copier ids, duplicate resolved wallet addresses, and duplicate
 #     leaders within one copier are rejected.
 #   - follows is an explicit whitelist (empty = no new copied entries while
-#     monitoring/protection continues). sizing.mode fixed uses quote_amount
-#     (<= limits.max_order_quote); proportional uses leader_share (a FRACTION
-#     of leader notional: 0.07 = 7%, bounded 0 < x <= 1).
+#     monitoring/protection continues). fixed quote_amount must be <=
+#     limits.max_order_quote; proportional leader_share is bounded 0 < x <= 1.
 #   - enabled: false validates the copier but does not start it (no lease, no
 #     routing, and its secret references are not demanded).
 #

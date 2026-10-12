@@ -427,9 +427,8 @@ async def run_doctor_checks(
         # load (structure, identities, modes, and live secret presence).
         # Loader errors are already secret-safe: they name variables, not
         # values.
-        copiers_file = bool(
-            (getattr(config, "app", None) and getattr(config.app, "copiers_config_file", "") or "").strip()
-        )
+        app_settings = getattr(config, "app", None)
+        copiers_file = str(getattr(app_settings, "copiers_config_file", "") or "").strip()
         if copiers_file:
             try:
                 from pmcopy.services.multiUserConfig import load_runtime_users
