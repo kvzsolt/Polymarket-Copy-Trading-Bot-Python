@@ -54,6 +54,56 @@ def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
         )
 
 
+def test_no_pythonpath_shadowing_in_the_image(dockerfile_text: str) -> None:
+    # Task 20: the runtime installs the built wheel into site-packages. The
+    # old PYTHONPATH=/app/src shadow hack — which let a bind-mounted source
+    # tree override the installed package (and made the wheel's packaged
+    # config silently ignorable) — must stay gone from every stage. Comments
+    # are inert; any *instruction* mentioning PYTHONPATH fails this gate.
+    offenders = [
+        line
+        for line in dockerfile_text.splitlines()
+        if "PYTHONPATH" in line and not line.lstrip().startswith("#")
+    ]
+    assert not offenders, (
+        f"The image must run the installed wheel; PYTHONPATH instructions must not reappear: {offenders}"
+    )
+
+
+def test_runtime_stage_contains_only_the_built_wheel(dockerfile_text: str) -> None:
+    """No source tree and no secret-shaped file may enter the runtime stage.
+
+    File-content assertions only (never a rendered compose config). The
+    runtime stage is the final image layer set, so anything COPY/ADD-ed
+    there — directly or across the ``--from=builder`` boundary — bakes into
+    image layers.
+    """
+    from_lines = [line for line in dockerfile_text.splitlines() if line.startswith("FROM ")]
+    assert len(from_lines) == 2, "image must be exactly builder + runtime stages"
+    # rsplit: the builder FROM line ("... AS builder") contains the runtime
+    # FROM string as a prefix, so the LAST occurrence is the runtime stage.
+    _, runtime = dockerfile_text.rsplit(from_lines[-1], maxsplit=1)
+    copies = [
+        line.strip() for line in runtime.splitlines() if line.strip().startswith(("COPY ", "ADD "))
+    ]
+    assert copies, "runtime stage must COPY the requirements export"
+    for line in copies:
+        args = [token for token in line.split()[1:] if not token.startswith("--")]
+        assert args and args[0] != "." and "src/pmcopy" not in line and "src" not in args, (
+            f"runtime stage must not contain the source tree: {line!r}"
+        )
+    stage_crossings = [line for line in copies if line.startswith("COPY --from=builder")]
+    assert stage_crossings, "the built wheel must cross the stage boundary"
+    for line in stage_crossings:
+        assert line.startswith("COPY --from=builder /wheels/"), (
+            f"only built wheels may cross the stage boundary: {line!r}"
+        )
+        for forbidden in ("secrets.env", "db.env", "secrets.toml", "runtime.local"):
+            assert forbidden not in line, (
+                f"secret-shaped files must not cross the stage boundary: {line!r}"
+            )
+
+
 def test_non_root_user_directive(dockerfile_text: str) -> None:
     assert "USER botuser" in dockerfile_text, (
         "Dockerfile must drop privileges to non-root before ENTRYPOINT"

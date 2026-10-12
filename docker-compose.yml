@@ -14,8 +14,12 @@
 # deliberately no production default password; postgres itself refuses to
 # start if POSTGRES_PASSWORD is unset.
 #
-# The current service YAML, environment overlays, and trader files are mounted
-# read-only. No deprecated runtime.local.yml setup file is required.
+# The image is wheel-only (Task 20): the pmcopy package and its packaged
+# config YAML tree install into site-packages, so no source tree is mounted
+# and the image never reads files under /app/src. Runtime overrides use
+# PMCOPY__* environment variables (secrets.env + the environment block
+# below); changing packaged service YAML requires rebuilding the image.
+# No deprecated runtime.local.yml setup file is required.
 
 services:
   postgres:
@@ -65,14 +69,6 @@ services:
       - "127.0.0.1:9102:9102"
     stop_grace_period: 60s
     volumes:
-      # Keep this tree from the same checkout as the image: config includes
-      # Python modules as well as YAML. Fail instead of creating a missing path.
-      - type: bind
-        source: ./src/pmcopy/config
-        target: /app/src/pmcopy/config
-        read_only: true
-        bind:
-          create_host_path: false
       # New managed volumes inherit botuser ownership from the image, avoiding
       # root-owned host directories that make non-root startup fail.
       - bot_data:/app/data

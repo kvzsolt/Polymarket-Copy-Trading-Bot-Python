@@ -1,12 +1,23 @@
 # Docker on the CCXT-only main branch
 
-The image uses Python 3.12 and the pinned runtime requirements, including
-CCXT 4.5.85. (The application itself targets Python 3.14 only — the image
-base is scheduled to move to `python:3.14.x-slim` in the modernization plan's
-Docker task; until then the container runtime stays on 3.12.) It builds the
-current checkout; the `:main` tag does not fetch Git or install CCXT from an
-upstream development branch. Build checks verify the installed application,
-PostgreSQL driver, and `ccxt.prediction.polymarket`.
+The image is a multi-stage build on `python:3.14.6-slim-bookworm` — the exact
+interpreter patch the test suite runs on (the application targets Python 3.14
+only). The builder stage compiles the pure-Python wheel from the checkout; the
+runtime stage installs that wheel plus the pinned runtime requirements from
+`requirements.runtime.txt` (generated from `uv.lock`), including CCXT 4.5.85.
+The runtime stage never contains the source tree: `pmcopy`, its console entry
+point, and the packaged config YAML tree install into site-packages and are
+resolved through `importlib.resources` (no `PYTHONPATH` shadowing). Build
+checks verify the installed application, the PostgreSQL driver, and
+`ccxt.prediction.polymarket` from outside `/app`.
+
+Base tag policy: the repo pins tags, not digests (same policy as
+`postgres:16-alpine` in compose), so Debian security updates keep flowing
+under the same Python patch. Registry digests recorded on 2026-10-11 via
+`docker manifest inspect python:3.14.6-slim-bookworm`:
+
+- linux/amd64 `sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4`
+- linux/arm64 `sha256:1609c3e634a6ad5b4759f67e34c246640d41858fffde69876245fd26afd632b7`
 
 ## Prepare
 
@@ -31,17 +42,19 @@ The password must match the existing database if its volume is already initializ
 changing `POSTGRES_PASSWORD` does not rotate an existing PostgreSQL user's password.
 Populate the required wallet/RPC settings from `secrets.env.example`.
 
-Compose mounts the checkout's `src/pmcopy/config/` read-only, including service YAML,
-`src/pmcopy/config/environments/`, and `src/pmcopy/config/traders/`. Keep that directory and the image
-from the same checkout because the directory also contains Python configuration
-modules. The old `runtime.local.example.yml` copy step is no longer needed.
-An existing `config/runtime.local.yml` still participates in the loader's
-deprecated compatibility layer; migrate it to the service/environment files.
-
 Default settings select paper mode. `PMCOPY_ENVIRONMENT` from `secrets.env` can
 select an explicit environment overlay; `execution.trading_mode` remains the
 authoritative paper/live control. Live submission also requires the existing
 database trading control to permit it. Rebuilding does not reset that control.
+
+Config lives inside the installed wheel: service YAML, `environments/`
+overlays, and `traders/` ship as package data and compose mounts no source
+tree (the wheel-only image has no `/app/src`). Runtime overrides use
+`PMCOPY__*` environment variables from `secrets.env` and the compose
+`environment` block; changing packaged service YAML requires rebuilding the
+image (`docker compose build bot`). An existing `config/runtime.local.yml`
+still participates in the loader's deprecated compatibility layer when placed
+in the deployment root; migrate it to the service/environment files.
 
 ## Build and run
 

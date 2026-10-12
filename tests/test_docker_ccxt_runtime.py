@@ -19,6 +19,11 @@ from pmcopy.config.app_config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: The production image base, pinned to the exact interpreter patch the test
+#: suite runs on (Python 3.14.6). Verified against the registry on
+#: 2026-10-11; see docs/docker.md for the recorded digests.
+PINNED_BASE = "python:3.14.6-slim-bookworm"
+
 
 class ContainerArtifacts:
     """Read container declarations without requiring a Docker daemon."""
@@ -36,6 +41,24 @@ class ContainerArtifacts:
         ]
         return matches[-1] if matches else ""
 
+    def stages(self) -> list[tuple[str, list[str]]]:
+        """Return ``(from_clause, instruction_lines)`` per build stage."""
+        stages: list[tuple[str, list[str]]] = []
+        for line in self.dockerfile.splitlines():
+            if line.startswith("FROM "):
+                stages.append((line.split(maxsplit=1)[1], []))
+            elif stages:
+                stages[-1][1].append(line)
+        return stages
+
+    def instructions_mentioning(self, token: str) -> list[str]:
+        """Non-comment lines mentioning ``token`` (comments are inert)."""
+        return [
+            line
+            for line in self.dockerfile.splitlines()
+            if token in line and not line.lstrip().startswith("#")
+        ]
+
     def environment(self) -> dict[str, str]:
         """Return image environment defaults from exec-free ENV declarations."""
         result: dict[str, str] = {}
@@ -46,20 +69,57 @@ class ContainerArtifacts:
 
 
 def test_image_matches_the_repository_python_minor() -> None:
-    """The image base tracks the repository's supported Python minor.
+    """The runtime image base equals the repository's supported Python.
 
-    The repository targets Python 3.14 only (``requires-python >=3.14,<3.15``),
-    but the production image deliberately stays on ``python:3.12`` until the
-    modernization plan's Docker task moves it to ``python:3.14.x-slim`` (see
-    docs/docker.md). Until then this contract pins the exact interim state:
-    image minor 3.12, repository target 3.14, and nothing else. When the
-    Docker bump lands, restore the strict equality assertion.
+    The repository targets Python 3.14 only (``requires-python >=3.14,<3.15``)
+    and the suite is green on 3.14.6, so the image is pinned to the same
+    interpreter patch (``python:3.14.6-slim-bookworm``, registry-verified —
+    see docs/docker.md). Task 20 restored the strict equality that Task 17
+    had temporarily relaxed while the image stayed on 3.12.
     """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     minor = project["tool"]["pyright"]["pythonVersion"]
     assert minor == "3.14", "Repository must target Python 3.14 only"
-    assert ContainerArtifacts().instruction("FROM").startswith("python:3.12-"), (
-        "Interim image base must stay python:3.12 until the Docker task lands"
+    assert ContainerArtifacts().instruction("FROM") == PINNED_BASE, (
+        "Runtime image base must be the pinned Python 3.14.6 slim image"
+    )
+
+
+def test_image_is_multi_stage_with_a_wheel_only_runtime() -> None:
+    """Builder compiles the wheel; the runtime stage installs only that wheel.
+
+    The interim single-stage image copied the whole checkout into ``/app``
+    and set ``PYTHONPATH=/app/src`` so a bind-mounted config tree could
+    shadow site-packages. The modernized image (Task 20) removes both: the
+    builder stage compiles the pure-Python wheel, the runtime stage installs
+    that wheel plus the locked runtime dependencies, and nothing else crosses
+    the stage boundary — no source tree, no ``PYTHONPATH``, packaged config
+    YAML resolved through importlib.resources from site-packages.
+    """
+    artifacts = ContainerArtifacts()
+    stages = artifacts.stages()
+    assert [name for name, _ in stages] == [f"{PINNED_BASE} AS builder", PINNED_BASE], (
+        "Exactly two stages on the pinned base: builder, then runtime"
+    )
+    builder_lines = stages[0][1]
+    runtime_lines = stages[1][1]
+
+    assert any("pip wheel" in line for line in builder_lines), (
+        "builder stage must compile the application wheel"
+    )
+
+    copies = [line for line in runtime_lines if line.startswith(("COPY ", "ADD "))]
+    assert copies, "runtime stage must COPY the requirements export"
+    assert any(line.startswith("COPY --from=builder /wheels/") for line in copies), (
+        "the only application artifact crossing the stage boundary must be the built wheel"
+    )
+    for line in copies:
+        args = [token for token in line.split()[1:] if not token.startswith("--")]
+        assert args[0] not in (".", "src") and "src/pmcopy" not in line, (
+            f"runtime stage must not contain the source tree: {line!r}"
+        )
+    assert not artifacts.instructions_mentioning("PYTHONPATH"), (
+        "No stage may shadow the installed pmcopy package"
     )
 
 
@@ -82,23 +142,32 @@ def test_build_verifies_ccxt_prediction_outside_the_source_tree() -> None:
     assert any("ensure_supported_ccxt_version" in line for line in checks)
 
 
-def test_compose_mounts_current_config_without_a_legacy_setup_file() -> None:
-    """Service YAML, environment overlays, and trader files reach the process."""
+def test_compose_config_reaches_the_process_through_the_installed_wheel() -> None:
+    """Service YAML, environment overlays, and trader files reach the process.
+
+    The runtime image is wheel-only (no source tree, no ``PYTHONPATH``), so
+    the config tree ships inside the installed ``pmcopy`` package and compose
+    no longer bind-mounts ``./src/pmcopy/config`` — a mount under ``/app/src``
+    would be dead weight the process never reads. Runtime overrides use
+    ``PMCOPY__*`` environment variables; changing packaged service YAML
+    requires rebuilding the image (Task 20).
+    """
     artifacts = ContainerArtifacts()
     mounts = artifacts.compose["services"]["bot"]["volumes"]
-    mount = next(
-        (item for item in mounts if isinstance(item, dict) and item["target"] == "/app/src/pmcopy/config"),
-        None,
-    )
-    assert mount is not None, "Compose must mount the canonical config tree"
-    assert mount["type"] == "bind"
-    assert mount["source"] == "./src/pmcopy/config"
-    assert mount["read_only"] is True
-    assert mount["bind"]["create_host_path"] is False
-    assert artifacts.environment().get("PYTHONPATH") == "/app/src", (
-        "The installed pmcopy command must import config from the mounted tree"
+    for item in mounts:
+        if isinstance(item, dict):
+            assert not item["target"].startswith("/app/src"), (
+                "the wheel-only image has no /app/src; source-tree mounts are dead"
+            )
+    assert not artifacts.instructions_mentioning("PYTHONPATH"), (
+        "no import shadowing may coexist with the wheel-only runtime"
     )
     assert "runtime.local.yml" not in str(mounts)
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = project["tool"]["setuptools"]["package-data"]["pmcopy.config"]
+    assert {"*.yml", "traders/*.yml", "environments/*/*.yml"} <= set(package_data), (
+        "the installed wheel must carry the packaged config tree"
+    )
 
 
 @pytest.mark.parametrize("target", ["/app/data", "/app/log"])
