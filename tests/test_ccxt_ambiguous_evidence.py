@@ -826,29 +826,98 @@ async def test_genuinely_empty_collections_map_to_complete_empty_and_advance_pro
     assert scan.qualifies_as_complete_absence is True
 
 
-async def test_nonempty_history_never_supports_an_absence_proof() -> None:
-    """Complete-but-nonempty collections cannot prove absence.
+async def test_unrelated_fill_history_with_zero_candidates_qualifies_as_absence() -> None:
+    """Absence is proven over the submission's candidate set, not raw emptiness.
 
-    Matching keyed on token/side/time/price/size can miss a genuinely executed
-    submission (a moved tick, a dust-sized difference, a corrupt timestamp).
-    A nonempty collection means there IS venue activity on this market, so the
-    row must stay duplicate-blocking rather than be proven absent.
+    The market-scoped collection is the account's ENTIRE fill history on the
+    condition (append-only, no ``since`` filter), so a routine unrelated fill
+    would otherwise block absence forever.  A complete read whose rows are all
+    non-candidates for THIS submission (token-exact matcher) is authoritative
+    absence evidence.
     """
 
     gateway = _FakeGateway(
-        # A fill for the same market that matches nothing: wrong token.
-        fills=[_fill(order_id="venue-other", token_id="9" * len(_TOKEN))],
-        orders=[_order(order_id="venue-other", token_id="9" * len(_TOKEN))],
+        fills=[_fill(order_id="venue-other", token_id="9" * len(_TOKEN))]
     )
     source, _ = _source(gateway=gateway)
 
     scan = await source.scan(_submission())
 
     assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.private_fills_candidates_empty is True
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_orders_candidates_empty is True
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is True
+
+
+async def test_unrelated_resting_order_with_zero_candidates_qualifies_as_absence() -> None:
+    """Mirror of the fill case: unrelated resting orders must not block proof."""
+
+    gateway = _FakeGateway(
+        orders=[_order(order_id="venue-other", token_id="9" * len(_TOKEN), side="SELL")]
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
     assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
-    assert scan.private_fills_complete is True
+    assert scan.private_orders_candidates_empty is True
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_fills_candidates_empty is True
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is True
+
+
+async def test_candidate_fill_activity_never_supports_an_absence_proof() -> None:
+    """A row that IS a candidate blocks absence even when it cannot match.
+
+    One candidate fill whose aggregate cannot reproduce the submission amount
+    is unresolved venue activity resembling this submission: absence stays
+    unproven and the row stays duplicate-blocking.
+    """
+
+    gateway = _FakeGateway(fills=[_fill(order_id="venue-order-7", size="1", price="0.5")])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_candidates_empty is False
     assert scan.match is None
     assert scan.qualifies_as_complete_absence is False
+
+
+async def test_multiple_candidate_orders_never_support_an_absence_proof() -> None:
+    """Two indistinguishable candidate orders are ambiguity, never absence."""
+
+    gateway = _FakeGateway(
+        orders=[_order(order_id="venue-a"), _order(order_id="venue-b")]
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount=None, amount_unit=None))
+
+    assert scan.private_orders_candidates_empty is False
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_failed_reads_with_zero_candidates_never_qualify_as_absence() -> None:
+    """invalid/partial/unavailable never qualify, whatever was read."""
+
+    for error in (
+        VenueSchemaError("unrecognized page"),
+        VenueHistoryIncompleteError("exceeded privateHistoryMaxPages"),
+        VenueUnavailableError("CCXT NetworkError"),
+    ):
+        gateway = _FakeGateway(fills_error=error)
+        source, _ = _source(gateway=gateway)
+
+        scan = await source.scan(_submission())
+
+        assert scan.private_fills_candidates_empty is None, type(error).__name__
+        assert scan.match is None, type(error).__name__
+        assert scan.qualifies_as_complete_absence is False, type(error).__name__
 
 
 async def test_nonempty_complete_history_still_recovers_identity() -> None:
@@ -860,6 +929,7 @@ async def test_nonempty_complete_history_still_recovers_identity() -> None:
     scan = await source.scan(_submission())
 
     assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.private_fills_candidates_empty is False
     assert scan.match is not None
     assert scan.match.venue_order_id == "venue-order-7"
 
@@ -947,5 +1017,41 @@ async def test_genuine_empty_terminal_pages_advance_the_absence_proof() -> None:
 
     assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
     assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is True
+
+
+async def test_unrelated_market_history_still_advances_the_absence_proof() -> None:
+    """End to end: unrelated venue activity on the condition must not block.
+
+    The fills collection carries one confirmed fill for the SAME condition but
+    a DIFFERENT outcome token, so the token-exact T7 matcher finds zero
+    candidates and a complete read still qualifies as absence for the
+    submission's token.
+    """
+
+    unrelated_fill = {
+        "id": "trade-unrelated",
+        "market": _CONDITION,
+        "asset_id": "9" * len(_TOKEN),
+        "side": "BUY",
+        "size": "3",
+        "price": "0.30",
+        "status": "CONFIRMED",
+        "match_time": str(int(_NOW.timestamp()) - 60),
+        "trader_side": "TAKER",
+        "maker_orders": [],
+    }
+    scan = await _gateway_scan(
+        _RawHistoryExchange(
+            order_pages={None: {"data": [], "next_cursor": ""}},
+            trade_pages={None: {"data": [unrelated_fill], "next_cursor": ""}},
+        )
+    )
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.private_fills_candidates_empty is True
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_orders_candidates_empty is True
     assert scan.match is None
     assert scan.qualifies_as_complete_absence is True

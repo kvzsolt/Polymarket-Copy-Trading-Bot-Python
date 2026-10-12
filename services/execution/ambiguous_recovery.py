@@ -63,21 +63,23 @@ class EvidenceCollectionOutcome(StrEnum):
     """Outcome of one authoritative private-history collection read.
 
     Audit A03: ``complete``/``incomplete`` booleans alone could not distinguish
-    a genuinely exhausted-but-empty collection from a misread or truncated one.
-    The five outcomes are total and mutually exclusive:
+    a genuinely exhausted collection from a misread or truncated one.  The
+    five outcomes are total and mutually exclusive:
 
     * ``complete_empty`` — the venue answered a recognized, exhausted
-      collection with zero rows.  The ONLY outcome that can support an
-      absence proof.
+      collection with zero rows.
     * ``complete_nonempty`` — exhausted with rows; supports identity
-      matching but never an absence proof, because activity exists on the
-      market and the matcher may simply have failed to recognize it.
+      matching and, when the submission's candidate set is empty, absence
+      proof (the rows are provably unrelated to this submission).
     * ``partial`` — rows may exist but pagination could not prove
       exhaustion (cursor loop or page-budget cutoff).
     * ``unavailable`` — the read could not be performed (transport,
       timeout, auth, rate limit).
     * ``invalid`` — the venue answered a payload whose shape cannot be
       trusted as history (schema drift, error body in a 200).
+
+    Only the two ``complete`` outcomes may support any proof; absence
+    additionally requires the candidate set for the submission to be empty.
     """
 
     COMPLETE_EMPTY = "complete_empty"
@@ -185,12 +187,16 @@ class AuthoritativeRecoveryScan:
 
     ``private_*_complete`` means the adapter exhausted the authenticated
     collection, including pagination.  A recovered match is valid only when
-    its corresponding collection is complete.  Absence is stronger and, since
-    audit A03, requires BOTH collections to declare the
-    ``complete_empty`` outcome: an exhausted-but-nonempty collection means
-    there IS venue activity on the market, and ``partial``/``unavailable``/
-    ``invalid`` outcomes mean the emptiness was never proven at all.  A scan
-    constructed without an outcome declaration can never qualify.
+    its corresponding collection is complete.  Absence (audit A03, fixup 1)
+    is qualified over the submission's CANDIDATE SET, not raw collection
+    emptiness: the market-scoped collections carry the account's entire
+    history on the condition, so unrelated rows must not block the proof.
+    Qualification requires BOTH collections complete (``complete_empty`` or
+    ``complete_nonempty`` — never ``partial``/``unavailable``/``invalid``),
+    BOTH candidate sets empty (no row survives the token-exact matcher for
+    THIS submission), no recovered match, and both account checks consistent.
+    A scan constructed without declared outcomes or candidate verdicts can
+    never qualify.
     """
 
     private_orders_complete: bool
@@ -200,6 +206,8 @@ class AuthoritativeRecoveryScan:
     match: RecoveryMatch | None = None
     private_orders_outcome: EvidenceCollectionOutcome | None = None
     private_fills_outcome: EvidenceCollectionOutcome | None = None
+    private_orders_candidates_empty: bool | None = None
+    private_fills_candidates_empty: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.position_check, AccountCheckResult):
@@ -216,6 +224,12 @@ class AuthoritativeRecoveryScan:
                 raise TypeError(f"{name}_outcome must be an EvidenceCollectionOutcome")
             if outcome.is_complete != bool(complete):
                 raise ValueError(f"{name}_outcome contradicts {name}_complete")
+        for candidates_empty, name in (
+            (self.private_orders_candidates_empty, "private_orders_candidates_empty"),
+            (self.private_fills_candidates_empty, "private_fills_candidates_empty"),
+        ):
+            if candidates_empty is not None and not isinstance(candidates_empty, bool):
+                raise TypeError(f"{name} must be a bool or None")
         if self.match is None:
             return
         if (
@@ -228,6 +242,16 @@ class AuthoritativeRecoveryScan:
             and not self.private_fills_complete
         ):
             raise ValueError("a private-fills match requires complete private fill history")
+        if (
+            self.match.source is RecoveryMatchSource.PRIVATE_FILLS
+            and self.private_fills_candidates_empty is True
+        ):
+            raise ValueError("a private-fills match requires fill candidates for the submission")
+        if (
+            self.match.source is RecoveryMatchSource.PRIVATE_ORDERS
+            and self.private_orders_candidates_empty is True
+        ):
+            raise ValueError("a private-orders match requires order candidates for the submission")
 
     @property
     def qualifies_as_complete_absence(self) -> bool:
@@ -235,8 +259,12 @@ class AuthoritativeRecoveryScan:
 
         return (
             self.match is None
-            and self.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
-            and self.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+            and self.private_fills_outcome is not None
+            and self.private_fills_outcome.is_complete
+            and self.private_orders_outcome is not None
+            and self.private_orders_outcome.is_complete
+            and self.private_fills_candidates_empty is True
+            and self.private_orders_candidates_empty is True
             and self.position_check is AccountCheckResult.CONSISTENT_WITH_ABSENCE
             and self.balance_check is AccountCheckResult.CONSISTENT_WITH_ABSENCE
         )

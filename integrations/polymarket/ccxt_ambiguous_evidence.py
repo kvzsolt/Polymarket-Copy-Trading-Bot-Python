@@ -195,6 +195,22 @@ class CcxtAmbiguousEvidenceSource:
             fills_complete=fills_outcome.is_complete,
             orders_complete=orders_outcome.is_complete,
         )
+        # Absence is qualified over the submission's CANDIDATE SET, not raw
+        # collection emptiness (A03 fixup 1): the market-scoped collections are
+        # the account's ENTIRE history on the condition, so unrelated rows must
+        # not block the proof.  A candidate verdict is declared only for a
+        # complete collection — an unread collection can never testify that no
+        # candidate exists.
+        fills_candidates_empty: bool | None = None
+        orders_candidates_empty: bool | None = None
+        if fills_outcome.is_complete:
+            fills_candidates_empty = not any(
+                self._fill_is_candidate(submission, fill) for fill in fills
+            )
+        if orders_outcome.is_complete:
+            orders_candidates_empty = not any(
+                self._order_is_candidate(submission, order) for order in orders
+            )
         position_check = await self._position_check(submission, token_id, condition_id)
         balance_check = await self._balance_check(submission)
 
@@ -203,6 +219,8 @@ class CcxtAmbiguousEvidenceSource:
             private_fills_complete=fills_outcome.is_complete,
             private_orders_outcome=orders_outcome,
             private_fills_outcome=fills_outcome,
+            private_orders_candidates_empty=orders_candidates_empty,
+            private_fills_candidates_empty=fills_candidates_empty,
             position_check=position_check,
             balance_check=balance_check,
             match=match,

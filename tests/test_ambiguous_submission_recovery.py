@@ -130,6 +130,8 @@ def _clear_absence_scan() -> AuthoritativeRecoveryScan:
         private_fills_complete=True,
         private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
         private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=True,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
@@ -286,7 +288,7 @@ async def test_match_requires_the_corresponding_private_history_to_be_complete()
 
 
 # ---------------------------------------------------------------------------
-# Absence qualification requires declared complete-empty outcomes (A03)
+# Absence qualification is computed over the submission candidate set (A03)
 # ---------------------------------------------------------------------------
 
 
@@ -294,8 +296,8 @@ async def test_undeclared_collection_outcome_never_qualifies_as_absence() -> Non
     """A scan that does not declare its collection outcomes cannot prove absence.
 
     ``private_*_complete`` alone was enough pre-A03: a misread collection that
-    silently returned ``()`` looked complete.  Qualification now requires the
-    evidence source to declare BOTH collections as ``complete_empty``.
+    silently returned ``()`` looked complete.  Qualification requires the
+    evidence source to declare BOTH collection outcomes.
     """
 
     undeclared = AuthoritativeRecoveryScan(
@@ -308,26 +310,80 @@ async def test_undeclared_collection_outcome_never_qualifies_as_absence() -> Non
     assert undeclared.qualifies_as_complete_absence is False
 
 
-async def test_complete_nonempty_history_never_qualifies_as_absence() -> None:
-    nonempty = AuthoritativeRecoveryScan(
-        private_orders_complete=True,
-        private_fills_complete=True,
-        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
-        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
-        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
-        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
-    )
-    mixed = AuthoritativeRecoveryScan(
+async def test_undeclared_candidate_set_never_qualifies_as_absence() -> None:
+    """Without a declared candidate verdict, emptiness proves nothing."""
+
+    undeclared = AuthoritativeRecoveryScan(
         private_orders_complete=True,
         private_fills_complete=True,
         private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
-        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
 
-    assert nonempty.qualifies_as_complete_absence is False
-    assert mixed.qualifies_as_complete_absence is False
+    assert undeclared.qualifies_as_complete_absence is False
+
+
+async def test_complete_nonempty_history_with_zero_candidates_qualifies_as_absence() -> None:
+    """Unrelated venue activity on the condition must not block the proof.
+
+    The market-scoped collections carry the account's ENTIRE history on the
+    condition; qualifying absence over raw collection emptiness made the proof
+    permanently unreachable for any previously active condition.  A COMPLETE
+    read (either emptiness) whose candidate set for THIS submission is empty
+    qualifies.
+    """
+
+    nonempty_unrelated = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=True,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+    mixed_unrelated = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=True,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+
+    assert nonempty_unrelated.qualifies_as_complete_absence is True
+    assert mixed_unrelated.qualifies_as_complete_absence is True
+
+
+async def test_candidate_activity_in_either_collection_never_qualifies_as_absence() -> None:
+    fills_candidate = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=False,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+    orders_candidate = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_orders_candidates_empty=False,
+        private_fills_candidates_empty=True,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+
+    assert fills_candidate.qualifies_as_complete_absence is False
+    assert orders_candidate.qualifies_as_complete_absence is False
 
 
 @pytest.mark.parametrize(
@@ -343,11 +399,15 @@ async def test_failed_collection_outcomes_never_qualify_as_absence(
     orders_outcome: EvidenceCollectionOutcome,
     fills_outcome: EvidenceCollectionOutcome,
 ) -> None:
+    """Zero candidates among whatever was read is not a proof: the read failed."""
+
     scan = AuthoritativeRecoveryScan(
         private_orders_complete=orders_outcome.is_complete,
         private_fills_complete=fills_outcome.is_complete,
         private_orders_outcome=orders_outcome,
         private_fills_outcome=fills_outcome,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=True,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
@@ -374,4 +434,33 @@ async def test_outcome_must_be_an_evidence_collection_outcome() -> None:
             private_orders_outcome="complete_empty",  # type: ignore[arg-type]
             position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
             balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        )
+
+
+async def test_candidate_verdict_must_be_a_bool() -> None:
+    with pytest.raises(TypeError):
+        AuthoritativeRecoveryScan(
+            private_orders_complete=True,
+            private_fills_complete=True,
+            private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+            private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+            private_orders_candidates_empty="yes",  # type: ignore[arg-type]
+            position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+            balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        )
+
+
+async def test_a_match_requires_candidates_in_its_source_collection() -> None:
+    with pytest.raises(ValueError, match="fill candidates"):
+        AuthoritativeRecoveryScan(
+            private_orders_complete=False,
+            private_fills_complete=True,
+            private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+            private_fills_candidates_empty=True,
+            position_check=AccountCheckResult.NOT_CHECKED,
+            balance_check=AccountCheckResult.NOT_CHECKED,
+            match=RecoveryMatch(
+                venue_order_id="venue-order-7",
+                source=RecoveryMatchSource.PRIVATE_FILLS,
+            ),
         )

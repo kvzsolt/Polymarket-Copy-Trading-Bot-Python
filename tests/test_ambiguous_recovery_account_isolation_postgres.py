@@ -167,6 +167,8 @@ def _clear_absence_scan() -> AuthoritativeRecoveryScan:
         private_fills_complete=True,
         private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
         private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_orders_candidates_empty=True,
+        private_fills_candidates_empty=True,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
