@@ -198,6 +198,28 @@ def _should_wait_for_discovery_roster(
     return TraderStartupPolicy(auto_trader=force_discovery).should_wait_for_discovery_roster(config)
 
 
+def _reject_duplicate_user_state(
+    user_states: dict[str, "UserRuntimeState"], user_id: str
+) -> None:
+    """A06 — a second copier with an already-built state must fail fast.
+
+    The strict multi-user loader rejects duplicate configured user ids, but
+    identities can still collide at runtime: ``bind_resolved_deposit_wallet``
+    re-keys payload users onto their resolved Deposit Wallet address, so two
+    differently-named entries sharing one wallet would otherwise silently
+    overwrite the first user's built state (repos, gateway, coordinators)
+    with the second's. That overwrite is a hard configuration error — name
+    the colliding id and refuse to continue.
+    """
+    if user_id in user_states:
+        raise ValueError(
+            f"duplicate runtime user id {user_id!r}: a second runtime user "
+            "would silently overwrite the already-built user state for that "
+            "id; multi-user user ids and bound wallet identities must be "
+            "unique across copiers"
+        )
+
+
 def _detection_confidence_from_config(value: object):
     """Parse ``detection.onchain.pending_tx_detection_confidence_required``.
 
@@ -1787,6 +1809,10 @@ async def _run_application(
         )
         # The CCXT runtime is the single venue owner; close it on shutdown.
         client_registry.append(venue_runtime)
+        # A06 — wallet binding above may have re-keyed this user onto a
+        # resolved Deposit Wallet address; a collision with an already-built
+        # state must fail fast instead of silently overwriting it.
+        _reject_duplicate_user_state(user_states, runtime_user.user_id)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             venue_runtime.client,

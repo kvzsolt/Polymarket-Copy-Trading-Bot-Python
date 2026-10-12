@@ -46,10 +46,16 @@ class TradingContext:
     execution_service: Any | None = None
     leaders_repo: Any | None = None
     config: AppConfig | None = None
-    allocation_pct: float = 0.05
+    # A06 — exact-decimal money: multi-user follows inject ``Decimal`` values
+    # from the strict config loader (see services/multiUserConfig); legacy
+    # single-account and test paths still pass floats. Every downstream read
+    # converts through ``Decimal(str(...))`` (copy_notional below) or
+    # ``copyStrategy._to_decimal``, both of which are exact for either input,
+    # so sizing math stays exact end-to-end.
+    allocation_pct: float | Decimal = 0.05
     buy_min_amount: float = 1.0
-    buy_max_amount: float = 100.0
-    max_market_exposure_usdc: float = 300.0
+    buy_max_amount: float | Decimal = 100.0
+    max_market_exposure_usdc: float | Decimal = 300.0
     rank_size_multiplier: Decimal = Decimal("1")
     leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None

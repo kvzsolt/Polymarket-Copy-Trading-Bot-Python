@@ -253,14 +253,21 @@ def configured_leaders(config: AppConfig) -> list[str]:
 
 
 def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollowConfig:
-    """Build the default follower-to-leader binding."""
+    """Build the default follower-to-leader binding.
+
+    A06 — follow money is exact ``Decimal`` end-to-end. The typed AppConfig
+    surface is float-typed; ``Decimal(str(...))`` of a float is its shortest
+    exact decimal text, so this is the lossless trusted-config boundary
+    (operator-supplied payload money must arrive as decimal text and is
+    strictly validated in ``services.multiUserConfig``).
+    """
     return UserFollowConfig(
         user_id=user_id,
         leader_id=leader_id,
         enabled=True,
-        allocation_pct=config.sizing.percentage / 100.0,
-        max_trade_usdc=config.sizing.buy_max_amount,
-        max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
+        allocation_pct=Decimal(str(config.sizing.percentage)) / Decimal("100"),
+        max_trade_usdc=Decimal(str(config.sizing.buy_max_amount)),
+        max_market_exposure_usdc=Decimal(str(config.risk.max_market_exposure_usdc)),
     )
 
 
@@ -1212,7 +1219,14 @@ async def build_trading_context(
         leader_scorer=leader_scorer,
         allocation_pct=follow.allocation_pct,
         buy_min_amount=config.sizing.buy_min_amount,
-        buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
+        # A06 — compare exact Decimal to exact Decimal: the follow cap is
+        # Decimal (strict loader) and the typed AppConfig float is converted
+        # through its shortest exact decimal text. The winner flows on as a
+        # Decimal; ``copyStrategy._to_decimal`` passes Decimals through
+        # untouched, so sizing math stays exact end-to-end.
+        buy_max_amount=min(
+            Decimal(str(config.sizing.buy_max_amount)), follow.max_trade_usdc
+        ),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
         rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
@@ -1584,9 +1598,11 @@ async def build_context_maps(
                 user_id=runtime_user.user_id,
                 leader_id="",
                 enabled=False,
-                allocation_pct=0,
-                max_trade_usdc=0,
-                max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
+                allocation_pct=Decimal("0"),
+                max_trade_usdc=Decimal("0"),
+                max_market_exposure_usdc=Decimal(
+                    str(config.risk.max_market_exposure_usdc)
+                ),
             )
         context = await build_trading_context(
             risk_user_state,

@@ -53,9 +53,11 @@ def test_configured_leaders_uses_typed_config_wallets():
 def test_default_follow_uses_typed_config_thresholds():
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
-    assert follow.allocation_pct == 0.07
-    assert follow.max_trade_usdc == 42.0
-    assert follow.max_market_exposure_usdc == 123.0
+    # A06 — follow money is exact Decimal (typed-config floats converted
+    # through their shortest exact decimal text at that trusted boundary).
+    assert follow.allocation_pct == Decimal("0.07")
+    assert follow.max_trade_usdc == Decimal("42")
+    assert follow.max_market_exposure_usdc == Decimal("123")
 
 
 def test_load_runtime_users_single_user_uses_typed_config_defaults():
@@ -70,8 +72,8 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
     assert user.user_id == _VALID_FUNDER
     assert user.follows["0x" + "d" * 40].user_id == _VALID_FUNDER
     assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
-    assert user.follows["0x" + "d" * 40].allocation_pct == 0.07
-    assert user.follows["0x" + "d" * 40].max_trade_usdc == 42.0
+    assert user.follows["0x" + "d" * 40].allocation_pct == Decimal("0.07")
+    assert user.follows["0x" + "d" * 40].max_trade_usdc == Decimal("42")
 
 
 def test_bind_resolved_deposit_wallet_sets_runtime_identity():

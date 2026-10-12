@@ -28,6 +28,17 @@ The bot uses a strictly typed configuration system (`config.app_config.AppConfig
 ## Multi-User / Allocator Mode
 If running for multiple sub-accounts, you can specify `MULTI_USER_CONFIG_FILE`. Keep this blank for standard single-wallet operations.
 
+The file is validated strictly (fail-closed): unknown keys are rejected at
+every level, `enabled` accepts only JSON booleans or the exact strings
+`"true"`/`"false"` (case-insensitive; absent means enabled), and money fields
+(`allocation_pct`, `max_trade_usdc`, `max_market_exposure_usdc`) must be
+decimal **text** (`"12.5"`, never a JSON number) with `allocation_pct` a
+fraction of leader notional (`0 < x <= 1`, so `"0.07"` = 7%) and the USDC
+caps strictly positive. Leader ids and `funder_address` must be valid
+Ethereum addresses, and duplicate copier ids, duplicate wallet identities
+(same funder or same private key), and duplicate leader ids inside one
+user's follows are hard errors.
+
 ## Follow Whitelists (who gets copied)
 
 Per-copier `follows` configuration is an **explicit whitelist** and the source

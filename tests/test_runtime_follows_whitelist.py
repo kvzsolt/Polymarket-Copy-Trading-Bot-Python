@@ -18,6 +18,7 @@ second account, means whitelist semantics with no union.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -71,11 +72,20 @@ def _multi_user_config_file(tmp_path, monkeypatch, entries: list[dict]) -> str:
     return str(path)
 
 
-def _payload_entry(user_id: str, follows: list | None) -> dict:
+def _payload_entry(
+    user_id: str,
+    follows: list | None,
+    *,
+    private_key: str = _VALID_PRIVATE_KEY,
+    funder: str = _VALID_FUNDER,
+) -> dict:
+    # A06 — distinct copier entries must carry distinct wallet identities;
+    # the strict loader rejects duplicate funders/keys instead of letting a
+    # second account silently share (or overwrite) the first's state.
     entry: dict = {
         "user_id": user_id,
-        "private_key": _VALID_PRIVATE_KEY,
-        "funder_address": _VALID_FUNDER,
+        "private_key": private_key,
+        "funder_address": funder,
         "signature_type": 3,
     }
     if follows is not None:
@@ -99,10 +109,11 @@ def test_single_account_with_empty_follows_applies_legacy_default():
         assert follow.enabled is True
         assert follow.user_id == "user-1"
         assert follow.leader_id == leader
-        # Legacy default sizing comes from the global config, unchanged.
-        assert follow.allocation_pct == 0.07
-        assert follow.max_trade_usdc == 42.0
-        assert follow.max_market_exposure_usdc == 123.0
+        # Legacy default sizing comes from the global config, unchanged —
+        # exact Decimal since A06 (money is never a binary float here).
+        assert follow.allocation_pct == Decimal("0.07")
+        assert follow.max_trade_usdc == Decimal("42")
+        assert follow.max_market_exposure_usdc == Decimal("123")
 
 
 def test_legacy_config_less_account_auto_follows_new_leaders_at_refresh():
@@ -282,7 +293,12 @@ def test_loader_multi_account_config_never_auto_follows(tmp_path, monkeypatch):
         monkeypatch,
         [
             _payload_entry("user-a", None),
-            _payload_entry("user-b", [{"leader_id": LEADER_1, "enabled": True}]),
+            _payload_entry(
+                "user-b",
+                [{"leader_id": LEADER_1, "enabled": True}],
+                private_key="0x" + "e" * 64,
+                funder="0x" + "f" * 40,
+            ),
         ],
     )
     cfg = _config(MULTI_USER_CONFIG_FILE=config_path)

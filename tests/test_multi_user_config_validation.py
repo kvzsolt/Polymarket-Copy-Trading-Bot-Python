@@ -367,11 +367,22 @@ def test_duplicate_leader_id_case_insensitive_rejected(tmp_path, monkeypatch):
 
 
 def test_same_leader_across_different_users_is_allowed(tmp_path, monkeypatch):
+    # Two DISTINCT wallets (different funder and different key) may both
+    # follow the same leader; only duplicate identities are rejected.
     users = _load(
         {
             "users": [
-                _entry("user-1", funder_address=_VALID_FUNDER, follows=[_follow(LEADER_1)]),
-                _entry("user-2", funder_address=_OTHER_FUNDER, follows=[_follow(LEADER_1)]),
+                _entry(
+                    "user-1",
+                    funder_address=_VALID_FUNDER,
+                    follows=[_follow(LEADER_1)],
+                ),
+                _entry(
+                    "user-2",
+                    private_key=_OTHER_PRIVATE_KEY,
+                    funder_address=_OTHER_FUNDER,
+                    follows=[_follow(LEADER_1)],
+                ),
             ]
         },
         tmp_path,
@@ -548,8 +559,8 @@ def test_app_allows_first_user_state_registration():
     from app import _reject_duplicate_user_state
 
     states: dict[str, object] = {}
+    # A fresh id raises nothing; the caller then performs the assignment.
     _reject_duplicate_user_state(states, "fresh-user")
-    assert "fresh-user" in states
 
 
 # ---------------------------------------------------------------------------
