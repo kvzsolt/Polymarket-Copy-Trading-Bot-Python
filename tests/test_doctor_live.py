@@ -328,6 +328,107 @@ async def test_automatic_initialization_does_not_require_periodic_discovery(tmp_
     assert _checks_by_name(out)["leaders"]["status"] == "ok"
 
 
+# ---------------------------------------------------------------------------
+# Task 22 — a schema v2 copiers roster is the wallet authority in live mode
+# ---------------------------------------------------------------------------
+
+_LIVE_LEADER = "0x" + "1" * 40
+
+
+def _live_roster_yaml(key_env: str) -> str:
+    return f"""schema_version: 2
+copiers:
+  - id: primary
+    enabled: true
+    mode: live
+    wallet:
+      funder_address_env: DOCTOR_FUNDER_ADDRESS
+      private_key_env: {key_env}
+    limits:
+      max_order_quote: "5.00"
+      max_open_exposure_quote: "50.00"
+    follows:
+      - leader_address: "{_LIVE_LEADER}"
+        enabled: true
+        sizing:
+          mode: fixed
+          quote_amount: "2.00"
+"""
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_copiers_roster_replaces_global_wallet_checks(tmp_path, monkeypatch):
+    # With a roster configured, the GLOBAL wallet.private_key/funder checks
+    # must not block: the per-copier env references are the credential
+    # source, and the roster itself is validated end-to-end instead.
+    roster = tmp_path / "copiers.yml"
+    roster.write_text(_live_roster_yaml("DOCTOR_PRIVATE_KEY"), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DOCTOR_FUNDER_ADDRESS", "0x" + "c" * 40)
+    monkeypatch.setenv("DOCTOR_PRIVATE_KEY", "0x" + "a" * 64)
+
+    out = await _run_doctor(
+        "live",
+        {
+            "PRIVATE_KEY": "",
+            "FUNDER_ADDRESS": "",
+            "LEADER_WALLETS": _LIVE_LEADER,
+            "USER_ADDRESS": _LIVE_LEADER,
+            "COPIERS_CONFIG_FILE": str(roster),
+        },
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    checks = _checks_by_name(out)
+    assert checks["copiers_roster"]["status"] == "ok"
+    assert "1 copier" in checks["copiers_roster"]["detail"]
+    # The legacy single-account checks are not the authority any more.
+    assert "wallet_private_key" not in checks
+    assert "wallet_funder_resolution" not in checks
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_copiers_roster_blocks_on_broken_secret_ref(tmp_path, monkeypatch):
+    roster = tmp_path / "copiers.yml"
+    roster.write_text(_live_roster_yaml("DOCTOR_PRIVATE_KEY"), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DOCTOR_FUNDER_ADDRESS", "0x" + "c" * 40)
+    monkeypatch.delenv("DOCTOR_PRIVATE_KEY", raising=False)
+
+    out = await _run_doctor(
+        "live",
+        {
+            "PRIVATE_KEY": "",
+            "FUNDER_ADDRESS": "",
+            "LEADER_WALLETS": _LIVE_LEADER,
+            "USER_ADDRESS": _LIVE_LEADER,
+            "COPIERS_CONFIG_FILE": str(roster),
+        },
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    rec = _checks_by_name(out)["copiers_roster"]
+    assert rec["status"] == "blocked"
+    # Names the variable; never a value.
+    assert "DOCTOR_PRIVATE_KEY" in rec["detail"]
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_still_blocks_on_missing_global_key_without_roster(tmp_path):
+    # The legacy single-account requirements remain fail-closed when no
+    # copiers roster is configured: the doctor's own typed-config load
+    # blocks on the missing wallet key before any wallet probe runs.
+    out = await _run_doctor(
+        "live",
+        {"PRIVATE_KEY": ""},
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    rec = _checks_by_name(out)["config_load"]
+    assert rec["status"] == "blocked"
+    assert "PRIVATE_KEY" in rec["detail"]
+
+
 async def test_saved_automatic_roster_can_restore_without_provider_credentials(
     tmp_path, monkeypatch
 ):
