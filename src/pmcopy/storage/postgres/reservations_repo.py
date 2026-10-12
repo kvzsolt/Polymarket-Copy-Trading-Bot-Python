@@ -189,15 +189,30 @@ class ReservationsRepo:
         reserved_usdc: Decimal,
         expires_at: int,
         available_balance: Decimal,
-    ) -> tuple["Reservation | None", "Reservation | None"]:
+        *,
+        open_exposure_cap: Decimal | None = None,
+        confirmed_open_exposure: Decimal | None = None,
+    ) -> tuple["Reservation | None", "Reservation | None", str | None]:
         """Atomic intent-key lookup + capacity check + insert.
 
-        Returns ``(existing, new)``:
-            * ``(active_row, None)`` — an active reservation for this
+        Returns ``(existing, new, failure_reason)``:
+            * ``(active_row, None, None)`` — an active reservation for this
               ``intent_key`` already exists. Caller should treat as
               ``ReservationConflict``.
-            * ``(None, None)`` — no active row but capacity insufficient.
-            * ``(None, new_row)`` — created successfully.
+            * ``(None, None, reason)`` — no active row but capacity
+              insufficient; ``reason`` names the binding constraint
+              (``insufficient_free_quote`` balance, ``task_capacity`` the
+              task budget, ``copier_open_exposure_cap`` /
+              ``copier_open_exposure_unavailable`` the per-copier open
+              exposure cap).
+            * ``(None, new_row, None)`` — created successfully.
+
+        When ``open_exposure_cap`` is supplied (an explicitly configured
+        copier-level cap), the TRANSACTION is authoritative for it: under the
+        same per-user advisory lock, ``confirmed_open_exposure +
+        already-reserved active quote + this reservation`` must stay within
+        the cap. Unknown confirmed exposure fails closed — the pipeline-level
+        pre-check is only a fast path and cannot close cross-scope races.
 
         Closes the Greptile finding from PR #108: the previous
         ``get_active_by_intent_key`` + ``create_buy_reservation_checked``
@@ -226,7 +241,7 @@ class ReservationsRepo:
                     stable_key,
                 )
                 if existing_row:
-                    return self._row_to_reservation(existing_row), None
+                    return self._row_to_reservation(existing_row), None, None
                 rows = await conn.fetch(
                     """
                     SELECT reserved_usdc FROM order_reservations
@@ -236,9 +251,22 @@ class ReservationsRepo:
                 )
                 already_reserved = self._sum_decimal_rows(rows, "reserved_usdc")
                 if available_balance - already_reserved < reserved_usdc:
-                    return None, None
+                    return None, None, "insufficient_free_quote"
+                if open_exposure_cap is not None:
+                    # Task 24 fix round 2 — the copier open-exposure cap is
+                    # enforced HERE, inside the serialized transaction, so
+                    # two concurrent admissions on DIFFERENT markets cannot
+                    # each read reserved=0 and collectively exceed an
+                    # explicit cap. Unknown confirmed exposure fails closed.
+                    if confirmed_open_exposure is None:
+                        return None, None, "copier_open_exposure_unavailable"
+                    if (
+                        confirmed_open_exposure + already_reserved + reserved_usdc
+                        > open_exposure_cap
+                    ):
+                        return None, None, "copier_open_exposure_cap"
                 if not await PostgresTaskBuyCapacity.permits(conn, intent, reserved_usdc):
-                    return None, None
+                    return None, None, "task_capacity"
                 await self._insert_reservation(
                     conn,
                     res_id,
@@ -249,7 +277,7 @@ class ReservationsRepo:
                     expires_at,
                 )
         new_row = await self.get_by_id(res_id)
-        return None, new_row
+        return None, new_row, None
 
     async def create_sell_reservation_checked(
         self,

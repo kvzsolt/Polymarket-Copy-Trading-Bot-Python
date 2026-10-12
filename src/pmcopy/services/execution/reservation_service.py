@@ -53,6 +53,17 @@ class InsufficientFreeQuote(Exception):
     pass
 
 
+class CopierOpenExposureCapExceeded(Exception):
+    """A BUY would push the copier past its explicitly configured open-exposure cap.
+
+    Raised by the authoritative checked-reservation transaction (and the
+    fail-closed evidence path before it) when the account's confirmed open
+    exposure plus active reserved quote plus this reservation would exceed
+    the schema-v2 ``limits.max_open_exposure_quote`` cap, or when the
+    confirmed-exposure evidence is unavailable under a configured cap.
+    """
+
+
 class InsufficientFreeShares(Exception):
     """Signal insufficient unreserved outcome shares."""
 
@@ -120,6 +131,8 @@ class ReservationService:
         force_release_grace_seconds: float | None = None,
         task_market_fraction: Decimal | None = None,
         task_max_open_markets: int = 0,
+        open_exposure_cap: Decimal | None = None,
+        confirmed_exposure_reader: Callable[[str], Awaitable[Decimal | None]] | None = None,
     ):
         self.reservations_repo = reservations_repo
         self.positions_repo = positions_repo
@@ -148,6 +161,18 @@ class ReservationService:
             raise ValueError("Task open-market limit must be a non-negative integer")
         self._task_market_fraction = task_market_fraction
         self._task_max_open_markets = task_max_open_markets
+        # Task 24 fix round 2 — an explicitly configured copier-level open
+        # exposure cap (schema v2 ``limits.max_open_exposure_quote``) plus
+        # the reader for its CONFIRMED open-exposure basis. Both default to
+        # None (legacy accounts: zero new work on the reservation path).
+        if open_exposure_cap is not None and (
+            not isinstance(open_exposure_cap, Decimal)
+            or not open_exposure_cap.is_finite()
+            or open_exposure_cap <= 0
+        ):
+            raise ValueError("open_exposure_cap must be a positive finite Decimal")
+        self.open_exposure_cap = open_exposure_cap
+        self.confirmed_exposure_reader = confirmed_exposure_reader
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         """Atomically reserve the capacity required by an execution intent."""
@@ -226,19 +251,52 @@ class ReservationService:
                 required_usdc,
                 expires_at,
             )
+            # Task 24 fix round 2 — resolve the copier open-exposure cap's
+            # CONFIRMED basis before the transaction. The transaction itself
+            # remains authoritative for the cap; this read only supplies the
+            # basis value. Unknown/unreadable evidence fails closed (never
+            # reserve under a configured cap without proof).
+            _open_exposure_cap = self.open_exposure_cap
+            _confirmed_open_exposure = None
+            if _open_exposure_cap is not None:
+                reader = self.confirmed_exposure_reader
+                if reader is None:
+                    raise CopierOpenExposureCapExceeded(
+                        "copier open-exposure cap configured without a "
+                        "confirmed-exposure reader — failing closed"
+                    )
+                try:
+                    _confirmed_open_exposure = await reader(intent.key.user_id)
+                except Exception as exc:
+                    logger.warning(
+                        "reservation.cap_confirmed_exposure_unavailable | user=%s error_type=%s",
+                        intent.key.user_id,
+                        type(exc).__name__,
+                    )
+                    _confirmed_open_exposure = None
+                if _confirmed_open_exposure is None:
+                    raise CopierOpenExposureCapExceeded(
+                        "confirmed open exposure unavailable under the "
+                        "configured copier cap — failing closed"
+                    )
             try:
                 # Atomic intent-key check + capacity check + insert inside
                 # one advisory-lock transaction. Closes the race window the
                 # outer ``get_active_by_intent_key`` fast-path cannot cover
-                # (Greptile finding in PR #108).
+                # (Greptile finding in PR #108) — and, when a copier
+                # open-exposure cap is configured, the cap race across
+                # DIFFERENT markets (Task 24 fix round 2).
                 (
                     existing_under_lock,
                     result,
+                    failure_reason,
                 ) = await self.reservations_repo.create_buy_reservation_checked_by_intent(
                     intent=intent,
                     reserved_usdc=required_usdc,
                     expires_at=expires_at,
                     available_balance=balance,
+                    open_exposure_cap=_open_exposure_cap,
+                    confirmed_open_exposure=_confirmed_open_exposure,
                 )
             except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
@@ -254,6 +312,14 @@ class ReservationService:
                 )
                 raise ReservationConflict(f"active reservation exists for intent={stable_key}")
             if result is None:
+                if failure_reason in {
+                    "copier_open_exposure_cap",
+                    "copier_open_exposure_unavailable",
+                }:
+                    raise CopierOpenExposureCapExceeded(
+                        f"copier open-exposure cap exceeded after atomic check: "
+                        f"need {required_usdc} ({failure_reason})"
+                    )
                 raise InsufficientFreeQuote(
                     f"insufficient free USDC after atomic check: need {required_usdc}"
                 )

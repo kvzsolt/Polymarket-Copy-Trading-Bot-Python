@@ -493,6 +493,49 @@ def build_user_state(
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
     # are wired per user so trade pipeline and risk monitor share reservation
     # and collision scope.
+    # Task 24 fix round 2 — the COPIER-level open-exposure cap: the minimum
+    # across this account's EXPLICITLY configured caps (schema v2
+    # ``limits.max_open_exposure_quote`` puts one value on every binding).
+    # Absent explicit caps this stays None: legacy accounts take no new
+    # reservation-transaction work.
+    _explicit_caps = [
+        Decimal(str(f.max_market_exposure_usdc))
+        for f in (getattr(runtime_user, "follows", None) or {}).values()
+        if getattr(f, "market_exposure_cap_explicit", False)
+    ]
+    open_exposure_cap = min(_explicit_caps) if _explicit_caps else None
+
+    confirmed_exposure_reader = None
+    if open_exposure_cap is not None:
+        from pmcopy.services.risk.account_snapshot import AccountRiskSnapshotBuilder
+
+        async def _confirmed_open_exposure(uid: str) -> Decimal | None:
+            """Confirmed open exposure on the SAME cost-basis accounting the
+            admission snapshot uses (``AccountRiskSnapshotBuilder`` over the
+            account's held positions) — no second valuation."""
+            try:
+                positions = await positions_repo.list_held_positions(uid)
+                snapshot = AccountRiskSnapshotBuilder(
+                    market_store,
+                    max_age_seconds=float(config.market_data.executable_quote_max_age_seconds),
+                ).build(
+                    account=uid,
+                    free_cash=Decimal("0"),
+                    positions=positions or [],
+                    condition_id="",
+                    leader_id="",
+                )
+                return snapshot.total_exposure_usdc
+            except Exception as exc:
+                logger.warning(
+                    "copier_cap_confirmed_exposure_unavailable | user=%s error_type=%s",
+                    uid,
+                    type(exc).__name__,
+                )
+                return None
+
+        confirmed_exposure_reader = _confirmed_open_exposure
+
     execution_coordinator = _build_execution_coordinator(
         pool=pool,
         positions_repo=positions_repo,
@@ -503,6 +546,8 @@ def build_user_state(
         latency=emitters.latency,
         copy_admission=copy_admission,
         position_coordinator=position_coordinator,
+        open_exposure_cap=open_exposure_cap,
+        confirmed_exposure_reader=confirmed_exposure_reader,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
@@ -855,6 +900,8 @@ def _build_execution_coordinator(
     copy_admission: CopyAdmission | None = None,
     provider_runtime: Any = None,
     position_coordinator: PositionCoordinator | None = None,
+    open_exposure_cap: Decimal | None = None,
+    confirmed_exposure_reader=None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -895,6 +942,10 @@ def _build_execution_coordinator(
         if config is not None
         else None,
         task_max_open_markets=config.sizing.position_threshold if config is not None else 0,
+        # Task 24 fix round 2 — the copier open-exposure cap is enforced
+        # authoritatively inside the checked BUY reservation transaction.
+        open_exposure_cap=open_exposure_cap,
+        confirmed_exposure_reader=confirmed_exposure_reader,
     )
     if not reservations_enabled:
         logger.warning(

@@ -19,6 +19,7 @@ from pmcopy.domain.execution import ExecutionOrderType
 from pmcopy.utils.logger import redact_error_detail
 from pmcopy.services.execution.reservation_service import (
     Clock,
+    CopierOpenExposureCapExceeded,
     DefaultClock,
     InsufficientFreeQuote,
     InsufficientFreeShares,
@@ -320,6 +321,23 @@ class ExecutionCoordinator:
                 skip_code="reservation_conflict",
                 reason=str(exc),
                 lifecycle_status="duplicate_ignored",
+            )
+        except CopierOpenExposureCapExceeded as exc:
+            self._safe_audit(
+                "coordinator_copier_exposure_cap",
+                {
+                    "user_id": intent.user_id,
+                    "side": intent.side,
+                    "source": source_override,
+                    "error": str(exc),
+                },
+            )
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="copier_open_exposure_cap",
+                skip_code="copier_open_exposure_cap",
+                reason=str(exc),
+                lifecycle_status="failed",
             )
         except (InsufficientFreeQuote, InsufficientFreeShares) as exc:
             self._safe_audit(
