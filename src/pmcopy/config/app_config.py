@@ -178,6 +178,11 @@ class AppServiceConfig:
     metrics_port: int = 9102
     metrics_bind_host: str = "127.0.0.1"
     multi_user_config_file: str = ""
+    # Task 22 — schema v2 copiers roster (YAML). When set it is the
+    # AUTHORITATIVE account roster: per-copier ``*_env`` secret references
+    # replace the single-account ``wallet`` section, and combining it with
+    # ``multi_user_config_file`` is a configuration error. Empty = disabled.
+    copiers_config_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -1304,8 +1309,23 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("execution.sell_fraction_missing_policy must be 'skip' or 'full_close'.")
 
     # Wallet essentials
+    #
+    # Task 22 — with a schema v2 copiers roster the per-copier
+    # ``wallet.*_env`` references are the only wallet credential source, so
+    # the SINGLE-account requirements below are waived (the roster loader
+    # enforces its own per-copier rules, including live secret presence).
+    # The two roster files are mutually exclusive: a v1 JSON users file and
+    # a v2 copiers YAML together is an ambiguous configuration, never a
+    # merge.
+    copiers_file = bool((getattr(cfg.app, "copiers_config_file", "") or "").strip())
+    if copiers_file and bool((cfg.app.multi_user_config_file or "").strip()):
+        errors.append(
+            "app.copiers_config_file and app.multi_user_config_file are both "
+            "set; exactly one account roster may be configured (the schema "
+            "v2 copiers file is authoritative on its own)."
+        )
     private_key = secret_value(cfg.wallet.private_key)
-    if not cfg.execution.paper_trade_only and not private_key:
+    if not cfg.execution.paper_trade_only and not private_key and not copiers_file:
         errors.append("PRIVATE_KEY is required.")
     if private_key and not _HEX_PRIVATE_KEY_RE.match(private_key):
         errors.append("PRIVATE_KEY must be a 66-char hex key (0x + 64 hex digits).")
@@ -1316,7 +1336,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     # address and this is the bot's only wallet identity: left empty, the
     # balance and live-position probes query "" and fail readiness with no
     # actionable error.
-    if cfg.execution.paper_trade_only and not cfg.wallet.funder_address:
+    if cfg.execution.paper_trade_only and not cfg.wallet.funder_address and not copiers_file:
         errors.append(
             "FUNDER_ADDRESS is required in paper mode (it is the wallet "
             "identity used by the balance/live-position health probes; live "

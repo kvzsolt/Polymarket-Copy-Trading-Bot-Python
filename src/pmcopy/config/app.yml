@@ -23,3 +23,8 @@ metrics_bind_host: 127.0.0.1
 # Empty = normal single-user startup. A path enables legacy multi-user wallet
 # configuration; this adds operational complexity and must reference a secured file.
 multi_user_config_file: ''
+# Empty = no copiers roster. A path to a schema v2 YAML file (see
+# copiers.example.yml) declares every copier account, its env-var-only wallet
+# secret references, limits, and explicit follow whitelists. When set it is
+# the authoritative roster and must not be combined with multi_user_config_file.
+copiers_config_file: ''

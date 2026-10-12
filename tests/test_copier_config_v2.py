@@ -211,8 +211,8 @@ def test_enabled_absent_defaults_true_and_false_disables(tmp_path, monkeypatch):
     assert follow.max_market_exposure_usdc == Decimal("50.00")
 
 
-def test_proportional_leader_share_defaults_from_typed_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+def test_proportional_leader_share_is_required_no_global_default(tmp_path, monkeypatch):
+    # Schema v2 keeps sizing fully explicit: no implicit global default.
     text = _paper_yaml(
         f"""  - id: primary
     mode: paper
@@ -227,14 +227,9 @@ def test_proportional_leader_share_defaults_from_typed_config(tmp_path, monkeypa
           mode: proportional
 """
     )
-    users = _load(
-        text,
-        tmp_path,
-        monkeypatch,
-        set_env=False,
-        PERCENTAGE="4",
-    )
-    assert users[0].follows[LEADER_1].allocation_pct == Decimal("0.04")
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    with pytest.raises(ValueError, match="leader_share"):
+        _load(text, tmp_path, monkeypatch, set_env=False)
 
 
 def test_disabled_copier_does_not_demand_secret_resolution(tmp_path, monkeypatch):
@@ -385,6 +380,8 @@ def _live_copier(key_env: str = "PRIMARY_PRIVATE_KEY") -> str:
 
 
 def test_live_copier_loads_with_resolved_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    monkeypatch.setenv("PRIMARY_PRIVATE_KEY", KEY_A)
     users = _load(
         _paper_yaml(_live_copier()), tmp_path, monkeypatch, set_env=False, TRADING_MODE="live"
     )
@@ -438,6 +435,7 @@ def test_live_invalid_private_key_format_is_rejected_without_echo(tmp_path, monk
 
 
 def test_live_funder_reference_is_optional_but_validated(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRIMARY_PRIVATE_KEY", KEY_A)
     # live may omit funder_address_env (derived from the key) …
     text = _paper_yaml(
         """  - id: primary
@@ -453,19 +451,24 @@ def test_live_funder_reference_is_optional_but_validated(tmp_path, monkeypatch):
     users = _load(text, tmp_path, monkeypatch, set_env=False, TRADING_MODE="live")
     assert users[0].wallet.funder_address == ""
 
-    # … but a present-and-set one must resolve to a valid address.
+    # … but a declared reference must resolve to a valid address.
+    text_with_funder = _paper_yaml(_live_copier())
     monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", "0x1234")
     with pytest.raises(ValueError, match="funder_address_env"):
-        _load(text, tmp_path, monkeypatch, set_env=False, TRADING_MODE="live")
+        _load(text_with_funder, tmp_path, monkeypatch, set_env=False, TRADING_MODE="live")
 
 
 def test_resolved_private_keys_are_registered_for_redaction(tmp_path, monkeypatch):
-    from pmcopy.utils.log_redaction import redact_text, reset_secret_registry
+    from pmcopy.utils.log_redaction import REDACTED_PLACEHOLDER, redact_text, reset_secret_registry
 
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    monkeypatch.setenv("PRIMARY_PRIVATE_KEY", KEY_A)
     reset_secret_registry()
     try:
         _load(_paper_yaml(_live_copier()), tmp_path, monkeypatch, set_env=False, TRADING_MODE="live")
-        assert KEY_A in redact_text(f"leak {KEY_A}")
+        redacted = redact_text(f"leak {KEY_A}")
+        assert KEY_A not in redacted
+        assert REDACTED_PLACEHOLDER in redacted
     finally:
         reset_secret_registry()
 
@@ -794,7 +797,9 @@ def test_two_paper_copiers_without_keys_are_not_duplicate_identities(tmp_path, m
 
 
 def test_duplicate_follow_leader_rejected_case_insensitive(tmp_path, monkeypatch):
-    upper = LEADER_1.upper()
+    # Same wallet written twice with different letter casing is ONE leader.
+    leader_mixed = "0x" + "Ab12" * 10
+    upper = "0x" + leader_mixed[2:].upper()
     text = _paper_yaml(
         f"""  - id: primary
     mode: paper
@@ -804,7 +809,7 @@ def test_duplicate_follow_leader_rejected_case_insensitive(tmp_path, monkeypatch
       max_order_quote: "5.00"
       max_open_exposure_quote: "50.00"
     follows:
-      - leader_address: "{LEADER_1}"
+      - leader_address: "{leader_mixed}"
         sizing:
           mode: fixed
           quote_amount: "1.00"
@@ -1058,20 +1063,25 @@ def test_copiers_file_must_parse_as_mapping(tmp_path, monkeypatch):
 
 
 def test_both_copiers_file_and_v1_multi_user_file_rejected(tmp_path, monkeypatch):
+    import dataclasses
+
     v1_path = tmp_path / "users.json"
     v1_path.write_text(json.dumps({"users": []}))
-    cfg = _config(
-        COPIERS_CONFIG_FILE=_copiers_file(tmp_path, monkeypatch, _paper_yaml()),
-        MULTI_USER_CONFIG_FILE=str(v1_path),
+    copiers_path = _copiers_file(tmp_path, monkeypatch, _paper_yaml())
+
+    # Rejected at config-load time so `pmcopy config validate` catches it.
+    with pytest.raises(Exception, match="copiers_config_file"):
+        _config(COPIERS_CONFIG_FILE=copiers_path, MULTI_USER_CONFIG_FILE=str(v1_path))
+
+    # Defense-in-depth: the roster loader refuses a hand-built AppConfig
+    # carrying both files even when semantic validation was bypassed.
+    base = _config(COPIERS_CONFIG_FILE=copiers_path)
+    conflicted = dataclasses.replace(
+        base,
+        app=dataclasses.replace(base.app, multi_user_config_file=str(v1_path)),
     )
     with pytest.raises(ValueError, match="multi_user_config_file"):
-        load_runtime_users([], cfg)
-    # Also rejected at config-load time so `config validate` catches it.
-    with pytest.raises(Exception, match="copiers_config_file"):
-        _config(
-            COPIERS_CONFIG_FILE=str(tmp_path / "copiers.yml"),
-            MULTI_USER_CONFIG_FILE=str(v1_path),
-        )
+        load_runtime_users([], conflicted)
 
 
 def test_semantic_validator_waives_single_account_wallet_requirements(tmp_path, monkeypatch):
@@ -1098,13 +1108,22 @@ def test_semantic_validator_waives_single_account_wallet_requirements(tmp_path, 
 def test_copiers_file_is_authoritative_over_legacy_env_wallet(monkeypatch, tmp_path):
     # Legacy PMCOPY__WALLET__* values may still be set in the environment;
     # with a copiers roster they must NOT become an extra or merged account.
-    monkeypatch.setenv("PMCOPY__WALLET__PRIVATE_KEY", KEY_B)
-    monkeypatch.setenv("PMCOPY__WALLET__FUNDER_ADDRESS", FUNDER_B)
+    legacy_key = "0x" + "e" * 64
+    legacy_funder = "0x" + "e" * 40
+    assert legacy_key not in {KEY_A, KEY_B} and legacy_funder not in {FUNDER_A, FUNDER_B}
+    monkeypatch.setenv("PMCOPY__WALLET__PRIVATE_KEY", legacy_key)
+    monkeypatch.setenv("PMCOPY__WALLET__FUNDER_ADDRESS", legacy_funder)
     _set_default_env(monkeypatch)
     cfg = _config(COPIERS_CONFIG_FILE=_copiers_file(tmp_path, monkeypatch, _paper_yaml()))
     users = load_runtime_users([], cfg)
+
     assert [u.user_id for u in users] == ["primary", "secondary"]
-    assert all(u.wallet.private_key.get_secret_value() != KEY_B or u.user_id == "primary" for u in users)
+    resolved_keys = {u.wallet.private_key.get_secret_value() for u in users}
+    resolved_funders = {u.wallet.funder_address for u in users}
+    assert resolved_keys == {KEY_A, KEY_B}
+    assert resolved_funders == {FUNDER_A, FUNDER_B}
+    assert legacy_key not in resolved_keys
+    assert legacy_funder not in resolved_funders
 
 
 def test_legacy_single_account_maps_to_one_deterministic_copier(caplog):

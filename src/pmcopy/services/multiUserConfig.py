@@ -41,6 +41,7 @@ Input contracts enforced here:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
@@ -53,6 +54,8 @@ from pmcopy.config.env import SignatureType, WalletConfig
 
 if TYPE_CHECKING:
     from pmcopy.config.app_config import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -408,24 +411,94 @@ def _reject_duplicate_users(users: list[RuntimeUser]) -> None:
             seen_funders[funder_key] = user.user_id
         # Live entries may omit funder_address (derived later); the private
         # key is then the wallet identity. Compare it internally and name
-        # only the users in the error — never the key material.
+        # only the users in the error — never the key material. Empty keys
+        # carry no identity (schema v2 paper copiers may legitimately have
+        # no signing secret) and are skipped: two empty secrets are not a
+        # shared wallet.
         private_key = user.wallet.private_key.get_secret_value()
-        previous_key_user = seen_private_keys.get(private_key)
-        if previous_key_user is not None:
-            raise ValueError(
-                f"multi-user config entries {previous_key_user!r} and "
-                f"{user.user_id!r} share the same wallet private_key; one "
-                "wallet may back exactly one copier entry"
-            )
-        seen_private_keys[private_key] = user.user_id
+        if private_key:
+            previous_key_user = seen_private_keys.get(private_key)
+            if previous_key_user is not None:
+                raise ValueError(
+                    f"multi-user config entries {previous_key_user!r} and "
+                    f"{user.user_id!r} share the same wallet private_key; one "
+                    "wallet may back exactly one copier entry"
+                )
+            seen_private_keys[private_key] = user.user_id
+
+
+def _is_descendant(child: Path, parent: Path) -> bool:
+    """Path.is_relative_to back-port for 3.8 + readability."""
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:  # pragma: no cover — Python < 3.9
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+
+def _resolve_confined_roster_path(
+    config_file: str, *, setting: str, suffixes: tuple[str, ...]
+) -> Path:
+    """Resolve an operator-supplied roster path with a confined-deputy guard.
+
+    ``Path(x).resolve()`` follows symlinks, then the resolved path must live
+    under cwd or $HOME — a misconfigured roster pointing at an arbitrary
+    system file must fail closed before any read fills memory. The suffix
+    check pins the expected document format per roster schema.
+    """
+    resolved = Path(config_file).expanduser().resolve(strict=False)
+    safe_roots = (
+        Path.home().resolve(strict=False),
+        Path.cwd().resolve(strict=False),
+    )
+    if not any(resolved == root or _is_descendant(resolved, root) for root in safe_roots):
+        raise ValueError(
+            f"{setting} must point under $HOME or the working directory; "
+            f"resolved path was {resolved}"
+        )
+    if resolved.suffix.lower() not in suffixes:
+        expected = " or ".join(suffixes)
+        raise ValueError(f"{setting} must be a {expected} file; got {resolved.suffix!r}")
+    return resolved
 
 
 def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[RuntimeUser]:
     """Load per-user follow configuration.
 
+    Roster precedence (Task 22, documented migration rule):
+
+    1. ``app.copiers_config_file`` (schema v2 YAML) — AUTHORITATIVE when
+       set. Per-copier ``wallet.*_env`` references are then the only wallet
+       credential source; legacy ``PMCOPY__WALLET__*`` values are never
+       merged in. Combining it with ``app.multi_user_config_file`` is an
+       error (also enforced by the AppConfig semantic validator).
+    2. ``app.multi_user_config_file`` (v1 JSON) — unchanged legacy roster.
+    3. Neither — the legacy single-account env/config maps deterministically
+       to exactly ONE copier whose id is the EXISTING persisted identity
+       (the wallet funder address, or ``default`` until Deposit Wallet
+       binding re-keys it) so no ledger splits; a migration notice is
+       logged. It is never combined with a copiers file.
+
     Fallback behavior keeps the existing single-user flow but sources defaults
     from the strongly typed AppConfig instead of the legacy ENV snapshot.
     """
+    copiers_file = (getattr(config.app, "copiers_config_file", "") or "").strip()
+    if copiers_file:
+        if (config.app.multi_user_config_file or "").strip():
+            raise ValueError(
+                "app.copiers_config_file and app.multi_user_config_file are "
+                "both set; exactly one account roster may be configured (the "
+                "schema v2 copiers file is authoritative on its own)."
+            )
+        # Local import: copierConfig reuses this module's strict primitives,
+        # so the dependency must stay one-directional at module scope.
+        from pmcopy.services.copierConfig import load_runtime_users_from_copiers
+
+        return load_runtime_users_from_copiers(copiers_file, config)
+
     config_file = (config.app.multi_user_config_file or "").strip()
     if not config_file:
         # Pre-fix: signature_type=None left a hole that crashed
@@ -445,6 +518,17 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         # left every funder-configured deployment with a RuntimeUser keyed on
         # the funder while its follows still said "default".
         user_id = config.wallet.funder_address or "default"
+        # Task 22 migration notice: without a roster file the legacy
+        # single-account configuration maps deterministically to exactly ONE
+        # copier (this fallback) whose id is the existing persisted identity.
+        # It is never combined with a schema v2 copiers file — that file is
+        # authoritative whenever configured.
+        logger.info(
+            "legacy single-account configuration mapped to one default "
+            "copier (id=%s); configure app.copiers_config_file to declare "
+            "multiple copiers explicitly",
+            user_id,
+        )
         follows = {
             leader: UserFollowConfig(
                 user_id=user_id,
@@ -470,26 +554,14 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             )
         ]
 
-    # Confined-deputy guard: an operator-supplied path is read as JSON
-    # into the process. ``Path(x).resolve()`` so symlinks are followed,
-    # then require the resolved path under cwd or $HOME — a misconfigured
-    # ``MULTI_USER_CONFIG_FILE=/etc/passwd`` should NOT silently parse
-    # an arbitrary file. JSON parsing would normally reject it, but the
-    # read happens first and fills memory.
-    resolved = Path(config_file).expanduser().resolve(strict=False)
-    safe_roots = (
-        Path.home().resolve(strict=False),
-        Path.cwd().resolve(strict=False),
+    # Confined-deputy guard (shared with the schema v2 roster loader):
+    # ``MULTI_USER_CONFIG_FILE=/etc/passwd`` must fail closed before the
+    # read. ``json.loads`` cannot parse JSONC (comments/trailing commas);
+    # only .json is accepted. Operators wanting comments must strip them
+    # upstream.
+    resolved = _resolve_confined_roster_path(
+        config_file, setting="MULTI_USER_CONFIG_FILE", suffixes=(".json",)
     )
-    if not any(resolved == root or _is_descendant(resolved, root) for root in safe_roots):
-        raise ValueError(
-            f"MULTI_USER_CONFIG_FILE must point under $HOME or the working "
-            f"directory; resolved path was {resolved}"
-        )
-    # ``json.loads`` cannot parse JSONC (comments/trailing commas); only
-    # accept .json. Operators wanting comments must strip them upstream.
-    if resolved.suffix.lower() != ".json":
-        raise ValueError(f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}")
 
     payload = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
