@@ -1,20 +1,45 @@
-"""Relocated trading-core primitives must import without any control plane.
+"""Relocated trading-core primitives and composition roots need no control plane.
 
-Task 11 of the standalone refactor moves the shared primitives the trading
+Task 11 of the standalone refactor moved the shared primitives the trading
 runtime needs (monotonic clock, durable full-stop order-cancel apply, and the
 local ``bot trading`` command surface) out of the control-plane namespaces.
-This guard simulates the post-Task-12 world: the ``integrations.control_plane``
-and ``services.control_plane`` packages are blocked from import entirely, and
-the relocated modules must still import and work.
+Task 12 deletes the control-plane packages entirely. These guards simulate the
+post-deletion world: every removed control-plane module is blocked from import
+(or absent from disk), and the composition roots must still import cleanly and
+register none of the removed modules.
 
-The test runs in a subprocess so the import blocker cannot poison the shared
-module cache of the main test process.
+The subprocess tests run in a child process so the import blocker cannot poison
+the shared module cache of the main test process.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+_REMOVED_MODULE_PREFIXES = (
+    "integrations.control_plane",
+    "services.control_plane",
+)
+
+_REMOVED_MODULE_NAMES = (
+    "orchestrators.control_plane_auto_traders",
+    "orchestrators.control_plane_bootstrap",
+    "orchestrators.control_plane_discovery",
+    "orchestrators.control_plane_portfolio",
+    "orchestrators.control_plane_reads",
+    "orchestrators.control_plane_runtime",
+    "orchestrators.control_plane_settings",
+    "orchestrators.control_plane_tasks",
+    "storage.postgres.control_plane_audit_repository",
+    "storage.postgres.control_plane_entry_control_repository",
+    "storage.postgres.control_plane_query_repository",
+    "storage.postgres.control_plane_reentry_lock_repository",
+    "storage.postgres.control_plane_task_bulk_repository",
+)
 
 _BLOCKER = """
 import builtins
@@ -24,15 +49,18 @@ import sys
 
 
 class _ControlPlaneBlocker(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    BLOCKED_PREFIXES = (
-        "integrations.control_plane",
-        "services.control_plane",
-    )
+    BLOCKED_PREFIXES = %r
+    BLOCKED_NAMES = %r
 
-    def find_spec(self, fullname, path=None, target=None):
+    def _blocked(self, fullname):
         for prefix in self.BLOCKED_PREFIXES:
             if fullname == prefix or fullname.startswith(prefix + "."):
-                return importlib.machinery.ModuleSpec(fullname, self)
+                return True
+        return fullname in self.BLOCKED_NAMES
+
+    def find_spec(self, fullname, path=None, target=None):
+        if self._blocked(fullname):
+            return importlib.machinery.ModuleSpec(fullname, self)
         return None
 
     def create_module(self, spec):
@@ -45,7 +73,10 @@ class _ControlPlaneBlocker(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 sys.meta_path.insert(0, _ControlPlaneBlocker())
-"""
+""" % (
+    _REMOVED_MODULE_PREFIXES,
+    _REMOVED_MODULE_NAMES,
+)
 
 _VERIFY = """
 from adapters.clock import MonotonicClock, SystemMonotonicClock
@@ -71,37 +102,143 @@ assert hasattr(trading_command, "run_trading")
 print("cp-free-ok")
 """
 
+_VERIFY_COMPOSITION_ROOTS = """
+import sys
+
+import app  # noqa: F401  (composition root: must import with CP blocked)
+import bootstrap  # noqa: F401
+import bot_cli.main as cli_main  # noqa: F401
+
+blocked_prefixes = %r
+blocked_names = %r
+
+registered = set(sys.modules)
+for name in registered:
+    for prefix in blocked_prefixes:
+        assert not (name == prefix or name.startswith(prefix + ".")), (
+            "composition root registered removed module: " + name
+        )
+    assert name not in blocked_names, (
+        "composition root registered removed module: " + name
+    )
+
+print("composition-roots-cp-free-ok")
+""" % (
+    _REMOVED_MODULE_PREFIXES,
+    _REMOVED_MODULE_NAMES,
+)
+
+
+def _run_subprocess(script: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=REPOSITORY_ROOT,
+    )
+
 
 def test_relocated_primitives_import_with_control_plane_blocked() -> None:
     """Clock, full-stop apply, and the trading CLI need no control-plane import."""
 
-    completed = subprocess.run(
-        [sys.executable, "-c", _BLOCKER + _VERIFY],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    completed = _run_subprocess(_BLOCKER + _VERIFY)
 
     assert completed.returncode == 0, (
-        f"control-plane-free import failed:\nstdout:\n{completed.stdout}\n"
-        f"stderr:\n{completed.stderr}"
+        f"control-plane-free import failed:\\nstdout:\\n{completed.stdout}\\n"
+        f"stderr:\\n{completed.stderr}"
     )
     assert "cp-free-ok" in completed.stdout
+
+
+def test_composition_roots_import_and_register_no_control_plane() -> None:
+    """Standalone startup imports register none of the removed CP modules."""
+
+    completed = _run_subprocess(_BLOCKER + _VERIFY_COMPOSITION_ROOTS)
+
+    assert completed.returncode == 0, (
+        f"control-plane-free composition-root import failed:\\n"
+        f"stdout:\\n{completed.stdout}\\nstderr:\\n{completed.stderr}"
+    )
+    assert "composition-roots-cp-free-ok" in completed.stdout
 
 
 def test_relocated_modules_declare_no_control_plane_imports() -> None:
     """Static guard: the relocated sources never mention the control plane."""
 
-    from pathlib import Path
-
-    repository_root = Path(__file__).resolve().parents[1]
     relocated = (
-        repository_root / "adapters" / "clock.py",
-        repository_root / "services" / "trading_control.py",
-        repository_root / "bot_cli" / "commands" / "trading.py",
+        REPOSITORY_ROOT / "adapters" / "clock.py",
+        REPOSITORY_ROOT / "services" / "trading_control.py",
+        REPOSITORY_ROOT / "bot_cli" / "commands" / "trading.py",
     )
     for path in relocated:
         source = path.read_text(encoding="utf-8")
         assert "control_plane" not in source, (
             f"{path} must not reference control_plane after the relocation"
         )
+
+
+def test_removed_control_plane_surfaces_are_absent_from_disk() -> None:
+    """Deletion guard: the removed packages and orchestrators stay deleted."""
+
+    removed_paths = (
+        REPOSITORY_ROOT / "integrations" / "control_plane",
+        REPOSITORY_ROOT / "services" / "control_plane",
+        REPOSITORY_ROOT / "tests" / "control_plane",
+        REPOSITORY_ROOT / "tests" / "control_plane_http",
+        REPOSITORY_ROOT / "run_ccxt.py",
+        REPOSITORY_ROOT / "docs" / "ui",
+        REPOSITORY_ROOT / "docs" / "frontend-control-plane.md",
+        *(
+            REPOSITORY_ROOT / "orchestrators" / f"control_plane_{stem}.py"
+            for stem in (
+                "auto_traders",
+                "bootstrap",
+                "discovery",
+                "portfolio",
+                "reads",
+                "runtime",
+                "settings",
+                "tasks",
+            )
+        ),
+        *(
+            REPOSITORY_ROOT / "storage" / "postgres" / f"control_plane_{stem}_repository.py"
+            for stem in ("audit", "entry_control", "query", "reentry_lock", "task_bulk")
+        ),
+        *(
+            REPOSITORY_ROOT / "scripts" / f"{stem}.py"
+            for stem in (
+                "export_api_contract",
+                "api_contract_introspection",
+                "api_contract_tables",
+                "api_contract_wire",
+            )
+        ),
+    )
+    for path in removed_paths:
+        assert not path.exists(), f"{path} must stay deleted after Task 12"
+
+
+def test_kept_trading_survivors_never_import_control_plane() -> None:
+    """Static guard: kept surfaces are free of control-plane imports."""
+
+    kept = (
+        REPOSITORY_ROOT / "services" / "healthServer.py",
+        REPOSITORY_ROOT / "orchestrators" / "liveness_heartbeat.py",
+        REPOSITORY_ROOT / "services" / "trading_permission.py",
+        REPOSITORY_ROOT / "storage" / "postgres" / "trading_control_repo.py",
+        REPOSITORY_ROOT / "services" / "telemetry",
+        REPOSITORY_ROOT / "orchestrators" / "telemetry_bootstrap.py",
+        REPOSITORY_ROOT / "services" / "trading_control.py",
+        REPOSITORY_ROOT / "adapters" / "clock.py",
+        REPOSITORY_ROOT / "bot_cli",
+    )
+    for path in kept:
+        sources = [path] if path.is_file() else sorted(path.rglob("*.py"))
+        assert sources, f"missing kept surface: {path}"
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            assert "control_plane" not in text, (
+                f"{source} must not reference control_plane after Task 12"
+            )

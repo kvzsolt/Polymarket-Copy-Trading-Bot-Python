@@ -148,23 +148,175 @@ async def test_core_null_runtime_telemetry_never_raises() -> None:
     assert gateway.cancel_calls == ["order-a"]
 
 
-def test_legacy_control_plane_runtime_module_reexports_the_core_signal() -> None:
-    """The old import path stays working until the control plane is deleted."""
+def test_legacy_control_plane_runtime_module_is_gone() -> None:
+    """The temporary Task-11 re-export shim died with its host package."""
 
-    from services.control_plane.runtime import (
-        OpenOrderControlGateway as LegacyGateway,
-        RuntimeSafetyApplyError as LegacyError,
-        TradingControlRuntimeSignal as LegacySignal,
+    import importlib.util
+
+    assert importlib.util.find_spec("services.control_plane") is None
+
+
+class StatefulControlRepo:
+    """Persist calls without touching PostgreSQL, from a mutable state."""
+
+    state: TradingControlState = NOW_STATE
+    enabled_calls: list[tuple[bool, str, str]] = []
+
+    def __init__(self, pool) -> None:
+        self.pool = pool
+        type(self).enabled_calls = []
+
+    async def get(self) -> TradingControlState:
+        return type(self).state
+
+    async def set_enabled(self, enabled, *, reason, updated_by) -> TradingControlState:
+        type(self).enabled_calls.append((enabled, reason, updated_by))
+        current = type(self).state
+        return TradingControlState(
+            enabled=enabled,
+            generation=current.generation + len(type(self).enabled_calls),
+            reason=reason,
+            updated_at=current.updated_at,
+            updated_by=updated_by,
+        )
+
+
+def _run_stateful_trading(
+    monkeypatch,
+    *,
+    action: str,
+    state: TradingControlState,
+    confirm: str = "LIVE",
+    reason: str = "incident",
+) -> tuple[list[tuple[bool, str, str]], int]:
+    import argparse
+
+    import bot_cli.commands.trading as trading_command
+    import storage.postgres.connection as pg_connection
+    import storage.postgres.migrations as pg_migrations
+    import storage.postgres.trading_control_repo as trading_control_repo
+
+    StatefulControlRepo.state = state
+
+    pool = _fake_pool()
+
+    async def fake_init_pool(*args, **kwargs):
+        return pool
+
+    async def fake_shutdown_pool():
+        return None
+
+    async def fake_apply_migrations(conn):
+        return None
+
+    monkeypatch.setattr(trading_command, "load_config", lambda: _config(trading_mode="paper"))
+    monkeypatch.setattr(pg_connection, "init_pool", fake_init_pool)
+    monkeypatch.setattr(pg_connection, "shutdown_pool", fake_shutdown_pool)
+    monkeypatch.setattr(pg_migrations, "apply_migrations", fake_apply_migrations)
+    monkeypatch.setattr(trading_control_repo, "TradingControlRepo", StatefulControlRepo)
+
+    args = argparse.Namespace(
+        trading_action=action,
+        reason=reason,
+        operator="operator-a",
+        confirm=confirm,
     )
-    from services.trading_control import (
-        OpenOrderControlGateway,
-        RuntimeSafetyApplyError,
-        TradingControlRuntimeSignal,
+    exit_code = trading_command.run_trading(args)
+    return StatefulControlRepo.enabled_calls, exit_code
+
+
+def _full_stop_state() -> TradingControlState:
+    return TradingControlState(
+        enabled=False,
+        generation=7,
+        reason="runtime.full_stop",
+        updated_at=NOW_STATE.updated_at,
+        updated_by="responder",
     )
 
-    assert LegacySignal is TradingControlRuntimeSignal
-    assert LegacyError is RuntimeSafetyApplyError
-    assert LegacyGateway is OpenOrderControlGateway
+
+def test_local_cli_resume_refuses_to_clear_a_durable_full_stop(monkeypatch, capsys) -> None:
+    """RULING: resume alone must not silently clear a money-path full stop."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="resume",
+        state=_full_stop_state(),
+    )
+
+    assert exit_code != 0
+    assert enabled_calls == [], "resume must not write the control while a full stop is active"
+    output = capsys.readouterr()
+    assert "clear-full-stop" in output.out + output.err
+
+
+def test_local_cli_clear_full_stop_resumes_trading_explicitly(monkeypatch, capsys) -> None:
+    """The dedicated explicit action is the only way to clear a full stop."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="clear-full-stop",
+        state=_full_stop_state(),
+    )
+
+    assert exit_code == 0
+    assert enabled_calls == [(True, "incident", "operator-a")]
+    assert '"enabled": true' in capsys.readouterr().out
+
+
+def test_local_cli_clear_full_stop_requires_live_confirmation(monkeypatch, capsys) -> None:
+    """Clearing the durable safety stop needs the explicit LIVE confirmation."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="clear-full-stop",
+        state=_full_stop_state(),
+        confirm="live",
+    )
+
+    assert exit_code != 0
+    assert enabled_calls == []
+    assert "LIVE" in capsys.readouterr().out
+
+
+def test_local_cli_clear_full_stop_is_idempotent_without_an_active_stop(monkeypatch, capsys) -> None:
+    """Clearing without an active full stop is a read-only no-op."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="clear-full-stop",
+        state=TradingControlState(
+            enabled=True,
+            generation=4,
+            reason="runtime.resume",
+            updated_at=NOW_STATE.updated_at,
+            updated_by="operator-a",
+        ),
+    )
+
+    assert exit_code == 0
+    assert enabled_calls == []
+    assert '"enabled": true' in capsys.readouterr().out
+
+
+def test_local_cli_resume_still_clears_an_ordinary_pause(monkeypatch, capsys) -> None:
+    """Plain pause/resume round trip keeps its pre-existing semantics."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="resume",
+        state=TradingControlState(
+            enabled=False,
+            generation=2,
+            reason="ops.weekend_pause",
+            updated_at=NOW_STATE.updated_at,
+            updated_by="operator-a",
+        ),
+    )
+
+    assert exit_code == 0
+    assert enabled_calls == [(True, "incident", "operator-a")]
+    assert '"enabled": true' in capsys.readouterr().out
 
 
 class RecordingControlRepo:
