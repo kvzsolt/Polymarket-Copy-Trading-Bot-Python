@@ -124,3 +124,9 @@ docker run --rm --network none polymarket-copy-trader:main doctor --help
 
 These checks build and inspect the container without enabling trading or
 testing a funded account. The image's production readiness probe remains strict.
+
+The CI docker-smoke job runs the paper-mode container against a disposable
+postgres plus a deterministic fake Polygon provider (`scripts/fake_polygon_rpc.py`,
+per-run CA, `--add-host` onto the approved alchemy hostname) because startup
+fail-closes until `polymarket.rpc_url` names an approved endpoint; the same
+rig reproduces the smoke locally.

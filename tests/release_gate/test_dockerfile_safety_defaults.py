@@ -148,6 +148,43 @@ def test_docker_smoke_uses_hermetic_health_contract(
     assert ".State.Running" not in readiness_probe
 
 
+def test_docker_smoke_seeds_hermetic_approved_provider_stub(ci_workflow_text: str) -> None:
+    """The paper smoke must satisfy the approved-provider startup gate.
+
+    Startup fail-closes until ``polymarket.rpc_url`` names an approved
+    alchemy/infura endpoint (``ProviderEndpoints``) with real balance
+    evidence, and CI holds no provider credential. The smoke therefore maps
+    the approved hostname onto a deterministic fake RPC
+    (``scripts/fake_polygon_rpc.py``) with a per-run CA, a runtime-generated
+    URL token, and a certifi trust-bundle mount — never a literal
+    credential, and the strict production probe stays overridden by the
+    local ``/health`` contract above.
+    """
+    smoke_run = ci_workflow_text.split("- name: docker run (paper mode)", maxsplit=1)[1].split(
+        "- name: container readiness probe", maxsplit=1
+    )[0]
+    stub_step = ci_workflow_text.split(
+        "- name: start fake Polygon provider (approved-endpoint stub)", maxsplit=1
+    )[1].split("- name: docker run (paper mode)", maxsplit=1)[0]
+
+    assert "fake_polygon_rpc.py" in stub_step, "CI must run the deterministic fake provider"
+    assert "openssl req -x509" in stub_step, "the stub CA is generated per run"
+    assert "certifi" in stub_step and "bundle.pem" in stub_step, (
+        "the image's certifi bundle must be extended: the provider transport "
+        "runs trust_env=False and ignores SSL_CERT_FILE"
+    )
+    assert "--add-host polygon-mainnet.g.alchemy.com:" in smoke_run
+    for key in ("PMCOPY__POLYMARKET__RPC_URL", "PMCOPY__WALLET__POLYGON_RPC_URL"):
+        assert f"{key}=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" in smoke_run, (
+            f"{key} must use the approved-host form with a runtime token"
+        )
+    assert "FAKE_RPC_TOKEN=$(openssl rand -hex" in smoke_run, (
+        "the URL token must be generated at runtime, never a literal credential"
+    )
+    cleanup = ci_workflow_text.split("- name: cleanup", maxsplit=1)[1]
+    assert "pmct-rpc" in cleanup, "cleanup must remove the stub container"
+
+
 def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     setuptools_cfg = project["tool"]["setuptools"]

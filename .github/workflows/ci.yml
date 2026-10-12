@@ -251,16 +251,76 @@ jobs:
           done
           docker logs pmct-postgres
           exit 1
+      - name: start fake Polygon provider (approved-endpoint stub)
+        run: |
+          # Startup fail-closes until polymarket.rpc_url names an approved
+          # alchemy/infura endpoint with live balance evidence (see
+          # ProviderEndpoints / ProviderRuntime.from_config), and CI holds no
+          # provider credential. Serve the approved hostname hermetically:
+          # per-run CA + scripts/fake_polygon_rpc.py on the smoke network,
+          # mapped onto the bot container with --add-host. The URL token is
+          # generated at runtime — never a literal credential.
+          mkdir -p /tmp/pmct-smoke-certs
+          cp scripts/fake_polygon_rpc.py /tmp/pmct-smoke-certs/
+          cd /tmp/pmct-smoke-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 1 \
+            -subj "/CN=pmct-smoke-ca" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -addext "subjectKeyIdentifier=hash"
+          openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr \
+            -subj "/CN=polygon-mainnet.g.alchemy.com"
+          printf '%s\n' \
+            'subjectAltName=DNS:polygon-mainnet.g.alchemy.com,DNS:data-api.polymarket.com,DNS:clob.polymarket.com,DNS:gamma-api.polymarket.com' \
+            'extendedKeyUsage=serverAuth' \
+            'keyUsage=digitalSignature,keyEncipherment' \
+            'authorityKeyIdentifier=keyid,issuer' \
+            'subjectKeyIdentifier=hash' > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+            -out server.pem -days 1 -extfile ext.cnf
+          # The provider transport ignores SSL_CERT_FILE (trust_env=False), so
+          # the image's certifi bundle is extended instead: extract it,
+          # append the smoke CA, and bind-mount the merged bundle over it.
+          CERTIFI_PATH=$(docker run --rm --network none --entrypoint python \
+            polymarket-copy-trader:ci -c "import certifi; print(certifi.where())")
+          docker run --rm --network none --entrypoint cat polymarket-copy-trader:ci \
+            "$CERTIFI_PATH" > bundle.pem
+          cat ca.pem >> bundle.pem
+          # Root user: the stub binds privileged port 443 (https URLs have no
+          # explicit port). Reuses the already-built bot image; no extra pull.
+          docker run -d --name pmct-rpc --network pmct-smoke-net --user root \
+            -v /tmp/pmct-smoke-certs:/cfg:ro --entrypoint python \
+            polymarket-copy-trader:ci /cfg/fake_polygon_rpc.py /cfg/server.pem /cfg/server.key
+          for _ in $(seq 1 10); do
+            if docker logs pmct-rpc 2>/dev/null | grep -q "ready on :443"; then
+              echo "fake provider ready"; exit 0
+            fi
+            sleep 1
+          done
+          docker logs pmct-rpc
+          exit 1
       - name: docker run (paper mode)
         run: |
+          RPC_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' pmct-rpc)
+          FAKE_RPC_TOKEN=$(openssl rand -hex 16)
+          CERTIFI_PATH=$(docker run --rm --network none --entrypoint python \
+            polymarket-copy-trader:ci -c "import certifi; print(certifi.where())")
           docker run -d --name pmct-smoke --network pmct-smoke-net \
+            --add-host polygon-mainnet.g.alchemy.com:$RPC_IP \
+            --add-host data-api.polymarket.com:$RPC_IP \
+            --add-host clob.polymarket.com:$RPC_IP \
+            --add-host gamma-api.polymarket.com:$RPC_IP \
+            -v /tmp/pmct-smoke-certs/bundle.pem:$CERTIFI_PATH:ro \
+            -e SSL_CERT_FILE=/tmp/smoke-ca/bundle.pem \
+            -v /tmp/pmct-smoke-certs/bundle.pem:/tmp/smoke-ca/bundle.pem:ro \
             -e PMCOPY__EXECUTION__TRADING_MODE=paper \
             -e PMCOPY__DATABASE__DSN=postgresql://bot:paper-smoke-only@pmct-postgres:5432/polymarket_copytrading_python \
             -e PMCOPY__WALLET__FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
-            -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com \
-            -e PMCOPY__NETWORK__RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
+            -e PMCOPY__NETWORK__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
             -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
             -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
+            -e PMCOPY__POLYMARKET__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
             -e PMCOPY__APP__ENABLE_METRICS_SERVER=true \
             -e PMCOPY__APP__METRICS_BIND_HOST=0.0.0.0 \
             -e PMCOPY__APP__METRICS_PORT=9102 \
@@ -296,4 +356,6 @@ jobs:
           docker logs pmct-postgres || true
           docker stop pmct-postgres || true
           docker rm pmct-postgres || true
+          docker rm -f pmct-rpc || true
+          rm -rf /tmp/pmct-smoke-certs
           docker network rm pmct-smoke-net || true
