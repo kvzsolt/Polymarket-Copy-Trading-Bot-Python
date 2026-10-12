@@ -6,8 +6,9 @@ Original Phase 3.11 findings this file pins:
   legacy ``runtime.local.yml`` shim);
 - ``_deep_merge`` must treat a YAML ``null`` as "unset", never as an eraser
   (root cause of a malformed ``runtime.local.yml`` bricking startup);
-- secrets/local-config paths resolve against the deployment root (env var or
-  marker-file walk-up), never the raw process CWD.
+- secrets/local-config paths resolve against the deployment root (the
+  ``PMCOPY_DEPLOYMENT_ROOT`` env var or the CWD — ancestors are never
+  walked), never the raw process CWD's parents.
 """
 
 from __future__ import annotations
@@ -148,12 +149,15 @@ def test_deployment_root_resolved_from_foreign_cwd_via_env_var(
     assert config.copy_trading.enabled_wallets() == PACKAGED_TRADER_WALLETS
 
 
-def test_deployment_root_marker_walk_up_from_inside_the_deployment(
+def test_deployment_root_is_cwd_without_the_env_var(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without the env var, the nearest ancestor containing a config marker
-    or secrets.env is the deployment root."""
+    """Without the env var the deployment root is the CWD itself — ancestors
+    are never walked (Task 19: no credential discovery from arbitrary parent
+    directories). A nested CWD inside a deployment no longer discovers the
+    ancestor's shim or secrets; run from the deployment root or set
+    ``PMCOPY_DEPLOYMENT_ROOT``."""
     deployment = _deployment(tmp_path, "sizing:\n  percentage: 9.5\n")
     secrets = deployment / "secrets.env"
     secrets.write_text("PMCOPY__DATABASE__DSN=postgresql://t:t@l/t\n", encoding="utf-8")
@@ -165,4 +169,5 @@ def test_deployment_root_marker_walk_up_from_inside_the_deployment(
 
     config = load_config(_overrides())
 
-    assert config.sizing.percentage == 9.5
+    # Ancestor layers were not merged: the packaged default survives.
+    assert config.sizing.percentage != 9.5

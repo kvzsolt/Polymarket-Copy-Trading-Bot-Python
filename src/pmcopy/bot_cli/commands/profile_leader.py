@@ -10,12 +10,29 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
+
+def _checkout_repo_root() -> Path | None:
+    """Return the checkout root, or ``None`` in an installed distribution.
+
+    ``parents[4]`` of this module lands on the repository root only when
+    running from a source checkout. In a wheel/sdist install it points
+    inside the interpreter's own tree (``<venv>/lib/python3.x``), which must
+    never become an allowed ``--output`` write root — no artifact of this
+    command may be written into the installed package environment. The
+    checkout is detected by its ``pyproject.toml`` + ``src/pmcopy`` layout.
+    """
+    if (_REPO_ROOT / "pyproject.toml").is_file() and (_REPO_ROOT / "src" / "pmcopy").is_dir():
+        return _REPO_ROOT
+    return None
+
+
 # SonarCloud S8707 (LLM path-traversal guard): ``--output`` accepts any
 # path, but an LLM (or accident) can escape the workspace (e.g.
 # ``--output ../../etc/cron.d/payload``). Resolve the path and require it
-# to live under the repo root OR under the system temp dir (so pytest's
-# ``tmp_path`` fixture keeps working in tests). Everything else is
-# rejected with exit code 2 before any file-system write happens.
+# to live under the checkout repo root (when running from one) OR under the
+# system temp dir (so pytest's ``tmp_path`` fixture keeps working in
+# tests). Everything else is rejected with exit code 2 before any
+# file-system write happens.
 #
 # ``tempfile.gettempdir()`` is used instead of a hardcoded ``"/tmp"``
 # literal so SonarCloud S5443 (publicly writable directories) does not
@@ -23,10 +40,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 # ``TMPDIR``/``TEMP``/``TMP`` environment, and on pytest's ``tmp_path``
 # the resolved path is a user-private subdirectory (``pytest-of-<user>``)
 # that is 0700-permissioned, not the world-writable ``/tmp`` itself.
-_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = (
-    _REPO_ROOT,
-    Path(tempfile.gettempdir()),
-)
+def _build_write_roots() -> tuple[Path, ...]:
+    """Return the allowed ``--output`` write roots for this process."""
+    return tuple(
+        root
+        for root in (
+            _checkout_repo_root(),
+            Path(tempfile.gettempdir()),
+        )
+        if root is not None
+    )
+
+
+_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = _build_write_roots()
 
 
 def _validate_writable_path(raw: str) -> Path | None:
@@ -48,7 +74,8 @@ def _validate_writable_path(raw: str) -> Path | None:
                 return resolved
             except ValueError:
                 pass
-    raise ValueError(f"--output must resolve under {_REPO_ROOT} or /tmp; got {resolved}")
+    allowed = " or ".join(str(root) for root in _ALLOWED_WRITE_ROOTS)
+    raise ValueError(f"--output must resolve under {allowed}; got {resolved}")
 
 
 def register_profile_leader_command(subparsers: argparse._SubParsersAction) -> None:

@@ -71,6 +71,7 @@ from pmcopy.config.trader_config import (
 )
 from pmcopy.config.v1_runtime import CopyTasksRuntimeConfig
 from pmcopy.domain.detection import DetectionMode
+from pmcopy.utils.packaged_resources import deployment_root, packaged_dir
 
 __all__ = [
     "AppConfig",
@@ -1530,7 +1531,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
 
 
-
 def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
     """Fail closed when ``detection.mode`` selects an unusable on-chain source.
 
@@ -1792,12 +1792,24 @@ class AppConfigSemanticValidator:
 #
 # ---------------------------------------------------------------------------
 
-_CONFIG_ROOT = Path(__file__).resolve().parent
-# Deployment-local layers are resolved relative to a deployment root, not the
-# process CWD (Phase 3.11). The root is, in priority order: the
-# ``PMCOPY_DEPLOYMENT_ROOT`` env var, or the nearest ancestor directory (walked
-# up from CWD) that contains a service-config marker (``config/app.yml``, the
-# legacy ``config/runtime.yml``) or a ``secrets.env`` file. Falls back to CWD.
+
+def packaged_config_dir() -> Path:
+    """Return the packaged readonly ``config/`` tree via ``importlib.resources``.
+
+    The shipped YAML defaults are readonly inputs: they are read from the
+    installed distribution (wheel/sdist → site-packages, possibly read-only)
+    and never written to. An explicit ``config_dir`` argument or a test
+    monkeypatch of ``_CONFIG_ROOT`` overrides this directory.
+    """
+    return packaged_dir("pmcopy.config")
+
+
+_CONFIG_ROOT = packaged_config_dir()
+# Deployment-local layers are resolved against a deployment root, not the
+# process CWD. The root is exactly: the ``PMCOPY_DEPLOYMENT_ROOT`` env var
+# (when it names an existing directory), else the CWD. Parent directories
+# are never walked — no credential discovery from arbitrary ancestors
+# (Task 19 packaging hardening).
 _RUNTIME_LOCAL_YAML = "config/runtime.local.yml"
 _SECRETS_ENV = "secrets.env"
 _DEFAULT_ENVIRONMENT = "paper"
@@ -1826,21 +1838,13 @@ SERVICE_CONFIG_FILES: tuple[str, ...] = (
 
 
 def _resolve_deployment_root() -> Path:
-    """Find the deployment root so local secrets/shim are not CWD-relative."""
-    explicit = os.getenv("PMCOPY_DEPLOYMENT_ROOT")
-    if explicit:
-        root = Path(explicit).expanduser().resolve()
-        if root.is_dir():
-            return root
-    cwd = Path.cwd()
-    for candidate in [cwd, *cwd.parents]:
-        if (
-            (candidate / "config" / "app.yml").exists()
-            or (candidate / "config" / "runtime.yml").exists()
-            or (candidate / "secrets.env").exists()
-        ):
-            return candidate
-    return cwd
+    """Find the deployment root so local secrets/shim are not CWD-relative.
+
+    Explicit and bounded: ``PMCOPY_DEPLOYMENT_ROOT`` (an existing directory)
+    or the CWD. Ancestor directories are never searched — a leftover
+    ``secrets.env`` in a parent must not leak into an unrelated process.
+    """
+    return deployment_root()
 
 
 class _LayeredModel(BaseModel):

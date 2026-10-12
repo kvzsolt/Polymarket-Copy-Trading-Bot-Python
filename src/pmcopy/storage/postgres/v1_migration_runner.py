@@ -12,6 +12,8 @@ from pathlib import Path
 
 import asyncpg
 
+from pmcopy.utils.packaged_resources import packaged_resource_dir
+
 MigrationConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
@@ -27,8 +29,12 @@ class V1MigrationCatalog:
     """Discover packaged v1 migrations in deterministic filename order."""
 
     def __init__(self, migration_directory: Path | None = None) -> None:
-        self._migration_directory = migration_directory or (
-            Path(__file__).resolve().parent / "migrations"
+        # Packaged migrations are readonly inputs resolved through
+        # importlib.resources so an installed wheel serves them from
+        # (possibly read-only) site-packages; the explicit directory
+        # override stays available for operators and tests.
+        self._migration_directory = migration_directory or packaged_resource_dir(
+            "pmcopy.storage.postgres", "migrations"
         )
 
     def migrations(self) -> tuple[V1Migration, ...]:
