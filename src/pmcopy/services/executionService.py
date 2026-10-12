@@ -465,10 +465,16 @@ def _effective_idempotency_key(
     tick_size: Decimal,
     intent_id: str = "",
     policy_version: str = "",
+    environment: str = "",
 ) -> str:
     """Compute idempotency key from effective post-sizing order parameters.
 
-    Delegates to :func:`services.idempotency.compute_effective_key`.
+    Delegates to :func:`services.idempotency.compute_effective_key`. The
+    ``environment`` discriminator (multi-copier addon §5) keeps paper and
+    live submissions of the same copier/source-intent from sharing one
+    ``orders`` dedup row: a paper row's simulated order id must never answer
+    a live submission's duplicate check. Empty (the default) preserves the
+    legacy derivation for environment-unaware callers.
     """
     return _compute_effective_key(
         user=user,
@@ -480,6 +486,7 @@ def _effective_idempotency_key(
         tick_size=tick_size,
         intent_id=intent_id,
         policy_version=policy_version,
+        environment=environment,
     )
 
 
@@ -1376,6 +1383,14 @@ class ExecutionService:
             tick_size=tick_size,
             intent_id=resolved_intent_id,
             policy_version=getattr(self._config, "policy_version", "") or "",
+            # Multi-copier addon §5: the execution idempotency key must
+            # distinguish the execution mode/environment. ``trading_mode``
+            # is the authoritative paper/live control; missing on legacy
+            # SimpleNamespace test configs, where "" keeps the historical
+            # derivation (and therefore historical dedup rows) intact.
+            environment=str(
+                getattr(getattr(self._config, "execution", None), "trading_mode", "") or ""
+            ),
         )
 
         order_repo = self.order_repo

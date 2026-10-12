@@ -31,8 +31,9 @@ class EffectiveOrderIdentity:
     effective_size: Decimal
     effective_price: Decimal
     tick_size: Decimal
-    intent_id: str
-    policy_version: str
+    intent_id: str = ""
+    policy_version: str = ""
+    environment: str = ""
 
 
 def compute_effective_key(
@@ -46,6 +47,7 @@ def compute_effective_key(
     tick_size: Decimal,
     intent_id: str = "",
     policy_version: str = "",
+    environment: str = "",
 ) -> str:
     """Compute a SHA-256 idempotency key from the **effective adjusted** order.
 
@@ -73,6 +75,16 @@ def compute_effective_key(
         Optional source/intent identifier for traceability.
     policy_version:
         Optional policy version to distinguish rule changes.
+    environment:
+        Optional execution-environment discriminator (multi-copier addon
+        §5): the execution mode ("paper"/"live"). The venue is structurally
+        fixed to the single CCXT Polymarket adapter (no venue selector
+        exists), so a venue axis can never vary inside one database.
+        Included in the payload only when non-empty, exactly like
+        ``policy_version`` — an omitted or empty value reproduces the
+        historical derivation byte-for-byte, so rows written by
+        environment-unaware callers keep colliding as before (safe upgrade
+        window: no dedup that used to hold stops holding).
 
     Returns
     -------
@@ -99,6 +111,8 @@ def compute_effective_key(
     }
     if policy_version:
         payload_dict["policy_version"] = policy_version
+    if environment:
+        payload_dict["environment"] = environment
     payload = json.dumps(
         payload_dict,
         separators=(",", ":"),
@@ -118,6 +132,7 @@ def compute_effective_identity(
     tick_size: Decimal,
     intent_id: str = "",
     policy_version: str = "",
+    environment: str = "",
 ) -> EffectiveOrderIdentity:
     """Build a full :class:`EffectiveOrderIdentity` with the computed key.
 
@@ -134,6 +149,7 @@ def compute_effective_identity(
         tick_size=tick_size,
         intent_id=intent_id,
         policy_version=policy_version,
+        environment=environment,
     )
     return EffectiveOrderIdentity(
         idempotency_key=key,
@@ -146,4 +162,5 @@ def compute_effective_identity(
         tick_size=tick_size,
         intent_id=intent_id,
         policy_version=policy_version,
+        environment=environment,
     )
