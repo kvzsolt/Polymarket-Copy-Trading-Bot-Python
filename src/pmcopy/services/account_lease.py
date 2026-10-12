@@ -1,0 +1,224 @@
+"""Cross-process account lease manager (Task 21).
+
+Owns the per-process half of the ``account_execution_leases`` protocol so
+two processes configured for the same copier account can never BOTH be
+active writers:
+
+* startup ACQUIRES one lease per account before any execution enablement
+  and fails closed while another live lease holds the row;
+* a supervised heartbeat RENEWS every held lease; a confirmed loss (another
+  process took the expired lease over) raises ``AccountLeaseLost`` so the
+  supervisor fail-closes the process instead of limping along un-leased;
+  a transient database outage is logged and retried on the next tick (the
+  TTL outlives several renewal intervals by construction);
+* graceful shutdown RELEASES every held lease for a clean handoff; a
+  crashed holder's lease simply expires and the next process takes over
+  with a logged takeover warning.
+
+Timing contract: the TTL (default 60s) must comfortably outlive the renewal
+interval (default 15s) so a handful of transient renewal failures never
+expire a live holder's lease. One lease per account regardless of trading
+mode — paper and live both write money-shaped rows (reservations, orders,
+positions) to the shared database — the holder's mode is recorded for
+observability only.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import socket
+import uuid
+from datetime import datetime
+from typing import Any
+
+from pmcopy.domain.account_identity import CopierAccountId
+from pmcopy.storage.postgres.account_lease_repo import (
+    AccountLeaseRepo,
+    LeaseAcquisition,
+)
+from pmcopy.utils.logger import get_logger
+
+DEFAULT_LEASE_TTL_SECONDS = 60.0
+DEFAULT_RENEWAL_INTERVAL_SECONDS = 15.0
+
+logger = get_logger("AccountLease")
+
+
+class AccountLeaseLost(RuntimeError):
+    """A held lease was taken over by another process; this one must stop."""
+
+
+class AccountLeaseManager:
+    """Acquire, renew, and release one lease per copier account."""
+
+    def __init__(
+        self,
+        pool: Any = None,
+        *,
+        repo: Any = None,
+        holder_host: str | None = None,
+        process_token: str | None = None,
+        ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS,
+        renewal_interval_seconds: float = DEFAULT_RENEWAL_INTERVAL_SECONDS,
+    ) -> None:
+        if repo is None and pool is None:
+            raise ValueError("AccountLeaseManager requires a pool or a repo")
+        if repo is None:
+            repo = AccountLeaseRepo(pool)
+        ttl = float(ttl_seconds)
+        interval = float(renewal_interval_seconds)
+        if ttl <= 0:
+            raise ValueError("lease ttl_seconds must be positive")
+        if interval <= 0:
+            raise ValueError("lease renewal_interval_seconds must be positive")
+        if interval >= ttl:
+            raise ValueError(
+                "lease renewal_interval_seconds must be shorter than the TTL "
+                "so transient renewal failures never expire a live lease"
+            )
+        self._repo = repo
+        self._ttl_seconds = ttl
+        self.renewal_interval_seconds = interval
+        self._holder_host = holder_host or socket.gethostname()
+        self.process_token = process_token or uuid.uuid4().hex
+        self._held: dict[str, CopierAccountId] = {}
+        self._closed = False
+
+    @property
+    def holder_description(self) -> str:
+        """Operator-visible holder identity (never a secret)."""
+        return f"host={self._holder_host} token={self.process_token}"
+
+    @property
+    def held_accounts(self) -> tuple[CopierAccountId, ...]:
+        return tuple(self._held.values())
+
+    async def acquire(self, account: CopierAccountId, *, mode: str) -> LeaseAcquisition:
+        """Acquire the lease for one account (idempotent per process)."""
+        outcome = await self._repo.acquire(
+            user_id=account.value,
+            holder_host=self._holder_host,
+            holder_token=self.process_token,
+            mode=str(mode or ""),
+            ttl_seconds=self._ttl_seconds,
+        )
+        if not outcome.acquired:
+            held_by = outcome.held_by
+            logger.warning(
+                "account_lease_held_by_other | user=%s mode=%s holder_host=%s "
+                "holder_expires_at=%s — refusing to start a second writer",
+                account.value,
+                mode,
+                getattr(held_by, "holder_host", "?"),
+                getattr(held_by, "expires_at", "?"),
+            )
+            return outcome
+        self._held[account.value] = account
+        if outcome.takeover:
+            logger.warning(
+                "account_lease_takeover | user=%s mode=%s ttl_seconds=%s — "
+                "previous holder's lease expired without release",
+                account.value,
+                mode,
+                self._ttl_seconds,
+            )
+        elif outcome.reacquired:
+            logger.info(
+                "account_lease_reacquired | user=%s mode=%s", account.value, mode
+            )
+        else:
+            logger.info(
+                "account_lease_acquired | user=%s mode=%s ttl_seconds=%s %s",
+                account.value,
+                mode,
+                self._ttl_seconds,
+                self.holder_description,
+            )
+        return outcome
+
+    async def renew_held(self) -> dict[str, datetime]:
+        """Renew every held lease; raise on a CONFIRMED loss.
+
+        A transient database failure is logged and skipped — the next tick
+        retries, and the TTL outlives several intervals by construction.
+        A zero-row renew means another process took the lease over: this
+        process must stop being an active writer, so the loss is raised for
+        the supervisor's fail-closed path.
+        """
+        renewed: dict[str, datetime] = {}
+        lost: list[str] = []
+        for user_id in sorted(self._held):
+            try:
+                expires_at = await self._repo.renew(
+                    user_id=user_id,
+                    holder_token=self.process_token,
+                    ttl_seconds=self._ttl_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "account_lease_renewal_transient_failed | user=%s error_type=%s "
+                    "— retrying next tick",
+                    user_id,
+                    type(exc).__name__,
+                )
+                continue
+            if expires_at is None:
+                lost.append(user_id)
+                continue
+            renewed[user_id] = expires_at
+        if lost:
+            raise AccountLeaseLost(
+                "account lease lost to another process for: " + ", ".join(lost)
+            )
+        return renewed
+
+    async def release_all(self) -> int:
+        """Release every held lease; return how many were released."""
+        released = 0
+        for user_id in sorted(self._held):
+            try:
+                ok = await self._repo.release(
+                    user_id=user_id, holder_token=self.process_token
+                )
+            except Exception as exc:
+                logger.warning(
+                    "account_lease_release_failed | user=%s error_type=%s — "
+                    "lease will expire by TTL",
+                    user_id,
+                    type(exc).__name__,
+                )
+                continue
+            if ok:
+                released += 1
+                logger.info("account_lease_released | user=%s", user_id)
+        self._held.clear()
+        return released
+
+    async def close(self) -> None:
+        """Graceful-shutdown hook (client-registry compatible, idempotent)."""
+        if self._closed:
+            return
+        self._closed = True
+        await self.release_all()
+
+
+async def account_lease_renewal_loop(manager: AccountLeaseManager) -> None:
+    """Heartbeat every held lease until cancelled or a lease is lost.
+
+    Registered as a supervised loop (``_Supervised`` in ``app.py``): a clean
+    return is a self-disable, ``AccountLeaseLost`` rides the bounded-restart
+    machinery and, on a confirmed loss, the loss keeps re-raising until the
+    supervisor fail-closes the process.
+    """
+    while True:
+        await manager.renew_held()
+        await asyncio.sleep(manager.renewal_interval_seconds)
+
+
+__all__ = [
+    "AccountLeaseLost",
+    "AccountLeaseManager",
+    "DEFAULT_LEASE_TTL_SECONDS",
+    "DEFAULT_RENEWAL_INTERVAL_SECONDS",
+    "account_lease_renewal_loop",
+]

@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sized
 from typing import TYPE_CHECKING, Any
 
 from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.account_identity import CopierAccountId
 from pmcopy.interfaces.clob_gateway import ClobGateway
 from pmcopy.cache.market_state_store import MarketStateStore
 from pmcopy.services.accountingService import AccountingService
@@ -178,7 +179,38 @@ async def startup_reconcile_unconfirmed(
 
 @dataclass
 class UserRuntimeState:
-    """Hold the composed runtime state for one follower account."""
+    """Hold the composed runtime state for one follower account.
+
+    Task 21 — this state IS the account-owned runtime: exactly one instance
+    per copier account, constructed only by ``build_user_state``, explicitly
+    owning every account-scoped concern. Ownership map (nothing below may be
+    constructed per-leader or shared across accounts):
+
+    * ``account`` — the typed account identity (``CopierAccountId``, the
+      persisted ``user_id``; stable across display/config renames).
+    * ``position_coordinator`` — the ONE per-scope lock map + intent
+      registry (A04); born-wired into ``execution_coordinator`` and injected
+      into every per-leader ``TradingContext`` and the risk context.
+    * ``execution_coordinator`` — reservation service, collision scope, and
+      leader-sell-target service for the whole account.
+    * ``ambiguous_recovery`` — account-scoped no-ID lost-POST recovery
+      (A01: scans only this account's rows).
+    * ``risk_engine`` / ``position_manager`` / ``accounting_service`` /
+      ``pnl_tracker`` — account risk and position state.
+    * ``trading_permission`` — the account's cached operator control gate.
+    * ``clob_gateway`` / ``client`` — the private venue boundary (one CCXT
+      exchange per follower wallet; the ONLY authenticated transport).
+    * ``manual_sync_service`` / ``inventory_refresh`` / ``position_drift_service``
+      — account inventory convergence and drift pause scopes.
+    * ``market_store`` / ``market_data_service`` — the account's market state.
+    * ``intents_recovered`` — the once-per-account intent-recovery guard.
+
+    Per-LEADER (not account) objects — ``LeaderScoringService``,
+    ``EntryPermissionService``, follow config, roster multipliers — are
+    policy references and stay per-binding. Cross-PROCESS mutual exclusion
+    for the account is enforced by the DB-backed lease acquired at startup
+    (``services.account_lease``); this state presumes it is held.
+    """
 
     user: RuntimeUser
     client: "CcxtPredictionClient"
@@ -227,6 +259,20 @@ class UserRuntimeState:
     # ``build_trading_context``: intents from every leader binding land in the
     # ONE account-owned registry, seeded exactly once per process.
     intents_recovered: bool = False
+    # Task 21 — the typed account identity for this runtime. Set by
+    # ``build_user_state`` from the persisted ``user_id``; optional only so
+    # pre-existing test fixtures that construct partial states stay valid
+    # (``account_id`` derives it lazily for those).
+    account: "CopierAccountId | None" = None
+
+    @property
+    def account_id(self) -> "CopierAccountId":
+        """The typed identity of the account owning this runtime."""
+        if self.account is not None:
+            return self.account
+        # Duck-typed fallback for foreign/test states constructed without
+        # ``build_user_state``; production always carries the explicit field.
+        return CopierAccountId(self.user.user_id)
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -509,6 +555,8 @@ def build_user_state(
     return UserRuntimeState(
         user=runtime_user,
         client=client,
+        # Task 21 — the typed account identity this whole runtime owns.
+        account=CopierAccountId.from_runtime_user(runtime_user),
         orders_repo=order_repo,
         fills_repo=fills_repo,
         positions_repo=positions_repo,

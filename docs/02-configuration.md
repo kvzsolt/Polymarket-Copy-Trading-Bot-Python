@@ -68,6 +68,45 @@ positions, and all of it runs through the same account-owned coordination
 state (one position lock map and one intent registry per follower account,
 shared by every leader binding and the execution coordinator).
 
+## Cross-Process Account Lease (one active writer per account)
+
+Every copier account is guarded by a database-backed lease
+(`account_execution_leases`, one row per account) so two processes configured
+for the same wallet + database can never both be active writers. The lease is
+acquired at startup **before any venue runtime or user state is built**; a
+second process that finds an active lease **fails closed** and exits with a
+non-zero code instead of starting.
+
+- **Identity**: the lease key is the persisted `user_id` string (typed as
+  `CopierAccountId` at runtime). It is never the wallet, a display name, or
+  any other renamable surface — renaming an account's configuration cannot
+  mint a new ledger or a new lease.
+- **Mode**: ONE lease per account regardless of `execution.trading_mode`.
+  Paper and live processes contend for the same row, because both write
+  money-shaped rows (reservations, orders, positions) to the shared
+  database. The holder's mode is recorded on the row for observability only.
+- **TTL / renewal**: a lease expires 60 seconds after its last heartbeat
+  (`DEFAULT_LEASE_TTL_SECONDS`). The holder renews every 15 seconds
+  (`DEFAULT_RENEWAL_INTERVAL_SECONDS`) via a supervised loop; the interval
+  is deliberately far below the TTL so a handful of transient database
+  errors never expire a live holder's lease (a transient renewal failure is
+  logged and retried on the next tick).
+- **Loss**: if a renewal confirms another process took the lease over, the
+  manager raises `AccountLeaseLost` and the supervisor fail-closes the
+  process — it never keeps trading un-leased.
+- **Graceful shutdown**: SIGTERM/SIGINT releases every held lease before
+  the database pool closes, so a restart acquires cleanly.
+- **Crash / takeover**: a crashed holder (no release) keeps blocking new
+  acquires until the TTL lapses; after expiry the next process takes over
+  and logs an `account_lease_takeover` warning. Operators seeing that
+  warning should confirm the previous process is really dead before
+  assuming single-writer semantics were continuous.
+
+Leases are per-account: two accounts in one process hold independent rows
+and never conflict. The lease table is additive (migration
+`20261011_13_account_execution_leases`) and applied automatically at
+startup by the standard migration runner.
+
 ## Path Resolution & Packaged Resources (installed package)
 
 The bot ships as the `pmcopy` package (`pip install` from the wheel/sdist).

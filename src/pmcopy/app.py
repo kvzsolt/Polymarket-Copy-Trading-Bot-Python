@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     )
 
 from pmcopy.bootstrap import build_app
+from pmcopy.domain.account_identity import CopierAccountId
 from pmcopy.orchestrators.account_inventory_startup import InitialInventorySync
 from pmcopy.config.app_config import AppConfig, EnvValidationError, load_config
 from pmcopy.config.env import is_valid_eth_address
@@ -64,6 +65,7 @@ from pmcopy.orchestrators.startup_health import perform_startup_health_check
 from pmcopy.orchestrators.telemetry_bootstrap import TelemetryRuntime
 from pmcopy.orchestrators.user_data_runtime import UserDataRuntime
 from pmcopy.services.healthServer import start_health_server
+from pmcopy.services.account_lease import AccountLeaseManager, account_lease_renewal_loop
 from pmcopy.services.metrics import MetricsRegistry, metrics
 from pmcopy.services.telemetry import TelemetryEmitters, WssTelemetryEmitter
 from pmcopy.services.multiUserConfig import (
@@ -1365,6 +1367,7 @@ async def _shutdown_runtime(
     onchain_runtime=None,
     pending_copy_tracker=None,
     evidence_drain=None,
+    account_lease_manager: AccountLeaseManager | None = None,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
 
@@ -1417,6 +1420,19 @@ async def _shutdown_runtime(
 
     if evidence_drain is not None:
         await evidence_drain.aclose()
+
+    # Task 21 — release every held account lease for a clean handoff. Must
+    # run BEFORE the pool closes (the release needs the database); a failed
+    # release only logs — the lease then expires by TTL and the next process
+    # takes over with the documented takeover warning.
+    if account_lease_manager is not None:
+        try:
+            await account_lease_manager.close()
+        except Exception as exc:
+            logger.warning(
+                "account_lease_release_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
 
     try:
         from pmcopy.utils.fetchData import close_session
@@ -1800,6 +1816,37 @@ async def _run_application(
     ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
     user_states: dict[str, UserRuntimeState] = {}
+
+    # Task 21 — cross-process account lease: acquire every account's lease
+    # BEFORE any venue runtime or user state exists, so a second process
+    # configured for the same wallet+database fails closed here instead of
+    # becoming a second active writer. ONE lease per account regardless of
+    # paper/live mode: both modes write money-shaped rows (reservations,
+    # orders, positions) to this database. Renewal is a supervised loop
+    # below; graceful shutdown releases via ``_shutdown_runtime`` (and the
+    # client registry on exception paths).
+    account_lease_manager = AccountLeaseManager(pool=_pool)
+    for runtime_user in runtime_users:
+        lease_outcome = await account_lease_manager.acquire(
+            CopierAccountId.from_runtime_user(runtime_user),
+            mode=mode,
+        )
+        if not lease_outcome.acquired:
+            held_by = lease_outcome.held_by
+            print_error(
+                "refusing to start a second writer for this account: lease for "
+                f"{runtime_user.user_id!r} is held by another active process "
+                f"(holder host={getattr(held_by, 'holder_host', '?')}, "
+                f"expires_at={getattr(held_by, 'expires_at', '?')})."
+            )
+            await account_lease_manager.release_all()
+            return 1
+    client_registry.append(account_lease_manager)
+    logger.info(
+        "startup_stage | stage=account_leases_acquired users=%d mode=%s",
+        len(runtime_users),
+        mode,
+    )
 
     for runtime_user in runtime_users:
         venue_runtime = await build_polymarket_runtime(
@@ -2488,6 +2535,13 @@ async def _run_application(
 
         supervised.append(_Supervised(name="reservation-reaper", factory=_reservation_reaper_loop))
 
+    supervised.append(
+        _Supervised(
+            name="account-lease-renewal",
+            factory=lambda: account_lease_renewal_loop(account_lease_manager),
+        )
+    )
+
     # Fixed-cadence operator liveness heartbeat. The runtime is otherwise silent
     # while idle: the native source logs only on state *change* and risk /
     # reconciliation only on action, so a healthy idle bot and a wedged one look
@@ -2685,6 +2739,7 @@ async def _run_application(
             onchain_runtime=onchain_runtime,
             pending_copy_tracker=pending_copy_tracker,
             evidence_drain=evidence_drain,
+            account_lease_manager=account_lease_manager,
         )
 
 
