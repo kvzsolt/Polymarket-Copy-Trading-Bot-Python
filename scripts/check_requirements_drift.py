@@ -21,10 +21,17 @@ This script fails non-zero with actionable diffs when any layer drifts:
    - shared packages carry identical version + marker in both exports;
    - the removed official SDKs (``polymarket-client`` / ``py-clob-client``)
      never reappear.
-2. uv-backed checks (require the ``uv`` binary — CI installs it):
+2. uv-backed checks (require the ``uv`` binary — CI installs it pinned):
    - ``uv lock --check`` — the lock is current for ``pyproject.toml``;
    - both exports byte-match a fresh render via ``generate_requirements``
      (exact name + version + marker equality against the lock).
+
+   The byte-exact comparison is uv-version-sensitive: uv rendering changes
+   (e.g. marker formatting) between releases can make a correct, committed
+   export differ from a fresh render. CI therefore installs a pinned uv
+   (see the drift step in ``.github/workflows/ci.yml``); when bumping that
+   pin, regenerate both exports with the same version via
+   ``python scripts/generate_requirements.py``.
 
 Run standalone (``python scripts/check_requirements_drift.py``) or import
 the ``find_*`` helpers for tests. Pure helpers never invoke uv, so the unit
@@ -186,10 +193,28 @@ def _pure_problems(root: pathlib.Path) -> list[str]:
             f"(regenerate: python scripts/generate_requirements.py)"
         )
     problems.extend(find_runtime_dev_inconsistencies(dev, runtime))
+    problems.extend(find_banned_sdk_violations(lock, dev, runtime))
+    return problems
+
+
+def find_banned_sdk_violations(
+    lock_text: str, dev_export_text: str, runtime_export_text: str
+) -> list[str]:
+    """Return messages for re-introduced official SDK distributions.
+
+    Matching anchors on parsed package NAME positions (lock package names and
+    export requirement names), never on raw substring occurrences — a token
+    like ``polymarket-client`` appearing inside a marker, annotation, or a
+    longer package name must not trigger (or mask) the guard.
+    """
+
+    problems: list[str] = []
+    locked_names = set(parse_lock_packages(lock_text))
+    export_names = set(parse_export(dev_export_text)) | set(parse_export(runtime_export_text))
     for banned in BANNED_PACKAGES:
-        if banned in lock:
+        if banned in locked_names:
             problems.append(f"banned official SDK reappeared in uv.lock: {banned}")
-        if banned in dev or banned in runtime:
+        if banned in export_names:
             problems.append(f"banned official SDK reappeared in an export: {banned}")
     return problems
 

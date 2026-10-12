@@ -24,9 +24,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: install
+        # Install from the generated lock export (requirements.txt) so the
+        # release tier exercises exactly what uv.lock resolves — not a fresh
+        # re-resolution of the pyproject ranges. The editable install adds the
+        # project itself without re-resolving anything, and pip check blocks
+        # on an inconsistent environment before the gate suite runs.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir --no-deps -e .
+          pip check
       - name: pytest (release-gate suite)
         run: pytest -m "release_gate" --maxfail=1 -q
       - name: gate result

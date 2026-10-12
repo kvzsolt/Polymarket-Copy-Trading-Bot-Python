@@ -13,6 +13,11 @@ check_requirements_drift.py`` re-renders both files through this module and
 fails on any byte difference, so the exports can never silently drift from
 the lock.
 
+The rendered bytes are uv-version-sensitive (marker formatting and other
+rendering details can change between uv releases). CI pins the uv version
+used for the byte comparison; when bumping it, regenerate both exports with
+the same version.
+
 Regenerate after every ``uv lock``:
 
     python scripts/generate_requirements.py

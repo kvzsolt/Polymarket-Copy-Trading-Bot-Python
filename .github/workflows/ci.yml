@@ -150,9 +150,12 @@ jobs:
         # requirements exports are generated from it. The script verifies the
         # exports match the lock exactly (name+version+marker), that pyproject
         # dependencies are locked, and that a fresh byte-identical export can
-        # be rendered (uv installed below for that).
+        # be rendered. The byte-exact comparison is uv-version-sensitive
+        # (rendering/marker formatting changes between uv releases), so uv is
+        # pinned here to the version that generated the committed exports;
+        # bump the pin together with `python scripts/generate_requirements.py`.
         run: |
-          pip install uv
+          pip install uv==0.11.31
           python scripts/check_requirements_drift.py
       - name: ruff (lint — hard fail on pyflakes + core pycodestyle)
         run: |

@@ -19,6 +19,7 @@ from __future__ import annotations
 import pathlib
 
 from scripts.check_requirements_drift import (
+    find_banned_sdk_violations,
     find_export_entries_absent_from_lock,
     find_lock_packages_absent_from_dev_export,
     find_pyproject_names_missing_from_lock,
@@ -154,6 +155,52 @@ def test_runtime_dev_inconsistencies_are_reported() -> None:
     ]
 
 
+def test_banned_sdk_violation_matches_package_names_not_substrings() -> None:
+    """The banned-SDK guard anchors on requirement NAME positions.
+
+    A substring match would false-positive on unrelated text (markers,
+    annotations, packages whose name merely contains the banned token) and
+    could also miss a re-introduced SDK hidden mid-line. Matching must use
+    the parsed name positions of the lock and both exports.
+    """
+
+    # A package whose name merely CONTAINS the banned token: not a violation.
+    lookalike_lock = (
+        LOCK_FIXTURE
+        + """
+[[package]]
+name = "not-polymarket-client-adapter"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+"""
+    )
+    lookalike_export = "aiohttp==3.14.5\nnot-polymarket-client-adapter==1.0.0\n"
+    assert find_banned_sdk_violations(lookalike_lock, lookalike_export, "") == []
+
+    # The real banned distribution name in the lock: violation.
+    banned_lock = (
+        LOCK_FIXTURE
+        + """
+[[package]]
+name = "polymarket-client"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+"""
+    )
+    problems = find_banned_sdk_violations(banned_lock, "aiohttp==3.14.5\n", "")
+    assert problems == ["banned official SDK reappeared in uv.lock: polymarket-client"]
+
+    # The banned distribution name as an export line (either export): violation.
+    problems = find_banned_sdk_violations(
+        LOCK_FIXTURE, "aiohttp==3.14.5\n", "py-clob-client==1.2.3\n"
+    )
+    assert problems == ["banned official SDK reappeared in an export: py-clob-client"]
+
+    # Substring occurrences inside a marker or annotation are not violations.
+    marker_only = "aiohttp==3.14.5 ; extra != 'polymarket-client'\n"
+    assert find_banned_sdk_violations(LOCK_FIXTURE, marker_only, "") == []
+
+
 def test_repo_exports_match_lock_and_pyproject() -> None:
     """Repository state: exports and lock must agree under every pure check."""
 
@@ -167,3 +214,4 @@ def test_repo_exports_match_lock_and_pyproject() -> None:
     assert find_export_entries_absent_from_lock(runtime, lock) == []
     assert find_lock_packages_absent_from_dev_export(lock, dev) == []
     assert find_runtime_dev_inconsistencies(dev, runtime) == []
+    assert find_banned_sdk_violations(lock, dev, runtime) == []
