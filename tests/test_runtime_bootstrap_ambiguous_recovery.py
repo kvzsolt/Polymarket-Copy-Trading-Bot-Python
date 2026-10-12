@@ -38,9 +38,11 @@ class _FakePool:
 class _FakeOrdersRepo:
     def __init__(self) -> None:
         self.listed = 0
+        self.list_scopes: list[tuple[str, int]] = []
 
-    async def list_no_id_ambiguous_submissions(self, *, limit: int):
+    async def list_no_id_ambiguous_submissions(self, *, user_id: str, limit: int):
         self.listed += 1
+        self.list_scopes.append((user_id, limit))
         return ()
 
     async def record_ambiguous_scan_evidence(self, **kwargs):  # pragma: no cover
@@ -114,6 +116,29 @@ async def test_default_config_matches_the_service_defaults() -> None:
     assert service._required_absence_scans == 3
     assert service._batch_size == 100
     assert service._evidence_history_limit == 8
+
+
+async def test_wired_service_scopes_recovery_to_its_own_account_only() -> None:
+    """The per-user service must carry its account identity end to end.
+
+    Audit A01: each follower's recovery loop may only list, scan, and mutate
+    its OWN ambiguous submissions. The built service owns the bootstrap
+    user's identity, and the evidence source resolves exactly that user to
+    the funder wallet — any other account is unserved and fails closed.
+    """
+    orders_repo = _FakeOrdersRepo()
+
+    service = _build(orders_repo=orders_repo)
+
+    assert isinstance(service, AmbiguousSubmissionRecoveryService)
+    assert service._account_user_id == "user-1"
+    assert service._account_wallet == _WALLET
+    assert service._evidence_source.wallet_for_user("user-1") == _WALLET
+    # Foreign accounts resolve to no wallet on this per-user evidence source.
+    assert service._evidence_source.wallet_for_user("user-2") is None
+
+    assert await service.recover_once() == ()
+    assert orders_repo.list_scopes == [("user-1", 100)]
 
 
 async def test_supervised_loop_survives_a_failing_scan_and_keeps_sweeping() -> None:

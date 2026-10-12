@@ -37,6 +37,11 @@ class _RecordingConn:
         self.calls.append((query, params))
         return self.rows
 
+    async def fetchval(self, query, *params):
+        # Quarantine-accounting helper lookups report zero excluded rows.
+        self.calls.append((query, params))
+        return 0
+
 
 @contextlib.asynccontextmanager
 async def _pg_pool():
@@ -121,8 +126,10 @@ async def test_unconfirmed_processed_trade_selectors_include_matched_rows():
     assert sell_rows[0]["order_id"] == "ord-matched"
     buy_query, buy_params = conn.calls[0]
     sell_query, sell_params = conn.calls[1]
-    assert "side = 'BUY'" in buy_query
-    assert "side = 'SELL'" in sell_query
+    assert "side = $3" in buy_query
+    assert "side = $3" in sell_query
+    assert buy_params[2] == "BUY"
+    assert sell_params[2] == "SELL"
     assert "matched" in buy_params[1]
     assert "matched" in sell_params[1]
 
@@ -147,12 +154,17 @@ async def test_unconfirmed_processed_trade_selectors_can_scope_by_user():
     await repo.get_unconfirmed_buys(user_id="u1")
     await repo.get_unconfirmed_sells(user_id="u1")
 
+    # calls: [buy main, buy quarantine count, sell main, sell quarantine count]
     buy_query, buy_params = conn.calls[0]
-    sell_query, sell_params = conn.calls[1]
-    assert "AND (user_id = $3 OR user_id IS NULL OR user_id = '')" in buy_query
-    assert "AND (user_id = $3 OR user_id IS NULL OR user_id = '')" in sell_query
-    assert buy_params[2] == "u1"
-    assert sell_params[2] == "u1"
+    sell_query, sell_params = conn.calls[2]
+    # Audit A01: legacy NULL/''-user rows must NOT be unioned into every
+    # user's pending set.  The scope is a strict equality predicate.
+    assert "AND user_id = $4" in buy_query
+    assert "AND user_id = $4" in sell_query
+    assert "OR user_id IS NULL" not in buy_query
+    assert "OR user_id IS NULL" not in sell_query
+    assert buy_params[3] == "u1"
+    assert sell_params[3] == "u1"
 
 
 async def test_order_repo_upsert_replaces_failed_submission():

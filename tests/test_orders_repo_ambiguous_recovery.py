@@ -48,7 +48,11 @@ class _Pool:
 
 
 class _StatefulConn:
-    """Tiny row-lock fake that records SQL and applies response/status writes."""
+    """Tiny row-lock fake that records SQL and applies response/status writes.
+
+    Honors the account compare-and-set: guarded statements only match when
+    the caller's ``user_id`` equals the row's owner.
+    """
 
     def __init__(self, row: dict) -> None:
         self.row = dict(row)
@@ -59,33 +63,50 @@ class _StatefulConn:
 
     async def fetch(self, query: str, *params: object) -> list[dict]:
         self.calls.append((query, params))
+        if "user_id = $1" in query and self.row.get("user_id") != params[0]:
+            return []
         return [dict(self.row)]
 
     async def fetchrow(self, query: str, *params: object) -> dict | None:
         self.calls.append((query, params))
         if "FOR UPDATE" in query:
-            if self.row.get("status") != "submitted_unconfirmed" or self.row.get("order_id"):
+            if not self._owned_and_open(params):
                 return None
         return dict(self.row)
 
     async def fetchval(self, query: str, *params: object) -> str | None:
         self.calls.append((query, params))
-        if self.row.get("status") != "submitted_unconfirmed" or self.row.get("order_id"):
+        if "count(*)" in query:
+            return 0
+        if not self._owned_and_open(params):
             return None
         if "SET order_id" in query:
-            self.row["order_id"] = params[1]
-            self.row["response_json"] = params[2]
+            self.row["order_id"] = params[2]
+            self.row["response_json"] = params[3]
         elif "SET status = 'confirmed_absent'" in query:
             self.row["status"] = "confirmed_absent"
-            self.row["response_json"] = params[1]
+            self.row["response_json"] = params[2]
         return str(self.row["idempotency_key"])
 
     async def execute(self, query: str, *params: object) -> str:
         self.calls.append((query, params))
-        if self.row.get("status") != "submitted_unconfirmed" or self.row.get("order_id"):
+        if not self._owned_and_open(params):
             return "UPDATE 0"
-        self.row["response_json"] = params[1]
+        self.row["response_json"] = params[2]
         return "UPDATE 1"
+
+    def _owned_and_open(self, params: tuple[object, ...]) -> bool:
+        """Guarded statements bind ``(idempotency_key, user_id, ...)``."""
+
+        if len(params) < 2:
+            return False
+        if str(params[0]) != self.row.get("idempotency_key"):
+            return False
+        if str(params[1]) != self.row.get("user_id"):
+            return False
+        if self.row.get("status") != "submitted_unconfirmed" or self.row.get("order_id"):
+            return False
+        return True
 
 
 def _row() -> dict:
@@ -127,7 +148,7 @@ async def test_lists_only_bounded_no_id_submitted_unconfirmed_candidates() -> No
     conn = _StatefulConn(_row())
     repo = OrdersRepo(_Pool(conn))
 
-    records = await repo.list_no_id_ambiguous_submissions(limit=7)
+    records = await repo.list_no_id_ambiguous_submissions(user_id="user-1", limit=7)
 
     assert len(records) == 1
     record = records[0]
@@ -138,8 +159,9 @@ async def test_lists_only_bounded_no_id_submitted_unconfirmed_candidates() -> No
     query, params = conn.calls[0]
     assert "status = 'submitted_unconfirmed'" in query
     assert "order_id IS NULL" in query
-    assert "LIMIT $1" in query
-    assert params == (7,)
+    assert "user_id = $1" in query
+    assert "LIMIT $2" in query
+    assert params == ("user-1", 7)
 
 
 async def test_records_only_a_bounded_evidence_tail_and_resets_on_inconclusive_scan() -> None:
@@ -148,6 +170,7 @@ async def test_records_only_a_bounded_evidence_tail_and_resets_on_inconclusive_s
 
     for offset in range(4):
         progress = await repo.record_ambiguous_scan_evidence(
+            user_id="user-1",
             idempotency_key="copy:leader:event",
             scan=_clear_scan(),
             observed_at=_OBSERVED_AT.replace(second=offset),
@@ -172,6 +195,7 @@ async def test_records_only_a_bounded_evidence_tail_and_resets_on_inconclusive_s
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
     progress = await repo.record_ambiguous_scan_evidence(
+        user_id="user-1",
         idempotency_key="copy:leader:event",
         scan=inconclusive,
         observed_at=_OBSERVED_AT.replace(second=4),
@@ -190,6 +214,7 @@ async def test_attach_recovered_order_id_is_guarded_and_preserves_ambiguous_stat
     repo = OrdersRepo(_Pool(conn))
 
     changed = await repo.attach_recovered_venue_order_id(
+        user_id="user-1",
         idempotency_key="copy:leader:event",
         venue_order_id="venue-order-7",
         source=RecoveryMatchSource.PRIVATE_FILLS,
@@ -212,6 +237,7 @@ async def test_confirmed_absent_transition_requires_persisted_scan_threshold() -
     repo = OrdersRepo(_Pool(conn))
 
     await repo.record_ambiguous_scan_evidence(
+        user_id="user-1",
         idempotency_key="copy:leader:event",
         scan=_clear_scan(),
         observed_at=_OBSERVED_AT,
@@ -220,6 +246,7 @@ async def test_confirmed_absent_transition_requires_persisted_scan_threshold() -
     )
     assert (
         await repo.mark_ambiguous_submission_confirmed_absent(
+            user_id="user-1",
             idempotency_key="copy:leader:event",
             required_scan_count=2,
             confirmed_at=_OBSERVED_AT,
@@ -228,6 +255,7 @@ async def test_confirmed_absent_transition_requires_persisted_scan_threshold() -
     )
 
     await repo.record_ambiguous_scan_evidence(
+        user_id="user-1",
         idempotency_key="copy:leader:event",
         scan=_clear_scan(),
         observed_at=_OBSERVED_AT.replace(second=1),
@@ -236,6 +264,7 @@ async def test_confirmed_absent_transition_requires_persisted_scan_threshold() -
     )
     assert (
         await repo.mark_ambiguous_submission_confirmed_absent(
+            user_id="user-1",
             idempotency_key="copy:leader:event",
             required_scan_count=2,
             confirmed_at=_OBSERVED_AT.replace(second=1),

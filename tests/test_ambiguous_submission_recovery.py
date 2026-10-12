@@ -39,6 +39,9 @@ class _EvidenceSource:
         self._scans = list(scans)
         self.calls: list[AmbiguousSubmission] = []
 
+    def wallet_for_user(self, user_id: str) -> str | None:
+        return "0x" + "11" * 20 if user_id == "user-1" else None
+
     async def scan(self, submission: AmbiguousSubmission) -> AuthoritativeRecoveryScan:
         self.calls.append(submission)
         return self._scans.pop(0)
@@ -48,20 +51,21 @@ class _Repository:
     def __init__(self, submission: AmbiguousSubmission) -> None:
         self.submission = submission
         self.consecutive = 0
-        self.list_limits: list[int] = []
+        self.list_scopes: list[tuple[str, int]] = []
         self.recorded: list[AuthoritativeRecoveryScan] = []
-        self.attached: list[tuple[str, str, RecoveryMatchSource, datetime]] = []
-        self.marked_absent: list[tuple[str, int, datetime]] = []
+        self.attached: list[tuple[str, str, str, RecoveryMatchSource, datetime]] = []
+        self.marked_absent: list[tuple[str, str, int, datetime]] = []
 
     async def list_no_id_ambiguous_submissions(
-        self, *, limit: int
+        self, *, user_id: str, limit: int
     ) -> tuple[AmbiguousSubmission, ...]:
-        self.list_limits.append(limit)
-        return (self.submission,)
+        self.list_scopes.append((user_id, limit))
+        return (self.submission,) if self.submission.user_id == user_id else ()
 
     async def record_ambiguous_scan_evidence(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         scan: AuthoritativeRecoveryScan,
         observed_at: datetime,
@@ -70,6 +74,7 @@ class _Repository:
     ) -> AmbiguousRecoveryProgress | None:
         del observed_at, evidence_history_limit
         assert idempotency_key == self.submission.idempotency_key
+        assert user_id == self.submission.user_id
         self.recorded.append(scan)
         self.consecutive = min(
             self.consecutive + 1 if scan.qualifies_as_complete_absence else 0,
@@ -83,22 +88,24 @@ class _Repository:
     async def attach_recovered_venue_order_id(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         venue_order_id: str,
         source: RecoveryMatchSource,
         recovered_at: datetime,
     ) -> bool:
-        self.attached.append((idempotency_key, venue_order_id, source, recovered_at))
+        self.attached.append((user_id, idempotency_key, venue_order_id, source, recovered_at))
         return True
 
     async def mark_ambiguous_submission_confirmed_absent(
         self,
         *,
+        user_id: str,
         idempotency_key: str,
         required_scan_count: int,
         confirmed_at: datetime,
     ) -> bool:
-        self.marked_absent.append((idempotency_key, required_scan_count, confirmed_at))
+        self.marked_absent.append((user_id, idempotency_key, required_scan_count, confirmed_at))
         return self.consecutive >= required_scan_count
 
 
@@ -132,6 +139,7 @@ async def test_before_grace_remains_blocking_without_querying_private_evidence()
     service = AmbiguousSubmissionRecoveryService(
         repository=repo,
         evidence_source=evidence,
+        account_user_id="user-1",
         clock=_Clock(),
         grace_period=timedelta(seconds=30),
         required_absence_scans=2,
@@ -173,6 +181,7 @@ async def test_complete_fill_history_match_attaches_order_id_without_resubmittin
     service = AmbiguousSubmissionRecoveryService(
         repository=repo,
         evidence_source=evidence,
+        account_user_id="user-1",
         clock=_Clock(),
         grace_period=timedelta(seconds=30),
         required_absence_scans=2,
@@ -184,6 +193,7 @@ async def test_complete_fill_history_match_attaches_order_id_without_resubmittin
     assert results[0].venue_order_id == "venue-order-7"
     assert repo.attached == [
         (
+            "user-1",
             submission.idempotency_key,
             "venue-order-7",
             RecoveryMatchSource.PRIVATE_FILLS,
@@ -204,6 +214,7 @@ async def test_confirmed_absent_requires_repeated_complete_scans_and_account_che
     service = AmbiguousSubmissionRecoveryService(
         repository=repo,
         evidence_source=evidence,
+        account_user_id="user-1",
         clock=_Clock(),
         grace_period=timedelta(seconds=30),
         required_absence_scans=2,
@@ -217,7 +228,7 @@ async def test_confirmed_absent_requires_repeated_complete_scans_and_account_che
     assert first[0].consecutive_complete_absence_scans == 1
     assert second[0].disposition is RecoveryDisposition.CONFIRMED_ABSENT
     assert second[0].consecutive_complete_absence_scans == 2
-    assert repo.marked_absent == [(submission.idempotency_key, 2, _NOW)]
+    assert repo.marked_absent == [("user-1", submission.idempotency_key, 2, _NOW)]
 
 
 async def test_incomplete_or_conflicting_account_scan_resets_absence_progress() -> None:
@@ -233,6 +244,7 @@ async def test_incomplete_or_conflicting_account_scan_resets_absence_progress() 
     service = AmbiguousSubmissionRecoveryService(
         repository=repo,
         evidence_source=evidence,
+        account_user_id="user-1",
         clock=_Clock(),
         grace_period=timedelta(seconds=30),
         required_absence_scans=2,

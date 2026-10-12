@@ -442,3 +442,52 @@ async def test_scan_only_ever_calls_read_methods() -> None:
 
     assert gateway.calls == ["get_fills", "list_open_orders"]
     assert not (_WRITE_METHODS & set(gateway.calls))
+
+
+# ---------------------------------------------------------------------------
+# Account ownership (audit A01)
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_for_an_unserved_account_performs_no_private_reads() -> None:
+    """A submission whose account has no served wallet must never be scanned.
+
+    The gateway is authenticated for ONE wallet.  Enumerating private history
+    for a submission owned by a different account would read the wrong
+    account's fills/orders, and the token/side/time/price/size match keying
+    could then attach a foreign venue order id.  Ownership is therefore
+    verified before any private read.
+    """
+    gateway = _FakeGateway(fills=[_fill()], orders=[_order()])
+    source, _ = _source(gateway=gateway, wallet=None)
+
+    scan = await source.scan(_submission())
+
+    assert gateway.calls == []
+    assert scan.private_orders_complete is False
+    assert scan.private_fills_complete is False
+    assert scan.position_check is AccountCheckResult.INCOMPLETE
+    assert scan.balance_check is AccountCheckResult.INCOMPLETE
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_wallet_for_user_exposes_the_served_wallet_per_account() -> None:
+    gateway = _FakeGateway()
+    source, _ = _source(gateway=gateway, wallet=_WALLET)
+
+    # The injected resolver decides which accounts are served; the bootstrap
+    # wires exactly one wallet for exactly one user.
+    assert source.wallet_for_user("user-1") == _WALLET
+    unserved, _ = _source(gateway=gateway, wallet=None)
+    assert unserved.wallet_for_user("user-1") is None
+
+
+async def test_private_reads_still_run_for_the_served_account() -> None:
+    gateway = _FakeGateway(fills=[_fill()], orders=[_order()])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert gateway.calls == ["get_fills", "list_open_orders"]
+    assert scan.private_fills_complete is True
