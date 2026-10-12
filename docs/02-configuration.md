@@ -67,3 +67,71 @@ monitoring: the runtime builds risk-only contexts for accounts with open
 positions, and all of it runs through the same account-owned coordination
 state (one position lock map and one intent registry per follower account,
 shared by every leader binding and the execution coordinator).
+
+## Path Resolution & Packaged Resources (installed package)
+
+The bot ships as the `pmcopy` package (`pip install` from the wheel/sdist).
+Packaged defaults — the service YAML tree (`app.yml`, `execution.yml`, …,
+`environments/<name>/`, `traders/*.yml`) and the SQL migrations under
+`pmcopy/storage/postgres/migrations/` — are **readonly inputs** resolved
+through `importlib.resources`, so a wheel install in a read-only
+site-packages serves them unchanged and nothing is ever written into the
+package tree. `python -m pmcopy`, the `pmcopy` console script, and
+`pmcopy config print | validate` all work with the checkout absent from
+`sys.path` (proven by `scripts/verify_package.py` and the
+`tests/release_gate/test_packaging_proofs.py` gate).
+
+### Deployment root (deployment-local files)
+
+`secrets.env`, the deprecated `config/runtime.local.yml` shim, `log/`, and
+`data/` are **deployment-local**, never package-relative. The deployment
+root is resolved explicitly, in this order:
+
+1. `PMCOPY_DEPLOYMENT_ROOT` environment variable — when it names an
+   existing directory;
+2. otherwise the process CWD.
+
+**Parent directories are never walked.** A leftover `secrets.env` in an
+ancestor directory is not discovered: run the bot from the deployment root
+or export `PMCOPY_DEPLOYMENT_ROOT` explicitly. `secrets_path` /
+`config_dir` arguments to the loader are the explicit override level above
+both.
+
+### Configuration layer precedence (lowest → highest)
+
+1. typed defaults baked into the config models;
+2. packaged service files (`pmcopy/config/<service>.yml` via
+   `importlib.resources`, overridable wholesale by an explicit
+   `config_dir` / `_CONFIG_ROOT` seam);
+3. legacy `<deployment root>/config/runtime.local.yml` shim (translated,
+   deprecated);
+4. `<config_dir>/environments/<PMCOPY_ENVIRONMENT>/<service>.yml`;
+5. `<config_dir>/traders/<name>.yml` (canonical followed-leader files);
+6. legacy `<config_dir>/leaders/<wallet>.yml`;
+7. program `overrides`;
+8. `<deployment root>/secrets.env` (`PMCOPY__SECTION__FIELD`, mode 0600);
+9. process `PMCOPY__SECTION__FIELD` variables.
+
+`PMCOPY_ENVIRONMENT` (explicit argument → process env → `secrets.env` →
+`paper`) selects the environment layer; it is never inferred from
+credential presence.
+
+### Logs and writable state
+
+The default log directory is `<deployment root>/log` (never derived from
+the installed module's location). The `logging.log_dir` /
+`logging.app_log_jsonl_file` settings and explicit `log_dir` arguments to
+`configure_logging()` override it. Relative `logging.*` paths resolve
+against the CWD as before. In every case the JSONL sink and rotating files
+land outside the installed package tree; the packaging battery asserts no
+`*.jsonl` or `log*` directory appears under site-packages.
+
+### Verifying an install
+
+`scripts/verify_package.py` builds the wheel + sdist (`uv build`, or
+`python -m build` when available) and proves both from fresh virtual
+environments: entry points, `python -m pmcopy`, config validation against
+an explicit external deployment root, `importlib.resources` lookups, a
+deterministic paper-mode workflow smoke, deployment-root-honoring writable
+paths, and a clean `pip check`. The sdist includes `tests/` (current
+behavior); the wheel does not contain tests, secrets, or state.

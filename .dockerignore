@@ -26,6 +26,16 @@ src/pmcopy/config/bot.toml
 .git/
 .github/
 .gitignore
+.worktrees/
+
+# Agent/assistant working state — never bake into the build context.
+.superpowers/
+.mimosa/
+.zcode/
+.claude/
+.codex/
+.memory/
+memory/
 
 # Local dev state
 .venv/
@@ -51,6 +61,8 @@ reviews/
 audit.md
 plan.md
 *.md
+# README is pyproject metadata ("readme"): `pip install .` fails without it.
+!README.md
 
 # IDE
 .idea/
