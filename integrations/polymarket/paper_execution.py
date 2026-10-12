@@ -84,6 +84,7 @@ class PaperOrderSimulator:
             filled_size=shares,
             avg_fill_price=price_limit,
             created_at=now,
+            token_id=str(request.token_id),
             raw={"paper": True},
         )
         self._orders[order_id] = state
@@ -134,6 +135,7 @@ class PaperOrderSimulator:
             filled_size=Decimal("0"),
             avg_fill_price=Decimal("0"),
             created_at=self._clock(),
+            token_id=str(request.token_id),
             raw={"paper": True},
         )
         # A resting limit order has legitimately matched nothing yet.
@@ -210,6 +212,7 @@ class PaperOrderSimulator:
             filled_size=state.filled_size,
             avg_fill_price=state.avg_fill_price,
             created_at=state.created_at,
+            token_id=state.token_id,
             raw=state.raw,
         )
         return VenueCancelResult(success=True, order_id=order_id, status="canceled")

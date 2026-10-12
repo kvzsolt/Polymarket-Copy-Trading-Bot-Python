@@ -1166,6 +1166,18 @@ class CcxtPredictionGateway:
         if average_raw is None:
             average_raw = _first(info, "avg_price", "average_price")
         average = _decimal(average_raw, field="average", default=Decimal("0"))
+        # Outcome-token identity at the adapter boundary.  CCXT parsed
+        # orders carry ``outcomeId`` (verified against the installed ccxt
+        # ``parse_prediction_order``: it resolves the raw CLOB ``asset_id``
+        # token and ``safe_outcome`` falls back to the raw token id whenever
+        # the outcome cache misses), while raw ``/data/orders`` rows carry
+        # ``asset_id`` directly.  No identity in the payload means ``None``:
+        # the adapter never guesses a token mapping for the domain.
+        token_raw = (
+            _first(raw, "outcomeId", "outcome_id", "token_id", "asset_id", "tokenId")
+            or _first(info, "asset_id", "token_id", "tokenId")
+        )
+        token_id = str(token_raw).strip() if token_raw is not None else None
         return VenueOrderState(
             order_id=order_id,
             status=_normalize_status(_first(raw, "status") or _first(info, "status")) or "unknown",
@@ -1185,6 +1197,7 @@ class CcxtPredictionGateway:
                 _first(raw, "datetime", "created_at"),
                 _first(raw, "timestamp") or _first(info, "created_at"),
             ),
+            token_id=token_id or None,
             raw=raw,
         )
 
@@ -1229,7 +1242,11 @@ class CcxtPredictionGateway:
                 raw_market = _first(state_raw, "market") or _first(
                     raw_info, "market", "condition_id"
                 )
-                if raw_market is not None and str(raw_market) != market:
+                # Strict scoping: a row whose payload carries no market
+                # identity cannot prove which condition — let alone which
+                # outcome token — it belongs to, so it must be rejected
+                # rather than silently bypass the filter.
+                if raw_market is None or str(raw_market) != market:
                     continue
             result.append(state)
         return result

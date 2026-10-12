@@ -110,22 +110,55 @@ read-only evidence scan per row:
 - that market's **open order** history;
 - the account's outcome-token **position** and collateral **balance**.
 
+Identity guarantees (A02):
+
+- **Outcome-token-exact.** Both the persisted row (from the submit request)
+  and every venue order/fill observation carry the raw outcome token. A
+  match requires token equality on both sides — YES and NO orders of one
+  condition share price, size, and side, so only the token separates them.
+  A venue row with no token identity is a non-match, never a guess.
+- **Strict market scoping.** `list_open_orders(market=...)` rejects any
+  row whose payload carries no market identity; an unscoped row can never
+  prove which condition (let alone which outcome) it belongs to.
+- **Unit-strict sizing.** The row records its amount unit at submission
+  time: `quote` (BUY = USDC spend) or `shares` (SELL = outcome shares).
+  Fill aggregates are compared in exactly that unit — BUY legs must
+  account for the quote spend, SELL legs for the share quantity — and the
+  two aggregates are never interchangeable.
+
 Guarantees:
 
 - **Read-only.** The evidence source holds no collaborator able to submit,
   cancel, or otherwise mutate a venue, and it never retries the original
   submission.
 - **Fail-closed.** Any transport error, timeout, incomplete pagination,
-  missing market identity, or unreadable account state marks that part of
-  the scan incomplete. An incomplete scan can support neither a recovered
-  identity nor an absence proof, and it resets the consecutive-absence
-  counter to zero.
+  missing market identity, unreadable unit identity, or unreadable account
+  state marks that part of the scan incomplete. An incomplete scan can
+  support neither a recovered identity nor an absence proof, and it resets
+  the consecutive-absence counter to zero.
 - **No weakened blocks.** Until a row is resolved it stays exactly as
   duplicate-blocking as before; a scan failure changes nothing.
 - **Thresholds are unchanged.** Recovery still requires the configured
   `required_absence_scans` (default 3) *consecutive* complete-absence scans,
   each exhausting both private collections and finding every account check
   consistent with absence.
+
+### Legacy rows without unit identity (quarantine)
+
+Rows written before the amount-unit column existed may carry an `amount`
+but no `amount_unit`. Identity is never fabricated for them: the scan
+fails closed before any private read (log tag
+`ambiguous_evidence_missing_unit_identity`), so the row can neither attach
+a recovered order id nor accumulate absence scans. Such a row is
+*duplicate-blocking forever* — that is deliberate. A row whose unit cannot
+be proven cannot safely distinguish "my fill" from "a numerically equal
+fill of the opposite kind", so auto-resolution (in either direction) would
+risk attaching a foreign identity or double-submitting.
+
+The operator resolution path is the same as for any unresolvable row:
+`python bot.py resolve`. If the row's outcome is known from external
+evidence (the venue UI, the leader's trade), record it there; do not
+back-fill `amount_unit` by guessing.
 
 Outcomes are recorded in `orders.response_json.ambiguous_recovery`:
 
@@ -140,8 +173,9 @@ each attempt.
 
 The manual override still exists: `python bot.py resolve` remains the
 operator path for a row the automatic scan cannot resolve — for example a
-legacy row with no `token_id`/`condition_id`, which fails closed forever by
-design. Prefer it over direct DB edits.
+legacy row with no `token_id`/`condition_id` or no persisted
+`amount_unit`, both of which fail closed forever by design. Prefer it
+over direct DB edits.
 
 ## 5. Invariants the operator must not break
 

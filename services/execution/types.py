@@ -20,6 +20,11 @@ _PERSISTED_REQUEST_FIELDS = (
     "condition_id",
     "side",
     "amount",
+    # A02: the unit of ``amount`` (quote spend for BUY, shares for SELL)
+    # and the submission kind, persisted so recovery matching can be
+    # unit-strict without re-deriving semantics from context.
+    "amount_unit",
+    "order_kind",
     "max_slippage_bps",
     "reason",
     "signal_id",

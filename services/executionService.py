@@ -1446,6 +1446,13 @@ class ExecutionService:
         request_doc["effective_idempotency_key"] = idem_key
         request_doc["effective_side"] = side
         request_doc["sizing_method"] = "effective_post_quantize"
+        # A02: record the unit of the submitted amount and the submission
+        # kind so persisted evidence can be matched unit-strictly during
+        # recovery.  The money path submits marketable orders where BUY
+        # ``amount`` is quote (USDC) spend and SELL ``amount`` is outcome
+        # shares — the invariant the ambiguous-recovery matcher enforces.
+        request_doc["amount_unit"] = "quote" if side == "BUY" else "shares"
+        request_doc["order_kind"] = "market"
         if requested_order_type or forced_sell_exit:
             request_doc["order_type"] = requested_order_type or "FAK"
         if hasattr(req, "condition_id") and req.condition_id:

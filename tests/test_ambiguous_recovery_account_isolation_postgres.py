@@ -584,8 +584,10 @@ async def test_save_submission_persists_identity_and_reader_surfaces_units():
         assert buy_row["amount_unit"] == "quote"
         assert buy_row["order_kind"] == "market"
         assert buy_row["effective_price_limit"] == "0.625"
-        assert buy_row["correlation_ids"]["signal_id"] == "signal-1"
-        assert buy_row["correlation_ids"]["source_promotion_id"] == "promo-1"
+        # asyncpg returns jsonb columns as JSON-encoded strings.
+        correlation = json.loads(buy_row["correlation_ids"])
+        assert correlation["signal_id"] == "signal-1"
+        assert correlation["source_promotion_id"] == "promo-1"
 
         submissions = await repo.list_no_id_ambiguous_submissions(user_id=_USER_A, limit=10)
         by_key = {s.idempotency_key: s for s in submissions}

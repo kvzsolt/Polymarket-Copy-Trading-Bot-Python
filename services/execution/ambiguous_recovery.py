@@ -29,6 +29,20 @@ class SubmissionSide(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class SubmissionAmountUnit(StrEnum):
+    """Unit of the persisted ``amount`` on an ambiguous submission.
+
+    Polymarket marketable sizing is unit-asymmetric: a BUY ``amount`` is
+    quote (USDC) spend while a SELL ``amount`` is outcome shares.  Recovery
+    matching is unit-strict — the unit recorded at submission time decides
+    which aggregate the venue evidence must reproduce.  ``None`` (legacy
+    rows that predate the field) can never be verified and fails closed.
+    """
+
+    QUOTE = "quote"
+    SHARES = "shares"
+
+
 class AccountCheckResult(StrEnum):
     """Result of an authoritative position or collateral balance check."""
 
@@ -80,6 +94,7 @@ class AmbiguousSubmission:
     amount: Decimal | None
     price_limit: Decimal | None
     submitted_at: datetime
+    amount_unit: SubmissionAmountUnit | None = None
 
     def __post_init__(self) -> None:
         key = str(self.idempotency_key).strip()
@@ -92,6 +107,10 @@ class AmbiguousSubmission:
             raise ValueError("submitted_at must be timezone-aware")
         if not isinstance(self.side, SubmissionSide):
             raise TypeError("side must be a SubmissionSide")
+        if self.amount_unit is not None and not isinstance(
+            self.amount_unit, SubmissionAmountUnit
+        ):
+            raise TypeError("amount_unit must be a SubmissionAmountUnit")
 
         object.__setattr__(self, "idempotency_key", key)
         object.__setattr__(self, "user_id", user_id)
@@ -507,6 +526,7 @@ __all__ = [
     "RecoveryDisposition",
     "RecoveryMatch",
     "RecoveryMatchSource",
+    "SubmissionAmountUnit",
     "SubmissionSide",
     "SystemClock",
 ]

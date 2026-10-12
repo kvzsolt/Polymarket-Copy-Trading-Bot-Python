@@ -31,6 +31,7 @@ from services.execution.ambiguous_recovery import (
     Clock,
     RecoveryMatch,
     RecoveryMatchSource,
+    SubmissionAmountUnit,
     SubmissionSide,
     SystemClock,
 )
@@ -161,6 +162,18 @@ class CcxtAmbiguousEvidenceSource:
             # Without a market identity there is nothing authoritative to read;
             # legacy rows with incomplete payloads stay duplicate-blocking.
             logger.warning("ambiguous_evidence_missing_identity key=%s", submission.idempotency_key)
+            return _fail_closed_scan()
+        if not self._unit_identity_verified(submission):
+            # A row that persisted an amount but not its unit (or with a unit
+            # contradicting the side's quote/share semantics) can never be
+            # verified unit-strictly.  Legacy identity is never fabricated:
+            # the scan is a complete fail-closed no-op, so the row keeps
+            # blocking duplicates until an operator resolves it.
+            logger.warning(
+                "ambiguous_evidence_missing_unit_identity key=%s side=%s",
+                submission.idempotency_key,
+                submission.side.value,
+            )
             return _fail_closed_scan()
 
         fills, fills_complete = await self._collect(
@@ -304,6 +317,12 @@ class CcxtAmbiguousEvidenceSource:
         return self._price_respects_limit(submission, getattr(fill, "price", None))
 
     def _order_is_candidate(self, submission: AmbiguousSubmission, order: Any) -> bool:
+        # Outcome-token-exact: two outcomes of one condition share price,
+        # size, and side, so only the token can separate a YES submission
+        # from a NO venue order.  Missing token identity on either side is
+        # a non-match (fail closed), never a guess.
+        if _text(getattr(order, "token_id", None)) != submission.token_id:
+            return False
         if str(getattr(order, "side", "") or "").upper() != submission.side.value:
             return False
         occurred_at = _as_utc(getattr(order, "created_at", None))
@@ -325,11 +344,14 @@ class CcxtAmbiguousEvidenceSource:
     def _fills_consistent_with_submission(
         self, submission: AmbiguousSubmission, legs: Sequence[Any]
     ) -> bool:
-        """Accept an aggregate that matches the shares *or* the quote spend.
+        """Accept an aggregate that matches the submission in ITS unit.
 
-        A marketable BUY carries its size as USDC spend while a limit BUY
-        carries shares, so both interpretations are accepted — either way the
-        aggregate must account for the requested size exactly.
+        Unit-strict: a BUY submission's ``amount`` is quote (USDC) spend,
+        so the aggregate quote ``sum(size * price)`` must account for it
+        exactly; a SELL submission's ``amount`` is outcome shares, so the
+        aggregate share ``sum(size)`` must account for it exactly.  The two
+        aggregates are never interchangeable — a 1-share SELL must not
+        match a 2-share aggregate whose quote happens to equal 1.
         """
 
         amount = submission.amount
@@ -344,7 +366,27 @@ class CcxtAmbiguousEvidenceSource:
                 return False
             total_size += size
             total_quote += size * price
-        return _close(total_size, amount) or _close(total_quote, amount)
+        if submission.amount_unit is SubmissionAmountUnit.QUOTE:
+            return _close(total_quote, amount)
+        return _close(total_size, amount)
+
+    def _unit_identity_verified(self, submission: AmbiguousSubmission) -> bool:
+        """Whether the submission's amount unit is present and side-coherent.
+
+        A row with no ``amount`` has nothing to verify, so its (absent) unit
+        cannot block the scan.  Otherwise the recorded unit must exist and
+        agree with the side's quote/share semantics: BUY spends quote,
+        SELL sells shares.  Anything else is a corrupt or legacy record and
+        fails closed.
+        """
+
+        if submission.amount is None:
+            return True
+        if submission.side is SubmissionSide.BUY:
+            return submission.amount_unit is SubmissionAmountUnit.QUOTE
+        if submission.side is SubmissionSide.SELL:
+            return submission.amount_unit is SubmissionAmountUnit.SHARES
+        return False
 
     def _price_respects_limit(self, submission: AmbiguousSubmission, price: Any) -> bool:
         value = _decimal(price)

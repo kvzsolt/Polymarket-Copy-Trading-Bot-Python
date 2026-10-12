@@ -31,8 +31,6 @@ from services.execution.submission import sanitize_submission_request
 from storage.postgres.orders_repo import _row_to_ambiguous_submission
 from tests.test_ccxt_prediction_gateway_contract import TOKEN, FakeExchange
 
-pytestmark = pytest.mark.asyncio
-
 _NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 
 

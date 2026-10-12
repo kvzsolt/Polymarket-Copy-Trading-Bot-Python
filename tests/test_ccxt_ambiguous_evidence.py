@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -149,6 +150,9 @@ def _source(
     return source, calls
 
 
+_AUTO_UNIT = object()
+
+
 def _submission(
     *,
     side: SubmissionSide = SubmissionSide.BUY,
@@ -157,19 +161,19 @@ def _submission(
     token_id: str | None = _TOKEN,
     condition_id: str | None = _CONDITION,
     age_seconds: int = 300,
-    amount_unit: SubmissionAmountUnit | None = None,
+    amount_unit: Any = _AUTO_UNIT,
 ) -> AmbiguousSubmission:
     # The recorded unit mirrors the submit semantics: BUY amount is quote
-    # spend, SELL amount is outcome shares.  Pass ``amount_unit`` explicitly
-    # to model a legacy row (``None``) or a corrupt record.
+    # spend, SELL amount is outcome shares.  Pass ``amount_unit=None``
+    # explicitly to model a legacy row or a corrupt record.
     unit = (
-        amount_unit
-        if amount_unit is not None
-        else (
+        (
             SubmissionAmountUnit.QUOTE
             if side is SubmissionSide.BUY
             else SubmissionAmountUnit.SHARES
         )
+        if amount_unit is _AUTO_UNIT
+        else amount_unit
     )
     return AmbiguousSubmission(
         idempotency_key="copy:leader:event",

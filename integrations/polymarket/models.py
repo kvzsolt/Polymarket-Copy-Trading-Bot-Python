@@ -57,7 +57,15 @@ class VenueSubmitResult:
 
 @dataclass(frozen=True)
 class VenueOrderState:
-    """Current state of an order on the venue."""
+    """Current state of an order on the venue.
+
+    ``token_id`` is the normalized raw outcome token the order trades.  It
+    is the adapter boundary identity: two outcomes of one condition (YES
+    and NO) share every other descriptive field, so recovery matching may
+    only treat two orders as the same intent when their tokens are equal.
+    ``None`` means the venue payload carried no token identity — never a
+    guessed mapping — and fail-closed consumers must reject such rows.
+    """
 
     order_id: str
     status: str
@@ -67,6 +75,7 @@ class VenueOrderState:
     filled_size: Decimal = Decimal("0")
     avg_fill_price: Decimal = Decimal("0")
     created_at: datetime | None = None
+    token_id: str | None = None
     raw: dict | None = None
 
 

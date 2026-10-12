@@ -22,5 +22,6 @@ def test_catalog_lists_every_sql_migration_in_immutable_order() -> None:
         "20260916_09_redemption_attempts",
         "20260916_10_auto_trader",
         "20260917_11_evidence_transaction_outbox",
+        "20261011_12_order_submission_identity",
     )
     assert all(migration.path.name == f"{migration.migration_id}.sql" for migration in migrations)

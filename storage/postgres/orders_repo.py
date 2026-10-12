@@ -50,6 +50,7 @@ from services.execution.ambiguous_recovery import (
     AmbiguousSubmission,
     AuthoritativeRecoveryScan,
     RecoveryMatchSource,
+    SubmissionAmountUnit,
     SubmissionSide,
 )
 
@@ -225,6 +226,63 @@ def _optional_decimal(value: Any) -> Decimal | None:
     return parsed
 
 
+def _optional_text(value: Any) -> str | None:
+    """Normalize an optional persisted text identity; blank becomes None."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+# A02: persisted order identity vocabulary.  Values outside these sets are
+# written as NULL (never fabricated) and readers surface ``None`` so
+# matching fails closed.
+_ORDER_AMOUNT_UNITS = frozenset({"quote", "shares"})
+_ORDER_KINDS = frozenset({"market", "limit"})
+
+
+def _submission_amount_unit(value: Any) -> SubmissionAmountUnit | None:
+    text = str(value or "").strip().lower()
+    if text == SubmissionAmountUnit.QUOTE.value:
+        return SubmissionAmountUnit.QUOTE
+    if text == SubmissionAmountUnit.SHARES.value:
+        return SubmissionAmountUnit.SHARES
+    return None
+
+
+def _order_identity_values(
+    request: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Extract the A02 order identity tuple from one sanitized request.
+
+    Returns ``(token_id, amount_unit, order_kind, effective_price_limit,
+    correlation_ids_json)``.  Every field is optional: an unrecognized or
+    absent value stays ``None`` so legacy rows are never back-filled with a
+    guessed identity.
+    """
+
+    token_id = _optional_text(request.get("token_id"))
+    unit = str(request.get("amount_unit") or "").strip().lower()
+    amount_unit = unit if unit in _ORDER_AMOUNT_UNITS else None
+    kind = str(request.get("order_kind") or "").strip().lower()
+    order_kind = kind if kind in _ORDER_KINDS else None
+    price_limit = _optional_text(request.get("price_limit"))
+    correlation: dict[str, str] = {}
+    signal_id = _optional_text(request.get("signal_id"))
+    if signal_id is not None:
+        correlation["signal_id"] = signal_id
+    recovery = request.get("recovery_metadata")
+    if isinstance(recovery, dict):
+        promotion_id = _optional_text(recovery.get("source_promotion_id"))
+        if promotion_id is not None:
+            correlation["source_promotion_id"] = promotion_id
+    correlation_ids = (
+        json.dumps(correlation, sort_keys=True, separators=(",", ":")) if correlation else None
+    )
+    return token_id, amount_unit, order_kind, price_limit, correlation_ids
+
+
 def _utc_datetime(value: Any) -> datetime | None:
     """Coerce persisted epoch/ISO/datetime values to an aware UTC instant."""
 
@@ -262,6 +320,11 @@ def _row_to_ambiguous_submission(row: Any) -> AmbiguousSubmission:
     Raises ``ValueError``/``TypeError`` for rows whose identity cannot be
     represented (blank ``user_id``, undated submission); callers quarantine
     such rows with a logged reason instead of processing them.
+
+    A02 identity columns are authoritative for rows that carry them; the
+    sanitized request payload remains the fallback for legacy rows.  A row
+    with no amount unit surfaces ``None`` — never a guessed unit — so the
+    evidence adapter can fail closed on it.
     """
 
     request = _parse_jsonb(row["request_json"])
@@ -281,11 +344,14 @@ def _row_to_ambiguous_submission(row: Any) -> AmbiguousSubmission:
         if raw_side in {SubmissionSide.BUY.value, SubmissionSide.SELL.value}
         else SubmissionSide.UNKNOWN
     )
+    row_keys = set(row.keys())
+    token_column = row["token_id"] if "token_id" in row_keys else None
+    unit_column = row["amount_unit"] if "amount_unit" in row_keys else None
     return AmbiguousSubmission(
         idempotency_key=str(row["idempotency_key"]),
         user_id=str(row["user_id"]),
         leader_id=(str(row["leader_id"]) if row["leader_id"] is not None else None),
-        token_id=(str(request["token_id"]) if request.get("token_id") is not None else None),
+        token_id=_optional_text(token_column) or _optional_text(request.get("token_id")),
         condition_id=(
             str(request["condition_id"]) if request.get("condition_id") is not None else None
         ),
@@ -293,6 +359,7 @@ def _row_to_ambiguous_submission(row: Any) -> AmbiguousSubmission:
         amount=_optional_decimal(request.get("amount")),
         price_limit=_optional_decimal(request.get("price_limit")),
         submitted_at=submitted_at,
+        amount_unit=_submission_amount_unit(unit_column or request.get("amount_unit")),
     )
 
 
@@ -360,16 +427,22 @@ class OrdersRepo(AbstractOrderRepository):
                 # reaper uses. A live (recent) or already-submitted (``order_id`` set)
                 # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
                 # and acquisition returns False as before.
+                token_id, amount_unit, order_kind, price_limit, correlation_ids = (
+                    _order_identity_values(request_payload)
+                )
                 returned = await conn.fetchval(
                     f"""
                     INSERT INTO orders (
                         idempotency_key, user_id, leader_id, order_id, status,
                         request_json, response_json, attempt_count, last_error,
-                        created_at, updated_at
+                        created_at, updated_at,
+                        token_id, amount_unit, order_kind, effective_price_limit,
+                        correlation_ids
                     ) VALUES (
                         $1, $2, $3, NULL, 'pending_lock',
                         $4::jsonb, NULL, 0, NULL,
-                        now(), now()
+                        now(), now(),
+                        $7, $8, $9, $10, $11::jsonb
                     )
                     ON CONFLICT(idempotency_key) DO UPDATE SET
                         user_id = excluded.user_id,
@@ -380,7 +453,12 @@ class OrdersRepo(AbstractOrderRepository):
                         attempt_count = 0,
                         last_error = 'stale_lock_taken_over',
                         created_at = now(),
-                        updated_at = now()
+                        updated_at = now(),
+                        token_id = excluded.token_id,
+                        amount_unit = excluded.amount_unit,
+                        order_kind = excluded.order_kind,
+                        effective_price_limit = excluded.effective_price_limit,
+                        correlation_ids = excluded.correlation_ids
                     WHERE orders.order_id IS NULL
                       AND orders.status = ANY($5::text[])
                       AND (
@@ -394,6 +472,11 @@ class OrdersRepo(AbstractOrderRepository):
                     request_json,
                     list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
                     int(stale_takeover_seconds),
+                    token_id,
+                    amount_unit,
+                    order_kind,
+                    price_limit,
+                    correlation_ids,
                 )
         return returned is not None
 
@@ -746,7 +829,8 @@ class OrdersRepo(AbstractOrderRepository):
                 SELECT idempotency_key, user_id, leader_id, order_id, status,
                        request_json, response_json, attempt_count, last_error,
                        created_at, updated_at,
-                       COALESCE(matched_total, '0') AS matched_total
+                       COALESCE(matched_total, '0') AS matched_total,
+                       token_id, amount_unit
                 FROM orders
                 WHERE status = 'submitted_unconfirmed'
                   AND order_id IS NULL
@@ -1094,6 +1178,9 @@ class OrdersRepo(AbstractOrderRepository):
         """Persist normalized submission evidence idempotently."""
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)
+        token_id, amount_unit, order_kind, price_limit, correlation_ids = (
+            _order_identity_values(record.request_payload)
+        )
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -1108,11 +1195,17 @@ class OrdersRepo(AbstractOrderRepository):
                     attempt_count,
                     last_error,
                     created_at,
-                    updated_at
+                    updated_at,
+                    token_id,
+                    amount_unit,
+                    order_kind,
+                    effective_price_limit,
+                    correlation_ids
                 ) VALUES (
                     $1, $2, $3, $4, $5,
                     $6::jsonb, $7::jsonb, 1, $8,
-                    now(), now()
+                    now(), now(),
+                    $9, $10, $11, $12, $13::jsonb
                 )
                 ON CONFLICT(idempotency_key) DO UPDATE SET
                     user_id  = COALESCE(NULLIF(excluded.user_id, ''), orders.user_id),
@@ -1137,7 +1230,14 @@ class OrdersRepo(AbstractOrderRepository):
                     END,
                     attempt_count = COALESCE(orders.attempt_count, 0) + 1,
                     last_error = excluded.last_error,
-                    updated_at = now()
+                    updated_at = now(),
+                    token_id = COALESCE(excluded.token_id, orders.token_id),
+                    amount_unit = COALESCE(excluded.amount_unit, orders.amount_unit),
+                    order_kind = COALESCE(excluded.order_kind, orders.order_kind),
+                    effective_price_limit = COALESCE(
+                        excluded.effective_price_limit, orders.effective_price_limit),
+                    correlation_ids = COALESCE(
+                        excluded.correlation_ids, orders.correlation_ids)
                 """,
                 record.idempotency_key,
                 record.user_id,
@@ -1147,6 +1247,11 @@ class OrdersRepo(AbstractOrderRepository):
                 request_json,
                 response_json,
                 record.last_error,
+                token_id,
+                amount_unit,
+                order_kind,
+                price_limit,
+                correlation_ids,
             )
 
     async def mark_fill(
