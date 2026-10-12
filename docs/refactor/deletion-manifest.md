@@ -35,3 +35,15 @@ stay in place so existing databases keep applying cleanly.
 Historical documents that reference the removed surface as part of a
 point-in-time record (`POLYMARKET_CODE_COMPLETION.md`, `docs/plans/*`,
 `docs/handoffs/*`, this manifest) are intentionally untouched.
+
+## Superseded branches (Task 16, 2026-10-12)
+
+The open Dependabot branch bumping `h2` to 4.4.1 in `requirements.txt` /
+`requirements.runtime.txt` only (lock untouched; its `hpack==4.1.0` conflicts
+with h2 4.4.1's `hpack>=4.2` floor) is SUPERSEDED and must NOT be merged.
+Task 16 re-locked the full graph from `pyproject.toml` (`uv lock --upgrade`),
+resolving `h2==4.4.1` + `hpack==4.2.0` coherently everywhere, and made both
+requirements exports generated artifacts of `uv.lock`
+(`scripts/generate_requirements.py`), guarded byte-exact by
+`scripts/check_requirements_drift.py`. Close the Dependabot PR without
+merging.

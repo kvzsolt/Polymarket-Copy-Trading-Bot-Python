@@ -1,65 +1,169 @@
-"""Dependency-drift guard tests (runtime-hardening).
+"""Lock-canonical dependency-drift guard tests.
 
-``scripts/check_requirements_drift.py`` fails CI when a ``[project].dependencies``
-entry in pyproject.toml has no matching distribution in requirements.txt — the
-exact gap that broke the Docker / documented install path for ``asyncpg``.
+``scripts/check_requirements_drift.py`` enforces the Task 16 dependency
+contract:
+
+- ``uv.lock`` is the single resolution source of truth;
+- ``requirements.txt`` / ``requirements.runtime.txt`` are generated exports
+  that must match the lock exactly (name + version + marker);
+- every ``[project].dependencies`` entry must be present in the lock.
+
+The pure parsing/comparison helpers are exercised here with synthetic
+fixtures; the repository-state test runs them against the real files. The
+uv-driven byte-exact re-render (and ``uv lock --check``) run in the script's
+``main`` and in CI, not in the unit suite.
 """
 
 from __future__ import annotations
 
 import pathlib
 
-from scripts.check_requirements_drift import find_missing
+from scripts.check_requirements_drift import (
+    find_export_entries_absent_from_lock,
+    find_lock_packages_absent_from_dev_export,
+    find_pyproject_names_missing_from_lock,
+    find_runtime_dev_inconsistencies,
+    parse_export,
+)
 
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-def test_reports_missing_runtime_dep():
-    pyproject = """
-[project]
-dependencies = ["aiohttp==3.13.5", "asyncpg>=0.30.0"]
+LOCK_FIXTURE = """
+version = 1
+requires-python = ">=3.11,<3.13"
+
+[[package]]
+name = "aiohttp"
+version = "3.14.5"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "uvloop"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "polymarket-copy-trading-bot"
+version = "0.1.0"
+source = { editable = "." }
 """
-    requirements = "aiohttp==3.13.5\n"
 
-    missing = find_missing(pyproject, requirements)
+
+def _pyproject(runtime: list[str]) -> str:
+    return f"""
+[project]
+dependencies = [
+{chr(10).join(f'  "{dep}",' for dep in runtime)}
+]
+"""
+
+
+def test_parse_export_handles_versions_and_markers() -> None:
+    parsed = parse_export(
+        "# header comment\n"
+        "aiohttp==3.14.5\n"
+        "    # via\n"
+        "    #   pyproject\n"
+        "uvloop==0.22.1 ; sys_platform != 'win32'\n"
+    )
+
+    assert parsed == {
+        "aiohttp": [("3.14.5", "")],
+        "uvloop": [("0.22.1", "sys_platform != 'win32'")],
+    }
+
+
+def test_parse_export_accumulates_repeated_names() -> None:
+    parsed = parse_export("orjson==3.11.9\norjson==3.13.0 ; platform_machine == 's390x'\n")
+
+    assert parsed["orjson"] == [("3.11.9", ""), ("3.13.0", "platform_machine == 's390x'")]
+
+
+def test_pyproject_dep_missing_from_lock_is_actionable() -> None:
+    pyproject = _pyproject(["aiohttp==3.14.5", "asyncpg>=0.30.0"])
+
+    missing = find_pyproject_names_missing_from_lock(pyproject, LOCK_FIXTURE)
 
     assert missing == ["asyncpg>=0.30.0"]
 
 
-def test_clean_when_all_present():
-    pyproject = """
-[project]
-dependencies = ["aiohttp==3.13.5", "asyncpg>=0.30.0"]
+def test_pyproject_dep_present_under_different_case_is_matched() -> None:
+    pyproject = _pyproject(["PyYAML>=6"])
+
+    assert find_pyproject_names_missing_from_lock(pyproject, LOCK_FIXTURE) == ["PyYAML>=6"]
+    lock_with_yaml = (
+        LOCK_FIXTURE
+        + """
+[[package]]
+name = "pyyaml"
+version = "6.0.3"
+source = { registry = "https://pypi.org/simple" }
 """
-    requirements = "aiohttp==3.13.5\nasyncpg>=0.30.0\n"
-
-    assert find_missing(pyproject, requirements) == []
-
-
-def test_name_match_ignores_version_and_case_and_underscores():
-    pyproject = """
-[project]
-dependencies = ["Python-Dotenv==1.2.2"]
-"""
-    # requirements pins a different version + uses different casing/separator.
-    requirements = "python_dotenv==1.0.0\n"
-
-    assert find_missing(pyproject, requirements) == []
+    )
+    assert find_pyproject_names_missing_from_lock(pyproject, lock_with_yaml) == []
 
 
-def test_dev_extras_are_not_required_in_requirements():
-    pyproject = """
-[project]
-dependencies = ["aiohttp==3.13.5"]
-[project.optional-dependencies]
-dev = ["testcontainers>=4.0.0"]
-"""
-    requirements = "aiohttp==3.13.5\n"
+def test_export_entry_absent_from_lock_is_reported() -> None:
+    export = "aiohttp==3.14.5\nh2==4.4.1\n"
 
-    assert find_missing(pyproject, requirements) == []
+    problems = find_export_entries_absent_from_lock(export, LOCK_FIXTURE)
+
+    assert problems == ["h2==4.4.1"]
 
 
-def test_repo_is_drift_free():
-    root = pathlib.Path(__file__).resolve().parents[1]
-    pyproject = (root / "pyproject.toml").read_text()
-    requirements = (root / "requirements.txt").read_text()
+def test_export_version_mismatch_against_lock_is_reported() -> None:
+    export = "aiohttp==3.14.4\n"
 
-    assert find_missing(pyproject, requirements) == []
+    problems = find_export_entries_absent_from_lock(export, LOCK_FIXTURE)
+
+    assert problems == ["aiohttp==3.14.4"]
+
+
+def test_lock_package_missing_from_dev_export_is_reported() -> None:
+    dev_export = "aiohttp==3.14.5\nuvloop==0.22.1 ; sys_platform != 'win32'\n"
+    # pytest is locked but absent from the (all-extras) dev export.
+
+    problems = find_lock_packages_absent_from_dev_export(LOCK_FIXTURE, dev_export)
+
+    assert problems == ["pytest"]
+    # The root project package is never exported (--no-emit-project).
+    assert "polymarket-copy-trading-bot" not in problems
+
+
+def test_runtime_dev_inconsistencies_are_reported() -> None:
+    dev = "aiohttp==3.14.5\nuvloop==0.22.1 ; sys_platform != 'win32'\n"
+
+    same = "aiohttp==3.14.5\nuvloop==0.22.1 ; sys_platform != 'win32'\n"
+    assert find_runtime_dev_inconsistencies(dev, same) == []
+
+    version_drift = "aiohttp==3.14.4\nuvloop==0.22.1 ; sys_platform != 'win32'\n"
+    assert find_runtime_dev_inconsistencies(dev, version_drift) == [
+        "aiohttp: version/marker differs between exports "
+        "(runtime: [('3.14.4', '')], dev: [('3.14.5', '')])"
+    ]
+
+    marker_drift = "aiohttp==3.14.5\nuvloop==0.22.1\n"
+    assert find_runtime_dev_inconsistencies(dev, marker_drift) == [
+        "uvloop: version/marker differs between exports "
+        "(runtime: [('0.22.1', '')], dev: [('0.22.1', \"sys_platform != 'win32'\")])"
+    ]
+
+
+def test_repo_exports_match_lock_and_pyproject() -> None:
+    """Repository state: exports and lock must agree under every pure check."""
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    dev = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    runtime = (ROOT / "requirements.runtime.txt").read_text(encoding="utf-8")
+
+    assert find_pyproject_names_missing_from_lock(pyproject, lock) == []
+    assert find_export_entries_absent_from_lock(dev, lock) == []
+    assert find_export_entries_absent_from_lock(runtime, lock) == []
+    assert find_lock_packages_absent_from_dev_export(lock, dev) == []
+    assert find_runtime_dev_inconsistencies(dev, runtime) == []
