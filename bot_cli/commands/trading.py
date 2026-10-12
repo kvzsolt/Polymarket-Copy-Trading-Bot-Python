@@ -122,6 +122,18 @@ async def _run_trading_async(args: argparse.Namespace) -> int:
         if args.trading_action == "status":
             state = await repo.get()
         elif args.trading_action == "pause":
+            current = await repo.get()
+            if not current.enabled and current.reason == FULL_STOP_REASON:
+                # Controller ruling: a durable full stop is already fully
+                # paused; an ordinary pause reason must never overwrite it,
+                # because that would let a routine resume clear the stop.
+                print(
+                    "Refusing pause: a durable full stop is active "
+                    f"(reason={FULL_STOP_REASON}); it already pauses every "
+                    "live submission. Run 'pmcopy trading clear-full-stop "
+                    "--confirm LIVE --reason ...' to clear it explicitly."
+                )
+                return 2
             state = await repo.set_enabled(
                 False,
                 reason=args.reason,
@@ -159,8 +171,8 @@ async def _run_trading_async(args: argparse.Namespace) -> int:
                 print(
                     "Refusing resume: a durable full stop is active "
                     f"(reason={FULL_STOP_REASON}). Run "
-                    "'trading clear-full-stop --confirm LIVE --reason ...' "
-                    "to clear it explicitly."
+                    "'pmcopy trading clear-full-stop --confirm LIVE "
+                    "--reason ...' to clear it explicitly."
                 )
                 return 2
             state = await repo.set_enabled(

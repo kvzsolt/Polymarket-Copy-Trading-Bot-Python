@@ -250,6 +250,59 @@ def test_local_cli_resume_refuses_to_clear_a_durable_full_stop(monkeypatch, caps
     assert "clear-full-stop" in output.out + output.err
 
 
+def test_local_cli_pause_cannot_downgrade_a_durable_full_stop(monkeypatch, capsys) -> None:
+    """RULING: an ordinary pause reason must never overwrite a durable full stop.
+
+    Overwriting the reason would let a routine ``resume`` bypass the guard and
+    reopen live flow without the dedicated clear action, so pause refuses and
+    leaves the durable stop byte-for-byte intact.
+    """
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="pause",
+        state=_full_stop_state(),
+    )
+
+    assert exit_code != 0
+    assert enabled_calls == [], "pause must not rewrite the control while a full stop is active"
+    output = capsys.readouterr()
+    assert "clear-full-stop" in output.out + output.err
+
+    # With the durable reason untouched, resume still demands the clear action.
+    resume_calls, resume_code = _run_stateful_trading(
+        monkeypatch,
+        action="resume",
+        state=_full_stop_state(),
+    )
+
+    assert resume_code != 0
+    assert resume_calls == []
+    assert "clear-full-stop" in capsys.readouterr().out
+
+
+def test_local_cli_pause_still_writes_an_ordinary_pause_without_a_full_stop(
+    monkeypatch, capsys
+) -> None:
+    """Plain pause keeps its pre-existing semantics when no full stop is active."""
+
+    enabled_calls, exit_code = _run_stateful_trading(
+        monkeypatch,
+        action="pause",
+        state=TradingControlState(
+            enabled=True,
+            generation=3,
+            reason="runtime.resume",
+            updated_at=NOW_STATE.updated_at,
+            updated_by="operator-a",
+        ),
+    )
+
+    assert exit_code == 0
+    assert enabled_calls == [(False, "incident", "operator-a")]
+    assert '"enabled": false' in capsys.readouterr().out
+
+
 def test_local_cli_clear_full_stop_resumes_trading_explicitly(monkeypatch, capsys) -> None:
     """The dedicated explicit action is the only way to clear a full stop."""
 
@@ -327,13 +380,14 @@ class RecordingControlRepo:
     """
 
     enabled_calls: list[tuple[bool, str, str]] = []
+    state: TradingControlState = NOW_STATE
 
     def __init__(self, pool) -> None:
         self.pool = pool
         type(self).enabled_calls = []
 
     async def get(self) -> TradingControlState:
-        return NOW_STATE
+        return type(self).state
 
     async def set_enabled(self, enabled, *, reason, updated_by) -> TradingControlState:
         type(self).enabled_calls.append((enabled, reason, updated_by))
@@ -407,12 +461,20 @@ def _patch_cli_environment(monkeypatch, *, trading_mode: str, built_runtimes):
     monkeypatch.setattr(multi_user_config, "load_runtime_users", fake_load_runtime_users)
 
 
-def _run_trading(monkeypatch, *, action: str, trading_mode: str = "live", built_runtimes=None):
+def _run_trading(
+    monkeypatch,
+    *,
+    action: str,
+    trading_mode: str = "live",
+    built_runtimes=None,
+    state: TradingControlState | None = None,
+):
     import argparse
 
     import bot_cli.commands.trading as trading_command
 
     built_runtimes = [] if built_runtimes is None else built_runtimes
+    RecordingControlRepo.state = NOW_STATE if state is None else state
     _patch_cli_environment(
         monkeypatch,
         trading_mode=trading_mode,
@@ -456,6 +518,13 @@ def test_local_cli_pause_never_cancels_resting_orders(monkeypatch) -> None:
         action="pause",
         trading_mode="live",
         built_runtimes=built,
+        state=TradingControlState(
+            enabled=True,
+            generation=3,
+            reason="runtime.resume",
+            updated_at=NOW_STATE.updated_at,
+            updated_by="operator-a",
+        ),
     )
 
     assert exit_code == 0

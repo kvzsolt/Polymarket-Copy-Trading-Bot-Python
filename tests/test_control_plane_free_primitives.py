@@ -228,6 +228,7 @@ def test_kept_trading_survivors_never_import_control_plane() -> None:
         REPOSITORY_ROOT / "orchestrators" / "liveness_heartbeat.py",
         REPOSITORY_ROOT / "services" / "trading_permission.py",
         REPOSITORY_ROOT / "storage" / "postgres" / "trading_control_repo.py",
+        REPOSITORY_ROOT / "storage" / "postgres" / "market_reentry_lock_repository.py",
         REPOSITORY_ROOT / "services" / "telemetry",
         REPOSITORY_ROOT / "orchestrators" / "telemetry_bootstrap.py",
         REPOSITORY_ROOT / "services" / "trading_control.py",
