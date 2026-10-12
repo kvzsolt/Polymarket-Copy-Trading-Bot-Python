@@ -1,7 +1,7 @@
 # Docker on the CCXT-only main branch
 
 The image uses Python 3.12 and the pinned runtime requirements, including
-CCXT 4.5.78. It builds the current checkout; the `:main` tag does not fetch Git
+CCXT 4.5.85. It builds the current checkout; the `:main` tag does not fetch Git
 or install CCXT from an upstream development branch. Build checks verify the
 installed application, PostgreSQL driver, and `ccxt.prediction.polymarket`.
 

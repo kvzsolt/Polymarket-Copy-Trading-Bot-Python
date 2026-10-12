@@ -1,12 +1,21 @@
 """Exact Polymarket order amount construction for CCXT prediction clients.
 
-CCXT's first Polymarket prediction implementation used a hard-coded table for a
+CCXT's Polymarket prediction implementation uses a hard-coded table for a
 small set of tick sizes.  Polymarket can expose additional exact increments
 (e.g. ``0.005`` and ``0.0025``).  Falling back to ``0.01`` can round a valid
 price to zero or sign amounts for a different implied price.
 
 This module installs a narrow instance-level compatibility patch.  It does not
 fork CCXT and is safe to remove once upstream accepts arbitrary tick sizes.
+
+Removal condition: upstream ``polymarket_order_raw_amounts`` must derive its
+rounding from the actual ``tickSize`` (no ``0.01`` fallback), quantize the
+price side-conservatively, and keep the maker/taker price inside the caller's
+tick.  Verified still lacking as of CCXT ``4.5.85`` (2026-10-01): the
+function is byte-identical to ``4.5.78`` and still selects
+``configs['0.01']`` for any tick outside ``{'0.1', '0.01', '0.001',
+'0.0001'}``.  Re-check on every CCXT upgrade before removing this patch;
+``tests/test_ccxt_precision.py`` pins the ``0.005``/``0.0025`` regressions.
 """
 
 from __future__ import annotations

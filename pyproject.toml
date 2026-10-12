@@ -5,27 +5,27 @@ description = "Production-hardened Polymarket copy-trading bot with PostgreSQL p
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "python-dotenv==1.2.2",
-  "aiohttp==3.14.3",
+  "python-dotenv==1.2.4",
+  "aiohttp==3.14.5",
   "httpx[http2]>=0.28.1,<1",
   "orjson>=3.11.0,<4",
   "pydantic>=2.13,<3",
   "pydantic-settings>=2.12,<3",
   "PyYAML>=6.0.2,<7",
   "uvloop>=0.22.0,<1; platform_system != 'Windows'",
-  "web3==7.15.0",
+  "web3==7.16.0",
   "eth-account==0.13.7",
   # CCXT prediction namespace is the only Polymarket venue transport.
   # Keep the exact behavior-verified release synchronized with install exports.
-  "ccxt==4.5.78",
-  "rich==14.3.3",
+  "ccxt==4.5.85",
+  "rich==14.3.4",
   "websockets>=13.0",
   "asyncpg>=0.30.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest==9.0.3",
+  "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "testcontainers[postgres]>=4.0.0",
 ]
