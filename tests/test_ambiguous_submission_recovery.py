@@ -15,6 +15,7 @@ from services.execution.ambiguous_recovery import (
     AmbiguousSubmission,
     AmbiguousSubmissionRecoveryService,
     AuthoritativeRecoveryScan,
+    EvidenceCollectionOutcome,
     RecoveryDisposition,
     RecoveryMatch,
     RecoveryMatchSource,
@@ -127,6 +128,8 @@ def _clear_absence_scan() -> AuthoritativeRecoveryScan:
     return AuthoritativeRecoveryScan(
         private_orders_complete=True,
         private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )
@@ -279,4 +282,96 @@ async def test_match_requires_the_corresponding_private_history_to_be_complete()
                 venue_order_id="venue-order-7",
                 source=RecoveryMatchSource.PRIVATE_ORDERS,
             ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Absence qualification requires declared complete-empty outcomes (A03)
+# ---------------------------------------------------------------------------
+
+
+async def test_undeclared_collection_outcome_never_qualifies_as_absence() -> None:
+    """A scan that does not declare its collection outcomes cannot prove absence.
+
+    ``private_*_complete`` alone was enough pre-A03: a misread collection that
+    silently returned ``()`` looked complete.  Qualification now requires the
+    evidence source to declare BOTH collections as ``complete_empty``.
+    """
+
+    undeclared = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+
+    assert undeclared.qualifies_as_complete_absence is False
+
+
+async def test_complete_nonempty_history_never_qualifies_as_absence() -> None:
+    nonempty = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+    mixed = AuthoritativeRecoveryScan(
+        private_orders_complete=True,
+        private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+
+    assert nonempty.qualifies_as_complete_absence is False
+    assert mixed.qualifies_as_complete_absence is False
+
+
+@pytest.mark.parametrize(
+    ("orders_outcome", "fills_outcome"),
+    [
+        (EvidenceCollectionOutcome.PARTIAL, EvidenceCollectionOutcome.PARTIAL),
+        (EvidenceCollectionOutcome.UNAVAILABLE, EvidenceCollectionOutcome.COMPLETE_EMPTY),
+        (EvidenceCollectionOutcome.INVALID, EvidenceCollectionOutcome.COMPLETE_EMPTY),
+        (EvidenceCollectionOutcome.PARTIAL, EvidenceCollectionOutcome.INVALID),
+    ],
+)
+async def test_failed_collection_outcomes_never_qualify_as_absence(
+    orders_outcome: EvidenceCollectionOutcome,
+    fills_outcome: EvidenceCollectionOutcome,
+) -> None:
+    scan = AuthoritativeRecoveryScan(
+        private_orders_complete=orders_outcome.is_complete,
+        private_fills_complete=fills_outcome.is_complete,
+        private_orders_outcome=orders_outcome,
+        private_fills_outcome=fills_outcome,
+        position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+        balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+    )
+
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_outcome_must_agree_with_the_completeness_flag() -> None:
+    with pytest.raises(ValueError, match="private_orders_outcome"):
+        AuthoritativeRecoveryScan(
+            private_orders_complete=False,
+            private_fills_complete=True,
+            private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+            position_check=AccountCheckResult.NOT_CHECKED,
+            balance_check=AccountCheckResult.NOT_CHECKED,
+        )
+
+
+async def test_outcome_must_be_an_evidence_collection_outcome() -> None:
+    with pytest.raises(TypeError):
+        AuthoritativeRecoveryScan(
+            private_orders_complete=True,
+            private_fills_complete=True,
+            private_orders_outcome="complete_empty",  # type: ignore[arg-type]
+            position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
+            balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         )

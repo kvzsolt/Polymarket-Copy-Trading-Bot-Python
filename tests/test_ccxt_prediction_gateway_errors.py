@@ -12,6 +12,7 @@ from integrations.polymarket.errors import (
     VenueOrderNotFoundError,
     VenueOrderbookNotFoundError,
     VenueRateLimitError,
+    VenueSchemaError,
     VenueUnavailableError,
 )
 from integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
@@ -410,3 +411,70 @@ async def test_not_fillable_without_detail_stays_stable() -> None:
 
     assert result.error == "order_not_fillable"
     assert result.venue_reason == "no venue detail"
+
+
+# ---------------------------------------------------------------------------
+# Unified-fallback envelope validation (A03)
+#
+# Without the raw cursor endpoints (degraded builds, public/paper doubles) the
+# gateway falls back to the unified ``fetch_open_orders``/``fetch_my_trades``.
+# A fallback answer whose shape is unrecognized must not be read as an empty
+# history: absence proofs are built on these collections.
+# ---------------------------------------------------------------------------
+
+
+class UnifiedFallbackExchange:
+    """Exchange with unified readers only, returning an injectable value."""
+
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    async def fetch_open_orders(self, *_args):
+        return self._value
+
+    async def fetch_my_trades(self, *_args):
+        return self._value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Dict without any recognized collection key.
+        {"error": "unavailable"},
+        # A null answer is not an empty collection.
+        None,
+        # A bare string is not a collection.
+        "unavailable",
+    ],
+)
+async def test_unrecognized_unified_fallback_shape_is_invalid_history(value: object) -> None:
+    with pytest.raises(VenueSchemaError):
+        await CcxtPredictionGateway(UnifiedFallbackExchange(value)).list_open_orders()
+
+
+@pytest.mark.asyncio
+async def test_unified_fallback_empty_list_is_valid_empty_history() -> None:
+    orders = await CcxtPredictionGateway(UnifiedFallbackExchange([])).list_open_orders()
+    assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_unified_fallback_keyed_envelope_is_valid_history() -> None:
+    order = {
+        "id": "order-1",
+        "status": "LIVE",
+        "side": "BUY",
+        "price": "0.40",
+        "original_size": "10",
+        "size_matched": "0",
+        "created_at": 1_750_000_000,
+        "market": "market-1",
+        "asset_id": "token-1",
+    }
+
+    orders = await CcxtPredictionGateway(
+        UnifiedFallbackExchange({"data": [order], "next_cursor": ""})
+    ).list_open_orders(market="market-1")
+
+    assert [state.order_id for state in orders] == ["order-1"]

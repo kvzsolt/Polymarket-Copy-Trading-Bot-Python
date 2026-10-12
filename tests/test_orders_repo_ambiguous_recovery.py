@@ -9,6 +9,7 @@ import pytest
 
 from services.execution.ambiguous_recovery import (
     AccountCheckResult,
+    EvidenceCollectionOutcome,
     AuthoritativeRecoveryScan,
     RecoveryMatchSource,
     SubmissionSide,
@@ -139,6 +140,8 @@ def _clear_scan() -> AuthoritativeRecoveryScan:
     return AuthoritativeRecoveryScan(
         private_orders_complete=True,
         private_fills_complete=True,
+        private_orders_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
+        private_fills_outcome=EvidenceCollectionOutcome.COMPLETE_EMPTY,
         position_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
         balance_check=AccountCheckResult.CONSISTENT_WITH_ABSENCE,
     )

@@ -19,10 +19,16 @@ from typing import Any
 import pytest
 
 from integrations.polymarket.ccxt_ambiguous_evidence import CcxtAmbiguousEvidenceSource
+from integrations.polymarket.errors import (
+    VenueHistoryIncompleteError,
+    VenueSchemaError,
+    VenueUnavailableError,
+)
 from integrations.polymarket.models import VenueFill, VenueOrderState
 from services.execution.ambiguous_recovery import (
     AccountCheckResult,
     AmbiguousSubmission,
+    EvidenceCollectionOutcome,
     RecoveryMatchSource,
     SubmissionAmountUnit,
     SubmissionSide,
@@ -44,6 +50,9 @@ _WRITE_METHODS = frozenset(
 )
 
 
+_UNSET = object()
+
+
 class _FakeGateway:
     """Read-only stand-in that records every interaction."""
 
@@ -55,12 +64,16 @@ class _FakeGateway:
         fills_error: BaseException | None = None,
         orders_error: BaseException | None = None,
         delay_seconds: float = 0.0,
+        fills_value: Any = _UNSET,
+        orders_value: Any = _UNSET,
     ) -> None:
         self._fills = list(fills or [])
         self._orders = list(orders or [])
         self._fills_error = fills_error
         self._orders_error = orders_error
         self._delay = delay_seconds
+        self._fills_value = fills_value
+        self._orders_value = orders_value
         self.calls: list[str] = []
 
     async def get_fills(self, market: str | None = None, *, trade_id=None, order_id=None):
@@ -69,6 +82,8 @@ class _FakeGateway:
             await asyncio.sleep(self._delay)
         if self._fills_error is not None:
             raise self._fills_error
+        if self._fills_value is not _UNSET:
+            return self._fills_value
         return list(self._fills)
 
     async def list_open_orders(self, *, order_id=None, market=None):
@@ -77,6 +92,8 @@ class _FakeGateway:
             await asyncio.sleep(self._delay)
         if self._orders_error is not None:
             raise self._orders_error
+        if self._orders_value is not _UNSET:
+            return self._orders_value
         return list(self._orders)
 
     async def submit_marketable_order(self, request):  # pragma: no cover - guard
@@ -719,3 +736,216 @@ async def test_private_reads_still_run_for_the_served_account() -> None:
 
     assert gateway.calls == ["get_fills", "list_open_orders"]
     assert scan.private_fills_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Collection outcome mapping (A03)
+#
+# A collection that raised, returned an unreadable payload, or stopped before
+# proving pagination exhausted is NOT a complete empty collection.  The scan
+# must carry which of the five outcomes each private read produced, and only
+# ``complete_empty`` can ever support an absence proof.
+# ---------------------------------------------------------------------------
+
+
+async def test_schema_invalid_history_maps_to_invalid_outcome() -> None:
+    gateway = _FakeGateway(fills_error=VenueSchemaError("unrecognized page"))
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.INVALID
+    assert scan.private_fills_complete is False
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_pagination_cutoff_maps_to_partial_outcome() -> None:
+    gateway = _FakeGateway(
+        orders_error=VenueHistoryIncompleteError("exceeded privateHistoryMaxPages")
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.PARTIAL
+    assert scan.private_orders_complete is False
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_transport_failure_maps_to_unavailable_outcome() -> None:
+    unavailable = _FakeGateway(fills_error=VenueUnavailableError("CCXT NetworkError"))
+    unknown = _FakeGateway(orders_error=RuntimeError("transport down"))
+    unavailable_source, _ = _source(gateway=unavailable)
+    unknown_source, _ = _source(gateway=unknown)
+
+    unavailable_scan = await unavailable_source.scan(_submission())
+    unknown_scan = await unknown_source.scan(_submission())
+
+    assert unavailable_scan.private_fills_outcome is EvidenceCollectionOutcome.UNAVAILABLE
+    assert unknown_scan.private_orders_outcome is EvidenceCollectionOutcome.UNAVAILABLE
+    assert unavailable_scan.qualifies_as_complete_absence is False
+    assert unknown_scan.qualifies_as_complete_absence is False
+
+
+async def test_none_collection_is_invalid_not_complete_empty() -> None:
+    """A ``None`` read is an unreadable payload, never an empty collection."""
+
+    gateway = _FakeGateway(fills_value=None)
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.INVALID
+    assert scan.private_fills_complete is False
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_cancellation_is_never_swallowed_into_a_scan_result() -> None:
+    """Task cancellation must propagate; it can never become a scan outcome."""
+
+    gateway = _FakeGateway(fills_error=asyncio.CancelledError())
+    source, _ = _source(gateway=gateway)
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.scan(_submission())
+
+
+async def test_genuinely_empty_collections_map_to_complete_empty_and_advance_proof() -> None:
+    gateway = _FakeGateway()
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_fills_complete is True
+    assert scan.private_orders_complete is True
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is True
+
+
+async def test_nonempty_history_never_supports_an_absence_proof() -> None:
+    """Complete-but-nonempty collections cannot prove absence.
+
+    Matching keyed on token/side/time/price/size can miss a genuinely executed
+    submission (a moved tick, a dust-sized difference, a corrupt timestamp).
+    A nonempty collection means there IS venue activity on this market, so the
+    row must stay duplicate-blocking rather than be proven absent.
+    """
+
+    gateway = _FakeGateway(
+        # A fill for the same market that matches nothing: wrong token.
+        fills=[_fill(order_id="venue-other", token_id="9" * len(_TOKEN))],
+        orders=[_order(order_id="venue-other", token_id="9" * len(_TOKEN))],
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.private_fills_complete is True
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_nonempty_complete_history_still_recovers_identity() -> None:
+    """``complete_nonempty`` supports matching; only absence needs emptiness."""
+
+    gateway = _FakeGateway(fills=[_fill(order_id="venue-order-7")])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_NONEMPTY
+    assert scan.match is not None
+    assert scan.match.venue_order_id == "venue-order-7"
+
+
+# ---------------------------------------------------------------------------
+# End to end with the production gateway (A03)
+# ---------------------------------------------------------------------------
+
+
+class _RawHistoryExchange:
+    """Raw CLOB envelopes walked by the production CCXT gateway."""
+
+    def __init__(
+        self,
+        *,
+        order_pages: dict[str | None, object] | None = None,
+        trade_pages: dict[str | None, object] | None = None,
+        options: dict[str, object] | None = None,
+    ) -> None:
+        self.options = {"chainId": 137, "signatureType": 3, **(options or {})}
+        self._order_pages = order_pages or {None: {"data": [], "next_cursor": ""}}
+        self._trade_pages = trade_pages or {None: {"data": [], "next_cursor": ""}}
+
+    async def clob_private_get_data_orders(self, params):
+        return self._order_pages[dict(params).get("next_cursor")]
+
+    async def clob_private_get_data_trades(self, params):
+        return self._trade_pages[dict(params).get("next_cursor")]
+
+    async def fetch_open_orders(self, *_args):  # pragma: no cover - raw path is used
+        raise AssertionError("raw endpoint must be preferred")
+
+    async def fetch_my_trades(self, *_args):  # pragma: no cover - raw path is used
+        raise AssertionError("raw endpoint must be used")
+
+
+async def _gateway_scan(exchange: _RawHistoryExchange) -> Any:
+    from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+
+    source, _ = _source(gateway=CcxtPredictionGateway(exchange))  # type: ignore[arg-type]
+    return await source.scan(_submission())
+
+
+async def test_malformed_http_200_history_never_becomes_an_absence_proof() -> None:
+    """The A03 headline defect, end to end.
+
+    Pre-A03, a schema-drifted 200 fills payload was silently read as an empty
+    page, both collections looked "complete", and the scan qualified as a
+    complete absence — potentially confirming a submission as absent when the
+    venue had actually answered garbage.
+    """
+
+    scan = await _gateway_scan(
+        _RawHistoryExchange(
+            order_pages={None: {"data": [], "next_cursor": ""}},
+            trade_pages={None: {"error": "internal error", "next_cursor": ""}},
+        )
+    )
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.INVALID
+    assert scan.private_fills_complete is False
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_pagination_cutoff_never_advances_the_absence_proof() -> None:
+    scan = await _gateway_scan(
+        _RawHistoryExchange(
+            options={"privateHistoryMaxPages": 1},
+            order_pages={None: {"data": [], "next_cursor": "MTAw"}},
+            trade_pages={None: {"data": [], "next_cursor": ""}},
+        )
+    )
+
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.PARTIAL
+    assert scan.private_orders_complete is False
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_genuine_empty_terminal_pages_advance_the_absence_proof() -> None:
+    scan = await _gateway_scan(_RawHistoryExchange())
+
+    assert scan.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+    assert scan.match is None
+    assert scan.qualifies_as_complete_absence is True
