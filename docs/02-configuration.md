@@ -94,6 +94,14 @@ non-zero code instead of starting.
 - **Loss**: if a renewal confirms another process took the lease over, the
   manager raises `AccountLeaseLost` and the supervisor fail-closes the
   process — it never keeps trading un-leased.
+- **Local TTL deadline (outage fail-close)**: transient renewal errors are
+  retried ONLY inside the TTL window. The manager also tracks the time of
+  the last successful acquire/renew on a monotonic clock (immune to
+  wall-clock jumps); if no renewal has succeeded for the full TTL — even
+  because the database is unreachable (partition, pool exhaustion) — it
+  raises `AccountLeaseLost` without any database contact and the process
+  fail-closes itself. An outage longer than the TTL therefore never leaves
+  a process running on a lease that has certainly expired server-side.
 - **Graceful shutdown**: SIGTERM/SIGINT releases every held lease before
   the database pool closes, so a restart acquires cleanly.
 - **Crash / takeover**: a crashed holder (no release) keeps blocking new

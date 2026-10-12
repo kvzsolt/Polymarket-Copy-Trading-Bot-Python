@@ -8,9 +8,13 @@ active writers:
   and fails closed while another live lease holds the row;
 * a supervised heartbeat RENEWS every held lease; a confirmed loss (another
   process took the expired lease over) raises ``AccountLeaseLost`` so the
-  supervisor fail-closes the process instead of limping along un-leased;
-  a transient database outage is logged and retried on the next tick (the
-  TTL outlives several renewal intervals by construction);
+  supervisor fail-closes the process instead of limping along un-leased.
+  Transient database errors are logged and retried ONLY inside the TTL
+  window: the manager also enforces a LOCAL deadline on a monotonic clock —
+  if no renewal has succeeded for ``ttl_seconds``, it raises
+  ``AccountLeaseLost`` regardless of database reachability, closing the
+  fail-open tail where an outage longer than the TTL would otherwise keep
+  the process trading on a lease that has certainly expired server-side;
 * graceful shutdown RELEASES every held lease for a clean handoff; a
   crashed holder's lease simply expires and the next process takes over
   with a logged takeover warning.
@@ -31,6 +35,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock
 from pmcopy.domain.account_identity import CopierAccountId
 from pmcopy.storage.postgres.account_lease_repo import (
     AccountLeaseRepo,
@@ -60,6 +65,7 @@ class AccountLeaseManager:
         process_token: str | None = None,
         ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS,
         renewal_interval_seconds: float = DEFAULT_RENEWAL_INTERVAL_SECONDS,
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         if repo is None and pool is None:
             raise ValueError("AccountLeaseManager requires a pool or a repo")
@@ -79,10 +85,14 @@ class AccountLeaseManager:
         self._repo = repo
         self._ttl_seconds = ttl
         self.renewal_interval_seconds = interval
+        self._monotonic: MonotonicClock = monotonic_clock or SystemMonotonicClock()
         self._holder_host = holder_host or socket.gethostname()
         self.process_token = process_token or uuid.uuid4().hex
         self._held: dict[str, CopierAccountId] = {}
         self._closed = False
+        # Monotonic timestamp of the last SUCCESSFUL acquire/renew per held
+        # account — the local fail-close deadline (see renew_held).
+        self._last_success_monotonic: dict[str, float] = {}
 
     @property
     def holder_description(self) -> str:
@@ -95,6 +105,10 @@ class AccountLeaseManager:
 
     async def acquire(self, account: CopierAccountId, *, mode: str) -> LeaseAcquisition:
         """Acquire the lease for one account (idempotent per process)."""
+        # Capture the attempt start so the recorded success time is never
+        # LATER than the server-side ``now()`` that set the row's expiry —
+        # the local deadline then fires at or before the true expiry.
+        attempt_started = self._monotonic.monotonic()
         outcome = await self._repo.acquire(
             user_id=account.value,
             holder_host=self._holder_host,
@@ -114,6 +128,7 @@ class AccountLeaseManager:
             )
             return outcome
         self._held[account.value] = account
+        self._last_success_monotonic[account.value] = attempt_started
         if outcome.takeover:
             logger.warning(
                 "account_lease_takeover | user=%s mode=%s ttl_seconds=%s — "
@@ -139,15 +154,49 @@ class AccountLeaseManager:
     async def renew_held(self) -> dict[str, datetime]:
         """Renew every held lease; raise on a CONFIRMED loss.
 
-        A transient database failure is logged and skipped — the next tick
-        retries, and the TTL outlives several intervals by construction.
-        A zero-row renew means another process took the lease over: this
-        process must stop being an active writer, so the loss is raised for
-        the supervisor's fail-closed path.
+        Fail-close ladder (strictest first):
+
+        1. LOCAL TTL deadline — checked on a monotonic clock BEFORE any
+           database contact. If no acquire/renew has succeeded for
+           ``ttl_seconds`` for a held account, the server-side lease has
+           certainly expired, so this process raises ``AccountLeaseLost``
+           regardless of database reachability. Without this, an outage
+           longer than the TTL (partition, pool exhaustion) would let the
+           process keep trading un-leased forever on "transient" errors
+           while a rival lawfully took the lease over.
+        2. Zero-row renew — the database answered and another holder owns
+           the row: a confirmed takeover loss.
+        3. Transient database error — logged and retried on the next tick;
+           only ever observed INSIDE the deadline window because of (1).
+
+        The success timestamp is recorded from the attempt START, so the
+        local deadline fires at or before the server-side expiry (the
+        server's ``now()`` cannot precede the client's send time).
         """
+        now = self._monotonic.monotonic()
+        lapsed: list[str] = []
+        for user_id in sorted(self._held):
+            last_success = self._last_success_monotonic.get(user_id)
+            # A missing timestamp is impossible state; fail closed on it.
+            if last_success is None or now - last_success >= self._ttl_seconds:
+                lapsed.append(user_id)
+        if lapsed:
+            logger.error(
+                "account_lease_local_deadline_passed | users=%s ttl_seconds=%s "
+                "— no successful renewal within the TTL; failing closed even "
+                "if the database is unreachable",
+                ",".join(lapsed),
+                self._ttl_seconds,
+            )
+            raise AccountLeaseLost(
+                "account lease local TTL deadline passed without a successful "
+                "renewal for: " + ", ".join(lapsed)
+            )
+
         renewed: dict[str, datetime] = {}
         lost: list[str] = []
         for user_id in sorted(self._held):
+            attempt_started = self._monotonic.monotonic()
             try:
                 expires_at = await self._repo.renew(
                     user_id=user_id,
@@ -165,6 +214,7 @@ class AccountLeaseManager:
             if expires_at is None:
                 lost.append(user_id)
                 continue
+            self._last_success_monotonic[user_id] = attempt_started
             renewed[user_id] = expires_at
         if lost:
             raise AccountLeaseLost(
@@ -192,6 +242,7 @@ class AccountLeaseManager:
                 released += 1
                 logger.info("account_lease_released | user=%s", user_id)
         self._held.clear()
+        self._last_success_monotonic.clear()
         return released
 
     async def close(self) -> None:

@@ -129,6 +129,19 @@ class FakeClock:
         self._now = self._now + timedelta(seconds=seconds)
 
 
+class FakeMonotonicClock:
+    """Deterministic monotonic seam (seconds since an arbitrary origin)."""
+
+    def __init__(self) -> None:
+        self._t = 1000.0
+
+    def monotonic(self) -> float:
+        return self._t
+
+    def advance(self, seconds: float) -> None:
+        self._t += seconds
+
+
 class FakeLeaseRepo:
     """In-memory store with the AccountLeaseRepo semantics and fault hooks."""
 
@@ -136,7 +149,6 @@ class FakeLeaseRepo:
         self._clock = clock
         self.rows: dict[str, dict] = {}
         self.renew_exc: Exception | None = None
-
     async def acquire(
         self,
         *,
@@ -333,6 +345,36 @@ async def test_transient_renewal_outage_is_not_a_loss() -> None:
     clock.advance(15)
     renewals = await holder.renew_held()
     assert renewals[ACCOUNT.value] > clock.now()
+
+
+async def test_transient_outage_spanning_ttl_fails_closed_without_db_contact() -> None:
+    """An outage longer than the TTL must fail-close the process locally.
+
+    Every renew attempt errors (database unreachable), so no SQL outcome —
+    not even a zero-row "lost" — can ever be observed. The manager still
+    MUST stop treating itself as the holder once its OWN monotonic deadline
+    (last successful acquire/renew + TTL) lapses: the server-side lease has
+    certainly expired, so a rival may lawfully take over while this process
+    would otherwise keep trading un-leased forever.
+    """
+    clock = FakeClock()
+    repo = FakeLeaseRepo(clock)
+    mono = FakeMonotonicClock()
+    holder = _manager(repo, monotonic_clock=mono)
+    assert (await holder.acquire(ACCOUNT, mode="live")).acquired
+
+    repo.renew_exc = RuntimeError("database partition")
+    # Failures strictly inside the TTL window: warn-and-continue.
+    for _ in range(3):
+        mono.advance(15)
+        await holder.renew_held()  # 45s elapsed, no raise
+    # Cross the local TTL deadline (61s since the successful acquire) with
+    # ZERO successful DB contact in between: the raise must come from the
+    # LOCAL deadline, not from a zero-row renew outcome.
+    mono.advance(16)
+    with pytest.raises(AccountLeaseLost) as excinfo:
+        await holder.renew_held()
+    assert ACCOUNT.value in str(excinfo.value)
 
 
 async def test_lease_is_per_account_two_accounts_never_conflict() -> None:
