@@ -6,9 +6,13 @@ import argparse
 import json
 
 from pmcopy.config.app_config import load_config, AppConfig, EnvValidationError
+from pmcopy.utils.log_redaction import REDACTED_PLACEHOLDER, is_secret_key, redact_text
 
 
-# Keys that should be redacted when printing config
+# Keys that should be redacted when printing config but are NOT matched by
+# the shared credential-key engine (``is_secret_key``): connection strings
+# and CLOB credential aliases. Boundary matching (``*_token``-style) applies
+# to every entry except keys that are market identity (``*_id``/``*_ids``).
 _SECRET_KEYS = frozenset(
     {
         "PRIVATE_KEY",
@@ -26,17 +30,25 @@ _SECRET_KEYS = frozenset(
     }
 )
 
-_REDACTED = "***REDACTED***"
+_REDACTED = REDACTED_PLACEHOLDER
 
 
 def _redact_value(key: str, value: object) -> object:
     """Redact secret values for safe display.
 
-    Matching is exact or on secret-name boundaries (``*_token``), so
-    plural/non-secret fields such as a copy-task ``tokens`` market filter are
-    not mistaken for credentials.
+    Key detection uses the shared Task 5 credential-key engine
+    (``is_secret_key``) plus the connection-string list above; boundary
+    matching on ``*_token`` compounds stays, but market identity keys
+    (``*_id``/``*_ids`` — e.g. a copy-task ``token_id`` filter) is exempt so
+    plural/identifier fields are not mistaken for credentials. String values
+    additionally pass through ``redact_text`` so provider keys embedded in
+    URLs (``/v2/<key>``, query parameters, userinfo passwords) are masked
+    even under innocuous field names.
     """
+    if is_secret_key(key):
+        return _REDACTED
     key_lower = key.lower()
+    market_identity = key_lower.endswith(("_id", "_ids"))
     for secret in _SECRET_KEYS:
         secret_lower = secret.lower()
         if (
@@ -44,7 +56,11 @@ def _redact_value(key: str, value: object) -> object:
             or key_lower.endswith(f"_{secret_lower}")
             or key_lower.startswith(f"{secret_lower}_")
         ):
+            if market_identity:
+                continue
             return _REDACTED
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 
