@@ -88,7 +88,11 @@ class TestConfigValidate:
         summary = payload["copiers"]
         assert [c["id"] for c in summary] == ["primary"]
         assert summary[0]["mode"] == "paper"
-        assert summary[0]["limits"]["max_order_quote"] == "5.00"
+        # Account caps flow to the follow whitelist as exact decimal text
+        # (fixed sizing: quote_amount is the per-order cap).
+        follow = summary[0]["follows"][0]
+        assert follow["max_trade_usdc"] == "2.00"
+        assert follow["max_market_exposure_usdc"] == "50.00"
         assert len(summary[0]["follows"]) == 1
         # Secret VALUES never appear — even though the reference resolved.
         assert canary not in out

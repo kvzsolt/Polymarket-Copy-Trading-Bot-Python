@@ -1,0 +1,70 @@
+# Example schema v2 copiers roster — multi-copier configuration (Task 22).
+#
+# Enable by pointing app.copiers_config_file at a copy of this file, e.g. in
+# secrets.env:  PMCOPY__APP__COPIERS_CONFIG_FILE=/path/to/copiers.yml
+#
+# SECURITY MODEL
+#   - wallet fields are environment-variable NAMES (references), never values.
+#     Put the actual secrets in secrets.env / your process environment.
+#   - paper mode must not demand signing secrets: private_key_env is optional
+#     there (a declared-but-unset reference resolves empty). funder_address_env
+#     IS required in paper — it is the account identity.
+#   - live mode requires private_key_env, its variable to be set, and the key
+#     to be a 0x + 64-hex value. Errors name the variable, never the value.
+#
+# RULES (validated fail-closed by services/copierConfig.py)
+#   - schema_version must be exactly 2.
+#   - Strict booleans: true/false only ("yes"/"1" are rejected).
+#   - Money is exact decimal text; quoting is optional because the loader
+#     reads every scalar as text (5.00 and "5.00" are identical and exact).
+#   - One process-wide mode: every copier's mode must equal
+#     execution.trading_mode (paper|live); mixed modes are rejected.
+#   - ids are the persisted account identity ([A-Za-z0-9][A-Za-z0-9._-]{0,63},
+#     not "default"); renaming a copier starts a NEW empty ledger.
+#   - Duplicate copier ids, duplicate resolved wallet addresses, and duplicate
+#     leaders within one copier are rejected.
+#   - follows is an explicit whitelist (empty = no new copied entries while
+#     monitoring/protection continues). sizing.mode fixed uses quote_amount
+#     (<= limits.max_order_quote); proportional uses leader_share (a FRACTION
+#     of leader notional: 0.07 = 7%, bounded 0 < x <= 1).
+#   - enabled: false validates the copier but does not start it (no lease, no
+#     routing, and its secret references are not demanded).
+#
+# All addresses below are SYNTHETIC. Never put real keys in YAML.
+schema_version: 2
+copiers:
+  - id: primary
+    enabled: true
+    mode: paper
+    wallet:
+      funder_address_env: PRIMARY_FUNDER_ADDRESS
+      private_key_env: PRIMARY_PRIVATE_KEY
+    limits:
+      max_order_quote: "5.00"
+      max_open_exposure_quote: "50.00"
+    follows:
+      - leader_address: "0x1111111111111111111111111111111111111111"
+        enabled: true
+        sizing:
+          mode: fixed
+          quote_amount: "2.00"
+  - id: secondary
+    enabled: true
+    mode: paper
+    wallet:
+      funder_address_env: SECONDARY_FUNDER_ADDRESS
+      private_key_env: SECONDARY_PRIVATE_KEY
+    limits:
+      max_order_quote: "3.00"
+      max_open_exposure_quote: "20.00"
+    follows:
+      - leader_address: "0x1111111111111111111111111111111111111111"
+        enabled: true
+        sizing:
+          mode: fixed
+          quote_amount: "1.00"
+      - leader_address: "0x2222222222222222222222222222222222222222"
+        enabled: true
+        sizing:
+          mode: proportional
+          leader_share: "0.07"

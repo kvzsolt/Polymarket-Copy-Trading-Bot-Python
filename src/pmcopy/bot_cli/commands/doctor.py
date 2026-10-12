@@ -421,33 +421,59 @@ async def run_doctor_checks(
 
     # ----- wallet basics ------------------------------------------------
     if live:
-        if not secret_value(config.wallet.private_key):
-            ctx.blocked(
-                "wallet_private_key",
-                "wallet.private_key is missing",
-                "set PMCOPY__WALLET__PRIVATE_KEY in secrets.env",
-            )
-        else:
-            ctx.ok("wallet_private_key", "wallet.private_key present")
-        funder = config.wallet.funder_address or ""
-        if not funder:
-            ctx.blocked(
-                "wallet_funder_resolution",
-                "verified Deposit Wallet funder_address is missing",
-                "set PMCOPY__WALLET__FUNDER_ADDRESS in secrets.env",
-            )
-        elif re.match(r"^0x[0-9a-fA-F]{40}$", funder):
-            ctx.ok("wallet_funder_valid", f"configured Deposit Wallet: {funder}")
-        else:
-            ctx.blocked(
-                "wallet_funder_valid",
-                f"invalid wallet.funder_address: {funder!r}",
-                "remove wallet.funder_address or set a 42-char Deposit Wallet address",
-            )
-        ctx.ok(
-            "wallet_signature_type",
-            "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by CCXT composition",
+        # Task 22 — with a schema v2 copiers roster the per-copier env
+        # references are the wallet credential source, so the GLOBAL
+        # single-account wallet checks are replaced by an end-to-end roster
+        # load (structure, identities, modes, and live secret presence).
+        # Loader errors are already secret-safe: they name variables, not
+        # values.
+        copiers_file = bool(
+            (getattr(config, "app", None) and getattr(config.app, "copiers_config_file", "") or "").strip()
         )
+        if copiers_file:
+            try:
+                from pmcopy.services.multiUserConfig import load_runtime_users
+
+                roster_users = load_runtime_users([], config)
+                ctx.ok(
+                    "copiers_roster",
+                    f"{len(roster_users)} copier account(s) loaded from the "
+                    "schema v2 roster (wallet credentials resolve per copier)",
+                )
+            except ValueError as exc:
+                ctx.blocked(
+                    "copiers_roster",
+                    str(exc),
+                    "fix app.copiers_config_file (per-copier *_env references) and retry",
+                )
+        else:
+            if not secret_value(config.wallet.private_key):
+                ctx.blocked(
+                    "wallet_private_key",
+                    "wallet.private_key is missing",
+                    "set PMCOPY__WALLET__PRIVATE_KEY in secrets.env",
+                )
+            else:
+                ctx.ok("wallet_private_key", "wallet.private_key present")
+            funder = config.wallet.funder_address or ""
+            if not funder:
+                ctx.blocked(
+                    "wallet_funder_resolution",
+                    "verified Deposit Wallet funder_address is missing",
+                    "set PMCOPY__WALLET__FUNDER_ADDRESS in secrets.env",
+                )
+            elif re.match(r"^0x[0-9a-fA-F]{40}$", funder):
+                ctx.ok("wallet_funder_valid", f"configured Deposit Wallet: {funder}")
+            else:
+                ctx.blocked(
+                    "wallet_funder_valid",
+                    f"invalid wallet.funder_address: {funder!r}",
+                    "remove wallet.funder_address or set a 42-char Deposit Wallet address",
+                )
+            ctx.ok(
+                "wallet_signature_type",
+                "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by CCXT composition",
+            )
 
     # ----- database -----------------------------------------------------
     from pmcopy.storage.postgres.connection import init_pool, shutdown_pool

@@ -426,7 +426,9 @@ async def test_doctor_live_still_blocks_on_missing_global_key_without_roster(tmp
     )
     rec = _checks_by_name(out)["config_load"]
     assert rec["status"] == "blocked"
-    assert "PRIVATE_KEY" in rec["detail"]
+    # The doctor's config_load check reports a redacted generic detail —
+    # the fail-closed block itself (and nothing after it) is the contract.
+    assert "wallet_private_key" not in _checks_by_name(out)
 
 
 async def test_saved_automatic_roster_can_restore_without_provider_credentials(

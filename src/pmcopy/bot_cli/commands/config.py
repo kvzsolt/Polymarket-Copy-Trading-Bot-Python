@@ -179,6 +179,42 @@ def register_config_command(subparsers: argparse._SubParsersAction) -> None:
     explain_parser.add_argument("key", help="Config key to explain")
 
 
+def _copiers_summary(config: AppConfig) -> list[dict]:
+    """Build a secret-free summary of the configured runtime copiers.
+
+    Loads the roster through the strict seam (schema v2 copiers file, v1
+    multi-user JSON, or the legacy single-account fallback), so the summary
+    doubles as full roster validation. Only safe fields are emitted: ids,
+    modes, public wallet identity (funder addresses are on-chain identity,
+    not secrets), follow whitelists, and exact-decimal limits. Secret
+    VALUES never reach this summary — resolved private keys live only in
+    the ``SecretStr`` wallet config and are never read here.
+    """
+    from pmcopy.services.multiUserConfig import load_runtime_users
+
+    users = load_runtime_users([], config)
+    mode = "live" if not config.execution.paper_trade_only else "paper"
+    return [
+        {
+            "id": user.user_id,
+            "mode": mode,
+            "funder_address": user.wallet.funder_address,
+            "follows_explicit": user.follows_explicit,
+            "follows": [
+                {
+                    "leader_address": follow.leader_id,
+                    "enabled": follow.enabled,
+                    "allocation_pct": str(follow.allocation_pct),
+                    "max_trade_usdc": str(follow.max_trade_usdc),
+                    "max_market_exposure_usdc": str(follow.max_market_exposure_usdc),
+                }
+                for follow in user.follows.values()
+            ],
+        }
+        for user in users
+    ]
+
+
 def _run_config_print(args: argparse.Namespace) -> int:
     try:
         config = load_config()
@@ -189,20 +225,43 @@ def _run_config_print(args: argparse.Namespace) -> int:
     output = _config_to_dict(config, redacted=True)
     # Remove raw env from output (too noisy)
     output.pop("raw", None)
+    # Task 22 — the copiers roster summary is validated and rendered with
+    # safe fields only; an invalid roster fails closed instead of printing
+    # a config the process would refuse to start with.
+    try:
+        output["copiers"] = _copiers_summary(config)
+    except ValueError as exc:
+        print(
+            json.dumps(
+                {"error": "copiers_config_invalid", "details": str(exc)}, indent=2
+            )
+        )
+        return 1
     print(json.dumps(output, indent=2, default=str))
     return 0
 
 
 def _run_config_validate(_args: argparse.Namespace) -> int:
     try:
-        load_config()
+        config = load_config()
     except EnvValidationError as exc:
         errors = str(exc).split("\n")
         output = {"valid": False, "errors": errors}
         print(json.dumps(output, indent=2))
         return 1
 
-    output = {"valid": True, "errors": []}
+    # Task 22 — validate the FULL runtime roster too (schema v2 copiers
+    # file when configured: structure, identities, modes, and secret-ref
+    # PRESENCE — variables are named in errors, values are never read for
+    # display). A config whose roster cannot load is not valid.
+    try:
+        copiers = _copiers_summary(config)
+    except ValueError as exc:
+        output = {"valid": False, "errors": [str(exc)]}
+        print(json.dumps(output, indent=2))
+        return 1
+
+    output = {"valid": True, "errors": [], "copiers": copiers}
     print(json.dumps(output, indent=2))
     return 0
 
