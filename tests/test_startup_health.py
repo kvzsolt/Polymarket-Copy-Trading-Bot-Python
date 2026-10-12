@@ -227,7 +227,7 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
     env = _summary_env()
     monkeypatch.setattr(
         "config.app_config.sys.version_info",
-        SimpleNamespace(major=3, minor=12),
+        SimpleNamespace(major=3, minor=14),
     )
     from tests.config_helpers import load_test_config
 

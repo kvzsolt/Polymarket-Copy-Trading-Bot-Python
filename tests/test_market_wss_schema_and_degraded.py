@@ -332,7 +332,7 @@ class TestMarketDataConfig:
         from types import SimpleNamespace
 
         monkeypatch.setattr(
-            "config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12)
+            "config.app_config.sys.version_info", SimpleNamespace(major=3, minor=14)
         )
         from tests.config_helpers import load_test_config
 
