@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import inspect
 
-from services.execution.reconciliation_service import ReconciliationService
-from services.executionService import ExecutionService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.executionService import ExecutionService
 
 
 REQUIRED_RECONCILER_METHODS = (

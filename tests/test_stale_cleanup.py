@@ -17,7 +17,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -33,7 +33,7 @@ async def _pg_pool():
         async with pool.acquire() as conn:
             await pg_apply(conn)
 
-        from storage.postgres import connection as conn_mod
+        from pmcopy.storage.postgres import connection as conn_mod
 
         conn_mod._reset_for_tests()
         prev_pool = conn_mod._pool
@@ -68,7 +68,7 @@ async def _insert_processed(pool, key: str, age_seconds: float):
 class TestPurgeProcessedTrades:
     async def test_purge_removes_old(self):
         async with _pg_pool() as pool:
-            from storage.postgres.orders_repo import OrdersRepo
+            from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
             repo = OrdersRepo(pool)
             await _insert_processed(pool, "old1", 40 * 86400)
@@ -81,7 +81,7 @@ class TestPurgeProcessedTrades:
 
     async def test_purge_nothing_when_all_fresh(self):
         async with _pg_pool() as pool:
-            from storage.postgres.orders_repo import OrdersRepo
+            from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
             repo = OrdersRepo(pool)
             await _insert_processed(pool, "a", 1000)
@@ -90,7 +90,7 @@ class TestPurgeProcessedTrades:
 
     async def test_custom_age(self):
         async with _pg_pool() as pool:
-            from storage.postgres.orders_repo import OrdersRepo
+            from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
             repo = OrdersRepo(pool)
             await _insert_processed(pool, "k1", 7200)  # 2 hours old
@@ -105,7 +105,7 @@ class TestIdempotencyPurge:
             await _insert_processed(pool, "old_trade", 40 * 86400)
             await _insert_processed(pool, "new_trade", 1 * 86400)
 
-            import utils.idempotency as idem
+            import pmcopy.utils.idempotency as idem
 
             total = await idem.purge_stale_records(30 * 86400)
             assert total == 1  # only the old trade

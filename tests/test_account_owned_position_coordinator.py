@@ -22,20 +22,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from config.env import SignatureType
+from pmcopy.config.env import SignatureType
 
-import config.app_config as app_config_mod
-import orchestrators.runtime_bootstrap as runtime_bootstrap
-from orchestrators.runtime_bootstrap import (
+import pmcopy.config.app_config as app_config_mod
+import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+from pmcopy.orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
 )
-from services.execution import intent_recovery as _intent_recovery_module
-from services.intentRegistry import IntentSide, Reservation
-from services.multiUserConfig import UserFollowConfig
-from services.positionActionCoordinator import PositionScope
-from services.positionCoordinator import PositionCoordinator
+from pmcopy.services.execution import intent_recovery as _intent_recovery_module
+from pmcopy.services.intentRegistry import IntentSide, Reservation
+from pmcopy.services.multiUserConfig import UserFollowConfig
+from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.positionCoordinator import PositionCoordinator
 from tests.config_helpers import load_test_config
 
 # Captured at import time, before the autouse fixture patches the module
@@ -93,14 +93,14 @@ def _build_account_state(user_id: str = "user-1") -> object:
 def _quiet_bootstrap(monkeypatch):
     """Keep the bootstrap off live DB / inventory paths for these wiring tests."""
     monkeypatch.setattr(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
         AsyncMock(return_value=None),
     )
     async def _no_recovery(*args, **kwargs):
         return 0
 
     monkeypatch.setattr(
-        "services.execution.intent_recovery.recover_intents_from_db", _no_recovery
+        "pmcopy.services.execution.intent_recovery.recover_intents_from_db", _no_recovery
     )
 
 
@@ -230,7 +230,7 @@ async def test_intent_recovery_seeds_one_registry_once_per_account(monkeypatch):
         return 2
 
     monkeypatch.setattr(
-        "services.execution.intent_recovery.recover_intents_from_db", _recorder
+        "pmcopy.services.execution.intent_recovery.recover_intents_from_db", _recorder
     )
 
     ctx1 = await build_trading_context(state, _follow("user-1", LEADER_1), _config())

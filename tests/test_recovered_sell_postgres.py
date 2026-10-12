@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.execution.fill_accounting import FillAccountingConflict
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.services.execution.fill_accounting import FillAccountingConflict
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
 from tests.test_fills_repo_dedup_key import _pg_pool
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.positions_repo import PositionRecord
-from orchestrators.trade_pipeline import _sync_sell_position_from_live_holdings
-from domain.position_ownership import PositionOwnership
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord
+from pmcopy.orchestrators.trade_pipeline import _sync_sell_position_from_live_holdings
+from pmcopy.domain.position_ownership import PositionOwnership
 from tests.test_positions_repo_set_position_size import _FakePool, _FakeTx, VALID_TOKEN
 
 

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.budget import (
+from pmcopy.services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
     TaskBudgetExecutionState,
     TaskBudgetInvariantError,
@@ -16,7 +16,7 @@ from services.copy_tasks.budget import (
     TaskBudgetReservationService,
     TaskBudgetReservationStatus,
 )
-from services.copy_tasks.domain import TaskSpendPolicy
+from pmcopy.services.copy_tasks.domain import TaskSpendPolicy
 
 
 def request(

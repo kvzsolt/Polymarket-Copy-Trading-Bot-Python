@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from storage.postgres.orders_repo import (
+from pmcopy.storage.postgres.orders_repo import (
     _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS,
     _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES,
     OrdersRepo,

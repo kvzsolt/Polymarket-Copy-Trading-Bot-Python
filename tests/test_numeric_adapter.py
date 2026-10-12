@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-from utils.numeric import DEFAULT_EPSILON, quantize_and_convert_to_float
+from pmcopy.utils.numeric import DEFAULT_EPSILON, quantize_and_convert_to_float
 
 
 class TestExactBoundary:

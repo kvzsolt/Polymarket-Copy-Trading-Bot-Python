@@ -7,13 +7,13 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import config.app_config as app_config_mod
-import orchestrators.runtime_bootstrap as runtime_bootstrap
-from application.trading_context import TradingContext
-from orchestrators.runtime_bootstrap import build_trading_context, default_follow
-from services.healthServer import ReadinessTracker
-from services.metrics import MetricsRegistry
-from services.telemetry import ExecutionTelemetryEmitter, TelemetryEmitters
+import pmcopy.config.app_config as app_config_mod
+import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.orchestrators.runtime_bootstrap import build_trading_context, default_follow
+from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.services.telemetry import ExecutionTelemetryEmitter, TelemetryEmitters
 from tests.config_helpers import load_test_config
 
 
@@ -45,7 +45,7 @@ def _runtime_user() -> SimpleNamespace:
 async def test_application_starts_and_registers_one_telemetry_owner() -> None:
     """The outer resource registry owns the same telemetry runtime it exposes."""
 
-    from app import _start_telemetry_runtime
+    from pmcopy.app import _start_telemetry_runtime
 
     resources: list[object] = []
     application = SimpleNamespace(readiness=ReadinessTracker())
@@ -67,7 +67,7 @@ async def test_application_starts_and_registers_one_telemetry_owner() -> None:
 async def test_emitter_bundle_is_built_from_the_started_telemetry_runtime() -> None:
     """The composition root turns the telemetry runtime into one shared bundle."""
 
-    from app import _build_telemetry_emitters, _start_telemetry_runtime
+    from pmcopy.app import _build_telemetry_emitters, _start_telemetry_runtime
 
     resources: list[object] = []
     runtime = await _start_telemetry_runtime(
@@ -90,7 +90,7 @@ async def test_emitter_bundle_is_built_from_the_started_telemetry_runtime() -> N
 def test_emitter_bundle_falls_back_to_the_disabled_null_object() -> None:
     """A missing telemetry runtime yields a total no-op bundle, never ``None``."""
 
-    from app import _build_telemetry_emitters
+    from pmcopy.app import _build_telemetry_emitters
 
     emitters = _build_telemetry_emitters(None)
 
@@ -101,7 +101,7 @@ def test_emitter_bundle_falls_back_to_the_disabled_null_object() -> None:
 def test_run_application_builds_the_bundle_and_threads_it_into_user_state() -> None:
     """``app._run_application`` composes telemetry before per-user wiring."""
 
-    import app
+    import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
 
@@ -119,7 +119,7 @@ def test_run_application_reports_the_startup_roster_before_starting_monitors() -
     guard (the repository's existing pattern for ``_run_application``).
     """
 
-    import app
+    import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
 
@@ -131,7 +131,7 @@ def test_run_application_reports_the_startup_roster_before_starting_monitors() -
 def test_run_application_reports_the_roster_on_discovery_promotion() -> None:
     """The dynamic path keeps reporting the recomputed active-leader count."""
 
-    import app
+    import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
 
@@ -141,7 +141,7 @@ def test_run_application_reports_the_roster_on_discovery_promotion() -> None:
 def test_run_application_passes_the_detection_emitter_to_every_producer() -> None:
     """Only the native dispatch adapter emits accepted production leader signals."""
 
-    import app
+    import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
 
@@ -178,8 +178,8 @@ def test_build_user_state_threads_the_bundle_into_execution_and_state() -> None:
     emitters = TelemetryEmitters.disabled()
 
     with (
-        patch("orchestrators.runtime_bootstrap.PositionManager"),
-        patch("orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager"),
+        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
     ):
         state = runtime_bootstrap.build_user_state(
             _runtime_user(),
@@ -200,8 +200,8 @@ def test_build_user_state_without_telemetry_uses_the_disabled_bundle() -> None:
     cfg = _config()
 
     with (
-        patch("orchestrators.runtime_bootstrap.PositionManager"),
-        patch("orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager"),
+        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
     ):
         state = runtime_bootstrap.build_user_state(
             _runtime_user(),
@@ -244,7 +244,7 @@ def test_build_trading_context_copies_the_bundle_from_the_user_state() -> None:
     )
 
     with patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         context = asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
@@ -255,7 +255,7 @@ def test_build_trading_context_copies_the_bundle_from_the_user_state() -> None:
 def test_execution_service_stores_the_injected_telemetry_emitter() -> None:
     """The execution service holds the emitter without using it yet."""
 
-    from services.executionService import ExecutionService
+    from pmcopy.services.executionService import ExecutionService
 
     cfg = _config()
     emitter = TelemetryEmitters.disabled().execution

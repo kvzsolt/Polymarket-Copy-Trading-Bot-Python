@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange
 
 

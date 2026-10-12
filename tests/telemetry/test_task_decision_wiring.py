@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from services.copy_tasks.event_routing import CopyTaskEventProcessor
-from services.telemetry import SkipEvent, TelemetryEmitters, TradeEvent, TradeOutcome
+from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
+from pmcopy.services.telemetry import SkipEvent, TelemetryEmitters, TradeEvent, TradeOutcome
 from tests.telemetry.test_emitters import _started_service
 from tests.v1.test_copy_task_event_routing import (
     InMemoryCopyTaskRepository,

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import services.compliance as compliance
-from domain.models import ComplianceDecision
-from services.compliance import GeoblockGate
+import pmcopy.services.compliance as compliance
+from pmcopy.domain.models import ComplianceDecision
+from pmcopy.services.compliance import GeoblockGate
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

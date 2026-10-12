@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from services.copy_tasks.worker import LeaderWorkerSupervisor
+from pmcopy.services.copy_tasks.worker import LeaderWorkerSupervisor
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_configured_drain_deadline_stops_inflight_work(monkeypatch, caplog
     await supervisor.start()
     await supervisor.submit("leader", 1)
     await started.wait()
-    monkeypatch.setattr("services.copy_tasks.worker.asyncio.timeout", timeout)
+    monkeypatch.setattr("pmcopy.services.copy_tasks.worker.asyncio.timeout", timeout)
     await supervisor.close()
     assert deadlines == [12.5]
     assert cleaned.is_set()

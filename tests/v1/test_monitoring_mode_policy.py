@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from domain.detection import DetectionFinality
-from services.copy_tasks.domain import MonitoringMode
-from services.copy_tasks.monitoring import CopyMonitoringModePolicy
+from pmcopy.domain.detection import DetectionFinality
+from pmcopy.services.copy_tasks.domain import MonitoringMode
+from pmcopy.services.copy_tasks.monitoring import CopyMonitoringModePolicy
 
 
 def test_normal_mode_allows_confirmed_evidence() -> None:

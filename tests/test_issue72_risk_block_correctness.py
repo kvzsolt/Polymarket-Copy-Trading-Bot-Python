@@ -16,20 +16,20 @@ from decimal import Decimal
 
 import pytest
 
-from application.trading_context import TradingContext
-from integrations.polymarket.models import VenueFill
-from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
-from services.executionService import ExecutionResult
-from services.positionManager import PositionManager
-from services.risk.risk_monitor import (
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.integrations.polymarket.models import VenueFill
+from pmcopy.orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.risk.risk_monitor import (
     rehydrate_position_manager,
     run_risk_check_for_context,
 )
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
-from storage.postgres.risk_triggers_repo import RiskTriggersRepo
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.storage.postgres.risk_triggers_repo import RiskTriggersRepo
 
 pytestmark = pytest.mark.integration
 
@@ -57,7 +57,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")

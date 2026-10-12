@@ -18,13 +18,13 @@ instead of in production.
 
 from __future__ import annotations
 
-from config.app_config import (
+from pmcopy.config.app_config import (
     _ONCHAIN_DETECTION_CONFIDENCE_VALUES,
     _PENDING_MODE_CONFIDENCE_VALUES,
 )
-from orchestrators.onchain_detection_runtime import _CONFIDENCE_RANK
-from services.onchain_detection.pending_tx_detector import build_signals_from_pending_tx
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.orchestrators.onchain_detection_runtime import _CONFIDENCE_RANK
+from pmcopy.services.onchain_detection.pending_tx_detector import build_signals_from_pending_tx
+from pmcopy.services.onchain_detection.trade_detection_models import (
     MAKER_SIDE_BUY,
     MAKER_SIDE_SELL,
     DetectionConfidence,

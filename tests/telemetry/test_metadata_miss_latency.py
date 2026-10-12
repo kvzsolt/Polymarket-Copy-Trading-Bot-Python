@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.errors import VenueUnavailableError
-from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
-from services.telemetry.latency import PipelineLatency
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.errors import VenueUnavailableError
+from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.telemetry.latency import PipelineLatency
 from tests.telemetry.test_pipeline_latency import ReceiptClock
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange, TOKEN
 

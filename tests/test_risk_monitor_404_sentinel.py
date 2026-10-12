@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from services.risk.risk_monitor import (
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.services.risk.risk_monitor import (
     RiskPriceCache,
     VenueCircuitBreaker,
     _active_sell_reserved_size,
@@ -36,7 +36,7 @@ from services.risk.risk_monitor import (
     _refresh_context_price_cache,
     _should_log_active_reservation_skip,
 )
-from utils.createClobClient import PRICE_TOKEN_NOT_FOUND
+from pmcopy.utils.createClobClient import PRICE_TOKEN_NOT_FOUND
 
 
 class _NotFoundPriceClient:

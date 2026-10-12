@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
-from orchestrators import trade_pipeline
-from services.risk import risk_monitor
+from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
+from pmcopy.orchestrators import trade_pipeline
+from pmcopy.services.risk import risk_monitor
 
 
 @pytest.mark.asyncio

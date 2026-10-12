@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from cache.market_state_store import MarketStateStore
+from pmcopy.cache.market_state_store import MarketStateStore
 
 
 def test_method_exists_and_marks_dirty_without_clearing_fresh_tick():

@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 
-from domain.detection import TradeSide
-from services.leader_performance import (
+from pmcopy.domain.detection import TradeSide
+from pmcopy.services.leader_performance import (
     ClosedEpisodeAccumulator,
     FollowerLeaderKey,
     PerformanceFill,

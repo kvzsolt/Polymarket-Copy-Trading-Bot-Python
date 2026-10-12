@@ -7,15 +7,15 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.lifecycle import (
+from pmcopy.services.copy_tasks.lifecycle import (
     TaskExecutionDisposition,
     TaskExecutionOutcome,
 )
-from services.copy_tasks.reconciliation import TaskBudgetReconciliationService
-from services.execution.pending_order_reconciliation import (
+from pmcopy.services.copy_tasks.reconciliation import TaskBudgetReconciliationService
+from pmcopy.services.execution.pending_order_reconciliation import (
     PendingOrderReconciliationQueryService,
 )
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 _NOW = datetime(2026, 8, 11, 16, tzinfo=UTC)
 

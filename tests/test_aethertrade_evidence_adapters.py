@@ -24,7 +24,7 @@ from tests.test_aethertrade_evidence_outbox import event, outbox
     ],
 )
 def test_transport_rejects_unsafe_origins_without_echoing(origin):
-    from integrations.pmrecon.http_transport import PmreconHttpTransport
+    from pmcopy.integrations.pmrecon.http_transport import PmreconHttpTransport
 
     with pytest.raises(ValueError) as caught:
         PmreconHttpTransport(origin, "private-service-token" * 2)
@@ -32,7 +32,7 @@ def test_transport_rejects_unsafe_origins_without_echoing(origin):
 
 
 async def test_http_posts_fixed_path_private_header_and_never_redirects():
-    from integrations.pmrecon.http_transport import PmreconHttpTransport
+    from pmcopy.integrations.pmrecon.http_transport import PmreconHttpTransport
 
     requests = []
 
@@ -55,7 +55,7 @@ async def test_http_posts_fixed_path_private_header_and_never_redirects():
 
 @pytest.mark.parametrize("scenario", ["large", "compressed", "exception"])
 async def test_http_reply_and_error_paths_are_bounded_and_sanitized(scenario):
-    from integrations.pmrecon.http_transport import PmreconHttpTransport
+    from pmcopy.integrations.pmrecon.http_transport import PmreconHttpTransport
 
     def receiver(request):
         if scenario == "exception":
@@ -78,7 +78,7 @@ async def test_http_reply_and_error_paths_are_bounded_and_sanitized(scenario):
 
 
 async def test_http_total_timeout_is_bounded_even_without_a_response():
-    from integrations.pmrecon.http_transport import PmreconHttpTransport
+    from pmcopy.integrations.pmrecon.http_transport import PmreconHttpTransport
 
     async def receiver(request):
         await asyncio.Event().wait()
@@ -95,7 +95,7 @@ async def test_http_total_timeout_is_bounded_even_without_a_response():
 
 
 async def test_http_library_logging_does_not_expose_private_origin(caplog):
-    from integrations.pmrecon.http_transport import PmreconHttpTransport
+    from pmcopy.integrations.pmrecon.http_transport import PmreconHttpTransport
 
     caplog.set_level(logging.INFO, logger="httpx")
     mock = httpx.MockTransport(lambda request: httpx.Response(201, json={}))
@@ -111,7 +111,7 @@ async def test_http_library_logging_does_not_expose_private_origin(caplog):
 
 
 def test_sink_retains_native_source_ns_provider_recovery_and_unknown_fee(tmp_path):
-    from integrations.pmrecon.observation_sink import PmreconObservationSink
+    from pmcopy.integrations.pmrecon.observation_sink import PmreconObservationSink
 
     box = outbox(tmp_path / "box")
     sink = PmreconObservationSink(box)
@@ -129,7 +129,7 @@ def test_sink_retains_native_source_ns_provider_recovery_and_unknown_fee(tmp_pat
 
 @pytest.mark.parametrize("native,kind", [(None, "gap"), (1_800_000_000_123_456_789, "unknown")])
 def test_sink_missing_native_clock_or_unknown_kind_invalidates(tmp_path, native, kind):
-    from integrations.pmrecon.observation_sink import PmreconObservationSink
+    from pmcopy.integrations.pmrecon.observation_sink import PmreconObservationSink
 
     box = outbox(tmp_path / "box")
     sink = PmreconObservationSink(box)
@@ -142,7 +142,7 @@ def test_sink_missing_native_clock_or_unknown_kind_invalidates(tmp_path, native,
 
 
 async def test_postgres_append_uses_existing_transaction_without_commit():
-    from integrations.pmrecon.transaction_outbox import PostgresEvidenceOutbox
+    from pmcopy.integrations.pmrecon.transaction_outbox import PostgresEvidenceOutbox
 
     class Connection:
         def __init__(self):
@@ -165,7 +165,7 @@ async def test_postgres_append_uses_existing_transaction_without_commit():
 
 
 async def test_postgres_missing_transaction_and_conflicting_id_fail_closed():
-    from integrations.pmrecon.transaction_outbox import PostgresEvidenceOutbox
+    from pmcopy.integrations.pmrecon.transaction_outbox import PostgresEvidenceOutbox
 
     class Connection:
         active = False

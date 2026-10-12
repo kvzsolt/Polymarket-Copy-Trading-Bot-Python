@@ -3,14 +3,14 @@
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from services.healthServer import ReadinessTracker
+from pmcopy.services.healthServer import ReadinessTracker
 
 import pytest
 
 
 @pytest.mark.asyncio
 async def test_refresh_removes_settled_tracking_and_updates_drift_readiness():
-    from orchestrators.account_inventory_startup import InventoryRuntimeRefresh
+    from pmcopy.orchestrators.account_inventory_startup import InventoryRuntimeRefresh
 
     manager = Mock()
     repo = SimpleNamespace(
@@ -31,7 +31,7 @@ async def test_refresh_removes_settled_tracking_and_updates_drift_readiness():
 
 @pytest.mark.asyncio
 async def test_multiple_accounts_do_not_clear_another_accounts_drift_failure():
-    from orchestrators.account_inventory_startup import InventoryRuntimeRefresh
+    from pmcopy.orchestrators.account_inventory_startup import InventoryRuntimeRefresh
 
     readiness = ReadinessTracker()
     updates = []
@@ -51,7 +51,7 @@ async def test_multiple_accounts_do_not_clear_another_accounts_drift_failure():
 
 
 def test_manager_removes_inactive_tracking_without_recording_a_trade():
-    from services.positionManager import PositionManager
+    from pmcopy.services.positionManager import PositionManager
 
     manager = PositionManager()
     for condition in ("active", "settled"):
@@ -71,7 +71,7 @@ def test_manager_removes_inactive_tracking_without_recording_a_trade():
 
 @pytest.mark.asyncio
 async def test_refresh_reads_active_inventory_after_drift_prunes_a_stale_row():
-    from orchestrators.account_inventory_startup import InventoryRuntimeRefresh
+    from pmcopy.orchestrators.account_inventory_startup import InventoryRuntimeRefresh
 
     rows = [SimpleNamespace(condition_id="stale", token_id="yes")]
 
@@ -104,7 +104,7 @@ def test_registering_an_unverified_account_invalidates_drift_readiness():
 
 @pytest.mark.asyncio
 async def test_startup_scan_updates_the_same_account_truth_as_periodic_refresh():
-    from orchestrators.runtime_bootstrap import startup_drift_check
+    from pmcopy.orchestrators.runtime_bootstrap import startup_drift_check
 
     readiness = ReadinessTracker()
     for user in ("one", "two"):

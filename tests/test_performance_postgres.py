@@ -6,10 +6,10 @@ import asyncpg
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from services.leader_performance import FollowerLeaderKey
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.migrations import apply_migrations
-from storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader
+from pmcopy.services.leader_performance import FollowerLeaderKey
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.migrations import apply_migrations
+from pmcopy.storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader
 
 
 @pytest.mark.asyncio

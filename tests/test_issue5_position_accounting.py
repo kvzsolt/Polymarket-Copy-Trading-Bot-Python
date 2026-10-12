@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from services.positionManager import PositionManager
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
 
 def _make_pm() -> PositionManager:
@@ -28,7 +28,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:

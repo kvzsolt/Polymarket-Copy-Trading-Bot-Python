@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from orchestration.bootstrap import PolygonSourceRuntimeConfig
+from pmcopy.orchestration.bootstrap import PolygonSourceRuntimeConfig
 
 
 def test_polygon_runtime_config_uses_sixty_second_confirmation_timeout() -> None:

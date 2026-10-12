@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.redemption import (
+from pmcopy.domain.redemption import (
     RedemptionConfirmation,
     RedemptionMarket,
     RedemptionState,

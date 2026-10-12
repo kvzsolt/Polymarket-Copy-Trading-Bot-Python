@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
+from pmcopy.clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
 
 
 # ---------------------------------------------------------------------------

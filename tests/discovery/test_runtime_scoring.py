@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from config.app_config import DiscoveryConfig
-from services.discovery.models import discovery_config_hash
-from services.leaderScoringService import LeaderScoringService
+from pmcopy.config.app_config import DiscoveryConfig
+from pmcopy.services.discovery.models import discovery_config_hash
+from pmcopy.services.leaderScoringService import LeaderScoringService
 
 
 def _config() -> SimpleNamespace:

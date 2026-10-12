@@ -7,8 +7,8 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.falcon.models import Market360Snapshot, TradeSnapshot
-from services.discovery.bankroll_compatibility import (
+from pmcopy.integrations.falcon.models import Market360Snapshot, TradeSnapshot
+from pmcopy.services.discovery.bankroll_compatibility import (
     BankrollCompatibilityPolicy,
     evaluate_bankroll_compatibility,
 )

@@ -10,8 +10,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Flat layout retired (Task 18): the pmcopy namespace lives under src/.
+export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+
 echo "[1/4] compileall..."
-python -m compileall -q app.py bot_cli clients orchestrators services cache domain integrations interfaces storage utils
+python -m compileall -q src/pmcopy/app.py src/pmcopy/bot_cli src/pmcopy/clients src/pmcopy/orchestrators src/pmcopy/services src/pmcopy/cache src/pmcopy/domain src/pmcopy/integrations src/pmcopy/interfaces src/pmcopy/storage src/pmcopy/utils
 echo "  ok"
 
 echo "[2/4] pytest..."
@@ -22,7 +25,7 @@ echo "[3/4] forbid scans..."
 fail=0
 # Scan production code only — tests legitimately reference legacy tokens
 # while documenting them. Scope: app + bot_cli + Python service trees.
-_FORBID_ROOTS=("app.py" "bot_cli" "clients" "orchestrators" "services" "cache" "domain" "integrations" "interfaces" "storage" "utils" "config")
+_FORBID_ROOTS=("src/pmcopy/app.py" "src/pmcopy/bot_cli" "src/pmcopy/clients" "src/pmcopy/orchestrators" "src/pmcopy/services" "src/pmcopy/cache" "src/pmcopy/domain" "src/pmcopy/integrations" "src/pmcopy/interfaces" "src/pmcopy/storage" "src/pmcopy/utils" "src/pmcopy/config")
 for substr in "services.price_cache" "PositionPriceCache" "MarketMetaService"; do
     if grep -RIn --include='*.py' "$substr" "${_FORBID_ROOTS[@]}" >/dev/null 2>&1; then
         echo "  FAIL forbidden substring still present in production Python source: $substr"
@@ -37,14 +40,14 @@ python - <<'PY'
 from pathlib import Path
 import sys
 
-allowed = {"services/execution/coordinator.py"}
+allowed = {"src/pmcopy/services/execution/coordinator.py"}
 patterns = [
     "execution_service.execute",
     'getattr(execution_service, "execute"',
     "getattr(execution_service, 'execute'",
 ]
 violations = []
-for root in ["orchestrators", "services"]:
+for root in ["src/pmcopy/orchestrators", "src/pmcopy/services"]:
     for path in Path(root).rglob("*.py"):
         rel = str(path)
         if rel in allowed:
@@ -68,6 +71,6 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "[4/4] doctor live..."
-python -m bot_cli.main doctor --live
+python -m pmcopy.bot_cli.main doctor --live
 
 echo "RC1 check complete."

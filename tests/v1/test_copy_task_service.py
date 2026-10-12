@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
-from services.copy_tasks.domain import CopyTask, CopyTaskStatus
-from services.copy_tasks.service import (
+from pmcopy.services.copy_tasks.domain import CopyTask, CopyTaskStatus
+from pmcopy.services.copy_tasks.service import (
     CopyTaskConflict,
     CopyTaskNotFound,
     CopyTaskService,

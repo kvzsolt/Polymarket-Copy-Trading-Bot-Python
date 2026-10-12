@@ -6,16 +6,16 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from services.execution.fill_accounting import AccountedOrderFill
-from services.execution.reconciliation_service import ReconciliationService
-from services.execution.recovery_inventory import StartupInventoryRecoveryUnavailable
+from pmcopy.services.execution.fill_accounting import AccountedOrderFill
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.recovery_inventory import StartupInventoryRecoveryUnavailable
 from tests.test_reconciler_idempotent_transitions import _make_service, _record
 
 
 @pytest.fixture
 def recovered_service(monkeypatch: pytest.MonkeyPatch):
     """Use fixed time and deterministic ledger and inventory boundaries."""
-    monkeypatch.setattr("services.execution.reconciliation_service.time.time", lambda: 1234)
+    monkeypatch.setattr("pmcopy.services.execution.reconciliation_service.time.time", lambda: 1234)
     service = _make_service()
     service._recovery_inventory = SimpleNamespace(zero_inventory=AsyncMock(return_value=True))
     service._accounted_fill_reader = SimpleNamespace(

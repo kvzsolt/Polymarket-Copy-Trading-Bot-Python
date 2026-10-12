@@ -2,7 +2,7 @@
 
 import pytest
 
-from services.executionService import _normalize_side
+from pmcopy.services.executionService import _normalize_side
 
 
 @pytest.mark.parametrize(

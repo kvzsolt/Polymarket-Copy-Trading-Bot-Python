@@ -16,8 +16,8 @@ These tests pin the extended transitions and the safety invariants:
 from __future__ import annotations
 
 import pytest
-from domain.order_lifecycle import OrderLifecycleStatus
-from services.execution.state_machine import (
+from pmcopy.domain.order_lifecycle import OrderLifecycleStatus
+from pmcopy.services.execution.state_machine import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
     assert_transition_allowed,

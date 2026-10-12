@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import orchestrators.runtime_bootstrap as rb
+import pmcopy.orchestrators.runtime_bootstrap as rb
 
 
 def _runtime_user(user_id="0xUser"):

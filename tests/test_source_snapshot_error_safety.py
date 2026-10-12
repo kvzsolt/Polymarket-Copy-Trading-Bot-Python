@@ -4,7 +4,7 @@ import traceback
 
 import pytest
 
-from adapters.persistence.source_transaction_state_store import SourceTransactionSnapshotCodec
+from pmcopy.adapters.persistence.source_transaction_state_store import SourceTransactionSnapshotCodec
 
 
 def test_invalid_snapshot_has_no_secret_bearing_validation_cause():

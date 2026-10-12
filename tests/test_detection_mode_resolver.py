@@ -7,7 +7,7 @@ before typed validation runs.
 
 from __future__ import annotations
 
-from config.app_config import DetectionModeResolver
+from pmcopy.config.app_config import DetectionModeResolver
 
 
 def test_default_is_polling() -> None:
@@ -66,7 +66,7 @@ def test_explicit_mode_wins_over_legacy_flags() -> None:
 def test_warning_emitter_logs_each_distinct_warning_once() -> None:
     import logging
 
-    from config.app_config import DetectionModeWarning, DetectionModeWarningEmitter
+    from pmcopy.config.app_config import DetectionModeWarning, DetectionModeWarningEmitter
 
     class _Recorder(logging.Logger):
         def __init__(self) -> None:

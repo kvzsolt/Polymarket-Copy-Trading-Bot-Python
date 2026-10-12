@@ -14,16 +14,16 @@ from decimal import Decimal
 
 import pytest
 
-from config.app_config import load_config
-from application.trading_context import TradingContext
-from domain.execution import ExecutionMetadata
-from orchestrators.trade_pipeline import execute_trades
-from services.executionService import ExecutionResult
-from services.positionManager import PositionManager
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.config.app_config import load_config
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.orchestrators.trade_pipeline import execute_trades
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -33,7 +33,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -83,12 +83,12 @@ class _FakePnlTracker:
 
 
 def _build_context(*, user_id: str, pool) -> TradingContext:
-    import config.app_config as app_config_mod
+    import pmcopy.config.app_config as app_config_mod
     import time
     from decimal import Decimal as _D
     from unittest.mock import AsyncMock, patch
-    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
         cfg = load_config(
@@ -177,8 +177,8 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 
     class _PassThrough:
         async def submit_copy_trade(self, intent):
-            from services.execution.coordinator import ExecutionCoordinatorResult
-            from services.execution.types import ExecutionRequest
+            from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
+            from pmcopy.services.execution.types import ExecutionRequest
 
             req = ExecutionRequest(
                 user_id=intent.user_id,
@@ -209,7 +209,7 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
     # ``_build_context`` passes an explicit override dict to ``load_config``,
     # so this test never reads process env for its config.
-    import orchestrators.trade_pipeline as trade_pipeline
+    import pmcopy.orchestrators.trade_pipeline as trade_pipeline
 
     async def _fake_balance(_wallet: str):
         return 1000.0

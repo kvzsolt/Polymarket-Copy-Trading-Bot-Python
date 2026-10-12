@@ -7,19 +7,19 @@ from decimal import Decimal
 
 import pytest
 
-from domain.detection import (
+from pmcopy.domain.detection import (
     DetectionFinality,
     DetectionMode,
     LeaderTradeEvent,
     TradeSide,
 )
-from services.copy_sizing_v5.policy import CopySizingPolicy
-from services.copy_tasks.admission import CopyTaskAdmissionEngine
-from services.copy_tasks.budget import (
+from pmcopy.services.copy_sizing_v5.policy import CopySizingPolicy
+from pmcopy.services.copy_tasks.admission import CopyTaskAdmissionEngine
+from pmcopy.services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
     TaskBudgetReservationService,
 )
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     CopyTaskStatus,
     MonitoringMode,
@@ -27,27 +27,27 @@ from services.copy_tasks.domain import (
     TaskSizingPolicy,
     TaskSpendPolicy,
 )
-from services.copy_tasks.entry_price import CopyTaskEntryPriceService
-from services.copy_tasks.event_routing import (
+from pmcopy.services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from pmcopy.services.copy_tasks.event_routing import (
     CopyTaskEventProcessor,
     CopyTaskSourceEvent,
     FollowerTaskSnapshot,
     TaskExecutionCommand,
 )
-from services.copy_tasks.lifecycle import (
+from pmcopy.services.copy_tasks.lifecycle import (
     CopyTaskFillLifecycleService,
     TaskExecutionDisposition,
     TaskExecutionOutcome,
 )
-from services.copy_tasks.monitoring import CopyMonitoringModePolicy
-from services.copy_tasks.reaction import CopyReactionEngine
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.monitoring import CopyMonitoringModePolicy
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryLockService,
 )
-from services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
-from services.copy_tasks.service import InMemoryCopyTaskRepository
-from services.copy_tasks.sizing import CopyTaskSizingService
+from pmcopy.services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.copy_tasks.sizing import CopyTaskSizingService
 
 _LEADER = "0x1111111111111111111111111111111111111111"
 _OTHER = "0x2222222222222222222222222222222222222222"

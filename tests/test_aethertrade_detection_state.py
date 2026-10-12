@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from domain.grouped_detection import NativeOwnerFill, TraderDetectionPolicy
+from pmcopy.domain.grouped_detection import NativeOwnerFill, TraderDetectionPolicy
 
 
 class FillFixture:
@@ -41,7 +41,7 @@ def test_source_consumption_survives_restart_and_does_not_collapse_sibling_logs(
     tmp_path: Path,
 ) -> None:
     """One durable action never dispatches twice after a process restart."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     path = tmp_path / "state.sqlite3"
     state = SqliteDetectionState(path)
@@ -56,7 +56,7 @@ def test_source_consumption_survives_restart_and_does_not_collapse_sibling_logs(
 
 def test_removed_first_and_reinclusion_never_create_fresh_entries(tmp_path: Path) -> None:
     """A removal tombstone survives restart; re-inclusion is evidence, not recopy."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     fill = FillFixture.fill()
@@ -70,7 +70,7 @@ def test_removed_first_and_reinclusion_never_create_fresh_entries(tmp_path: Path
 
 def test_recovery_evidence_cannot_later_be_dispatched_as_fresh(tmp_path: Path) -> None:
     """A buffered/live duplicate of recovered old evidence stays non-actionable."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     fill = FillFixture.fill()
@@ -81,7 +81,7 @@ def test_recovery_evidence_cannot_later_be_dispatched_as_fresh(tmp_path: Path) -
 
 def test_source_capacity_and_conflicting_evidence_fail_visibly(tmp_path: Path) -> None:
     """No pruning or rewriting of prior financial evidence buys extra capacity."""
-    from storage.detection_state import (
+    from pmcopy.storage.detection_state import (
         DetectionEvidenceConflict,
         DetectionStateCapacity,
         SqliteDetectionState,
@@ -100,7 +100,7 @@ def test_source_capacity_and_conflicting_evidence_fail_visibly(tmp_path: Path) -
 
 def test_desired_effective_and_last_observation_persist_separately(tmp_path: Path) -> None:
     """A saved pending preference never claims pending service without a feed."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     path = tmp_path / "state.sqlite3"
     policy = TraderDetectionPolicy(wallet=FillFixture.fill().owner, mode="pending")
@@ -127,7 +127,7 @@ def test_desired_effective_and_last_observation_persist_separately(tmp_path: Pat
 
 def test_checkpoints_and_reorg_invalidation_survive_restart(tmp_path: Path) -> None:
     """Recovery resumes conservatively and retains removed inclusion tombstones."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     path = tmp_path / "state.sqlite3"
     state = SqliteDetectionState(path)
@@ -148,7 +148,7 @@ def test_checkpoints_and_reorg_invalidation_survive_restart(tmp_path: Path) -> N
 
 def test_reincluded_transaction_with_changed_log_index_never_recopies(tmp_path: Path) -> None:
     """Transaction reordering changes logIndex; tombstones still suppress fresh entries."""
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.storage.detection_state import SqliteDetectionState
 
     state = SqliteDetectionState(tmp_path / "state")
     fill = FillFixture.fill()

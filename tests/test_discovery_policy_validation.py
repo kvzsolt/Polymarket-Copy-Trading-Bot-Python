@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from config.app_config import load_config
-from services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
+from pmcopy.config.app_config import load_config
+from pmcopy.services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
 
 
 @pytest.mark.parametrize(
@@ -136,8 +136,8 @@ def test_policy_normalizes_and_deduplicates_sort_modes() -> None:
 
 def test_packaged_profile_caps_the_startup_sweep_at_fifty_candidates() -> None:
     """The shipped discovery profile bounds one full sweep to 50 wallets."""
-    from services.discovery.falcon_candidate_service import PROVIDER_LEADERBOARD_ROW_CAP
-    from services.discovery.policy_config import discovery_policy_from_config
+    from pmcopy.services.discovery.falcon_candidate_service import PROVIDER_LEADERBOARD_ROW_CAP
+    from pmcopy.services.discovery.policy_config import discovery_policy_from_config
 
     config = load_config(
         {

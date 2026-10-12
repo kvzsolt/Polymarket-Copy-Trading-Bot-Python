@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from services.positionActionCoordinator import (
+from pmcopy.services.positionActionCoordinator import (
     PositionActionCoordinator,
     PositionScope,
 )
@@ -242,7 +242,7 @@ async def test_yes_no_under_same_condition_do_not_collide_via_domain_import():
     """Verify the domain canonical type and the back-compat alias resolve to
     the same lock identity, and that YES/NO scopes (different token_ids)
     do not block each other under a single coordinator."""
-    from domain.position_key import PositionKey
+    from pmcopy.domain.position_key import PositionKey
 
     coord = PositionActionCoordinator()
     yes = PositionKey(user_id="u1", condition_id="cZ", token_id="0xYES")
@@ -277,7 +277,7 @@ async def test_same_key_via_domain_and_alias_share_one_lock():
     same (condition_id, token_id) pair must serialize against each other —
     proves the alias is truly a single type and the coordinator's lock map
     keys are equal-valued."""
-    from domain.position_key import PositionKey
+    from pmcopy.domain.position_key import PositionKey
 
     coord = PositionActionCoordinator()
     via_key = PositionKey(user_id="u1", condition_id="c-shared", token_id=FAKE_TOKEN_A)

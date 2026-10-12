@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.position_lifecycle import PositionLifecycle
-from storage.postgres.positions_repo import PositionRecord
+from pmcopy.domain.position_lifecycle import PositionLifecycle
+from pmcopy.storage.postgres.positions_repo import PositionRecord
 from tests.test_positions_repo_set_position_size import VALID_TOKEN, _repo_with_current
 
 

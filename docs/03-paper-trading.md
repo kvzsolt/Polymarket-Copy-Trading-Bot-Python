@@ -7,7 +7,7 @@ You can run the Discovery engine completely isolated from the execution layer. T
 1. Leave `PRIVATE_KEY` empty or invalid in `secrets.env`.
 2. Ensure `FALCON_API_TOKEN` is set.
 3. Run the bot. The system will ingest, score, and rank candidates into the PostgreSQL database.
-4. Review the DB logs or use the CLI (`python3 bot.py rotate-traders`) to see who the bot *would* have picked.
+4. Review the DB logs or use the CLI (`pmcopy rotate-traders`) to see who the bot *would* have picked.
 
 ## Phase 2: Copyability Replay
 The `CopyabilityReplayService` is your best friend. It takes a discovered leader's historical signals and simulates them against your configured budget and risk limits.

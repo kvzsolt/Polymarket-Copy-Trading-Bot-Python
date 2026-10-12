@@ -21,14 +21,14 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from services.execution.ambiguous_recovery import (
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.services.execution.ambiguous_recovery import (
     AmbiguousSubmission,
     SubmissionAmountUnit,
     SubmissionSide,
 )
-from services.execution.submission import sanitize_submission_request
-from storage.postgres.orders_repo import _row_to_ambiguous_submission
+from pmcopy.services.execution.submission import sanitize_submission_request
+from pmcopy.storage.postgres.orders_repo import _row_to_ambiguous_submission
 from tests.test_ccxt_prediction_gateway_contract import TOKEN, FakeExchange
 
 _NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)

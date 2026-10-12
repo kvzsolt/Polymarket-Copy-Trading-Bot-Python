@@ -13,8 +13,8 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.models import MarketableOrderRequest
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.models import MarketableOrderRequest
 
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange, TOKEN
 
@@ -122,14 +122,14 @@ def test_metadata_ttl_defaults_to_refetching_before_every_signed_order() -> None
 
 
 def test_venue_metadata_ttl_is_configurable_and_defaults_off() -> None:
-    from config.app_config import ExecutionConfig
+    from pmcopy.config.app_config import ExecutionConfig
 
     assert ExecutionConfig().venue_metadata_ttl_seconds == 0.0
 
 
 @pytest.mark.parametrize("value", [-1.0, -0.001])
 def test_negative_venue_metadata_ttl_is_rejected(value: float) -> None:
-    from config.app_config import EnvValidationError, load_config
+    from pmcopy.config.app_config import EnvValidationError, load_config
 
     overrides = {
         "database": {"dsn": "postgresql://test:test@localhost/test"},

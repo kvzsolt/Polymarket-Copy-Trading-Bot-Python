@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from orchestrators import trade_pipeline
+from pmcopy.orchestrators import trade_pipeline
 from tests.config_helpers import load_test_config
 from tests.test_trade_pipeline_safety import FAKE_TOKEN_ID
 

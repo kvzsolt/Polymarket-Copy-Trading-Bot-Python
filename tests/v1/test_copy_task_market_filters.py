@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from services.copy_tasks.admission import CopyTaskAdmissionEngine
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.admission import CopyTaskAdmissionEngine
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     TaskAdmissionContext,
     TaskMarketFilter,

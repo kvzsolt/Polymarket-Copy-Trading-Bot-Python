@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.falcon.models import Wallet360Snapshot
-from services.discovery.falcon_candidate_service import (
+from pmcopy.integrations.falcon.models import Wallet360Snapshot
+from pmcopy.services.discovery.falcon_candidate_service import (
     FalconCandidateService,
     FalconDiscoveryPolicy,
 )

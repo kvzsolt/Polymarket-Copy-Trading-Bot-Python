@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.auto_trader import (
+from pmcopy.domain.auto_trader import (
     AutoRoster,
     AutoTraderPolicy,
     AutoTraderScope,
@@ -15,7 +15,7 @@ from domain.auto_trader import (
     Trader,
     TraderStatus,
 )
-from services.auto_trader import AutoTraderService, PromotionRejected
+from pmcopy.services.auto_trader import AutoTraderService, PromotionRejected
 from tests.test_auto_trader_lifecycle import performance
 
 NOW = datetime(2026, 9, 16, tzinfo=UTC)

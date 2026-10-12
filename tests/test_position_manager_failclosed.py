@@ -18,7 +18,7 @@ from decimal import Decimal, InvalidOperation
 
 import pytest
 
-from services.positionManager import PositionManager, _to_dec
+from pmcopy.services.positionManager import PositionManager, _to_dec
 
 
 # --- _to_dec contract ------------------------------------------------------

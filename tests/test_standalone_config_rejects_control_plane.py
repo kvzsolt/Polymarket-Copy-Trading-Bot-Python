@@ -13,13 +13,14 @@ string can never satisfy an error-message match by accident.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from config.app_config import EnvValidationError, load_config
+from pmcopy.config.app_config import EnvValidationError, load_config
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,16 +67,16 @@ def test_error_message_names_the_removal_and_the_operator_action(tmp_path, monke
 
 
 def test_startup_layered_model_no_longer_carries_the_operator_plane_section():
-    from config.app_config import _LayeredModel
+    from pmcopy.config.app_config import _LayeredModel
 
     assert "control_plane" not in _LayeredModel.model_fields
 
 
 def test_operator_plane_service_files_are_gone():
     removed = (
-        REPOSITORY_ROOT / "config" / "control_plane.yml",
-        REPOSITORY_ROOT / "config" / "environments" / "live" / "control_plane.yml",
-        REPOSITORY_ROOT / "config" / "environments" / "example" / "control_plane.yml",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "config" / "control_plane.yml",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "config" / "environments" / "live" / "control_plane.yml",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "config" / "environments" / "example" / "control_plane.yml",
     )
     for path in removed:
         assert not path.exists(), f"{path} must not ship after control-plane removal"
@@ -88,11 +89,12 @@ def test_secrets_template_lists_no_operator_plane_credentials():
 
 def _cli_help(command: list[str]) -> str:
     completed = subprocess.run(
-        [sys.executable, "-m", "bot_cli.main", *command],
+        [sys.executable, "-m", "pmcopy.bot_cli.main", *command],
         capture_output=True,
         text=True,
         timeout=120,
         cwd=REPOSITORY_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPOSITORY_ROOT / "src")},
     )
     assert completed.returncode == 0, completed.stderr
     return completed.stdout + completed.stderr

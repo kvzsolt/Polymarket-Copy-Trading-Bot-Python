@@ -4,9 +4,9 @@ from decimal import Decimal as D
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.errors import VenueInvalidOrderError
-from integrations.polymarket.paper_market_reader import CcxtPaperMarketReader
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.errors import VenueInvalidOrderError
+from pmcopy.integrations.polymarket.paper_market_reader import CcxtPaperMarketReader
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange, TOKEN
 
 
@@ -33,10 +33,10 @@ async def test_missing_or_unsupported_fee_curves_fail_closed(fee):
 async def test_depth_simulator_writes_only_to_paper_gateway(monkeypatch):
     from datetime import UTC, datetime
     from unittest.mock import AsyncMock
-    from domain.paper_evaluation import PaperBook
-    from integrations.polymarket.paper_evaluation_execution import PaperEvaluationExecution
+    from pmcopy.domain.paper_evaluation import PaperBook
+    from pmcopy.integrations.polymarket.paper_evaluation_execution import PaperEvaluationExecution
 
-    from integrations.polymarket.paper_execution import PaperExecutionGateway
+    from pmcopy.integrations.polymarket.paper_execution import PaperExecutionGateway
 
     original = PaperExecutionGateway.submit_marketable_order
     captured = []

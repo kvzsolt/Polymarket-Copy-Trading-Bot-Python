@@ -5,7 +5,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from domain.paper_evaluation import PaperBook, PaperFill, PaperLedger, PaperSimulation
+from pmcopy.domain.paper_evaluation import PaperBook, PaperFill, PaperLedger, PaperSimulation
 
 NOW = datetime(2026, 9, 16, tzinfo=UTC)
 

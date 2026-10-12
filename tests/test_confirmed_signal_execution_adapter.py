@@ -7,8 +7,8 @@ from decimal import Decimal
 
 import pytest
 
-from application.confirmed_signal_execution_adapter import ConfirmedSignalExecutionAdapter
-from domain.source_transactions import (
+from pmcopy.application.confirmed_signal_execution_adapter import ConfirmedSignalExecutionAdapter
+from pmcopy.domain.source_transactions import (
     ConfirmedExecutionClaim,
     ConfirmedSourceFill,
     CopyConsumptionKey,
@@ -16,7 +16,7 @@ from domain.source_transactions import (
     SourceSide,
     WatchedRole,
 )
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )

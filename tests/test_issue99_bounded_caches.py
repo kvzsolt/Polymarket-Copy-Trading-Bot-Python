@@ -14,8 +14,8 @@ from decimal import Decimal
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from services.risk.risk_monitor import RiskPriceCache
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.services.risk.risk_monitor import RiskPriceCache
 
 
 class TestMarketStateStoreBounded:
@@ -84,7 +84,7 @@ class TestRiskPriceCacheTypedConfig:
     the production wiring path; cache-local environment parsing is gone."""
 
     def _load_config(self, max_size: int | None = None):
-        from config.app_config import load_config
+        from pmcopy.config.app_config import load_config
 
         overrides = {
             "database": {"dsn": "postgresql://test:test@localhost/test"},
@@ -117,7 +117,7 @@ class TestRiskPriceCacheTypedConfig:
         ctx.extra = {}
         ctx.config = config
 
-        from services.risk.risk_monitor import _ensure_context_price_cache
+        from pmcopy.services.risk.risk_monitor import _ensure_context_price_cache
 
         cache = _ensure_context_price_cache(ctx)
         assert cache._max_size == 42

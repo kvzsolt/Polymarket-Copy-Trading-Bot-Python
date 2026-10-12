@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app
-from bot_cli.commands.run import run_run
-from orchestrators.user_data_runtime import UserDataRuntime
-from services.manual_sync_service import ManualSyncService
+import pmcopy.app as app
+from pmcopy.bot_cli.commands.run import run_run
+from pmcopy.orchestrators.user_data_runtime import UserDataRuntime
+from pmcopy.services.manual_sync_service import ManualSyncService
 
 
 class ShutdownScenario:
@@ -83,11 +83,11 @@ def test_repeated_interrupt_finishes_runtime_cleanup(
     """Repeated signals must not skip manual-sync stop or database closure."""
     scenario = ShutdownScenario(first_signal, repeat_signal)
     if loop_kind == "stdlib":
-        monkeypatch.setattr("utils.event_loop.new_event_loop", asyncio.new_event_loop)
+        monkeypatch.setattr("pmcopy.utils.event_loop.new_event_loop", asyncio.new_event_loop)
     close_pool = AsyncMock()
     monkeypatch.setattr(app, "main", scenario.run)
-    monkeypatch.setattr("storage.postgres.connection.shutdown_pool", close_pool)
-    monkeypatch.setattr("utils.fetchData.close_session", AsyncMock())
+    monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", close_pool)
+    monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
     original_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     try:

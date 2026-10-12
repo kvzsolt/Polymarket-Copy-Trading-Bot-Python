@@ -100,14 +100,16 @@ def test_docker_smoke_uses_hermetic_health_contract(
 
 def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    modules = set(project["tool"]["setuptools"]["py-modules"])
-    packages = set(project["tool"]["setuptools"]["packages"]["find"]["include"])
-    assert {"app", "bootstrap"} <= modules, (
-        "pmcopy run imports top-level app/bootstrap modules, so both must be "
-        "packaged for non-editable Docker installs"
+    setuptools_cfg = project["tool"]["setuptools"]
+    find_cfg = setuptools_cfg["packages"]["find"]
+    assert find_cfg["where"] == ["src"], "package discovery must target src/ (src-layout)"
+    assert set(find_cfg["include"]) == {"pmcopy*"}, (
+        "the single installable namespace must be pmcopy under src/ "
+        "(pmcopy.app/pmcopy.bootstrap ship as modules of that package for "
+        "non-editable Docker installs)"
     )
-    assert "cache*" in packages, (
-        "app imports the cache package, so it must be included in the wheel"
+    assert "py-modules" not in setuptools_cfg, (
+        "flat py-modules must not reappear beside the src/pmcopy namespace"
     )
 
 

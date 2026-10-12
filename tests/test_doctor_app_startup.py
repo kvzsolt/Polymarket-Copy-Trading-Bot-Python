@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from config.evidence import EvidenceConfig
+from pmcopy.config.evidence import EvidenceConfig
 
 
-_APP_PY = Path(__file__).resolve().parents[1] / "app.py"
+_APP_PY = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "app.py"
 
 
 @pytest.fixture
@@ -20,11 +20,11 @@ def admitted_provider(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Keep startup ordering tests isolated from real provider configuration/network."""
     runtime = SimpleNamespace(close=Mock())
     monkeypatch.setattr(
-        "orchestrators.provider_runtime.ProviderRuntime.from_config", lambda _config: runtime
+        "pmcopy.orchestrators.provider_runtime.ProviderRuntime.from_config", lambda _config: runtime
     )
     evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
     monkeypatch.setattr(
-        "orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda _config: evidence
+        "pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda _config: evidence
     )
     return runtime
 
@@ -92,7 +92,7 @@ async def test_live_doctor_runs_before_build_app(
     monkeypatch: pytest.MonkeyPatch, admitted_provider
 ) -> None:
     """The doctor receives default manual mode before runtime composition."""
-    import app as app_module
+    import pmcopy.app as app_module
 
     events: list[str] = []
     fake_config = SimpleNamespace(
@@ -125,7 +125,7 @@ async def test_live_doctor_runs_before_build_app(
 
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
     monkeypatch.setattr(app_module, "build_app", _fake_build_app)
-    monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
+    monkeypatch.setattr("pmcopy.bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
 
     with pytest.raises(RuntimeError, match="stop_after_build"):
         await app_module.main()
@@ -140,7 +140,7 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(
     admitted_provider,
 ) -> None:
     """A blocked doctor result still prevents application construction."""
-    import app as app_module
+    import pmcopy.app as app_module
 
     fake_config = SimpleNamespace(
         evidence=EvidenceConfig(),
@@ -176,7 +176,7 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(
 
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
     monkeypatch.setattr(app_module, "build_app", build_app)
-    monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
+    monkeypatch.setattr("pmcopy.bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
 
     await app_module.main()
 
@@ -186,7 +186,7 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(
 
 @pytest.mark.asyncio
 async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch, admitted_provider):
-    import app as app_module
+    import pmcopy.app as app_module
 
     fake_config = SimpleNamespace(
         evidence=EvidenceConfig(),

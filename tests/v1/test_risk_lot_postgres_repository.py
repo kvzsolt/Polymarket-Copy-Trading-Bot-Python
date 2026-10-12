@@ -9,13 +9,13 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.lots import DurableRiskLot, ProtectiveLotExitFill, RiskLotStatus
-from services.copy_tasks.protective_exits import (
+from pmcopy.services.copy_tasks.lots import DurableRiskLot, ProtectiveLotExitFill, RiskLotStatus
+from pmcopy.services.copy_tasks.protective_exits import (
     FillRiskLot,
     LayeredLevel,
     ProtectiveRiskPolicy,
 )
-from storage.postgres.risk_lot_repository import PostgresRiskLotRepository, RiskLotCodec
+from pmcopy.storage.postgres.risk_lot_repository import PostgresRiskLotRepository, RiskLotCodec
 
 
 def _aggregate() -> DurableRiskLot:

@@ -4,12 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from domain.detection import DetectionMode
-from services.copy_tasks.budget import InMemoryTaskBudgetRepository, TaskBudgetReservationService
-from services.copy_tasks.event_routing import CopyTaskEventProcessor
-from services.copy_tasks.lifecycle import TaskExecutionDisposition
-from services.copy_tasks.service import InMemoryCopyTaskRepository
-from services.copy_tasks.reentry_lock import (
+from pmcopy.domain.detection import DetectionMode
+from pmcopy.services.copy_tasks.budget import InMemoryTaskBudgetRepository, TaskBudgetReservationService
+from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
+from pmcopy.services.copy_tasks.lifecycle import TaskExecutionDisposition
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryLockService,
 )

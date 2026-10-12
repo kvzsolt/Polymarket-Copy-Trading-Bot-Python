@@ -24,9 +24,9 @@ from itertools import product
 
 import pytest
 
-from services.executionService import _effective_idempotency_key
-from services.order_sizing import size_buy_order, size_sell_order
-from utils.numeric import quantize_and_convert_to_float
+from pmcopy.services.executionService import _effective_idempotency_key
+from pmcopy.services.order_sizing import size_buy_order, size_sell_order
+from pmcopy.utils.numeric import quantize_and_convert_to_float
 
 TICKS = ("0.001", "0.01", "0.05", "0.1")
 PRICES = ("0.01", "0.10", "0.50", "0.95", "0.99", "0.999")

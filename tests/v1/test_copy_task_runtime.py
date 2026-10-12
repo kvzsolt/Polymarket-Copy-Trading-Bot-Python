@@ -7,31 +7,31 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.admission import CopyTaskAdmissionEngine
-from services.copy_tasks.budget import (
+from pmcopy.services.copy_tasks.admission import CopyTaskAdmissionEngine
+from pmcopy.services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
     TaskBudgetKey,
     TaskBudgetReservationRequest,
     TaskBudgetReservationService,
 )
-from services.copy_tasks.domain import CopyTask, SourceTrade, TaskAdmissionContext
-from services.copy_tasks.domain import TaskSpendPolicy
-from services.copy_tasks.entry_price import CopyTaskEntryPriceService
-from services.copy_tasks.lifecycle import (
+from pmcopy.services.copy_tasks.domain import CopyTask, SourceTrade, TaskAdmissionContext
+from pmcopy.services.copy_tasks.domain import TaskSpendPolicy
+from pmcopy.services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from pmcopy.services.copy_tasks.lifecycle import (
     CopyTaskFillLifecycleService,
     TaskExecutionDisposition,
     TaskExecutionOutcome,
 )
-from services.copy_tasks.monitoring import CopyMonitoringModePolicy
-from services.copy_tasks.reaction import CopyReactionEngine
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.monitoring import CopyMonitoringModePolicy
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryKey,
     MarketReentryLock,
     MarketReentryLockService,
     ProtectiveExitReason,
 )
-from services.copy_tasks.runtime import CopyTaskRuntimeCoordinator, RuntimeDecision
+from pmcopy.services.copy_tasks.runtime import CopyTaskRuntimeCoordinator, RuntimeDecision
 
 
 _LEADER = "0x1111111111111111111111111111111111111111"
@@ -304,7 +304,7 @@ async def test_downstream_exception_retains_task_budget_reservation() -> None:
     # reservation and a competing reservation both remain blocked.
     from datetime import timedelta
 
-    from services.copy_tasks.budget import TaskBudgetKey, TaskBudgetReservationRequest
+    from pmcopy.services.copy_tasks.budget import TaskBudgetKey, TaskBudgetReservationRequest
 
     second = await budget_service.reserve(
         TaskBudgetReservationRequest(

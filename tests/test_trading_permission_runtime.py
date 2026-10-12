@@ -6,8 +6,8 @@ from collections.abc import Awaitable
 
 import pytest
 
-from orchestration.trading_permission_runtime import TradingPermissionRuntime
-from services.trading_permission import TradingPausedError
+from pmcopy.orchestration.trading_permission_runtime import TradingPermissionRuntime
+from pmcopy.services.trading_permission import TradingPausedError
 
 
 class FakePermission:

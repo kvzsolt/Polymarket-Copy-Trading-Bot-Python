@@ -4,7 +4,7 @@ import contextlib
 
 import pytest
 
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,7 +50,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -334,7 +334,7 @@ async def test_has_recent_processed_trade_ignores_cross_source_claim_sentinel():
     row keyed on the tx-level identity; manual-sync must not read it as "the
     bot acted on this scope" and misclassify a real manual fill.
     """
-    from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
+    from pmcopy.storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 
     conn = _FetchrowConn(None)
     repo = OrdersRepo(_FakePool(conn))

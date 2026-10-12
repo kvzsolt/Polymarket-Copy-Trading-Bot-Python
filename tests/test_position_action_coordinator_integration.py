@@ -22,22 +22,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import config.app_config as app_config_mod
+import pmcopy.config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
-from application.trading_context import TradingContext
-from domain.execution import ExecutionMetadata
-from orchestrators.trade_pipeline import execute_trades
-from services.accountingService import AccountingService
-from services.executionService import ExecutionResult
-from services.pnlTracker import PnLTracker
-from services.positionManager import PositionManager
-from services.positionActionCoordinator import PositionScope
-from services.risk.risk_engine import RiskEngine
-from services.risk.risk_monitor import run_risk_check_for_context
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.orchestrators.trade_pipeline import execute_trades
+from pmcopy.services.accountingService import AccountingService
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.risk.risk_engine import RiskEngine
+from pmcopy.services.risk.risk_monitor import run_risk_check_for_context
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 
 @contextlib.asynccontextmanager
@@ -45,7 +45,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -92,7 +92,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):
@@ -121,8 +121,8 @@ def _config(**overrides):
 
 
 def _make_fresh_bundle():
-    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
     now = time.monotonic()
     return MarketDataBundle(
@@ -295,7 +295,7 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
         ctx.position_coordinator.action_coordinator.get_lock = _spy  # type: ignore[assignment]
 
         with patch(
-            "services.risk.risk_monitor._get_context_cached_price",
+            "pmcopy.services.risk.risk_monitor._get_context_cached_price",
             new_callable=AsyncMock,
             return_value=Decimal("0.60"),
         ):
@@ -344,7 +344,7 @@ async def test_busy_scope_defers_risk_exit_until_next_tick(tmp_path):
 
         async with ctx.position_coordinator.acquire(scope):
             with patch(
-                "services.risk.risk_monitor._get_context_cached_price",
+                "pmcopy.services.risk.risk_monitor._get_context_cached_price",
                 new_callable=AsyncMock,
                 return_value=Decimal("0.40"),
             ):
@@ -352,7 +352,7 @@ async def test_busy_scope_defers_risk_exit_until_next_tick(tmp_path):
             exec_svc.execute.assert_not_awaited()
 
         with patch(
-            "services.risk.risk_monitor._get_context_cached_price",
+            "pmcopy.services.risk.risk_monitor._get_context_cached_price",
             new_callable=AsyncMock,
             return_value=Decimal("0.40"),
         ):
@@ -399,7 +399,7 @@ async def test_different_scopes_stay_concurrent(tmp_path):
         await lock_a.acquire()
         try:
             with patch(
-                "services.risk.risk_monitor._get_context_cached_price",
+                "pmcopy.services.risk.risk_monitor._get_context_cached_price",
                 new_callable=AsyncMock,
                 return_value=Decimal("0.40"),
             ):

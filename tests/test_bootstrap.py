@@ -13,16 +13,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from bootstrap import Application, build_app
-from config.app_config import AppConfig
-from domain.ports.repositories import AbstractLeaderRepository
-from orchestrators.leader_registry import LeaderRegistry
-from services.discovery.falcon_discovery_service import (
+from pmcopy.bootstrap import Application, build_app
+from pmcopy.config.app_config import AppConfig
+from pmcopy.domain.ports.repositories import AbstractLeaderRepository
+from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.services.discovery.falcon_discovery_service import (
     FalconDiscoveryService,
 )
-from services.healthServer import ReadinessTracker
-from storage.postgres.discovery_repo import DiscoveryRepo
-from storage.postgres.leaders_repo import LeadersRepo
+from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
+from pmcopy.storage.postgres.leaders_repo import LeadersRepo
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,7 +39,7 @@ async def _pg_container():
     its own pool online cleanly."""
     try:
         from testcontainers.postgres import PostgresContainer
-        from storage.postgres import connection as conn_mod
+        from pmcopy.storage.postgres import connection as conn_mod
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -79,7 +79,7 @@ def _valid_env(dsn: str) -> dict:
 @pytest.fixture(autouse=True)
 def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "config.app_config.sys.version_info",
+        "pmcopy.config.app_config.sys.version_info",
         SimpleNamespace(major=3, minor=14),
     )
 
@@ -140,7 +140,7 @@ class TestBuildApp:
             assert app2.readiness.snapshot()["api_ok"] is False
 
     async def test_invalid_env_surfaces_validation_error(self) -> None:
-        from config.app_config import EnvValidationError
+        from pmcopy.config.app_config import EnvValidationError
 
         async with _pg_container() as dsn:
             env = _valid_env(dsn)

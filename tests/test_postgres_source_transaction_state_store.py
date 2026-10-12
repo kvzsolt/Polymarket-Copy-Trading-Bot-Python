@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from adapters.persistence.source_transaction_state_store import (
+from pmcopy.adapters.persistence.source_transaction_state_store import (
     PostgresSourceTransactionStateStore,
     SourceTransactionSnapshotCodec,
 )
-from domain.source_transactions import (
+from pmcopy.domain.source_transactions import (
     CopyConsumptionKey,
     SourceTransactionRecordSnapshot,
     SourceTransactionSnapshot,
     TransactionState,
 )
-from storage.postgres import migrations
+from pmcopy.storage.postgres import migrations
 from tests.test_source_transaction_registry_persistence import (
     _confirmed,
     _correlation,
@@ -47,7 +47,7 @@ class FakeDatabasePool:
 def _snapshot() -> SourceTransactionSnapshot:
     pending = _pending()
     reservation = _confirmed_reservation = None
-    from domain.source_transactions import ReservedTransaction
+    from pmcopy.domain.source_transactions import ReservedTransaction
 
     reservation = ReservedTransaction(
         reservation_id=f"{pending.chain_id}:{pending.transaction_hash}",

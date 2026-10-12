@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.reconciliation import (
+from pmcopy.services.reconciliation import (
     ReconciliationResult,
     ReconciliationService,
     _order_age_seconds,
     _safe_int,
 )
-from integrations.polymarket.models import VenueCancelResult, VenueOrderState
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from pmcopy.integrations.polymarket.models import VenueCancelResult, VenueOrderState
+from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
 
 
 @contextlib.asynccontextmanager
@@ -27,7 +27,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:

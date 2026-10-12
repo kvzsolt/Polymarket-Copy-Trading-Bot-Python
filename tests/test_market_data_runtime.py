@@ -17,14 +17,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from integrations.polymarket.errors import VenueOrderbookNotFoundError
-from integrations.polymarket.models import OrderBook, OrderBookLevel
-from orchestrators.market_data_runtime import (
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.integrations.polymarket.errors import VenueOrderbookNotFoundError
+from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
+from pmcopy.orchestrators.market_data_runtime import (
     MarketDataRuntime,
     extract_token_ids_from_live_positions,
 )
-from services.healthServer import ReadinessTracker
+from pmcopy.services.healthServer import ReadinessTracker
 
 
 TOKEN_A = "0xaaa"
@@ -146,7 +146,7 @@ class TestStartNoTokens:
     @pytest.mark.asyncio
     async def test_start_empty_tokens_market_data_not_ready(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         readiness = ReadinessTracker()
@@ -166,7 +166,7 @@ class TestStartNoTokens:
         and every dynamically-added token is permanently un-bootstrappable.
         """
         monkeypatch.setattr(
-            "orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         rt = _make_runtime()
@@ -183,7 +183,7 @@ class TestStartNoTokens:
     ) -> None:
         """After an empty start, a new token must reach the live WS client."""
         monkeypatch.setattr(
-            "orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         gw = _make_bootstrap_gateway()
@@ -666,7 +666,7 @@ def _make_runtime_with_config(
 
 
 def _make_good_book(token_id: str = TOKEN_A):
-    from integrations.polymarket.models import OrderBook, OrderBookLevel
+    from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
 
     return OrderBook(
         token_id=token_id,
@@ -831,7 +831,7 @@ class TestEnsureTokenReadyOrBootstrapped:
 
     @pytest.mark.asyncio
     async def test_bootstrap_rejects_wide_spread(self) -> None:
-        from integrations.polymarket.models import OrderBook, OrderBookLevel
+        from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
 
         wide_book = OrderBook(
             token_id=TOKEN_A,
@@ -895,7 +895,7 @@ class TestEnsureTokenReadyOrBootstrapped:
 
     @pytest.mark.asyncio
     async def test_bootstrap_rejected_when_empty_book(self) -> None:
-        from integrations.polymarket.models import OrderBook
+        from pmcopy.integrations.polymarket.models import OrderBook
 
         empty_book = OrderBook(
             token_id=TOKEN_A,
@@ -978,7 +978,7 @@ class TestWssTelemetry:
 
     @pytest.mark.asyncio
     async def test_first_connect_reports_connected_then_reconnected(self) -> None:
-        from services.telemetry import TelemetryProducer, WssEvent, WssOutcome
+        from pmcopy.services.telemetry import TelemetryProducer, WssEvent, WssOutcome
         from tests.telemetry_helpers import recording_emitters
 
         emitters, service = recording_emitters()
@@ -1029,7 +1029,7 @@ class TestWssTelemetry:
         with no preceding CONNECTED. That must never raise, and must never make
         the first real connection report RECONNECTED.
         """
-        from services.telemetry import WssEvent, WssOutcome
+        from pmcopy.services.telemetry import WssEvent, WssOutcome
         from tests.telemetry_helpers import recording_emitters
 
         emitters, service = recording_emitters()

@@ -4,12 +4,12 @@ from datetime import datetime
 import aiohttp
 import pytest
 
-from services.compliance import GEOBLOCK_URL, check_geoblock
+from pmcopy.services.compliance import GEOBLOCK_URL, check_geoblock
 
 
 @pytest.mark.asyncio
 async def test_geoblock_blocked_fails_closed():
-    with patch("services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": True})):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": True})):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "region_blocked_by_polymarket"
@@ -19,7 +19,7 @@ async def test_geoblock_blocked_fails_closed():
 
 @pytest.mark.asyncio
 async def test_geoblock_allowed_passes():
-    with patch("services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": False})):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": False})):
         decision = await check_geoblock()
     assert decision.allowed is True
     assert decision.reason == "ok"
@@ -37,7 +37,7 @@ async def test_geoblock_http_error_fails_closed():
         status=503,
         message="Service Unavailable",
     )
-    with patch("services.compliance.fetch_data", new=AsyncMock(side_effect=exc)):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(side_effect=exc)):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "geoblock_failed_closed_http_503"
@@ -47,7 +47,7 @@ async def test_geoblock_http_error_fails_closed():
 @pytest.mark.asyncio
 async def test_geoblock_timeout_fails_closed():
     with patch(
-        "services.compliance.fetch_data", new=AsyncMock(side_effect=RuntimeError("network down"))
+        "pmcopy.services.compliance.fetch_data", new=AsyncMock(side_effect=RuntimeError("network down"))
     ):
         decision = await check_geoblock()
     assert decision.allowed is False
@@ -57,7 +57,7 @@ async def test_geoblock_timeout_fails_closed():
 
 @pytest.mark.asyncio
 async def test_geoblock_invalid_payload_fails_closed():
-    with patch("services.compliance.fetch_data", new=AsyncMock(return_value=["not", "a", "dict"])):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(return_value=["not", "a", "dict"])):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "geoblock_failed_closed_invalid_payload"
@@ -66,7 +66,7 @@ async def test_geoblock_invalid_payload_fails_closed():
 
 @pytest.mark.asyncio
 async def test_geoblock_missing_blocked_field_fails_closed():
-    with patch("services.compliance.fetch_data", new=AsyncMock(return_value={"other": "value"})):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(return_value={"other": "value"})):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "geoblock_failed_closed_missing_field"
@@ -75,7 +75,7 @@ async def test_geoblock_missing_blocked_field_fails_closed():
 
 @pytest.mark.asyncio
 async def test_live_mode_refuses_when_compliance_unknown():
-    with patch("services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": None})):
+    with patch("pmcopy.services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": None})):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "geoblock_failed_closed_missing_field"

@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from config.app_config import OrderConfirmationConfig
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.config.app_config import OrderConfirmationConfig
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 def _cfg(**overrides) -> OrderConfirmationConfig:
@@ -113,7 +113,7 @@ async def test_auto_release_fires_when_all_probes_clean():
         reservation_service=reservation,
         clob_gateway=gw,
     )
-    with patch("services.metrics.metrics.inc_sync") as inc_sync:
+    with patch("pmcopy.services.metrics.metrics.inc_sync") as inc_sync:
         released = await svc._maybe_auto_release_ambiguous(
             _record(),
             side="BUY",
@@ -402,7 +402,7 @@ def _svc(gw, *, reservation=None, positions=None, orders=None, cfg=None):
 
 @pytest.mark.asyncio
 async def test_venue_unavailable_is_inconclusive_not_error():
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     reservation = _ReservationService()
     gw = _gateway(order_status="absent", fills=[], list_orders=[])
@@ -479,7 +479,7 @@ async def test_repeated_aborts_are_log_throttled():
     gw.get_order = AsyncMock(side_effect=RuntimeError("boom"))
     svc = _svc(gw)
 
-    with patch("services.execution.reconciliation_service._log.log") as log_spy:
+    with patch("pmcopy.services.execution.reconciliation_service._log.log") as log_spy:
         for _ in range(11):
             released = await svc._maybe_auto_release_ambiguous(
                 _record(),
@@ -509,7 +509,7 @@ async def test_timeout_handler_paces_auto_release_attempts(monkeypatch):
 
     fake_now = [1000.0]
     monkeypatch.setattr(
-        "services.execution.reconciliation_service.time.monotonic",
+        "pmcopy.services.execution.reconciliation_service.time.monotonic",
         lambda: fake_now[0],
     )
 
@@ -548,7 +548,7 @@ async def test_timeout_handler_clears_pacing_on_release():
     svc._auto_release_next_probe_at["ord-amb-1"] = (0.0, 30.0)
     svc._auto_release_abort_counts["ord-amb-1"] = 3
 
-    with patch("services.metrics.metrics.inc_sync"):
+    with patch("pmcopy.services.metrics.metrics.inc_sync"):
         timed_out, released = await svc._handle_unresolved_confirmation_timeout(
             _record(), side="BUY", fill_info={"status": "poll_unavailable"}
         )
@@ -673,6 +673,6 @@ async def test_horizon_is_disabled_by_default():
 
 
 def test_baseline_missing_horizon_has_a_config_default():
-    from config.app_config import OrderConfirmationConfig
+    from pmcopy.config.app_config import OrderConfirmationConfig
 
     assert OrderConfirmationConfig().auto_release_baseline_missing_after_seconds == 0.0

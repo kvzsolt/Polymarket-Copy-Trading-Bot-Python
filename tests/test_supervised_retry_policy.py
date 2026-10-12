@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-import app
+import pmcopy.app as app
 
 
 def _spec(**kw):

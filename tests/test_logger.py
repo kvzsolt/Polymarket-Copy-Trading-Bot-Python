@@ -10,9 +10,9 @@ import pytest
 import sys
 from rich.traceback import Traceback
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from utils.logger import (
+from pmcopy.utils.logger import (
     APP_NAME,
     JsonFormatter,
     MonitorHeartbeat,
@@ -312,7 +312,7 @@ class TestRichConsoleHandler:
             exc_info=exc_info,
         )
 
-        with patch("utils.logger.console.print") as print_mock:
+        with patch("pmcopy.utils.logger.console.print") as print_mock:
             with patch.object(handler, "format", return_value="test message"):
                 handler.emit(record)
 
@@ -341,7 +341,7 @@ class TestRichConsoleHandler:
         # in source. The assert below still proves it is fully redacted.
         record.private_key = "-".join(("do", "not", "show"))
 
-        with patch("utils.logger.console.print") as print_mock:
+        with patch("pmcopy.utils.logger.console.print") as print_mock:
             handler.emit(record)
 
         rendered = str(print_mock.call_args.args[0])
@@ -366,7 +366,7 @@ class TestRichConsoleHandler:
         record.user = "0xabc"
         record.market = "BTC"
 
-        with patch("utils.logger.console.print") as print_mock:
+        with patch("pmcopy.utils.logger.console.print") as print_mock:
             handler.emit(record)
 
         assert print_mock.call_count == 2
@@ -398,7 +398,7 @@ class TestRichConsoleHandler:
         record.eligible_live = True
         record.duration_seconds = 1.25
 
-        with patch("utils.logger.console.print") as print_mock:
+        with patch("pmcopy.utils.logger.console.print") as print_mock:
             handler.emit(record)
 
         assert print_mock.call_count == 1

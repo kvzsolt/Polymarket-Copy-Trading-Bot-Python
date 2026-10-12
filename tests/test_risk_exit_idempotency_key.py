@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
-from services.risk.risk_monitor import _risk_exit_signal_id
+from pmcopy.services.risk.risk_monitor import _risk_exit_signal_id
 
 
 def _pos(

@@ -11,7 +11,7 @@ class TestEvidenceDrainRuntime:
     """Explicit event barriers keep retry and cancellation tests deterministic."""
 
     async def test_retry_does_not_drop_rows_or_end_worker(self):
-        from orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
+        from pmcopy.orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
 
         waiting = asyncio.Event()
         released = asyncio.Event()
@@ -31,7 +31,7 @@ class TestEvidenceDrainRuntime:
         assert runtime.status == "closed"
 
     async def test_close_cancels_stalled_database_operation(self):
-        from orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
+        from pmcopy.orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
 
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -50,9 +50,9 @@ class TestEvidenceDrainRuntime:
         assert cancelled.is_set()
 
     def test_user_state_passes_atomic_projection_to_actual_fill_repository(self, monkeypatch):
-        from config.app_config import AppConfig
-        from orchestrators import runtime_bootstrap
-        from services.multiUserConfig import RuntimeUser
+        from pmcopy.config.app_config import AppConfig
+        from pmcopy.orchestrators import runtime_bootstrap
+        from pmcopy.services.multiUserConfig import RuntimeUser
 
         seen = []
         projection = object()
@@ -68,7 +68,7 @@ class TestEvidenceDrainRuntime:
         assert seen[0]["evidence_projection"] is projection
 
     async def test_shutdown_stops_drain_before_database(self, monkeypatch):
-        import app
+        import pmcopy.app as app
 
         events = []
 
@@ -78,15 +78,15 @@ class TestEvidenceDrainRuntime:
         async def stop_database():
             events.append("database")
 
-        monkeypatch.setattr("utils.fetchData.close_session", AsyncMock())
-        monkeypatch.setattr("storage.postgres.connection.shutdown_pool", stop_database)
+        monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
+        monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", stop_database)
         await app._shutdown_runtime(monitor_tasks=[], supervised=[], market_data_runtimes={},
                                     user_data_runtimes=[], metrics_runner=None,
                                     evidence_drain=SimpleNamespace(aclose=stop_drain))
         assert events == ["drain", "database"]
 
     async def test_early_startup_failure_closes_async_only_resources(self, monkeypatch):
-        import app
+        import pmcopy.app as app
 
         evidence = SimpleNamespace(aclose=AsyncMock())
         drain = SimpleNamespace(aclose=AsyncMock())
@@ -96,7 +96,7 @@ class TestEvidenceDrainRuntime:
             raise RuntimeError("startup interrupted")
 
         monkeypatch.setattr(app, "_run_application", fail_after_registration)
-        monkeypatch.setattr("utils.fetchData.close_session", AsyncMock())
+        monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
         with pytest.raises(RuntimeError, match="startup interrupted"):
             await app.main()
         drain.aclose.assert_awaited_once()

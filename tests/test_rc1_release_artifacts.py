@@ -97,7 +97,7 @@ def test_rc1_check_script_runs_forbid_scans(repo_root: Path) -> None:
 
 def test_rc1_live_doctor_detects_file_backed_wallet_config(repo_root: Path) -> None:
     text = (repo_root / "scripts/rc1_check.sh").read_text(encoding="utf-8")
-    assert "python -m bot_cli.main doctor --live" in text
+    assert "python -m pmcopy.bot_cli.main doctor --live" in text
     assert "${PMCOPY__WALLET__PRIVATE_KEY-}" not in text
 
 
@@ -119,7 +119,7 @@ def test_documented_config_templates_exist(repo_root: Path) -> None:
     missing = {
         rel: sorted(set(where))
         for rel, where in referenced.items()
-        if not (repo_root / rel).is_file()
+        if not (repo_root / "src" / "pmcopy" / rel).is_file()
     }
     assert not missing, f"documented config templates do not exist: {missing}"
 
@@ -128,7 +128,7 @@ def test_example_environment_template_is_paper_safe_and_secret_free(
     repo_root: Path,
 ) -> None:
     """The copied-verbatim environment template must never arm live trading."""
-    path = repo_root / "config" / "environments" / "example" / "execution.yml"
+    path = repo_root / "src" / "pmcopy" / "config" / "environments" / "example" / "execution.yml"
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert payload["trading_mode"] == "paper"
@@ -141,10 +141,10 @@ def test_packaged_service_files_are_paper_safe_and_secret_free(
     repo_root: Path,
 ) -> None:
     """Canonical service files ship paper-mode, kill-switches off, no keys."""
-    execution = yaml.safe_load((repo_root / "config" / "execution.yml").read_text(encoding="utf-8"))
-    app_cfg = yaml.safe_load((repo_root / "config" / "app.yml").read_text(encoding="utf-8"))
-    risk = yaml.safe_load((repo_root / "config" / "risk.yml").read_text(encoding="utf-8"))
-    wallet = yaml.safe_load((repo_root / "config" / "wallet.yml").read_text(encoding="utf-8"))
+    execution = yaml.safe_load((repo_root / "src" / "pmcopy" / "config" / "execution.yml").read_text(encoding="utf-8"))
+    app_cfg = yaml.safe_load((repo_root / "src" / "pmcopy" / "config" / "app.yml").read_text(encoding="utf-8"))
+    risk = yaml.safe_load((repo_root / "src" / "pmcopy" / "config" / "risk.yml").read_text(encoding="utf-8"))
+    wallet = yaml.safe_load((repo_root / "src" / "pmcopy" / "config" / "wallet.yml").read_text(encoding="utf-8"))
 
     assert execution["trading_mode"] == "paper"
     assert "venue_backend" not in execution
@@ -152,7 +152,7 @@ def test_packaged_service_files_are_paper_safe_and_secret_free(
     assert app_cfg["kill_switch"] is False
     assert risk["kill_switch"] is False
     assert wallet.get("private_key", "") == ""
-    for path in sorted((repo_root / "config").glob("*.yml")):
+    for path in sorted((repo_root / "src" / "pmcopy" / "config").glob("*.yml")):
         if path.name == "runtime.local.yml":  # operator-local, git-ignored
             continue
         assert not re.search(r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")), (
@@ -162,8 +162,9 @@ def test_packaged_service_files_are_paper_safe_and_secret_free(
 
 def test_bot_cli_module_executes_its_entrypoint(repo_root: Path) -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "bot_cli.main", "--help"],
+        [sys.executable, "-m", "pmcopy.bot_cli.main", "--help"],
         cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
         capture_output=True,
         check=False,
         text=True,

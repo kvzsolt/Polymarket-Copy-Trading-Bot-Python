@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app
-from services.healthServer import ReadinessTracker
+import pmcopy.app as app
+from pmcopy.services.healthServer import ReadinessTracker
 from tests.test_book_update_atomicity import seeded_store
 
 
@@ -20,7 +20,7 @@ async def test_real_market_runtime_wiring_aggregates_account_readiness(monkeypat
         await stopped.wait()
 
     monkeypatch.setattr(
-        "orchestrators.market_data_runtime.MarketWebSocket",
+        "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
         lambda **kwargs: SimpleNamespace(connect=connect, stop=AsyncMock()),
     )
     users = [SimpleNamespace(user_id=account) for account in ("a", "b")]

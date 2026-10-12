@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_client import (
+from pmcopy.integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionConfigurationError,
     CcxtPredictionUnavailable,
     create_ccxt_prediction_client,

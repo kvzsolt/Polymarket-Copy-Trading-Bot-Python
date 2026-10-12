@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
 
 @contextlib.asynccontextmanager
@@ -31,7 +31,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -195,7 +195,7 @@ class TestPipelineIntegration:
     """
 
     def test_trade_pipeline_uses_try_claim(self):
-        from orchestrators import trade_pipeline
+        from pmcopy.orchestrators import trade_pipeline
 
         src = Path(trade_pipeline.__file__).read_text(encoding="utf-8")
         assert "try_claim_processed_trade" in src, (

@@ -2,15 +2,15 @@
 
 import pytest
 
-from adapters.clock import SystemReceiptClock
-from domain.source_time import TransportReceipt
+from pmcopy.adapters.clock import SystemReceiptClock
+from pmcopy.domain.source_time import TransportReceipt
 
 
 class TestEvidenceClock:
     """Nanosecond units do not imply kernel timestamp or clock accuracy claims."""
 
     def test_clock_retains_native_sample_once(self, monkeypatch):
-        import adapters.clock as clock_module
+        import pmcopy.adapters.clock as clock_module
         calls=[]
         def wall():
             calls.append(True)

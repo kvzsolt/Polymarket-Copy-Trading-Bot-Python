@@ -18,7 +18,7 @@ from shutil import copyfile
 import pytest
 import yaml
 
-from config.app_config import SERVICE_CONFIG_FILES, load_config
+from pmcopy.config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
@@ -35,7 +35,7 @@ def _isolated_packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     packaged_config = tmp_path / "packaged-config"
     packaged_config.mkdir()
     for service in SERVICE_CONFIG_FILES:
-        source = ROOT / "config" / f"{service}.yml"
+        source = ROOT / "src" / "pmcopy" / "config" / f"{service}.yml"
         if source.exists():
             copyfile(source, packaged_config / source.name)
     traders = packaged_config / "traders"
@@ -46,7 +46,7 @@ def _isolated_packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
             yaml.safe_dump({"name": name, "wallet": wallet, "enabled": True}),
             encoding="utf-8",
         )
-    monkeypatch.setattr("config.app_config._CONFIG_ROOT", packaged_config)
+    monkeypatch.setattr("pmcopy.config.app_config._CONFIG_ROOT", packaged_config)
 
 
 def _overrides() -> dict:

@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from domain.provider_budget import BudgetExhausted
-from domain.source_time import TransportReceipt
+from pmcopy.domain.provider_budget import BudgetExhausted
+from pmcopy.domain.source_time import TransportReceipt
 
 
 class Clock:
@@ -37,9 +37,9 @@ class TestPendingRuntime:
         enabled,
         expected,
     ):
-        from config.native_detection import NativeDetectionConfig
-        from domain.grouped_detection import TraderDetectionPolicy
-        from orchestrators.native_detection_runtime import NativeDetectionRuntime
+        from pmcopy.config.native_detection import NativeDetectionConfig
+        from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+        from pmcopy.orchestrators.native_detection_runtime import NativeDetectionRuntime
 
         wallet = "0x" + "11" * 20
         owner = SimpleNamespace(
@@ -48,7 +48,7 @@ class TestPendingRuntime:
             budget=Mock(),
             endpoints=SimpleNamespace(http_url=lambda _: "https://synthetic.invalid", infura=""),
         )
-        monkeypatch.setattr("orchestrators.native_detection_runtime.SystemReceiptClock", Clock)
+        monkeypatch.setattr("pmcopy.orchestrators.native_detection_runtime.SystemReceiptClock", Clock)
         runtime = NativeDetectionRuntime.compose(
             config=NativeDetectionConfig(
                 state_path=str(tmp_path / "source.sqlite"),
@@ -75,7 +75,7 @@ class TestPendingRuntime:
             await runtime.stop()
 
     async def test_later_inflight_failure_cannot_erase_budget_pause_reason(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         _, evaluator = self.dependencies()
         evaluator.stop_requested, evaluator.stop_reason = True, "budget_stopped"
@@ -93,7 +93,7 @@ class TestPendingRuntime:
         assert runtime.status == "budget_stopped"
 
     async def test_fifth_inflight_body_is_charged_then_stops_without_unbounded_queue(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         frame = json.dumps(
@@ -129,7 +129,7 @@ class TestPendingRuntime:
         )
 
     async def test_subscription_send_has_injected_deadline_and_cleanup(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         sender = SimpleNamespace(send=AsyncMock(side_effect=TimeoutError))
@@ -149,7 +149,7 @@ class TestPendingRuntime:
         socket.close.assert_awaited_once()
 
     async def test_close_failure_preserves_budget_reason_and_exposes_cleanup_failure(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         socket.close.side_effect = OSError("private transport details")
@@ -175,7 +175,7 @@ class TestPendingRuntime:
         assert runtime.cleanup_failed is True
 
     async def test_unrecorded_gap_invalidates_local_evidence(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         _, evaluator = self.dependencies()
         sink = SimpleNamespace(
@@ -194,7 +194,7 @@ class TestPendingRuntime:
         sink.invalidate.assert_called_once_with("storage_failure")
 
     async def test_slow_body_does_not_delay_receipt_of_next_hash_frame(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         body_entered, next_received = asyncio.Event(), asyncio.Event()
@@ -251,7 +251,7 @@ class TestPendingRuntime:
     async def test_one_grouped_subscription_is_charged_before_open_and_every_frame_is_observed(
         self,
     ):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         sequence = []
@@ -307,9 +307,9 @@ class TestPendingRuntime:
     async def test_native_owner_starts_stops_and_applies_explicit_budget_policy(
         self, tmp_path, fallback, mode
     ):
-        from domain.grouped_detection import TraderDetectionPolicy
-        from orchestrators.native_detection_runtime import NativeDetectionRuntime
-        from storage.detection_state import SqliteDetectionState
+        from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+        from pmcopy.orchestrators.native_detection_runtime import NativeDetectionRuntime
+        from pmcopy.storage.detection_state import SqliteDetectionState
 
         wallet = "0x" + "11" * 20
         state = SqliteDetectionState(tmp_path / "state")
@@ -357,7 +357,7 @@ class TestPendingRuntime:
             state.close()
 
     async def test_subscription_budget_failure_never_opens_any_socket(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         _, evaluator = self.dependencies()
         connector = SimpleNamespace(open=AsyncMock())
@@ -375,7 +375,7 @@ class TestPendingRuntime:
         connector.open.assert_not_awaited()
 
     async def test_idle_receive_timeout_expires_without_retry_or_extra_connection(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
 
@@ -399,7 +399,7 @@ class TestPendingRuntime:
         connector.open.assert_awaited_once()
 
     async def test_roster_change_cancels_only_optional_pending_owner(self):
-        from orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
+        from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
 
         socket, evaluator = self.dependencies()
         entered = asyncio.Event()

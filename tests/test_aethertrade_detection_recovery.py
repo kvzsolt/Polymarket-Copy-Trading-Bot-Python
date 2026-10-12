@@ -5,17 +5,17 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from services.grouped_detection import DetectionSubscription
-from storage.detection_state import SqliteDetectionState
+from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.storage.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
-from services.onchain_detection.native_owner import NativeOwnerLogDecoder
-from domain.source_time import TransportReceipt
+from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
+from pmcopy.domain.source_time import TransportReceipt
 
 
 @pytest.mark.asyncio
 async def test_recovery_uses_chunks_and_marks_every_result_historical(tmp_path: Path) -> None:
     """A known gap is recovered inclusively without periodic polling or fresh entry."""
-    from services.onchain_detection.bounded_recovery import BoundedLogRecovery
+    from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     group = DetectionSubscription("alchemy", "mined", (OWNER,))
@@ -55,7 +55,7 @@ async def test_recovery_uses_chunks_and_marks_every_result_historical(tmp_path: 
 @pytest.mark.asyncio
 async def test_gap_above_bound_recovers_recent_overlap_before_advancing(tmp_path: Path) -> None:
     """Oversized downtime resumes after verified recent evidence without a manual reset."""
-    from services.onchain_detection.bounded_recovery import BoundedLogRecovery
+    from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     group = DetectionSubscription("alchemy", "mined", (OWNER,))
@@ -76,7 +76,7 @@ async def test_recovery_invalidates_replaced_blocks_before_processing_new_logs(
     tmp_path: Path,
 ) -> None:
     """A missed removed notification is reconstructed from canonical block identity."""
-    from services.onchain_detection.bounded_recovery import BoundedLogRecovery
+    from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     fill = NativeOwnerLogDecoder().decode(LogFixture.make())
@@ -98,7 +98,7 @@ async def test_recovery_invalidates_replaced_blocks_before_processing_new_logs(
 @pytest.mark.asyncio
 async def test_recovery_bound_counts_both_inclusive_endpoints(tmp_path: Path) -> None:
     """An inclusive getLogs range never exceeds the configured block count."""
-    from services.onchain_detection.bounded_recovery import BoundedLogRecovery
+    from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery
 
     state = SqliteDetectionState(tmp_path / "state")
     group = DetectionSubscription("alchemy", "mined", (OWNER,))

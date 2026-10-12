@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from domain.position_key import PositionKey
+from pmcopy.domain.position_key import PositionKey
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ def test_factory_validation_propagates():
 
 
 def test_position_scope_alias_resolves_to_position_key():
-    from services.positionActionCoordinator import PositionScope
+    from pmcopy.services.positionActionCoordinator import PositionScope
 
     assert PositionScope is PositionKey
     a = PositionScope(user_id="u1", condition_id="c", token_id="t")
@@ -236,7 +236,7 @@ def test_position_scope_alias_resolves_to_position_key():
 
 
 def test_coordinator_module_exposes_position_key_aliases():
-    from services.positionActionCoordinator import (
+    from pmcopy.services.positionActionCoordinator import (
         PositionActionCoordinator,
         PositionKey as PK,
         PositionScope as PS,

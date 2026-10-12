@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.source_transactions import (
+from pmcopy.domain.source_transactions import (
     ConfirmedSourceFill,
     ConfirmedTransaction,
     LeaderTradeCorrelation,
@@ -19,7 +19,7 @@ from domain.source_transactions import (
     TransactionState,
     WatchedRole,
 )
-from services.onchain_detection.source_transaction_gate import SourceTransactionRegistry
+from pmcopy.services.onchain_detection.source_transaction_gate import SourceTransactionRegistry
 
 _NOW = datetime(2026, 8, 13, 10, 0, tzinfo=UTC)
 _TX_HASH = "0x" + "ab" * 32

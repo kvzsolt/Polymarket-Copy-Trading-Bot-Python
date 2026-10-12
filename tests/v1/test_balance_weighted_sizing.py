@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.copy_sizing_v5.domain import CopySizingRequest
-from services.copy_sizing_v5.engine import CopySizingEngine
-from services.copy_sizing_v5.policy import CopySizingPolicy
+from pmcopy.services.copy_sizing_v5.domain import CopySizingRequest
+from pmcopy.services.copy_sizing_v5.engine import CopySizingEngine
+from pmcopy.services.copy_sizing_v5.policy import CopySizingPolicy
 
 
 def test_balance_weighted_applies_leader_available_balance_fraction_to_follower_budget() -> None:

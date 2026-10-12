@@ -7,15 +7,15 @@ import pytest
 
 def test_empty_roster_has_no_subscriptions() -> None:
     """An empty owner OR-filter must never become an exchange-wide feed."""
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     assert GroupedDetectionPlanner().plan(()) == ()
 
 
 def test_default_mined_owner_groups_cover_more_than_one_hundred_wallets() -> None:
     """Every owner appears exactly once in bounded native-owner groups."""
-    from domain.grouped_detection import TraderDetectionPolicy
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     policies = tuple(TraderDetectionPolicy(wallet=f"0x{number:040x}") for number in range(1, 252))
     groups = GroupedDetectionPlanner().plan(policies)
@@ -33,8 +33,8 @@ def test_default_mined_owner_groups_cover_more_than_one_hundred_wallets() -> Non
 
 def test_pending_is_shared_and_keeps_independent_mined_coverage() -> None:
     """Missing mempool evidence cannot hide a pending trader's mined action."""
-    from domain.grouped_detection import TraderDetectionPolicy
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     policies = tuple(
         TraderDetectionPolicy(wallet=f"0x{number:040x}", mode="pending") for number in (1, 2)
@@ -62,7 +62,7 @@ def test_pending_is_shared_and_keeps_independent_mined_coverage() -> None:
 )
 def test_invalid_policies_fail_closed(changes: dict[str, object]) -> None:
     """Configuration cannot activate REST, extra providers, or paid fallback."""
-    from domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
 
     with pytest.raises(ValueError):
         TraderDetectionPolicy(**({"wallet": "0x" + "11" * 20} | changes))
@@ -70,8 +70,8 @@ def test_invalid_policies_fail_closed(changes: dict[str, object]) -> None:
 
 def test_unverified_infura_stream_and_duplicate_wallet_policy_are_rejected() -> None:
     """A wallet gets one owner policy; Infura stream billing needs explicit proof."""
-    from domain.grouped_detection import TraderDetectionPolicy
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     policy = TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="infura")
     with pytest.raises(ValueError, match="billing"):
@@ -82,8 +82,8 @@ def test_unverified_infura_stream_and_duplicate_wallet_policy_are_rejected() -> 
 
 def test_disabled_trader_is_never_subscribed() -> None:
     """Disabled desired policy cannot keep a hidden source feed alive."""
-    from domain.grouped_detection import TraderDetectionPolicy
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     assert (
         GroupedDetectionPlanner().plan(
@@ -95,8 +95,8 @@ def test_disabled_trader_is_never_subscribed() -> None:
 
 def test_boolean_verification_cannot_bypass_missing_infura_per_block_metering() -> None:
     """A claimed billing verification cannot implement an absent stream meter."""
-    from domain.grouped_detection import TraderDetectionPolicy
-    from services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
     with pytest.raises(ValueError, match="billing"):
         GroupedDetectionPlanner(infura_logs_billing_verified=True).plan(

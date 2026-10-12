@@ -63,16 +63,17 @@ from pathlib import Path
 from types import MappingProxyType
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from services.metrics import MetricsRegistry  # noqa: E402
-from services.telemetry.emitters import (  # noqa: E402
+from pmcopy.services.metrics import MetricsRegistry  # noqa: E402
+from pmcopy.services.telemetry.emitters import (  # noqa: E402
     DetectionTelemetryEmitter,
     TradeTelemetryEmitter,
 )
-from services.telemetry.hub import TelemetryHub, TelemetrySubscription  # noqa: E402
-from services.telemetry.service import TelemetryService  # noqa: E402
+from pmcopy.services.telemetry.hub import TelemetryHub, TelemetrySubscription  # noqa: E402
+from pmcopy.services.telemetry.service import TelemetryService  # noqa: E402
 
 _SUMMARY = "Latency-safety bench for the synchronous telemetry emit path."
 _NS_PER_US = 1_000.0

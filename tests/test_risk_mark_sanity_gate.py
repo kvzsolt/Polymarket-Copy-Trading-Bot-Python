@@ -14,7 +14,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from services.risk.risk_monitor import (
+from pmcopy.services.risk.risk_monitor import (
     RiskPriceCache,
     _cache_market_store_risk_price,
 )

@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.order_lifecycle import IntentReason, IntentSide, Reservation
-from services.execution.intent_recovery import recover_intents_from_db
-from services.intentRegistry import DuplicateIntentError, IntentRegistry, IntentState
-from services.positionActionCoordinator import PositionScope
+from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, Reservation
+from pmcopy.services.execution.intent_recovery import recover_intents_from_db
+from pmcopy.services.intentRegistry import DuplicateIntentError, IntentRegistry, IntentState
+from pmcopy.services.positionActionCoordinator import PositionScope
 
 
 @pytest.mark.asyncio

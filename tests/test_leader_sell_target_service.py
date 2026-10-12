@@ -7,9 +7,9 @@ from dataclasses import replace
 
 import pytest
 
-from domain.leader_sell_target import LeaderSellTarget
-from services.execution.coordinator import ExecutionCoordinatorResult, ExecutionIntent
-from services.execution.leader_sell_target_service import LeaderSellTargetService
+from pmcopy.domain.leader_sell_target import LeaderSellTarget
+from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult, ExecutionIntent
+from pmcopy.services.execution.leader_sell_target_service import LeaderSellTargetService
 
 
 def test_recovered_sell_preserves_task_and_protective_lot_ownership() -> None:

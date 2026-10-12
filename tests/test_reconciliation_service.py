@@ -1,8 +1,8 @@
 import pytest
 from typing import Any
 
-from domain.order_lifecycle import OrderLifecycleStatus
-from services.execution.reconciliation_service import ReconciliationService, OrderRecord
+from pmcopy.domain.order_lifecycle import OrderLifecycleStatus
+from pmcopy.services.execution.reconciliation_service import ReconciliationService, OrderRecord
 
 
 class MockOrder(OrderRecord):
@@ -230,7 +230,7 @@ async def test_target_redrive_failure_does_not_misreport_successful_reservation_
         warnings.append(message % args)
 
     monkeypatch.setattr(
-        "services.execution.reconciliation_service._log.warning",
+        "pmcopy.services.execution.reconciliation_service._log.warning",
         _capture_warning,
     )
 
@@ -619,8 +619,8 @@ async def test_confirm_fill_not_found_remains_pending_without_positive_evidence(
     The order stays pending so an outage/indexing delay cannot unlock a retry
     that might duplicate an already accepted order.
     """
-    from integrations.polymarket.errors import VenueOrderNotFoundError
-    from services.execution.reconciliation_service import (
+    from pmcopy.integrations.polymarket.errors import VenueOrderNotFoundError
+    from pmcopy.services.execution.reconciliation_service import (
         _VENUE_ORDER_NOT_FOUND_THRESHOLD,
     )
 
@@ -648,8 +648,8 @@ async def test_confirm_fill_not_found_remains_pending_without_positive_evidence(
 async def test_confirm_fill_not_found_counter_resets_on_success():
     """A successful poll between 404s clears the streak so a single later 404
     does not prematurely settle the order."""
-    from integrations.polymarket.errors import VenueOrderNotFoundError
-    from services.execution.reconciliation_service import (
+    from pmcopy.integrations.polymarket.errors import VenueOrderNotFoundError
+    from pmcopy.services.execution.reconciliation_service import (
         _VENUE_ORDER_NOT_FOUND_THRESHOLD,
     )
 
@@ -689,8 +689,8 @@ async def test_confirm_fill_not_found_counter_resets_on_success():
 async def test_confirmed_trade_remains_partial_without_complete_account_history():
     from decimal import Decimal
 
-    from integrations.polymarket.errors import VenueUnavailableError
-    from integrations.polymarket.models import VenueFill
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.models import VenueFill
 
     class _TradeFallbackGateway:
         async def get_order(self, venue_order_id):
@@ -735,7 +735,7 @@ async def test_confirmed_trade_remains_partial_without_complete_account_history(
 async def test_confirm_fill_keeps_nonterminal_trade_id_pending():
     from decimal import Decimal
 
-    from integrations.polymarket.models import VenueFill
+    from pmcopy.integrations.polymarket.models import VenueFill
 
     class _PendingTradeGateway:
         async def get_order(self, venue_order_id):
@@ -775,7 +775,7 @@ async def test_confirm_fill_keeps_nonterminal_trade_id_pending():
 async def test_confirm_fill_mixed_confirmed_and_failed_trades_uses_successful_size():
     from decimal import Decimal
 
-    from integrations.polymarket.models import VenueFill
+    from pmcopy.integrations.polymarket.models import VenueFill
 
     class _MixedTradeGateway:
         async def get_order(self, venue_order_id):
@@ -815,7 +815,7 @@ async def test_confirm_fill_mixed_confirmed_and_failed_trades_uses_successful_si
 
 @pytest.mark.asyncio
 async def test_confirm_fill_uses_endpoint_specific_exponential_backoff():
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     class _OutageGateway:
         def __init__(self):
@@ -843,7 +843,7 @@ async def test_confirm_fill_uses_endpoint_specific_exponential_backoff():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
-            "services.execution.reconciliation_service.random.uniform",
+            "pmcopy.services.execution.reconciliation_service.random.uniform",
             lambda _low, _high: 1.0,
         )
         assert (await svc.confirm_fill("vBackoff"))["status"] == "poll_unavailable"
@@ -874,7 +874,7 @@ def _outage_service():
 
 
 def test_poll_failure_does_not_escalate_inside_active_window():
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     svc = _outage_service()
     svc._record_poll_failure("order", "o1", VenueUnavailableError("down"))
@@ -888,7 +888,7 @@ def test_poll_failure_does_not_escalate_inside_active_window():
 
 
 def test_poll_success_decays_failure_count_instead_of_resetting():
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     svc = _outage_service()
     for _ in range(3):
@@ -917,7 +917,7 @@ def test_poll_success_decays_failure_count_instead_of_resetting():
 async def test_concurrent_poll_failures_count_as_one():
     import asyncio
 
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     svc = _outage_service()
 
@@ -931,7 +931,7 @@ async def test_concurrent_poll_failures_count_as_one():
 
 
 def test_trade_fills_success_does_not_decay_account_fills_backoff():
-    from integrations.polymarket.errors import VenueUnavailableError
+    from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 
     svc = _outage_service()
     for _ in range(2):

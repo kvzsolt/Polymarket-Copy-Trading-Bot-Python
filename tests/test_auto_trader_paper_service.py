@@ -4,10 +4,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal as D
 
-from domain.auto_trader import AutoTraderScope
-from domain.paper_evaluation import PaperBook, PaperSimulation
-from services.paper_evaluation import PaperCopyOrder, PaperCopyEvaluator
-from services.risk.risk_engine import RiskEngine, policy_from_config
+from pmcopy.domain.auto_trader import AutoTraderScope
+from pmcopy.domain.paper_evaluation import PaperBook, PaperSimulation
+from pmcopy.services.paper_evaluation import PaperCopyOrder, PaperCopyEvaluator
+from pmcopy.services.risk.risk_engine import RiskEngine, policy_from_config
 from tests.config_helpers import load_test_config
 
 NOW = datetime(2026, 9, 16, tzinfo=UTC)

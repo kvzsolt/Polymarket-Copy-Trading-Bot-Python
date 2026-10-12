@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.risk.risk_monitor import (
+from pmcopy.services.risk.risk_monitor import (
     _arm_risk_exit_reject_cooldown,
     _risk_exit_cooldown_active,
     _risk_exit_reject_cooldown_seconds,
@@ -89,7 +89,7 @@ class TestCooldownHelpers:
 
     def test_appconfig_field_typed_default(self):
         # AppConfig-drift precedent: the key must live on the typed surface.
-        from config.app_config import RiskConfig
+        from pmcopy.config.app_config import RiskConfig
 
         field = {f.name: f for f in dataclasses.fields(RiskConfig)}[
             "risk_exit_reject_cooldown_seconds"
@@ -118,12 +118,12 @@ class TestCooldownHelpers:
 # skipped when docker is unavailable — same policy as issue72 harness).
 # --------------------------------------------------------------------------
 
-from storage.postgres.fills_repo import FillRecord, FillsRepo  # noqa: E402
-from storage.postgres.positions_repo import PositionsRepo  # noqa: E402
-from storage.postgres.risk_triggers_repo import RiskTriggersRepo  # noqa: E402
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo  # noqa: E402
+from pmcopy.storage.postgres.positions_repo import PositionsRepo  # noqa: E402
+from pmcopy.storage.postgres.risk_triggers_repo import RiskTriggersRepo  # noqa: E402
 
-from services.executionService import ExecutionResult  # noqa: E402
-from services.risk.risk_monitor import (  # noqa: E402
+from pmcopy.services.executionService import ExecutionResult  # noqa: E402
+from pmcopy.services.risk.risk_monitor import (  # noqa: E402
     rehydrate_position_manager,
     run_risk_check_for_context,
 )

@@ -20,26 +20,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import config.app_config as app_config_mod
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from tests.config_helpers import load_test_config
-from application.trading_context import TradingContext
-from domain.execution import ExecutionMetadata
-from orchestrators.trade_pipeline import execute_trades
-from services.accountingService import AccountingService
-from services.executionService import ExecutionResult
-from services.market_data_service import (
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.orchestrators.trade_pipeline import execute_trades
+from pmcopy.services.accountingService import AccountingService
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.services.market_data_service import (
     MarketDataBundle,
     MarketDataSource,
     StaleDataError,
 )
-from services.pnlTracker import PnLTracker
-from services.positionManager import PositionManager
-from services.risk.risk_engine import RiskEngine
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.risk.risk_engine import RiskEngine
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -49,7 +49,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -91,7 +91,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):
@@ -191,8 +191,8 @@ class _FakeMDS:
 def _passthrough_coordinator(exec_svc):
     class _PassThrough:
         async def submit_copy_trade(self, intent):
-            from services.execution.coordinator import ExecutionCoordinatorResult
-            from services.execution.types import ExecutionRequest
+            from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
+            from pmcopy.services.execution.types import ExecutionRequest
 
             req = ExecutionRequest(
                 user_id=intent.user_id,
@@ -266,7 +266,7 @@ async def test_market_data_stale_prints_panel(tmp_path):
             runtime=runtime,
             primary="rest_snapshot",
         )
-        with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
+        with patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p:
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "skipped"
         assert results[0].reason == "market_metadata_unavailable"
@@ -288,7 +288,7 @@ async def test_sell_never_held_prints_panel(tmp_path):
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
         )
-        with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
+        with patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p:
             results = await execute_trades(ctx, "leader1", [_signal(side="SELL")], time.time())
         assert results[0].status == "skipped"
         assert results[0].reason == "never_held"
@@ -322,9 +322,9 @@ async def test_terminal_copy_failure_has_one_panel_and_follower_amounts(tmp_path
             runtime=runtime,
         )
         with (
-            patch("orchestrators.trade_pipeline.print_skip_reason") as generic_panel,
-            patch("orchestrators.trade_pipeline.print_trade_result") as detailed_panel,
-            patch("orchestrators.trade_pipeline.log_trade_skip") as skip_log,
+            patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as generic_panel,
+            patch("pmcopy.orchestrators.trade_pipeline.print_trade_result") as detailed_panel,
+            patch("pmcopy.orchestrators.trade_pipeline.log_trade_skip") as skip_log,
         ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         generic_panel.assert_not_called()
@@ -370,8 +370,8 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
             runtime=runtime,
         )
         with (
-            patch("orchestrators.trade_pipeline.print_skip_reason") as p,
-            patch("orchestrators.trade_pipeline.log_trade_submitted") as log_sub,
+            patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p,
+            patch("pmcopy.orchestrators.trade_pipeline.log_trade_submitted") as log_sub,
         ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "submitted_unconfirmed"

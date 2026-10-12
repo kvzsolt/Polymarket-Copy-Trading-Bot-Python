@@ -188,7 +188,7 @@ jobs:
           #          user-supplied; revisit if external URL ever flows here
           # B104 dropped — orphan services/observability/health_server.py
           # was deleted in Batch 9 logging hygiene work.
-          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations bot_cli app.py bootstrap.py -ll --skip B101,B311,B608,B108,B310
+          bandit -r src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/clients src/pmcopy/config src/pmcopy/utils src/pmcopy/cache src/pmcopy/storage src/pmcopy/interfaces src/pmcopy/domain src/pmcopy/integrations src/pmcopy/bot_cli src/pmcopy/app.py src/pmcopy/bootstrap.py -ll --skip B101,B311,B608,B108,B310
       - name: mypy (money-path spine — BLOCKING, no regressions allowed)
         run: |
           pip install mypy
@@ -201,15 +201,15 @@ jobs:
           # more money-path modules are cleaned. No ``|| true`` — this gates.
           mypy --install-types --non-interactive --explicit-package-bases \
             --ignore-missing-imports --follow-imports=silent \
-            integrations/polymarket/ccxt_prediction_client.py \
-            integrations/polymarket/ccxt_prediction_gateway.py \
-            integrations/polymarket/venue_runtime.py \
-            clients/network/http_client.py
+            src/pmcopy/integrations/polymarket/ccxt_prediction_client.py \
+            src/pmcopy/integrations/polymarket/ccxt_prediction_gateway.py \
+            src/pmcopy/integrations/polymarket/venue_runtime.py \
+            src/pmcopy/clients/network/http_client.py
       - name: mypy (type — soft fail until type debt cleared)
         continue-on-error: true
         run: |
           pip install mypy
-          mypy --install-types --non-interactive --ignore-missing-imports services orchestrators domain || true
+          mypy --install-types --non-interactive --ignore-missing-imports src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/domain || true
 
   docker-smoke:
     name: docker-smoke

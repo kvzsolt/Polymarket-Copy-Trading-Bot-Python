@@ -5,8 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import patch
 
-from services.execution.types import ExecutionRequest
-from services.executionService import ExecutionService
+from pmcopy.services.execution.types import ExecutionRequest
+from pmcopy.services.executionService import ExecutionService
 
 
 def _request(*, side: str, amount: str) -> ExecutionRequest:
@@ -32,7 +32,7 @@ class TestExecutionLifecycleAmounts:
         request = _request(side="BUY", amount="17.406709")
         price = Decimal("0.88")
 
-        with patch("utils.logger.log_order_lifecycle") as lifecycle_log:
+        with patch("pmcopy.utils.logger.log_order_lifecycle") as lifecycle_log:
             ExecutionService._emit_post_lifecycle(
                 req=request,
                 side="BUY",
@@ -54,7 +54,7 @@ class TestExecutionLifecycleAmounts:
         request = _request(side="SELL", amount="5.9523")
         price = Decimal("0.84")
 
-        with patch("utils.logger.log_order_lifecycle") as lifecycle_log:
+        with patch("pmcopy.utils.logger.log_order_lifecycle") as lifecycle_log:
             ExecutionService._emit_post_lifecycle(
                 req=request,
                 side="SELL",

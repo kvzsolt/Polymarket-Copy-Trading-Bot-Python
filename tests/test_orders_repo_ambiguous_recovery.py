@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from services.execution.ambiguous_recovery import (
+from pmcopy.services.execution.ambiguous_recovery import (
     AccountCheckResult,
     EvidenceCollectionOutcome,
     AuthoritativeRecoveryScan,
     RecoveryMatchSource,
     SubmissionSide,
 )
-from storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
 pytestmark = pytest.mark.asyncio
 

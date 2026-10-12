@@ -24,7 +24,7 @@ from decimal import Decimal
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
+from pmcopy.cache.market_state_store import MarketStateStore
 
 
 TOKEN = "tok-pr10-4"

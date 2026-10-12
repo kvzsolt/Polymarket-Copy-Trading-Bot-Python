@@ -11,11 +11,11 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from config.app_config import DiscoverySchedulerConfig, FalconDiscoveryConfig, HysteresisConfig
-from services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
-from services.discovery.policy_config import discovery_policy_from_config
+from pmcopy.config.app_config import DiscoverySchedulerConfig, FalconDiscoveryConfig, HysteresisConfig
+from pmcopy.services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
+from pmcopy.services.discovery.policy_config import discovery_policy_from_config
 
-DISCOVERY_YML = Path(__file__).resolve().parents[1] / "config" / "discovery.yml"
+DISCOVERY_YML = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "config" / "discovery.yml"
 
 # Packaged values that deliberately diverge from the dataclass default. The
 # shipped runtime evaluates more wallets concurrently than the library default.

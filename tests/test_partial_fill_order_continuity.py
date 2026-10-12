@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.models import VenueFill, VenueOrderState
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.integrations.polymarket.models import VenueFill, VenueOrderState
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 from tests.conftest import make_clob_gateway
 
 

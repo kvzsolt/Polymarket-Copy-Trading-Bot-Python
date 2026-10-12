@@ -32,7 +32,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.execution.ambiguous_recovery import (
+from pmcopy.services.execution.ambiguous_recovery import (
     AccountCheckResult,
     EvidenceCollectionOutcome,
     AmbiguousSubmission,
@@ -42,7 +42,7 @@ from services.execution.ambiguous_recovery import (
     RecoveryMatchSource,
     SubmissionSide,
 )
-from storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
 pytestmark = pytest.mark.asyncio
 
@@ -61,7 +61,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover - dependency guard
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -538,8 +538,8 @@ async def test_save_submission_persists_identity_and_reader_surfaces_units():
     must surface the outcome token and amount unit on the submission so
     matching can be outcome-token-exact and unit-strict.
     """
-    from services.execution.ambiguous_recovery import SubmissionAmountUnit
-    from storage.postgres.orders_repo import OrderSubmissionRecord
+    from pmcopy.services.execution.ambiguous_recovery import SubmissionAmountUnit
+    from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord
 
     async with _pg_pool() as pool:
         repo = OrdersRepo(pool)

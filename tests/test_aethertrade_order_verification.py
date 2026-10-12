@@ -8,8 +8,8 @@ from eth_account.messages import encode_typed_data
 from eth_utils import keccak
 import pytest
 
-from domain.source_time import TransportReceipt
-from integrations.pmrecon.codec import PmreconEvidenceCodec
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
 
 EXCHANGE = "0xe111180000d2663c0091e4f400237545b87b996b"
 NEG_RISK = "0xe2222d279d744050d28e00520010520000310f59"
@@ -140,7 +140,7 @@ def reference_hash(value, exchange):
 
 
 def test_decoder_preserves_all_native_owner_orders_roles_and_signatures():
-    from integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
+    from pmcopy.integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
 
     values = [signed(order(owner=OTHER, signature_type=1, salt=2)), signed(order(salt=3))]
     decoded = V2PendingCalldataDecoder().decode(EXCHANGE, calldata(makers=values))
@@ -165,7 +165,7 @@ def test_decoder_preserves_all_native_owner_orders_roles_and_signatures():
     ],
 )
 def test_decoder_rejects_unqualified_or_unbounded_calls(fault):
-    from integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
+    from pmcopy.integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
 
     raw, target = calldata(), EXCHANGE
     if fault == "wrapper":
@@ -195,7 +195,7 @@ def test_decoder_rejects_unqualified_or_unbounded_calls(fault):
 
 @pytest.mark.parametrize("exchange", [EXCHANGE, NEG_RISK])
 def test_real_eip712_hash_and_recovery_match_official_v2_formula(exchange):
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     value = signed(order(), exchange)
     event = source(calldata(taker=value), exchange)
@@ -219,7 +219,7 @@ def test_real_eip712_hash_and_recovery_match_official_v2_formula(exchange):
 
 @pytest.mark.parametrize("signature_type", [1, 2, 3])
 def test_signature_recovery_never_fabricates_contract_wallet_authority(signature_type):
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     value = signed(order(owner=OTHER, signature_type=signature_type))
     wire = (
@@ -236,7 +236,7 @@ def test_signature_recovery_never_fabricates_contract_wallet_authority(signature
 def test_missing_signature_preserves_preapproval_unknown_and_invalid_signature_is_not_valid(
     signature,
 ):
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     wire = (
         V2OrderVerifier()
@@ -251,7 +251,7 @@ def test_missing_signature_preserves_preapproval_unknown_and_invalid_signature_i
 
 
 def test_compact_signature_matches_pinned_solady_and_v_zero_does_not():
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     value = signed(order())
     signature = value[-1]
@@ -272,7 +272,7 @@ def test_compact_signature_matches_pinned_solady_and_v_zero_does_not():
 
 
 def test_wrong_domain_or_wrong_signer_fails_and_mixed_batch_stays_per_order():
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     wrong_domain = signed(order(), NEG_RISK)
     event = source(
@@ -292,7 +292,7 @@ def test_wrong_domain_or_wrong_signer_fails_and_mixed_batch_stays_per_order():
 
 
 def test_verifier_refuses_forged_source_kind_or_regressing_clock():
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     verifier = V2OrderVerifier()
     wrong = PmreconEvidenceCodec.encode(
@@ -318,7 +318,7 @@ def test_verifier_refuses_forged_source_kind_or_regressing_clock():
     ],
 )
 def test_fixed_vectors_from_pinned_official_hash_formula(exchange, expected):
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     assert reference_hash(order(), exchange) == expected
     result = V2OrderVerifier().verify(source(calldata(taker=order()), exchange), receipt())[0]
@@ -326,7 +326,7 @@ def test_fixed_vectors_from_pinned_official_hash_formula(exchange, expected):
 
 
 def test_pinned_solady_high_s_signature_and_eoa_owner_mismatch():
-    from integrations.pmrecon.order_verification import V2OrderVerifier
+    from pmcopy.integrations.pmrecon.order_verification import V2OrderVerifier
 
     value = signed(order(owner=OTHER))
     signature = value[-1]

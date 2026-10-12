@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 from web3.exceptions import TransactionNotFound
 
-from clients.network.web3_adapter import AsyncWeb3Adapter
-from clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
+from pmcopy.clients.network.web3_adapter import AsyncWeb3Adapter
+from pmcopy.clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
 
 _TX = "0x" + "cd" * 32
 
@@ -131,7 +131,7 @@ async def test_adapter_get_transaction_receipt_is_offloaded_not_called_inline(
     """
     import asyncio
 
-    import clients.network.web3_adapter as web3_adapter_module
+    import pmcopy.clients.network.web3_adapter as web3_adapter_module
 
     offloaded: list[str] = []
 

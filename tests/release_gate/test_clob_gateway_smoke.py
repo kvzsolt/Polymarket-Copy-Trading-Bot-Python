@@ -12,7 +12,7 @@ import inspect
 
 import pytest
 
-from interfaces.clob_gateway import ClobGateway
+from pmcopy.interfaces.clob_gateway import ClobGateway
 
 
 REQUIRED_METHODS = (

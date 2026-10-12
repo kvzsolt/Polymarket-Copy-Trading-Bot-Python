@@ -6,8 +6,8 @@ import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
-from domain.execution import ExecutionOrderType
-from integrations.polymarket.models import VenueSubmitResult
+from pmcopy.domain.execution import ExecutionOrderType
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from tests.test_book_quality_gate import _make_execution_service, _req
 
 

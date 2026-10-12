@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from utils import fetchData
+from pmcopy.utils import fetchData
 
 
 @pytest.mark.asyncio
@@ -18,7 +18,7 @@ async def test_app_main_closes_shared_session_on_early_return(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Startup-policy injection preserves cleanup after an early return."""
-    import app as app_module
+    import pmcopy.app as app_module
 
     async def _early_return(_clients, *, startup_policy=None):
         assert startup_policy is not None

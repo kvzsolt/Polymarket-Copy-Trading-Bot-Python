@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from adapters.clock import SystemReceiptClock
-from domain.detection import DetectionMode
-from integrations.polymarket.models import VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
-from orchestrators.v1_event_adapters import LeaderEventNormalizer
-from services.executionService import ExecutionService
-from services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
-from services.telemetry.emitters import ExecutionTelemetryEmitter
-from services.telemetry.latency import PipelineLatency
+from pmcopy.adapters.clock import SystemReceiptClock
+from pmcopy.domain.detection import DetectionMode
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.telemetry.emitters import ExecutionTelemetryEmitter
+from pmcopy.services.telemetry.latency import PipelineLatency
 from tests.config_helpers import load_test_config
 from tests.telemetry.test_pipeline_latency import ReceiptClock, histogram
 from tests.test_execution_fak_repost_ambiguity import _mock_mds, _order_repo, _req
@@ -97,7 +97,7 @@ async def test_gateway_ack_and_confirmed_fill_use_actual_boundaries(ambiguous: b
 
 @pytest.mark.asyncio
 async def test_task_worker_observes_queue_wait_and_decision_before_downstream() -> None:
-    from services.copy_tasks.event_routing import CopyTaskEventProcessor
+    from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
     from tests.v1.test_copy_task_event_routing import (
         InMemoryCopyTaskRepository,
         InMemoryTaskBudgetRepository,
@@ -146,7 +146,7 @@ async def test_task_worker_observes_queue_wait_and_decision_before_downstream() 
 
 @pytest.mark.asyncio
 async def test_canonical_coordinator_measures_atomic_reservation() -> None:
-    from services.execution.coordinator import ExecutionCoordinator
+    from pmcopy.services.execution.coordinator import ExecutionCoordinator
     from tests.test_execution_coordinator_production import (
         _intent,
         _make_reservation,

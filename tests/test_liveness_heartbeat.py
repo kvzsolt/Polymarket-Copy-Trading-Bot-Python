@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from orchestrators import liveness_heartbeat
-from orchestrators.liveness_heartbeat import (
+from pmcopy.orchestrators import liveness_heartbeat
+from pmcopy.orchestrators.liveness_heartbeat import (
     MINIMUM_HEARTBEAT_INTERVAL_SECONDS,
     bot_heartbeat_loop,
     heartbeat_extras,

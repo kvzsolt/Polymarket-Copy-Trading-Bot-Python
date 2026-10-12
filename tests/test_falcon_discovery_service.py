@@ -15,17 +15,17 @@ from typing import Any
 
 import pytest
 
-from services.discovery.discovery_models import (
+from pmcopy.services.discovery.discovery_models import (
     DiscoveryEvidence,
     DiscoveryResult,
     RankedTrader,
     RejectedTrader,
 )
-from services.discovery.falcon_discovery_service import (
+from pmcopy.services.discovery.falcon_discovery_service import (
     FalconDiscoveryUnavailable,
     FalconDiscoveryService,
 )
-from services.discovery.models import Candidate
+from pmcopy.services.discovery.models import Candidate
 
 
 GOOD = "0x" + "1" * 40
@@ -34,7 +34,7 @@ SYBIL = "0x" + "3" * 40
 
 
 def _config() -> Any:
-    from config.app_config import DiscoveryConfig
+    from pmcopy.config.app_config import DiscoveryConfig
 
     class _C:
         discovery = DiscoveryConfig.model_validate({})
@@ -121,7 +121,7 @@ class FakeRepo:
 
 
 def _config() -> Any:
-    from config.app_config import DiscoveryConfig
+    from pmcopy.config.app_config import DiscoveryConfig
 
     class _C:
         discovery = DiscoveryConfig.model_validate({})

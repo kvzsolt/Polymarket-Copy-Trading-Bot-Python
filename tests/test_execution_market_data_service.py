@@ -22,16 +22,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.models import VenueSubmitResult
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import (
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import (
     MarketDataBundle,
     MarketDataNotReady,
     MarketDataSource,
     StaleDataError,
 )
-from storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
 from tests.conftest import make_clob_gateway, make_exec_config
 
 
@@ -93,7 +93,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -157,7 +157,7 @@ def _request(**overrides) -> ExecutionRequest:
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
-    import services.executionService as _es
+    import pmcopy.services.executionService as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield

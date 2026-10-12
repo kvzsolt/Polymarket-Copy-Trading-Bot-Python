@@ -12,10 +12,10 @@ from __future__ import annotations
 import inspect
 from unittest.mock import MagicMock
 
-from services.circuitBreaker import CircuitBreaker
-from services.executionService import ExecutionService, _CLOB_CIRCUIT
-from services.healthServer import ReadinessTracker
-from application.trading_context import TradingContext
+from pmcopy.services.circuitBreaker import CircuitBreaker
+from pmcopy.services.executionService import ExecutionService, _CLOB_CIRCUIT
+from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.application.trading_context import TradingContext
 from types import SimpleNamespace
 
 
@@ -88,7 +88,7 @@ class TestExecutionCircuitBreakerDI:
 
 class TestOrchestratorDISeams:
     def test_leader_registry_accepts_readiness_tracker(self) -> None:
-        from orchestrators.leader_registry import LeaderRegistry
+        from pmcopy.orchestrators.leader_registry import LeaderRegistry
 
         sig = inspect.signature(LeaderRegistry.__init__)
         assert "readiness_tracker" in sig.parameters
@@ -114,7 +114,7 @@ class TestOrchestratorDISeams:
         assert ctx.readiness is tracker
 
     def test_trade_monitor_accepts_readiness_tracker(self) -> None:
-        from services.tradeMonitor import trade_monitor
+        from pmcopy.services.tradeMonitor import trade_monitor
 
         sig = inspect.signature(trade_monitor)
         assert "readiness_tracker" in sig.parameters

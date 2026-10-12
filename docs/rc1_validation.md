@@ -81,7 +81,7 @@ also see the same.
 
 ### Phase 4 — Doctor live readiness gate
 ```bash
-python -m bot_cli.main doctor --live
+python -m pmcopy.bot_cli.main doctor --live
 ```
 **Expected:** structured doctor result with `status=ok`. The doctor
 blocks on: zero pUSD balance, zero CTF exchange allowance, zero Neg

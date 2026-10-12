@@ -8,15 +8,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORE_PACKAGES = {
-    "config",
-    "interfaces",
-    "models",
-    "services",
-    "utils",
-    "domain",
-    "clients.network",
-    "orchestrators",
-    "storage",
+    "pmcopy.config",
+    "pmcopy.interfaces",
+    "pmcopy.models",
+    "pmcopy.services",
+    "pmcopy.utils",
+    "pmcopy.domain",
+    "pmcopy.clients.network",
+    "pmcopy.orchestrators",
+    "pmcopy.storage",
 }
 
 

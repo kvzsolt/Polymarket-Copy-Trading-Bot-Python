@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import storage.postgres.migrations as migrations_module
+import pmcopy.storage.postgres.migrations as migrations_module
 
 
 class _FakeTransaction:

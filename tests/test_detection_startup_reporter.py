@@ -11,9 +11,9 @@ import logging
 
 import pytest
 
-from config.app_config import DetectionConfig, OnchainDetectionConfig
-from orchestrators.detection_startup_reporter import DetectionStartupReporter
-from services.metrics import (
+from pmcopy.config.app_config import DetectionConfig, OnchainDetectionConfig
+from pmcopy.orchestrators.detection_startup_reporter import DetectionStartupReporter
+from pmcopy.services.metrics import (
     GAUGE_DETECTION_MODE_SELECTED,
     TELEMETRY_METRIC_SCHEMAS,
     MetricKind,

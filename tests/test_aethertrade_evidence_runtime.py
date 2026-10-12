@@ -11,7 +11,7 @@ from tests.test_aethertrade_evidence_publisher import FakeTransport
 
 
 def config(tmp_path, **changes):
-    from config.evidence import EvidenceConfig
+    from pmcopy.config.evidence import EvidenceConfig
 
     return SimpleNamespace(
         evidence=EvidenceConfig(
@@ -36,14 +36,14 @@ def config(tmp_path, **changes):
     ],
 )
 def test_runtime_config_rejects_unsafe_bounds(tmp_path, changes):
-    from config.evidence import EvidenceConfig
+    from pmcopy.config.evidence import EvidenceConfig
 
     with pytest.raises(ValueError):
         EvidenceConfig(**changes)
 
 
 def test_secret_rejected_in_yaml_and_never_exposed_in_repr(tmp_path):
-    from config.evidence import EvidenceSecretBoundary
+    from pmcopy.config.evidence import EvidenceSecretBoundary
 
     value = config(tmp_path).evidence
     assert value.token.get_secret_value() not in repr(value)
@@ -54,8 +54,8 @@ def test_secret_rejected_in_yaml_and_never_exposed_in_repr(tmp_path):
 
 @pytest.mark.parametrize("enabled,token", [(False, "x" * 32), (True, "")])
 def test_runtime_has_no_disabled_or_unconfigured_noop(tmp_path, enabled, token):
-    from config.evidence import EvidenceConfig
-    from orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.config.evidence import EvidenceConfig
+    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
 
     cfg = SimpleNamespace(
         evidence=EvidenceConfig(
@@ -70,7 +70,7 @@ def test_runtime_has_no_disabled_or_unconfigured_noop(tmp_path, enabled, token):
 
 
 async def test_runtime_persists_before_start_and_close_cancels_stalled_network(tmp_path):
-    from orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
 
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -105,7 +105,7 @@ async def test_runtime_persists_before_start_and_close_cancels_stalled_network(t
 
 
 async def test_runtime_clockless_record_and_overflow_stay_invalid_after_restart(tmp_path):
-    from orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
 
     cfg = config(tmp_path, max_events=1)
     runtime = EvidenceRuntime.from_config(
@@ -132,7 +132,7 @@ async def test_runtime_clockless_record_and_overflow_stay_invalid_after_restart(
 
 
 async def test_runtime_closes_after_unexpected_worker_failure(tmp_path):
-    from orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
 
     failed = asyncio.Event()
 
@@ -162,7 +162,7 @@ async def test_runtime_closes_after_unexpected_worker_failure(tmp_path):
 
 
 async def test_runtime_exposes_sticky_explicit_invalidation(tmp_path):
-    from orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
 
     runtime = EvidenceRuntime.from_config(
         config(tmp_path), clock=FixedClock(), transport=FakeTransport(TimeoutError())

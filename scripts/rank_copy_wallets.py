@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from services.discovery.operator_cli import main
+from pmcopy.services.discovery.operator_cli import main
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.auto_trader import (
+from pmcopy.domain.auto_trader import (
     AutoTraderPolicy,
     CopyPerformance,
     FalconObservation,
@@ -165,9 +165,9 @@ def test_stale_reserve_cannot_be_newly_activated():
 
 
 def test_live_episode_history_counts_only_fresh_closed_fills():
-    from services.leader_performance import PerformanceFill
-    from services.auto_trader_performance import RecentEpisodeAccumulator
-    from domain.detection import TradeSide
+    from pmcopy.services.leader_performance import PerformanceFill
+    from pmcopy.services.auto_trader_performance import RecentEpisodeAccumulator
+    from pmcopy.domain.detection import TradeSide
 
     accumulator = RecentEpisodeAccumulator()
     for i in range(25):

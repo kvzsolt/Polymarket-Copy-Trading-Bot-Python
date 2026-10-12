@@ -51,7 +51,7 @@ class _FakePool:
 async def test_init_pool_forwards_acquire_timeout_and_server_settings(monkeypatch):
     """``init_pool`` must hand ``create_pool`` a bounded acquire ``timeout``
     and server-side ``statement_timeout`` / ``idle_in_transaction_session_timeout``."""
-    import storage.postgres.connection as conn_mod
+    import pmcopy.storage.postgres.connection as conn_mod
 
     conn_mod._reset_for_tests()
     captured: dict = {}
@@ -89,7 +89,7 @@ async def test_init_pool_forwards_acquire_timeout_and_server_settings(monkeypatc
 async def test_init_pool_defaults_are_sane_and_bounded(monkeypatch):
     """With no overrides the defaults must still bound acquire + server side
     (never ``None``/unbounded)."""
-    import storage.postgres.connection as conn_mod
+    import pmcopy.storage.postgres.connection as conn_mod
 
     conn_mod._reset_for_tests()
     captured: dict = {}
@@ -142,7 +142,7 @@ async def _pg_dsn():
 async def test_exhausted_pool_acquire_times_out_not_hangs():
     """The whole point of P2-b: a default acquire timeout means a caller on an
     EXHAUSTED pool fails fast rather than livelocking forever."""
-    import storage.postgres.connection as conn_mod
+    import pmcopy.storage.postgres.connection as conn_mod
 
     async with _pg_dsn() as dsn:
         conn_mod._reset_for_tests()
@@ -171,7 +171,7 @@ async def test_exhausted_pool_acquire_times_out_not_hangs():
 
 async def test_server_side_timeouts_applied_on_live_connection():
     """The GUCs we set must actually land on the backend session."""
-    import storage.postgres.connection as conn_mod
+    import pmcopy.storage.postgres.connection as conn_mod
 
     async with _pg_dsn() as dsn:
         conn_mod._reset_for_tests()
@@ -205,7 +205,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -256,7 +256,7 @@ async def test_atomic_ledger_decimal_sites_are_str_wrapped():
     """
     import inspect
 
-    from storage.postgres import orders_repo
+    from pmcopy.storage.postgres import orders_repo
 
     src = inspect.getsource(orders_repo.OrdersRepo.persist_execution_atomically)
     import re
@@ -276,7 +276,7 @@ async def test_persist_execution_decimal_math_is_exact():
     str its signature declares; the assertion is that the decimal math carries
     no binary-float dust (which a ``Decimal(<float>)`` regression would add).
     """
-    from storage.postgres.orders_repo import OrdersRepo
+    from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
     # Latent-bug witness: raw Decimal(float) corrupts; Decimal(str(float)) is clean.
     assert Decimal(0.1) != Decimal("0.1")

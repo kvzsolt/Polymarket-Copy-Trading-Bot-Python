@@ -21,6 +21,6 @@ import pytest
 )
 def test_doctor_redacts_dsn_password(dsn: str, expected: str) -> None:
     """Doctor must never print the Postgres password (§0.8)."""
-    from bot_cli.commands.doctor import _redact_dsn
+    from pmcopy.bot_cli.commands.doctor import _redact_dsn
 
     assert _redact_dsn(dsn) == expected

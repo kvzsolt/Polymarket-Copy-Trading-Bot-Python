@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config.app_config import OrderConfirmationConfig
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.config.app_config import OrderConfirmationConfig
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 def _cfg(**overrides) -> OrderConfirmationConfig:

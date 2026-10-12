@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from clients import market_ws, onchain_ws, user_ws
+from pmcopy.clients import market_ws, onchain_ws, user_ws
 from tests.test_book_update_atomicity import seeded_store
 
 MARKER = "SYNTHETIC_PRIVATE_TOKEN_DO_NOT_LOG"

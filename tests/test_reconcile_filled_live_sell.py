@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config.app_config import OrderConfirmationConfig
-from integrations.polymarket.models import VenueFill, VenueOrderState
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.config.app_config import OrderConfirmationConfig
+from pmcopy.integrations.polymarket.models import VenueFill, VenueOrderState
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 from tests.conftest import make_clob_gateway
 
 _ORDER_ID = "0x8d50b1def78c4b4473e1570818b7f22aee994ee001ae217d697b316e46473394"

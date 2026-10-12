@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.cached_assessment import (
+from pmcopy.services.copy_tasks.cached_assessment import (
     AssessmentConclusion,
     AssessmentScope,
     CachedCopyabilityAssessment,

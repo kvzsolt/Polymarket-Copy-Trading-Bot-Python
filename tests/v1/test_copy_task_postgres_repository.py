@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     CopyTaskStatus,
     MonitoringMode,
@@ -23,8 +23,8 @@ from services.copy_tasks.domain import (
     TaskSpendPolicy,
     TaskTriggerPolicy,
 )
-from services.copy_tasks.service import CopyTaskConflict, CopyTaskNotFound
-from storage.postgres.copy_task_repository import CopyTaskCodec, PostgresCopyTaskRepository
+from pmcopy.services.copy_tasks.service import CopyTaskConflict, CopyTaskNotFound
+from pmcopy.storage.postgres.copy_task_repository import CopyTaskCodec, PostgresCopyTaskRepository
 
 
 class FakePool:

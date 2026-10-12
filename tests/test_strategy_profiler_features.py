@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from services.strategy_profile.leader_history_loader import LoadedHistory
-from services.strategy_profile.strategy_profiler import compute_features, profile_leader
+from pmcopy.services.strategy_profile.leader_history_loader import LoadedHistory
+from pmcopy.services.strategy_profile.strategy_profiler import compute_features, profile_leader
 
 
 def _mk_activity(

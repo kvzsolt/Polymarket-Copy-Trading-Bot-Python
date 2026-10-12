@@ -5,9 +5,9 @@ import json
 import httpx
 import pytest
 
-from clients.network.provider_transport import ProviderEndpoints, ProviderHttpTransport
-from domain.provider_budget import ProviderConfigurationError
-from services.provider_gateway import ProviderUnavailable
+from pmcopy.clients.network.provider_transport import ProviderEndpoints, ProviderHttpTransport
+from pmcopy.domain.provider_budget import ProviderConfigurationError
+from pmcopy.services.provider_gateway import ProviderUnavailable
 
 
 class TestProviderEndpoints:

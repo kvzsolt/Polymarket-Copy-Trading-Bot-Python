@@ -4,15 +4,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from clients.onchain_ws import OnchainWebSocket
+from pmcopy.clients.onchain_ws import OnchainWebSocket
 
 
 @pytest.mark.asyncio
 async def test_socket_samples_injected_receipt_before_decoding_and_overwrites_provider_value(
     monkeypatch,
 ):
-    import clients.onchain_ws as module
-    from domain.source_time import TransportReceipt
+    import pmcopy.clients.onchain_ws as module
+    from pmcopy.domain.source_time import TransportReceipt
 
     order = []
     receipt = TransportReceipt(wall_timestamp_ms=100000, monotonic_ns=123456789, boot_id="boot-a")
@@ -45,7 +45,7 @@ async def test_socket_samples_injected_receipt_before_decoding_and_overwrites_pr
 
 
 def test_transport_receipt_rejects_cross_session_elapsed_comparison():
-    from domain.source_time import TransportReceipt
+    from pmcopy.domain.source_time import TransportReceipt
 
     older = TransportReceipt(wall_timestamp_ms=100000, monotonic_ns=100, boot_id="boot-a")
     later = TransportReceipt(wall_timestamp_ms=101000, monotonic_ns=200, boot_id="boot-b")
@@ -55,10 +55,10 @@ def test_transport_receipt_rejects_cross_session_elapsed_comparison():
 
 @pytest.mark.asyncio
 async def test_mined_receipt_survives_enrichment_and_canonical_normalization():
-    from domain.source_time import TransportReceipt
-    from domain.detection import DetectionMode
-    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-    from orchestrators.v1_event_adapters import LeaderEventNormalizer
+    from pmcopy.domain.source_time import TransportReceipt
+    from pmcopy.domain.detection import DetectionMode
+    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
     from tests.test_onchain_detection_runtime import _WATCHED, _build_log
     from tests.test_confirmed_signal_execution_adapter import FakeClock
 
@@ -88,8 +88,8 @@ async def test_mined_receipt_survives_enrichment_and_canonical_normalization():
 
 def test_pending_entry_without_receipt_or_source_time_remains_unknown():
     from dataclasses import replace
-    from domain.detection import DetectionMode, DetectionFinality
-    from services.copy_tasks.source_freshness import SourceFreshnessPolicy
+    from pmcopy.domain.detection import DetectionMode, DetectionFinality
+    from pmcopy.services.copy_tasks.source_freshness import SourceFreshnessPolicy
     from tests.v1.test_copy_task_event_routing import source_event, _NOW
 
     event = replace(
@@ -102,7 +102,7 @@ def test_pending_entry_without_receipt_or_source_time_remains_unknown():
 
 
 def test_pending_qualification_uses_receipt_time_and_retains_clock_provenance():
-    from domain.source_time import TransportReceipt
+    from pmcopy.domain.source_time import TransportReceipt
     from tests.test_pending_transaction_factory import (
         PendingNotificationFactory,
         _factory,
@@ -126,8 +126,8 @@ def test_pending_qualification_uses_receipt_time_and_retains_clock_provenance():
 @pytest.mark.asyncio
 async def test_multiplexed_source_socket_preserves_receipt_before_queue_dispatch():
     import asyncio
-    from adapters.polygon.alchemy_json_rpc import AlchemyJsonRpcSession, AlchemySubscriptionOptions
-    from domain.source_time import TransportReceipt
+    from pmcopy.adapters.polygon.alchemy_json_rpc import AlchemyJsonRpcSession, AlchemySubscriptionOptions
+    from pmcopy.domain.source_time import TransportReceipt
     from tests.test_alchemy_json_rpc_session import (
         FakeClock,
         FakeJsonRpcSocket,
@@ -177,8 +177,8 @@ async def test_multiplexed_source_socket_preserves_receipt_before_queue_dispatch
 
 def test_transport_receipt_survives_the_actual_restart_codec():
     from dataclasses import replace
-    from adapters.persistence.source_transaction_state_store import SourceTransactionSnapshotCodec
-    from domain.source_time import TransportReceipt
+    from pmcopy.adapters.persistence.source_transaction_state_store import SourceTransactionSnapshotCodec
+    from pmcopy.domain.source_time import TransportReceipt
     from tests.test_postgres_source_transaction_state_store import _snapshot
 
     snapshot = _snapshot()
@@ -203,7 +203,7 @@ def test_transport_receipt_survives_the_actual_restart_codec():
 
 
 def test_out_of_range_receipt_time_is_rejected_at_construction():
-    from domain.source_time import TransportReceipt
+    from pmcopy.domain.source_time import TransportReceipt
 
     with pytest.raises(ValueError, match="range"):
         TransportReceipt(253402300800000, 100, "boot-a")

@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
-from adapters.polygon.historical_erc1155_balance import Web3HistoricalErc1155BalanceReader
-from orchestrators.startup_health import _check_rpc
-from utils.getMyBalance import get_my_balance, get_native_balance_wei
+from pmcopy.clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
+from pmcopy.adapters.polygon.historical_erc1155_balance import Web3HistoricalErc1155BalanceReader
+from pmcopy.orchestrators.startup_health import _check_rpc
+from pmcopy.utils.getMyBalance import get_my_balance, get_native_balance_wei
 
 
 class TestMeteredConsumers:
@@ -68,7 +68,7 @@ class TestProviderBalanceReader:
 
     @pytest.mark.asyncio
     async def test_exact_collateral_and_unknown_transport(self):
-        from services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.provider_balances import ProviderBalanceReader
 
         gateway = SimpleNamespace(
             call=AsyncMock(side_effect=["0x6000", "0x" + format(9007199254740993123456, "064x")])
@@ -81,7 +81,7 @@ class TestProviderBalanceReader:
 
     @pytest.mark.asyncio
     async def test_native_and_invalid_address_do_not_fabricate_zero(self):
-        from services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.provider_balances import ProviderBalanceReader
 
         gateway = SimpleNamespace(call=AsyncMock(return_value="0x7"))
         reader = ProviderBalanceReader(gateway, "alchemy", ())
@@ -97,9 +97,9 @@ class TestProviderComposition:
 
     @pytest.mark.asyncio
     async def test_discovery_funds_carry_runtime(self, monkeypatch):
-        import bootstrap
+        import pmcopy.bootstrap as bootstrap
         from dataclasses import replace
-        from config.app_config import AppConfig
+        from pmcopy.config.app_config import AppConfig
         from tests.test_bootstrap_balance_configuration import _FakePool
 
         cfg = AppConfig()
@@ -116,8 +116,8 @@ class TestProviderComposition:
 
     @pytest.mark.asyncio
     async def test_reservation_balance_carries_runtime(self, monkeypatch):
-        from orchestrators import runtime_bootstrap
-        from config.app_config import AppConfig
+        from pmcopy.orchestrators import runtime_bootstrap
+        from pmcopy.config.app_config import AppConfig
         from unittest.mock import Mock
 
         runtime = SimpleNamespace(
@@ -125,7 +125,7 @@ class TestProviderComposition:
         )
         reservation = Mock()
         monkeypatch.setattr(
-            "services.execution.reservation_service.ReservationService", reservation
+            "pmcopy.services.execution.reservation_service.ReservationService", reservation
         )
         runtime_bootstrap._build_execution_coordinator(
             pool=Mock(),
@@ -145,7 +145,7 @@ class TestBalanceExactness:
 
     @pytest.mark.asyncio
     async def test_full_uint256_precision(self):
-        from services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.provider_balances import ProviderBalanceReader
 
         amount = 2**256 - 1
         gateway = SimpleNamespace(
@@ -163,14 +163,14 @@ class TestProviderDoctorInjection:
     @pytest.mark.asyncio
     async def test_doctor_uses_shared_rpc_before_startup(self, monkeypatch, tmp_path):
         from dataclasses import replace
-        from config.app_config import AppConfig
-        from bot_cli.commands import doctor
-        from orchestrators import startup_health
+        from pmcopy.config.app_config import AppConfig
+        from pmcopy.bot_cli.commands import doctor
+        from pmcopy.orchestrators import startup_health
 
         cfg = AppConfig()
         cfg = replace(cfg, polymarket=replace(cfg.polymarket, enforce_geoblock=False))
         monkeypatch.setattr(
-            "storage.postgres.connection.init_pool",
+            "pmcopy.storage.postgres.connection.init_pool",
             AsyncMock(side_effect=RuntimeError("fake unavailable")),
         )
         monkeypatch.setattr(doctor, "_repo_root", lambda: tmp_path)
@@ -184,7 +184,7 @@ class TestProviderDoctorInjection:
 
     @pytest.mark.asyncio
     async def test_startup_health_passes_runtime_to_rpc(self, monkeypatch):
-        from orchestrators import startup_health
+        from pmcopy.orchestrators import startup_health
 
         class StopAfterProbes(Exception):
             pass

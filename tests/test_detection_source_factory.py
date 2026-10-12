@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from domain.detection import DetectionMode
-from orchestrators.detection_source_factory import (
+from pmcopy.domain.detection import DetectionMode
+from pmcopy.orchestrators.detection_source_factory import (
     ConfirmedSourceBuilder,
     DetectionSourceFactory,
     DetectionSourceRequest,
@@ -20,8 +20,8 @@ from orchestrators.detection_source_factory import (
     ProvisionalPendingSourceBuilder,
     UnsupportedDetectionModeError,
 )
-from services.onchain_detection.pending_tx_detector import PendingTxConfig
-from services.onchain_detection.trade_detection_models import DetectionConfidence
+from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfig
+from pmcopy.services.onchain_detection.trade_detection_models import DetectionConfidence
 
 _LEADER = "0x" + "11" * 20
 _WS_URL = "wss://polygon.example.invalid/v2/redacted"
@@ -143,7 +143,7 @@ async def test_on_chain_pending_builds_gen1_runtime_with_pending_only() -> None:
 
 @pytest.mark.asyncio
 async def test_on_chain_pending_default_factory_is_gen1_runtime() -> None:
-    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
 
     builder = ProvisionalPendingSourceBuilder(
         pending_config=PendingTxConfig(),
@@ -165,7 +165,7 @@ async def test_pending_builder_forwards_websocket_factory() -> None:
     state_listener=reporter)`` here; if the builder swallowed it the WS
     connection state would silently stop being reported.
     """
-    from clients.onchain_ws import OnchainWebSocket
+    from pmcopy.clients.onchain_ws import OnchainWebSocket
 
     def _socket_factory(**_kwargs: object) -> object:
         raise AssertionError("never constructed in this test")
@@ -196,7 +196,7 @@ async def test_pending_builder_forwards_websocket_factory() -> None:
 @pytest.mark.asyncio
 async def test_pending_builder_websocket_factory_reaches_the_real_runtime() -> None:
     """Contract check against ``OnchainDetectionRuntime``, not just a stand-in."""
-    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
 
     def _socket_factory(**_kwargs: object) -> object:
         raise AssertionError("never constructed in this test")
@@ -234,7 +234,7 @@ async def test_on_chain_confirmed_builds_polygon_source_runtime_and_awaits_state
 
 @pytest.mark.asyncio
 async def test_on_chain_confirmed_default_bootstrap_builds_polygon_runtime() -> None:
-    from orchestration.polygon_source_transaction_runtime import (
+    from pmcopy.orchestration.polygon_source_transaction_runtime import (
         PolygonSourceTransactionRuntime,
     )
 
@@ -315,7 +315,7 @@ async def test_logs_only_builder_forwards_websocket_factory() -> None:
         websocket_factory=_socket_factory,
     )
 
-    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
 
     runtime = await builder.build(
         _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")

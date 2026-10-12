@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clients.network.rpc_fallback import (
+from pmcopy.clients.network.rpc_fallback import (
     FallbackWeb3Provider,
     _DEFAULT_REQUEST_TIMEOUT_SECONDS,
     _FailoverHTTPProvider,
@@ -121,7 +121,7 @@ class TestFailoverHTTPProviderCreation:
         assert provider._fallback is not None
 
     def test_http_providers_receive_timeout_request_kwargs(self) -> None:
-        with patch("clients.network.rpc_fallback.Web3.HTTPProvider") as http_provider:
+        with patch("pmcopy.clients.network.rpc_fallback.Web3.HTTPProvider") as http_provider:
             _FailoverHTTPProvider(
                 "https://primary.example",
                 "https://fallback.example",
@@ -274,7 +274,7 @@ class TestGetMyBalanceFallback:
         mock_config.network.usdc_contract_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
         mock_config.network.chain_id = 137
 
-        from utils.getMyBalance import configure_from_appconfig
+        from pmcopy.utils.getMyBalance import configure_from_appconfig
 
         configure_from_appconfig(mock_config)
 
@@ -292,7 +292,7 @@ class TestGetMyBalanceFallback:
 
 def test_module_imports() -> None:
     """Guard against circular imports or missing dependencies."""
-    from clients.network import rpc_fallback
+    from pmcopy.clients.network import rpc_fallback
 
     assert hasattr(rpc_fallback, "FallbackWeb3Provider")
     assert hasattr(rpc_fallback, "_FailoverHTTPProvider")

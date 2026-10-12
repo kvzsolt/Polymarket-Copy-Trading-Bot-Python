@@ -8,11 +8,11 @@ import httpx
 import pytest
 from web3 import Web3
 
-from clients.network.provider_transport import ProviderEndpoints
-from clients.network.provider_web3 import MeteredWeb3Provider
-from domain.provider_budget import BudgetSettings, ProviderConfigurationError
-from services.provider_gateway import ProviderUnavailable
-from storage.provider_budget import SqliteProviderBudget
+from pmcopy.clients.network.provider_transport import ProviderEndpoints
+from pmcopy.clients.network.provider_web3 import MeteredWeb3Provider
+from pmcopy.domain.provider_budget import BudgetSettings, ProviderConfigurationError
+from pmcopy.services.provider_gateway import ProviderUnavailable
+from pmcopy.storage.provider_budget import SqliteProviderBudget
 
 
 class Clock:

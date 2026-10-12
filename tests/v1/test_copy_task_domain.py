@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopySideFilter,
     CopyTask,
     CopyTaskStatus,

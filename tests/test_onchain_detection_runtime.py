@@ -8,11 +8,11 @@ from decimal import Decimal
 
 import pytest
 
-from config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
-from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-from services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
-from services.onchain_detection.pending_tx_detector import PendingTxConfig
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
+from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+from pmcopy.services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
+from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfig
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )
@@ -673,7 +673,7 @@ class _RecordingWebSocket:
 
 
 def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
-    from services.onchain_detection.order_filled_detector import (
+    from pmcopy.services.onchain_detection.order_filled_detector import (
         log_subscription_params_for_watched,
     )
 
@@ -742,7 +742,7 @@ async def test_logs_only_runtime_opens_the_two_watched_subscriptions() -> None:
 async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -> None:
     """Without a params factory the mined subscription is byte-identical to
     today's gen-1 behaviour (one address-only filter)."""
-    from services.onchain_detection.order_filled_detector import log_subscription_params
+    from pmcopy.services.onchain_detection.order_filled_detector import log_subscription_params
 
     _RecordingWebSocket.instances = []
 
@@ -810,7 +810,7 @@ async def test_logs_only_runtime_with_empty_roster_opens_no_subscriptions() -> N
     idles visibly, and the first non-empty roster update reopens the filters."""
     import logging
 
-    from orchestrators import onchain_detection_runtime as runtime_module
+    from pmcopy.orchestrators import onchain_detection_runtime as runtime_module
 
     records: list[logging.LogRecord] = []
 
@@ -854,7 +854,7 @@ async def test_resubscribe_failure_is_warned_and_the_next_update_still_processes
     sockets stay subscribed and the next roster update is processed."""
     import logging
 
-    from orchestrators import onchain_detection_runtime as runtime_module
+    from pmcopy.orchestrators import onchain_detection_runtime as runtime_module
 
     calls: list[frozenset[str]] = []
 

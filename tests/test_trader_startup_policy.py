@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from config.app_config import EnvValidationError
-from orchestrators.trader_startup_policy import TraderStartupPolicy
+from pmcopy.config.app_config import EnvValidationError
+from pmcopy.orchestrators.trader_startup_policy import TraderStartupPolicy
 from tests.config_helpers import load_test_config
 
 

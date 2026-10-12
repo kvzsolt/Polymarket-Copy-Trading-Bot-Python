@@ -39,15 +39,16 @@ RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 # requirements.txt drop of ``asyncpg`` (the runtime DB driver) fails the build
 # rather than surfacing only at first DB use inside a running container.
 # Run this outside /app so the check proves the installed console entry point
-# can import the top-level application modules from site-packages. Checking
-# from /app masks missing ``py-modules`` packaging because cwd is importable.
-RUN cd /tmp && python -c "import app, bootstrap; from config.app_config import load_config; import storage.postgres.connection; print('OK')"
-RUN cd /tmp && python -c "import ccxt; from ccxt.prediction import polymarket; from integrations.polymarket.ccxt_compat.version_guard import ensure_supported_ccxt_version; ensure_supported_ccxt_version(ccxt.__version__); assert callable(polymarket); print('CCXT prediction OK:', ccxt.__version__)"
+# can import the namespaced application modules from site-packages. Checking
+# from /app masks missing ``pmcopy`` packaging because cwd is importable.
+RUN cd /tmp && python -c "import pmcopy.app, pmcopy.bootstrap; from pmcopy.config.app_config import load_config; import pmcopy.storage.postgres.connection; print('OK')"
+RUN cd /tmp && python -c "import ccxt; from ccxt.prediction import polymarket; from pmcopy.integrations.polymarket.ccxt_compat.version_guard import ensure_supported_ccxt_version; ensure_supported_ccxt_version(ccxt.__version__); assert callable(polymarket); print('CCXT prediction OK:', ccxt.__version__)"
 
 # The console script otherwise imports the installed config package and
-# silently ignores service YAML mounted at /app/config. Set this only after
-# the installed-wheel checks above so those checks cannot use the source tree.
-ENV PYTHONPATH=/app
+# silently ignores service YAML mounted at /app/src/pmcopy/config. Set this
+# only after the installed-wheel checks above so those checks cannot use the
+# source tree.
+ENV PYTHONPATH=/app/src
 
 # Fail-closed mode selection lives in AppConfig. ``execution.trading_mode``
 # defaults to paper and is immutable after startup. Live submission additionally

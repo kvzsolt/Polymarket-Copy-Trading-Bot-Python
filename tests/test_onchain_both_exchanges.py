@@ -7,15 +7,15 @@ the Neg Risk CTF Exchange V2, so detection never silently misses one venue.
 
 from __future__ import annotations
 
-from config.addresses import (
+from pmcopy.config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
 )
-from services.onchain_detection.order_filled_detector import (
+from pmcopy.services.onchain_detection.order_filled_detector import (
     ONCHAIN_EXCHANGE_ADDRESSES,
     log_subscription_params,
 )
-from services.onchain_detection.pending_tx_detector import (
+from pmcopy.services.onchain_detection.pending_tx_detector import (
     pending_subscription_params,
 )
 

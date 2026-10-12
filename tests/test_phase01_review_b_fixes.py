@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.positionActionCoordinator import (
+from pmcopy.services.positionActionCoordinator import (
     PositionActionCoordinator,
     PositionScope,
 )
@@ -45,7 +45,7 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
     """Legacy rows with NULL user_id/condition_id/asset must reconcile via
     sentinel scope and emit ``reconcile_missing_scope_total``."""
 
-    from orchestrators import trade_pipeline as tp
+    from pmcopy.orchestrators import trade_pipeline as tp
 
     metric_calls: list[tuple[str, dict | None]] = []
 
@@ -126,7 +126,7 @@ async def test_reconcile_submitted_unconfirmed_scopes_queries_to_context_user():
     every submitted_unconfirmed row globally, one stuck venue order can multiply
     work across all users and repeatedly hit the pre-reconcile timeout.
     """
-    from orchestrators import trade_pipeline as tp
+    from pmcopy.orchestrators import trade_pipeline as tp
 
     orders_repo = MagicMock()
     orders_repo.get_unconfirmed_buys = AsyncMock(return_value=[])
@@ -156,7 +156,7 @@ async def test_reconcile_submitted_unconfirmed_scopes_queries_to_context_user():
 async def test_reconcile_includes_orders_table_only_v1_submissions(monkeypatch):
     """Reconcile v1 orders even when processed_trades has no matching row."""
 
-    from orchestrators import trade_pipeline as tp
+    from pmcopy.orchestrators import trade_pipeline as tp
 
     class OrdersWithV1Rows:
         """Expose both legacy scans and the bounded v1 orders scan."""
@@ -232,7 +232,7 @@ def _paper_config() -> SimpleNamespace:
 
 
 def _make_coordinator(*, config):
-    from services.execution.coordinator import ExecutionCoordinator
+    from pmcopy.services.execution.coordinator import ExecutionCoordinator
 
     execution_service = SimpleNamespace(_config=config)
     return ExecutionCoordinator(
@@ -292,8 +292,8 @@ def test_runtime_bootstrap_helper_wires_account_coordinator_at_construction():
     on the same lock map as every per-binding TradingContext — with no
     post-construction rewiring left to silently drop.
     """
-    from orchestrators.runtime_bootstrap import _build_execution_coordinator
-    from services.positionCoordinator import PositionCoordinator
+    from pmcopy.orchestrators.runtime_bootstrap import _build_execution_coordinator
+    from pmcopy.services.positionCoordinator import PositionCoordinator
 
     pos_coord = PositionCoordinator()
     coord = _build_execution_coordinator(

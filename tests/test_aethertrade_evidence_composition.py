@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from config.app_config import AppConfig, dump_config_payload, load_config
+from pmcopy.config.app_config import AppConfig, dump_config_payload, load_config
 from tests.test_redemption_config import TestRedemptionConfig as RedeemConfigFixture
 
 
@@ -31,21 +31,21 @@ class TestEvidenceComposition:
 
     @staticmethod
     def prepare(monkeypatch):
-        import app
+        import pmcopy.app as app
 
         config = AppConfig()
         provider = SimpleNamespace(aclose=AsyncMock())
         monkeypatch.setattr(app, "load_config", lambda: config)
         monkeypatch.setattr(app, "configure_logging", lambda **kwargs: None)
         monkeypatch.setattr(app, "_validate_detection_confidence_floor", lambda config: None)
-        monkeypatch.setattr("orchestrators.provider_runtime.ProviderRuntime.from_config", lambda config: provider)
+        monkeypatch.setattr("pmcopy.orchestrators.provider_runtime.ProviderRuntime.from_config", lambda config: provider)
         policy = SimpleNamespace(validate=lambda config: None, effective_config=lambda config: config)
         return app, config, provider, policy
 
     async def test_default_runtime_starts_before_consumers_and_is_owned(self, monkeypatch):
         app, config, provider, policy = self.prepare(monkeypatch)
         evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
-        monkeypatch.setattr("orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda config: evidence)
+        monkeypatch.setattr("pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda config: evidence)
 
         async def stop_after_composition(**kwargs):
             evidence.start.assert_awaited_once()
@@ -59,12 +59,12 @@ class TestEvidenceComposition:
 
     async def test_invalid_evidence_stops_before_database_or_source(self, monkeypatch):
         app, config, provider, policy = self.prepare(monkeypatch)
-        from domain.evidence import EvidenceError
+        from pmcopy.domain.evidence import EvidenceError
 
         def unavailable(config):
             raise EvidenceError("unsafe synthetic-token detail")
 
-        monkeypatch.setattr("orchestrators.evidence_runtime.EvidenceRuntime.from_config", unavailable)
+        monkeypatch.setattr("pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", unavailable)
         build = AsyncMock(side_effect=AssertionError("database should not open"))
         monkeypatch.setattr(app, "build_app", build)
         assert await app._run_application([], startup_policy=policy) == 1
@@ -80,7 +80,7 @@ class TestEvidenceComposition:
         """
         from dataclasses import replace
 
-        from config.evidence import EvidenceConfig
+        from pmcopy.config.evidence import EvidenceConfig
 
         app, config, provider, policy = TestEvidenceComposition.prepare(monkeypatch)
         off = replace(config, evidence=EvidenceConfig(enabled=False))
@@ -95,7 +95,7 @@ class TestEvidenceComposition:
 
         app, config, provider, policy = self.disabled(monkeypatch)
         monkeypatch.setattr(
-            "orchestrators.evidence_runtime.EvidenceRuntime.from_config", forbidden
+            "pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", forbidden
         )
 
         async def stop_after_composition(**kwargs):
@@ -118,7 +118,7 @@ class TestEvidenceComposition:
         """
         from dataclasses import replace
 
-        from config.evidence import EvidenceConfig
+        from pmcopy.config.evidence import EvidenceConfig
 
         app, config, provider, policy = self.disabled(monkeypatch)
         with_journal = replace(
@@ -130,7 +130,7 @@ class TestEvidenceComposition:
         monkeypatch.setattr(app, "load_config", lambda: with_journal)
         opened = AsyncMock(side_effect=AssertionError("journal must not be opened"))
         monkeypatch.setattr(
-            "orchestrators.history_evidence_drain_runtime."
+            "pmcopy.orchestrators.history_evidence_drain_runtime."
             "HistoryEvidenceDrainRuntime.from_config",
             opened,
         )

@@ -19,8 +19,8 @@ from decimal import Decimal
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
-from services.telemetry import (
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,
     FillEvent,

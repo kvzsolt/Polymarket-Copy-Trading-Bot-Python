@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.balance_regime import BalanceRegime
+from pmcopy.services.balance_regime import BalanceRegime
 
 
 @pytest.mark.asyncio

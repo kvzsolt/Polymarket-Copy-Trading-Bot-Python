@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from services.metrics import (
+from pmcopy.services.metrics import (
     ActiveEntity,
     FalconDiscoveryState,
     GAUGE_TELEMETRY_ACTIVE_ENTITIES,
@@ -27,7 +27,7 @@ from services.metrics import (
     MetricsRegistry,
     TelemetryQueue,
 )
-from services.telemetry import (
+from pmcopy.services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,
     DiscoveryEvent,

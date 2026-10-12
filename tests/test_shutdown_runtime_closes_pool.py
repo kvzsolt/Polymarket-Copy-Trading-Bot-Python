@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-import app
-import storage.postgres.connection as connection
+import pmcopy.app as app
+import pmcopy.storage.postgres.connection as connection
 
 pytestmark = pytest.mark.asyncio
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
-from domain.source_transactions import (
+from pmcopy.config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
+from pmcopy.domain.source_transactions import (
     EvmReceipt,
     PendingSourceMatch,
     PendingTransaction,
@@ -15,8 +15,8 @@ from domain.source_transactions import (
     SourceSide,
     WatchedRole,
 )
-from services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
-from services.onchain_detection.order_filled_receipt_decoder import OrderFilledReceiptDecoder
+from pmcopy.services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
+from pmcopy.services.onchain_detection.order_filled_receipt_decoder import OrderFilledReceiptDecoder
 
 _CHAIN_ID = 137
 _TX_HASH = "0x" + "ab" * 32

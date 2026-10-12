@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from adapters.polygon.block_timestamp import RpcBlockTimestampReader
+from pmcopy.adapters.polygon.block_timestamp import RpcBlockTimestampReader
 
 _HASH = "0x" + "a" * 64
 

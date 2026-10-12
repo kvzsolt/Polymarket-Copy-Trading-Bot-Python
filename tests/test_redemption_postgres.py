@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from domain.redemption import (
+from pmcopy.domain.redemption import (
     RedemptionAttempt,
     RedemptionAuthorization,
     RedemptionMarket,
@@ -12,7 +12,7 @@ from domain.redemption import (
     RedemptionState,
     SettlementStorageError,
 )
-from storage.postgres.redemption_journal import PostgresRedemptionJournal
+from pmcopy.storage.postgres.redemption_journal import PostgresRedemptionJournal
 from tests.test_fills_repo_dedup_key import _pg_pool
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

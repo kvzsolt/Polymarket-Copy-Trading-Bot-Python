@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
+from pmcopy.services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
 
 
 @pytest.mark.asyncio
@@ -20,7 +20,7 @@ async def test_gamma_resolver_caches_both_clob_tokens(monkeypatch) -> None:
         ]
 
     monkeypatch.setattr(
-        "services.onchain_detection.condition_id_resolver.fetch_data",
+        "pmcopy.services.onchain_detection.condition_id_resolver.fetch_data",
         fake_fetch_data,
     )
     resolver = GammaConditionIdResolver(base_url="https://gamma.example/markets")
@@ -38,7 +38,7 @@ async def test_gamma_resolver_returns_blank_on_lookup_failure(monkeypatch) -> No
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
-        "services.onchain_detection.condition_id_resolver.fetch_data",
+        "pmcopy.services.onchain_detection.condition_id_resolver.fetch_data",
         fake_fetch_data,
     )
     resolver = GammaConditionIdResolver()

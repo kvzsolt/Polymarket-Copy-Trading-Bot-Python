@@ -8,7 +8,7 @@ from pathlib import Path
 def test_v1_migration_contains_copy_tasks_and_durable_reentry_lock() -> None:
     migration = (
         Path(__file__).resolve().parents[2]
-        / "storage"
+        / "src" / "pmcopy" / "storage"
         / "postgres"
         / "migrations"
         / "20260808_01_copy_tasks_and_reentry_locks.sql"
@@ -27,7 +27,7 @@ def test_v1_migration_contains_copy_tasks_and_durable_reentry_lock() -> None:
 def test_v1_migration_contains_atomic_task_budget_ledger() -> None:
     migration = (
         Path(__file__).resolve().parents[2]
-        / "storage"
+        / "src" / "pmcopy" / "storage"
         / "postgres"
         / "migrations"
         / "20260808_01_copy_tasks_and_reentry_locks.sql"
@@ -46,7 +46,7 @@ def test_followup_migration_adds_multi_fill_budget_and_durable_risk_lots() -> No
 
     migration = (
         Path(__file__).resolve().parents[2]
-        / "storage"
+        / "src" / "pmcopy" / "storage"
         / "postgres"
         / "migrations"
         / "20260811_02_copy_task_execution_lifecycle.sql"

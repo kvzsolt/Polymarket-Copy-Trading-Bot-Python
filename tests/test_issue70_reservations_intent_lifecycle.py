@@ -25,7 +25,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -48,17 +48,17 @@ async def _pg_pool():
         ctr.stop()
 
 
-from domain.order_lifecycle import (  # noqa: E402
+from pmcopy.domain.order_lifecycle import (  # noqa: E402
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
     Reservation,
 )
-from services.execution.reservation_service import (  # noqa: E402
+from pmcopy.services.execution.reservation_service import (  # noqa: E402
     ReservationService,
 )
-from services.intentRegistry import (  # noqa: E402
+from pmcopy.services.intentRegistry import (  # noqa: E402
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
@@ -66,7 +66,7 @@ from services.intentRegistry import (  # noqa: E402
     UnknownIntentError,
     Reservation as IntentReservation,
 )
-from services.positionActionCoordinator import PositionScope  # noqa: E402
+from pmcopy.services.positionActionCoordinator import PositionScope  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ class TestStaleReservationExpiry:
     @pytest.mark.asyncio
     async def test_list_expired_active(self):
         """Expired active reservations are found by list_expired_active."""
-        from storage.postgres.reservations_repo import ReservationsRepo
+        from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 
         async with _pg_pool() as pool:
             repo = ReservationsRepo(pool)
@@ -302,7 +302,7 @@ class TestStaleReservationExpiry:
     @pytest.mark.asyncio
     async def test_non_expired_not_listed(self):
         """Non-expired reservations are not in list_expired_active."""
-        from storage.postgres.reservations_repo import ReservationsRepo
+        from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 
         async with _pg_pool() as pool:
             repo = ReservationsRepo(pool)
@@ -330,7 +330,7 @@ class TestStartupRecovery:
     @pytest.mark.asyncio
     async def test_recovery_from_empty_db(self):
         """Recovery with no pending orders returns 0."""
-        from services.execution.intent_recovery import recover_intents_from_db
+        from pmcopy.services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
         mock_repo = MagicMock()
@@ -343,7 +343,7 @@ class TestStartupRecovery:
     @pytest.mark.asyncio
     async def test_recovery_restores_pending_intent(self):
         """Recovery restores a pending order as an in-flight intent."""
-        from services.execution.intent_recovery import recover_intents_from_db
+        from pmcopy.services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
         mock_reservation = Reservation(
@@ -378,7 +378,7 @@ class TestStartupRecovery:
     @pytest.mark.asyncio
     async def test_recovery_uses_active_reservations_only(self):
         """Released/terminal rows are not recovered because repo returns active rows only."""
-        from services.execution.intent_recovery import recover_intents_from_db
+        from pmcopy.services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
         mock_repo = MagicMock()
@@ -391,7 +391,7 @@ class TestStartupRecovery:
     @pytest.mark.asyncio
     async def test_recovery_duplicate_after_crash(self):
         """Recovery preserves both existing durable allocations on the same scope."""
-        from services.execution.intent_recovery import recover_intents_from_db
+        from pmcopy.services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
         mock_a = Reservation(
@@ -446,8 +446,8 @@ class TestReservationAuditLogging:
     @pytest.mark.asyncio
     async def test_buy_reservation_logs_acquire(self, caplog):
         """BUY reservation logs the acquire event."""
-        from storage.postgres.reservations_repo import ReservationsRepo
-        from storage.postgres.positions_repo import PositionsRepo
+        from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
+        from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
         async with _pg_pool() as pool:
             res_repo = ReservationsRepo(pool)
@@ -474,8 +474,8 @@ class TestReservationAuditLogging:
     @pytest.mark.asyncio
     async def test_release_terminal_logs(self, caplog):
         """release_terminal logs the release event."""
-        from storage.postgres.reservations_repo import ReservationsRepo
-        from storage.postgres.positions_repo import PositionsRepo
+        from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
+        from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
         async with _pg_pool() as pool:
             res_repo = ReservationsRepo(pool)

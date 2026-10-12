@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.falcon.errors import FalconAuthenticationError, FalconProtocolError
-from services.discovery.falcon_candidate_service import FalconCandidateService
+from pmcopy.integrations.falcon.errors import FalconAuthenticationError, FalconProtocolError
+from pmcopy.services.discovery.falcon_candidate_service import FalconCandidateService
 from tests.test_falcon_candidate_service import FakeFalcon, NOW
 
 

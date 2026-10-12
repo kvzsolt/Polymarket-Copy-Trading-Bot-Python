@@ -6,13 +6,13 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.precision import (
+from pmcopy.integrations.polymarket.ccxt_compat.precision import (
     CcxtPrecisionError,
     install_ccxt_polymarket_precision_patch,
     polymarket_raw_amounts,
 )
-from integrations.polymarket.ccxt_compat.capabilities import PRECISION_PATCH_ID
-from integrations.polymarket.ccxt_compat.tick_size import quantize_price_to_tick
+from pmcopy.integrations.polymarket.ccxt_compat.capabilities import PRECISION_PATCH_ID
+from pmcopy.integrations.polymarket.ccxt_compat.tick_size import quantize_price_to_tick
 
 
 @pytest.mark.parametrize("tick", ["0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"])

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from services.copy_tasks.worker import (
+from pmcopy.services.copy_tasks.worker import (
     LeaderLimitReached,
     LeaderWorkerSupervisor,
     WorkerQueueFull,

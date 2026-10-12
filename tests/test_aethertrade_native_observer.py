@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.grouped_detection import TraderDetectionPolicy
-from domain.source_time import TransportReceipt
-from storage.detection_state import SqliteDetectionState
+from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.storage.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import COUNTERPARTY, EXCHANGE, OWNER, LogFixture
 
 
@@ -16,7 +16,7 @@ async def test_owner_only_dispatch_preserves_native_taker_and_original_receipt(
     tmp_path: Path,
 ) -> None:
     """Topic3 matching does not create a counterparty action; topic2 taker summary does."""
-    from services.onchain_detection.native_observer import NativeOwnerObserver
+    from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     state.configure((TraderDetectionPolicy(OWNER), TraderDetectionPolicy(COUNTERPARTY)))
@@ -49,7 +49,7 @@ async def test_removal_recovery_reinclusion_duplicates_and_counterparty_never_di
     tmp_path: Path,
 ) -> None:
     """Evidence-only transitions never turn historical data into a new trade signal."""
-    from services.onchain_detection.native_observer import NativeOwnerObserver
+    from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     sink, condition, timestamp = AsyncMock(), AsyncMock(), AsyncMock()
@@ -87,7 +87,7 @@ async def test_missing_enrichment_is_visible_and_never_uses_wall_time_as_block_t
     tmp_path: Path,
 ) -> None:
     """Incomplete enrichment is explicit evidence and cannot submit a fresh copy."""
-    from services.onchain_detection.native_observer import NativeOwnerObserver
+    from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
 
     state = SqliteDetectionState(tmp_path / "state.sqlite3")
     state.configure((TraderDetectionPolicy(OWNER),))
@@ -114,7 +114,7 @@ async def test_missing_enrichment_is_visible_and_never_uses_wall_time_as_block_t
 @pytest.mark.asyncio
 async def test_retirement_during_enrichment_blocks_dispatch(tmp_path: Path) -> None:
     """Roster retirement cannot race an outstanding market lookup into a new copy."""
-    from services.onchain_detection.native_observer import NativeOwnerObserver
+    from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
 
     state = SqliteDetectionState(tmp_path / "state")
     sink, condition, timestamp = AsyncMock(), AsyncMock(), AsyncMock()

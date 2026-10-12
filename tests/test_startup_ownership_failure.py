@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrators.runtime_bootstrap import (
+from pmcopy.orchestrators.runtime_bootstrap import (
     build_trading_context,
     default_follow,
     startup_drift_check,
 )
-from services.healthServer import ReadinessTracker
+from pmcopy.services.healthServer import ReadinessTracker
 from tests.config_helpers import load_test_config
 
 

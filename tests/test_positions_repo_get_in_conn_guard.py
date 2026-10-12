@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
 
 def test_get_position_in_conn_refuses_for_update_without_token_id() -> None:

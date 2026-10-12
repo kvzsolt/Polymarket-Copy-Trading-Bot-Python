@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.models import (
+from pmcopy.integrations.polymarket.models import (
     LimitOrderRequest,
     MarketableOrderRequest,
     OrderBook,
 )
-from integrations.polymarket.paper_execution import (
+from pmcopy.integrations.polymarket.paper_execution import (
     PaperExecutionGateway,
     PaperOrderSimulator,
 )
@@ -261,7 +261,7 @@ async def test_paper_get_order_unknown_id_raises_venue_not_found() -> None:
     nothing about this order" (clean); a bare ``KeyError`` is treated as a
     hard probe error and blocks release forever in paper mode.
     """
-    from integrations.polymarket.errors import VenueOrderNotFoundError
+    from pmcopy.integrations.polymarket.errors import VenueOrderNotFoundError
 
     gateway, _market = _paper_gateway()
 

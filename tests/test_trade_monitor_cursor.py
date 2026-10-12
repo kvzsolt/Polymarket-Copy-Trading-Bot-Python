@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import services.tradeMonitor as trade_monitor_module
-from services.tradeMonitor import (
+import pmcopy.services.tradeMonitor as trade_monitor_module
+from pmcopy.services.tradeMonitor import (
     LeaderMonitorState,
     _guarded_leader_fetch,
     _monitor_loop_healthy,
@@ -16,7 +16,7 @@ from services.tradeMonitor import (
     init,
     trade_monitor,
 )
-from storage.postgres.cursors_repo import TradeCursor
+from pmcopy.storage.postgres.cursors_repo import TradeCursor
 
 # Shared test fixtures for DI refactor
 _MOCK_READINESS = MagicMock()
@@ -55,7 +55,7 @@ async def test_init_sets_startup_watermark_from_latest_activity_when_no_cursor_e
     ]
     state = LeaderMonitorState()
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=activities):
+    with patch("pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=activities):
         await init("0x1111111111111111111111111111111111111111", state)
 
     assert int(state.last_cursor.timestamp) == 1_700_000_010
@@ -89,7 +89,7 @@ async def test_late_trade_newer_than_cursor_is_processed_once():
     )
 
     with patch(
-        "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
+        "pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
     ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
@@ -117,7 +117,7 @@ async def test_init_preserves_existing_cursor_on_restart():
         last_processed_ts=1_700_000_100.0,
     )
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=activities):
+    with patch("pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=activities):
         await init("0x1111111111111111111111111111111111111111", state)
 
     assert int(state.last_cursor.timestamp) == 1_700_000_100
@@ -157,9 +157,9 @@ async def test_new_trade_schedules_research_capture_without_blocking_execution()
 
     with (
         patch(
-            "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
+            "pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
         ),
-        patch("services.tradeMonitor.asyncio.create_task", side_effect=_capture_task),
+        patch("pmcopy.services.tradeMonitor.asyncio.create_task", side_effect=_capture_task),
     ):
         await fetch_trade_data(
             "0xleader",
@@ -197,7 +197,7 @@ async def test_cursor_comparison_normalizes_hash_and_trade_id_on_restart():
     on_trade = AsyncMock()
 
     with patch(
-        "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[duplicate_trade]
+        "pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[duplicate_trade]
     ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
@@ -236,7 +236,7 @@ async def test_sell_trade_is_annotated_with_leader_sell_fraction():
         captured.append(trades)
 
     with patch(
-        "services.tradeMonitor.fetch_data",
+        "pmcopy.services.tradeMonitor.fetch_data",
         new_callable=AsyncMock,
         side_effect=[[sell_trade], leader_positions],
     ):
@@ -274,13 +274,13 @@ async def test_detected_trade_logs_emit_before_trade_callback():
         events.append("callback")
 
     with (
-        patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
+        patch("pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
         patch(
-            "services.tradeMonitor.print_new_trade_detected",
+            "pmcopy.services.tradeMonitor.print_new_trade_detected",
             side_effect=lambda _trade: events.append("console"),
         ) as print_detected,
         patch(
-            "services.tradeMonitor.log_trade_detected",
+            "pmcopy.services.tradeMonitor.log_trade_detected",
             side_effect=lambda *_args, **_kwargs: events.append("structured"),
         ) as log_detected,
     ):
@@ -292,11 +292,11 @@ async def test_detected_trade_logs_emit_before_trade_callback():
 
 
 def test_monitor_loop_healthy_requires_recent_poll_and_ready_dependencies():
-    from services.healthServer import ReadinessTracker
+    from pmcopy.services.healthServer import ReadinessTracker
 
     tracker = ReadinessTracker()
     tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
-    with patch("services.tradeMonitor.time.time", return_value=120):
+    with patch("pmcopy.services.tradeMonitor.time.time", return_value=120):
         assert (
             _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker)
             is True
@@ -304,16 +304,16 @@ def test_monitor_loop_healthy_requires_recent_poll_and_ready_dependencies():
 
 
 def test_monitor_loop_healthy_rejects_stale_or_failed_poll():
-    from services.healthServer import ReadinessTracker
+    from pmcopy.services.healthServer import ReadinessTracker
 
     tracker = ReadinessTracker()
     tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
-    with patch("services.tradeMonitor.time.time", return_value=140):
+    with patch("pmcopy.services.tradeMonitor.time.time", return_value=140):
         assert (
             _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker)
             is False
         )
-    with patch("services.tradeMonitor.time.time", return_value=110):
+    with patch("pmcopy.services.tradeMonitor.time.time", return_value=110):
         assert (
             _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5, readiness_tracker=tracker)
             is False
@@ -332,19 +332,19 @@ async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
 
     with (
         patch(
-            "services.tradeMonitor.LeaderCursorStore.create",
+            "pmcopy.services.tradeMonitor.LeaderCursorStore.create",
             new_callable=AsyncMock,
             return_value=cursor_store,
         ),
-        patch("services.tradeMonitor.init", new_callable=AsyncMock),
+        patch("pmcopy.services.tradeMonitor.init", new_callable=AsyncMock),
         patch(
-            "services.tradeMonitor.fetch_trade_data",
+            "pmcopy.services.tradeMonitor.fetch_trade_data",
             new_callable=AsyncMock,
             return_value=(True, 17),
         ),
-        patch("services.tradeMonitor._monitor_loop_healthy", return_value=True),
-        patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
-        patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
+        patch("pmcopy.services.tradeMonitor._monitor_loop_healthy", return_value=True),
+        patch("pmcopy.services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
+        patch("pmcopy.services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
     ):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
@@ -375,19 +375,19 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
 
     with (
         patch(
-            "services.tradeMonitor.LeaderCursorStore.create",
+            "pmcopy.services.tradeMonitor.LeaderCursorStore.create",
             new_callable=AsyncMock,
             return_value=cursor_store,
         ),
-        patch("services.tradeMonitor.init", new_callable=AsyncMock),
+        patch("pmcopy.services.tradeMonitor.init", new_callable=AsyncMock),
         patch(
-            "services.tradeMonitor.fetch_trade_data",
+            "pmcopy.services.tradeMonitor.fetch_trade_data",
             new_callable=AsyncMock,
             return_value=(False, 0),
         ),
-        patch("services.tradeMonitor._monitor_loop_healthy", return_value=False),
-        patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
-        patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
+        patch("pmcopy.services.tradeMonitor._monitor_loop_healthy", return_value=False),
+        patch("pmcopy.services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
+        patch("pmcopy.services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
     ):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
@@ -479,14 +479,14 @@ async def test_trade_monitor_survives_set_cursor_failure_and_keeps_looping():
 
     with (
         patch(
-            "services.tradeMonitor.LeaderCursorStore.create",
+            "pmcopy.services.tradeMonitor.LeaderCursorStore.create",
             new_callable=AsyncMock,
             return_value=cursor_store,
         ),
-        patch("services.tradeMonitor.init", new_callable=AsyncMock),
-        patch("services.tradeMonitor.fetch_trade_data", side_effect=_fake_fetch),
-        patch("services.tradeMonitor._monitor_loop_healthy", return_value=False),
-        patch("services.tradeMonitor.asyncio.sleep", side_effect=_fake_sleep),
+        patch("pmcopy.services.tradeMonitor.init", new_callable=AsyncMock),
+        patch("pmcopy.services.tradeMonitor.fetch_trade_data", side_effect=_fake_fetch),
+        patch("pmcopy.services.tradeMonitor._monitor_loop_healthy", return_value=False),
+        patch("pmcopy.services.tradeMonitor.asyncio.sleep", side_effect=_fake_sleep),
     ):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
@@ -516,8 +516,8 @@ async def test_guarded_leader_fetch_singleflights_same_wallet_and_kind():
     url = f"https://data-api.polymarket.com/activity?user={wallet}&limit=50&offset=0"
 
     with (
-        patch("services.tradeMonitor._fetch_spacing_config", None),
-        patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
+        patch("pmcopy.services.tradeMonitor._fetch_spacing_config", None),
+        patch("pmcopy.services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
     ):
         first, second = await asyncio.gather(
             _guarded_leader_fetch("activity", wallet, url),
@@ -538,8 +538,8 @@ async def test_guarded_leader_fetch_keeps_different_wallets_parallel():
         return [{"ok": True, "url": url}]
 
     with (
-        patch("services.tradeMonitor._fetch_spacing_config", None),
-        patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
+        patch("pmcopy.services.tradeMonitor._fetch_spacing_config", None),
+        patch("pmcopy.services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
     ):
         first, second = await asyncio.gather(
             _guarded_leader_fetch(
@@ -595,7 +595,7 @@ async def test_v1_mode_preserves_individual_trade_identities_without_aggregation
     )
     on_trade = AsyncMock()
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=trades):
+    with patch("pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=trades):
         await fetch_trade_data(
             "0xleader",
             on_trade,
@@ -613,7 +613,7 @@ async def test_v1_mode_preserves_individual_trade_identities_without_aggregation
 @pytest.mark.asyncio
 async def test_polling_trade_increments_detection_signals_polling_counter():
     """Every polled TRADE row is attributed to ``source=polling`` provenance."""
-    from services.metrics import METRIC_DETECTION_SIGNALS
+    from pmcopy.services.metrics import METRIC_DETECTION_SIGNALS
 
     now = int(time.time())
     trade = {
@@ -637,7 +637,7 @@ async def test_polling_trade_increments_detection_signals_polling_counter():
     )
 
     with (
-        patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
+        patch("pmcopy.services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
         patch.object(trade_monitor_module.metrics, "inc") as inc,
     ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)

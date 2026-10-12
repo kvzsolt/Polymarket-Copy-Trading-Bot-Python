@@ -14,6 +14,7 @@ the shared module cache of the main test process.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,24 +22,24 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 _REMOVED_MODULE_PREFIXES = (
-    "integrations.control_plane",
-    "services.control_plane",
+    "pmcopy.integrations.control_plane",
+    "pmcopy.services.control_plane",
 )
 
 _REMOVED_MODULE_NAMES = (
-    "orchestrators.control_plane_auto_traders",
-    "orchestrators.control_plane_bootstrap",
-    "orchestrators.control_plane_discovery",
-    "orchestrators.control_plane_portfolio",
-    "orchestrators.control_plane_reads",
-    "orchestrators.control_plane_runtime",
-    "orchestrators.control_plane_settings",
-    "orchestrators.control_plane_tasks",
-    "storage.postgres.control_plane_audit_repository",
-    "storage.postgres.control_plane_entry_control_repository",
-    "storage.postgres.control_plane_query_repository",
-    "storage.postgres.control_plane_reentry_lock_repository",
-    "storage.postgres.control_plane_task_bulk_repository",
+    "pmcopy.orchestrators.control_plane_auto_traders",
+    "pmcopy.orchestrators.control_plane_bootstrap",
+    "pmcopy.orchestrators.control_plane_discovery",
+    "pmcopy.orchestrators.control_plane_portfolio",
+    "pmcopy.orchestrators.control_plane_reads",
+    "pmcopy.orchestrators.control_plane_runtime",
+    "pmcopy.orchestrators.control_plane_settings",
+    "pmcopy.orchestrators.control_plane_tasks",
+    "pmcopy.storage.postgres.control_plane_audit_repository",
+    "pmcopy.storage.postgres.control_plane_entry_control_repository",
+    "pmcopy.storage.postgres.control_plane_query_repository",
+    "pmcopy.storage.postgres.control_plane_reentry_lock_repository",
+    "pmcopy.storage.postgres.control_plane_task_bulk_repository",
 )
 
 _BLOCKER = """
@@ -79,14 +80,14 @@ sys.meta_path.insert(0, _ControlPlaneBlocker())
 )
 
 _VERIFY = """
-from adapters.clock import MonotonicClock, SystemMonotonicClock
+from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock
 
 clock = SystemMonotonicClock()
 assert isinstance(clock.monotonic(), float)
 assert clock.monotonic() <= clock.monotonic()
 assert hasattr(MonotonicClock, "monotonic")
 
-from services.trading_control import (
+from pmcopy.services.trading_control import (
     NullRuntimeTelemetry,
     OpenOrderControlGateway,
     RuntimeSafetyApplyError,
@@ -94,7 +95,7 @@ from services.trading_control import (
     TradingControlRuntimeSignal,
 )
 
-import bot_cli.commands.trading as trading_command
+import pmcopy.bot_cli.commands.trading as trading_command
 
 assert hasattr(trading_command, "register_trading_command")
 assert hasattr(trading_command, "run_trading")
@@ -105,9 +106,9 @@ print("cp-free-ok")
 _VERIFY_COMPOSITION_ROOTS = """
 import sys
 
-import app  # noqa: F401  (composition root: must import with CP blocked)
-import bootstrap  # noqa: F401
-import bot_cli.main as cli_main  # noqa: F401
+import pmcopy.app  # noqa: F401  (composition root: must import with CP blocked)
+import pmcopy.bootstrap  # noqa: F401
+import pmcopy.bot_cli.main as cli_main  # noqa: F401
 
 blocked_prefixes = %r
 blocked_names = %r
@@ -136,6 +137,7 @@ def _run_subprocess(script: str) -> subprocess.CompletedProcess:
         text=True,
         timeout=300,
         cwd=REPOSITORY_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPOSITORY_ROOT / "src")},
     )
 
 
@@ -167,9 +169,9 @@ def test_relocated_modules_declare_no_control_plane_imports() -> None:
     """Static guard: the relocated sources never mention the control plane."""
 
     relocated = (
-        REPOSITORY_ROOT / "adapters" / "clock.py",
-        REPOSITORY_ROOT / "services" / "trading_control.py",
-        REPOSITORY_ROOT / "bot_cli" / "commands" / "trading.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "clock.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_control.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "bot_cli" / "commands" / "trading.py",
     )
     for path in relocated:
         source = path.read_text(encoding="utf-8")
@@ -182,15 +184,15 @@ def test_removed_control_plane_surfaces_are_absent_from_disk() -> None:
     """Deletion guard: the removed packages and orchestrators stay deleted."""
 
     removed_paths = (
-        REPOSITORY_ROOT / "integrations" / "control_plane",
-        REPOSITORY_ROOT / "services" / "control_plane",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "integrations" / "control_plane",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "control_plane",
         REPOSITORY_ROOT / "tests" / "control_plane",
         REPOSITORY_ROOT / "tests" / "control_plane_http",
         REPOSITORY_ROOT / "run_ccxt.py",
         REPOSITORY_ROOT / "docs" / "ui",
         REPOSITORY_ROOT / "docs" / "frontend-control-plane.md",
         *(
-            REPOSITORY_ROOT / "orchestrators" / f"control_plane_{stem}.py"
+            REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / f"control_plane_{stem}.py"
             for stem in (
                 "auto_traders",
                 "bootstrap",
@@ -203,7 +205,7 @@ def test_removed_control_plane_surfaces_are_absent_from_disk() -> None:
             )
         ),
         *(
-            REPOSITORY_ROOT / "storage" / "postgres" / f"control_plane_{stem}_repository.py"
+            REPOSITORY_ROOT / "src" / "pmcopy" / "storage" / "postgres" / f"control_plane_{stem}_repository.py"
             for stem in ("audit", "entry_control", "query", "reentry_lock", "task_bulk")
         ),
         *(
@@ -224,16 +226,16 @@ def test_kept_trading_survivors_never_import_control_plane() -> None:
     """Static guard: kept surfaces are free of control-plane imports."""
 
     kept = (
-        REPOSITORY_ROOT / "services" / "healthServer.py",
-        REPOSITORY_ROOT / "orchestrators" / "liveness_heartbeat.py",
-        REPOSITORY_ROOT / "services" / "trading_permission.py",
-        REPOSITORY_ROOT / "storage" / "postgres" / "trading_control_repo.py",
-        REPOSITORY_ROOT / "storage" / "postgres" / "market_reentry_lock_repository.py",
-        REPOSITORY_ROOT / "services" / "telemetry",
-        REPOSITORY_ROOT / "orchestrators" / "telemetry_bootstrap.py",
-        REPOSITORY_ROOT / "services" / "trading_control.py",
-        REPOSITORY_ROOT / "adapters" / "clock.py",
-        REPOSITORY_ROOT / "bot_cli",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "healthServer.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "liveness_heartbeat.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_permission.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "storage" / "postgres" / "trading_control_repo.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "storage" / "postgres" / "market_reentry_lock_repository.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "telemetry",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "telemetry_bootstrap.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_control.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "clock.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "bot_cli",
     )
     for path in kept:
         sources = [path] if path.is_file() else sorted(path.rglob("*.py"))

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopySideFilter,
     ReactionPolicy,
     SourceTrade,
 )
-from services.copy_tasks.reaction import CopyReactionEngine, ReactionAction
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine, ReactionAction
 
 
 def _trade(action: str = "BUY", outcome: str = "YES") -> SourceTrade:

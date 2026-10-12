@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 
-from services.risk.risk_engine import _policy_from_config, headroom_for_buy
+from pmcopy.services.risk.risk_engine import _policy_from_config, headroom_for_buy
 
 
 def _config(

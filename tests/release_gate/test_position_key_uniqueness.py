@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from domain.position_key import PositionKey
+from pmcopy.domain.position_key import PositionKey
 
 
 def test_outcome_does_not_affect_identity() -> None:

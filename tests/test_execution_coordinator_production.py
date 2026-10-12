@@ -18,12 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.execution.coordinator import (
+from pmcopy.services.execution.coordinator import (
     ExecutionCoordinator,
     ExecutionCoordinatorResult,
     ExecutionIntent,
 )
-from services.execution.reservation_service import (
+from pmcopy.services.execution.reservation_service import (
     InsufficientFreeQuote,
     InsufficientFreeShares,
     ReservationConflict,

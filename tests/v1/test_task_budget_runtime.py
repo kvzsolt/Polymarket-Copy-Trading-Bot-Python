@@ -8,25 +8,25 @@ from datetime import timedelta
 
 import pytest
 
-from services.copy_tasks.admission import CopyTaskAdmissionEngine
-from services.copy_tasks.budget import (
+from pmcopy.services.copy_tasks.admission import CopyTaskAdmissionEngine
+from pmcopy.services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
     TaskBudgetReservationService,
 )
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     SourceTrade,
     TaskAdmissionContext,
     TaskSpendPolicy,
 )
-from services.copy_tasks.entry_price import CopyTaskEntryPriceService
-from services.copy_tasks.monitoring import CopyMonitoringModePolicy
-from services.copy_tasks.reaction import CopyReactionEngine
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from pmcopy.services.copy_tasks.monitoring import CopyMonitoringModePolicy
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryLockService,
 )
-from services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
+from pmcopy.services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
 
 
 class SizingDecision:

@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from config.app_config import DiscoveryConfig
-from integrations.falcon.client import FalconClient
-from integrations.falcon.models import LeaderboardEntry
-from services.discovery.operator_cli import DiscoveryCliError, resolve_api_key
+from pmcopy.config.app_config import DiscoveryConfig
+from pmcopy.integrations.falcon.client import FalconClient
+from pmcopy.integrations.falcon.models import LeaderboardEntry
+from pmcopy.services.discovery.operator_cli import DiscoveryCliError, resolve_api_key
 
 
 class _Response:
@@ -82,7 +82,7 @@ def test_discovery_config_has_one_falcon_provider_policy() -> None:
 
 def test_retired_provider_package_is_absent() -> None:
     """The obsolete provider package must not remain as an active alias."""
-    assert importlib.util.find_spec("integrations.heisenberg") is None
+    assert importlib.util.find_spec("pmcopy.integrations.heisenberg") is None
 
 
 def test_operator_cli_uses_the_canonical_falcon_token_name() -> None:

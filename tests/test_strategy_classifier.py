@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from models.strategy_profile import StrategyArchetype
-from services.strategy_profile.strategy_classifier import classify_profile
+from pmcopy.models.strategy_profile import StrategyArchetype
+from pmcopy.services.strategy_profile.strategy_classifier import classify_profile
 
 
 def test_too_few_trades_is_noisy_uncopyable() -> None:

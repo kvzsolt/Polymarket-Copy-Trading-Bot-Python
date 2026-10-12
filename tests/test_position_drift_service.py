@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.app_config import PositionDriftConfig
-from domain.position_drift import PositionDriftAction, PositionDriftStatus
-from services.position_drift_service import PositionDriftService
+from pmcopy.config.app_config import PositionDriftConfig
+from pmcopy.domain.position_drift import PositionDriftAction, PositionDriftStatus
+from pmcopy.services.position_drift_service import PositionDriftService
 
 
 def _cfg(**overrides) -> PositionDriftConfig:

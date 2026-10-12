@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from storage.postgres import connection
+from pmcopy.storage.postgres import connection
 
 
 @pytest.fixture(autouse=True)

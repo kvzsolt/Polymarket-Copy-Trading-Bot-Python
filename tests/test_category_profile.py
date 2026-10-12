@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from integrations.falcon.models import Wallet360Snapshot
-from services.discovery.category_profile import CategoryProfile
+from pmcopy.integrations.falcon.models import Wallet360Snapshot
+from pmcopy.services.discovery.category_profile import CategoryProfile
 
 
 def profile(rows: list[dict[str, object]], total: int) -> CategoryProfile:

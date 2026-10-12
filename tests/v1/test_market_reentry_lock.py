@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryKey,
     MarketReentryLockService,

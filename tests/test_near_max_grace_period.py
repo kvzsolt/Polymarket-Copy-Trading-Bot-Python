@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 
 
-from services.positionManager import PositionManager
+from pmcopy.services.positionManager import PositionManager
 
 
 def _make_pm(*, near_max_grace_seconds: float = 30.0) -> PositionManager:

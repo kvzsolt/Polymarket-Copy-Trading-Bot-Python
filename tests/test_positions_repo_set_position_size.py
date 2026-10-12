@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 # A real Polymarket CLOB token id shape (passes is_valid_clob_token_id).
 VALID_TOKEN = "52114319501245915516055106046884209969926127482827954674443846427813813222426"

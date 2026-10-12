@@ -9,9 +9,9 @@ import asyncpg
 import pytest
 from testcontainers.community.postgres import PostgresContainer
 
-from domain.auto_trader import AutoRoster, AutoTraderScope, Trader
-from storage.postgres.auto_trader_repository import PostgresAutoTraderRepository
-from storage.postgres.migrations import apply_migrations
+from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader
+from pmcopy.storage.postgres.auto_trader_repository import PostgresAutoTraderRepository
+from pmcopy.storage.postgres.migrations import apply_migrations
 
 
 @pytest.mark.asyncio
@@ -54,8 +54,8 @@ async def test_roster_compare_and_swap_restart_scope_audit_and_discovery_lease()
 
 
 async def test_candidate_score_lookup_preserves_wallets_across_targeted_cycles():
-    from storage.postgres.discovery_repo import DiscoveryRepo
-    from services.discovery.models import Candidate
+    from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
+    from pmcopy.services.discovery.models import Candidate
 
     with PostgresContainer("postgres:16-alpine") as container:
         pool = await asyncpg.create_pool(
@@ -85,9 +85,9 @@ async def test_candidate_score_lookup_preserves_wallets_across_targeted_cycles()
 
 
 async def test_exit_ownership_retains_inventory_pending_orders_and_paper_scope():
-    from storage.postgres.auto_trader_ownership import PostgresAutoTraderOwnership
-    from storage.postgres.paper_evaluation_repository import PostgresPaperLedgerRepository
-    from domain.paper_evaluation import PaperLedger, PaperFill
+    from pmcopy.storage.postgres.auto_trader_ownership import PostgresAutoTraderOwnership
+    from pmcopy.storage.postgres.paper_evaluation_repository import PostgresPaperLedgerRepository
+    from pmcopy.domain.paper_evaluation import PaperLedger, PaperFill
 
     with PostgresContainer("postgres:16-alpine") as container:
         pool = await asyncpg.create_pool(
@@ -127,9 +127,9 @@ async def test_exit_ownership_retains_inventory_pending_orders_and_paper_scope()
 
 async def test_doctor_allows_initialization_before_new_roster_migration(monkeypatch):
     from unittest.mock import AsyncMock
-    from bot_cli.commands.doctor import _automatic_rosters_available
+    from pmcopy.bot_cli.commands.doctor import _automatic_rosters_available
     from tests.config_helpers import load_test_config
-    import storage.postgres.connection as connection_module
+    import pmcopy.storage.postgres.connection as connection_module
 
     with PostgresContainer("postgres:16-alpine") as container:
         pool = await asyncpg.create_pool(

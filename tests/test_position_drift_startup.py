@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.app_config import PositionDriftConfig
-from orchestrators.runtime_bootstrap import startup_drift_check
-from services.healthServer import ReadinessTracker
+from pmcopy.config.app_config import PositionDriftConfig
+from pmcopy.orchestrators.runtime_bootstrap import startup_drift_check
+from pmcopy.services.healthServer import ReadinessTracker
 
 
 def _drift_config(**overrides) -> PositionDriftConfig:
@@ -126,7 +126,7 @@ async def test_startup_drift_check_propagates_failure_to_readiness():
 
 
 def test_log_position_drift_emits_structured_payload(caplog):
-    from utils.logger import log_position_drift
+    from pmcopy.utils.logger import log_position_drift
 
     caplog.set_level(logging.INFO, logger="PMBot.Test.Drift")
     log_position_drift(

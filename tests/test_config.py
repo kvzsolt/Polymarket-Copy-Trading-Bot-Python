@@ -9,8 +9,8 @@ import pytest
 import yaml
 from pydantic import SecretStr, ValidationError
 
-from config.app_config import DiscoveryConfig, EnvValidationError, load_config
-from config.env import SignatureType, secret_value
+from pmcopy.config.app_config import DiscoveryConfig, EnvValidationError, load_config
+from pmcopy.config.env import SignatureType, secret_value
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
@@ -193,7 +193,7 @@ def test_finite_numeric_values_still_load() -> None:
 
 def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
     """The YAML layer must not silently re-enable a fail-closed code default."""
-    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
 
     assert packaged["onchain"]["enable_onchain_pending_detection"] is False
 
@@ -329,7 +329,7 @@ def test_obsolete_venue_backend_keys_are_rejected(key: str) -> None:
 def test_execution_config_no_longer_carries_venue_selection_fields() -> None:
     """CCXT is the only transport; no selector or experimental gate exists."""
 
-    from config.app_config import ExecutionConfig
+    from pmcopy.config.app_config import ExecutionConfig
 
     config = ExecutionConfig()
     assert not hasattr(config, "venue_backend")
@@ -397,7 +397,7 @@ def test_secrets_read_uses_validated_file_descriptor(
             swapped = True
         return info
 
-    monkeypatch.setattr("config.app_config.os.fstat", replace_path_after_open)
+    monkeypatch.setattr("pmcopy.config.app_config.os.fstat", replace_path_after_open)
 
     config = load_config(_overrides(), secrets_path=secrets)
 
@@ -427,7 +427,7 @@ def test_secrets_reject_duplicate_and_non_nested_application_keys(
 def test_unknown_yaml_key_fails_closed(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    payload = yaml.safe_load((ROOT / "config/execution.yml").read_text())
+    payload = yaml.safe_load((ROOT / "src" / "pmcopy" / "config/execution.yml").read_text())
     payload["tradeing_mode"] = "live"
     (config_dir / "execution.yml").write_text(yaml.safe_dump(payload), encoding="utf-8")
 
@@ -527,9 +527,9 @@ def _onchain_overrides(mode: str, **onchain: object) -> dict:
 
 def test_checked_in_yaml_keeps_detection_mode_polling() -> None:
     """Base YAML must never select an on-chain source; polling is the default."""
-    from domain.detection import DetectionMode
+    from pmcopy.domain.detection import DetectionMode
 
-    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
     # The base file must not pin ``mode`` at all: an explicit base value would
     # shadow the deprecated-boolean derivation in every real deployment (I1).
     assert packaged.get("mode", "polling") == "polling"
@@ -546,8 +546,8 @@ def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
     """A legacy ``enable_onchain_pending_detection: true`` above the base layer
     still derives ``on_chain_confirmed`` (with the deprecation WARN) through the
     real loader — the base YAML must not shadow the derivation."""
-    import config.app_config as app_config_mod
-    from domain.detection import DetectionMode
+    import pmcopy.config.app_config as app_config_mod
+    from pmcopy.domain.detection import DetectionMode
 
     monkeypatch.setattr(
         app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
@@ -583,7 +583,7 @@ def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import config.app_config as app_config_mod
+    import pmcopy.config.app_config as app_config_mod
 
     monkeypatch.setattr(
         app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
@@ -606,7 +606,7 @@ def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
 def test_detection_mode_env_override_selects_on_chain_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from domain.detection import DetectionMode
+    from pmcopy.domain.detection import DetectionMode
 
     monkeypatch.setenv("PMCOPY__DETECTION__MODE", "on_chain_pending")
     monkeypatch.setenv(
@@ -723,7 +723,7 @@ def test_on_chain_pending_requires_positive_confirmation_max_tracked() -> None:
 
 def test_pending_copy_confirmation_defaults_load_from_packaged_yaml() -> None:
     """The packaged base file carries the tracker defaults the typed model uses."""
-    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
     onchain_yaml = packaged["onchain"]
 
     assert onchain_yaml["pending_copy_confirmation_enabled"] is False
@@ -765,7 +765,7 @@ def test_confirmed_source_defaults_to_mempool_reserved() -> None:
 
 def test_confirmed_source_default_is_pinned_in_the_packaged_base_yaml() -> None:
     """The base detection.yml carries the knob so operators can discover it."""
-    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
     assert packaged["onchain"]["confirmed_source"] == "mempool_reserved"
     assert load_config(_overrides()).detection.onchain.confirmed_source == "mempool_reserved"
 
@@ -887,10 +887,10 @@ def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
     operator already runs, and leaves the mempool path one env var away
     (``PMCOPY__DETECTION__MODE=on_chain_pending``).
     """
-    from domain.detection import DetectionMode
+    from pmcopy.domain.detection import DetectionMode
 
     packaged = yaml.safe_load(
-        (ROOT / "config" / "environments" / "live" / "detection.yml").read_text()
+        (ROOT / "src" / "pmcopy" / "config" / "environments" / "live" / "detection.yml").read_text()
     )
     assert packaged["mode"] == "on_chain_confirmed"
     assert packaged["onchain"]["confirmed_source"] == "logs_only"
@@ -927,7 +927,7 @@ def test_live_environment_without_ws_url_fails_closed() -> None:
 def test_execution_max_entry_price_drift_pct_default_and_shipped_value() -> None:
     """Use a five-percent copy-entry tolerance by default."""
 
-    from config.app_config import ExecutionConfig
+    from pmcopy.config.app_config import ExecutionConfig
 
     assert ExecutionConfig().max_entry_price_drift_pct == 5.0
     assert load_config(_overrides()).execution.max_entry_price_drift_pct == 5.0
@@ -969,7 +969,7 @@ def test_cli_explains_copy_entry_tolerance_is_per_leader() -> None:
     that validation no longer enforces would send an operator looking for a
     limit that is not there.
     """
-    from bot_cli.commands.config import _CONFIG_EXPLANATIONS
+    from pmcopy.bot_cli.commands.config import _CONFIG_EXPLANATIONS
 
     explanation = _CONFIG_EXPLANATIONS["MAX_ENTRY_PRICE_DRIFT_PCT"]
 
@@ -981,7 +981,7 @@ def test_cli_explains_copy_entry_tolerance_is_per_leader() -> None:
 def test_market_data_config_has_no_copy_snapshot_switch() -> None:
     """No operator setting can restore book-derived copy pricing."""
 
-    from config.app_config import MarketDataConfig
+    from pmcopy.config.app_config import MarketDataConfig
 
     assert not hasattr(MarketDataConfig(), "copy_entry_requires_rest_snapshot")
     assert not hasattr(load_config(_overrides()).market_data, "copy_entry_requires_rest_snapshot")
@@ -994,7 +994,7 @@ def test_packaged_market_data_yaml_pins_the_relaxed_rest_snapshot_budgets() -> N
     Copy entries no longer consume this snapshot or its spread cap.
     """
 
-    payload = yaml.safe_load((ROOT / "config" / "market_data.yml").read_text(encoding="utf-8"))
+    payload = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "market_data.yml").read_text(encoding="utf-8"))
 
     assert "copy_entry_requires_rest_snapshot" not in payload
     assert payload["rest_snapshot_max_age_ms"] == 1500
@@ -1011,7 +1011,7 @@ def test_runtime_python_gate_accepts_only_3_14(monkeypatch: pytest.MonkeyPatch) 
     """The fail-closed runtime gate matches requires-python (>=3.14,<3.15)."""
     from types import SimpleNamespace
 
-    import config.app_config as app_config
+    import pmcopy.config.app_config as app_config
 
     def _supported(minor: int) -> bool:
         monkeypatch.setattr(
@@ -1032,7 +1032,7 @@ def test_runtime_python_gate_message_names_3_14_only(monkeypatch: pytest.MonkeyP
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12)
+        "pmcopy.config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12)
     )
     with pytest.raises(EnvValidationError, match="Use Python 3.14"):
         load_config(_overrides())

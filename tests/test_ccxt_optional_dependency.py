@@ -8,12 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import integrations.polymarket.ccxt_prediction_client as client_mod
-from integrations.polymarket.ccxt_prediction_client import (
+import pmcopy.integrations.polymarket.ccxt_prediction_client as client_mod
+from pmcopy.integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionUnavailable,
     create_ccxt_prediction_client,
 )
-from integrations.polymarket.venue_runtime import build_polymarket_runtime
+from pmcopy.integrations.polymarket.venue_runtime import build_polymarket_runtime
 
 
 @pytest.fixture

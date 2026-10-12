@@ -20,11 +20,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.models import VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
 
 
 def _make_bundle(*, bid="0.49", ask="0.51", min_order_size="0") -> MarketDataBundle:
@@ -135,7 +135,7 @@ def _req(*, side="BUY", amount="10", order_type="FAK", price_limit="0.55") -> Ex
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
-    import services.executionService as _es
+    import pmcopy.services.executionService as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -336,7 +336,7 @@ async def test_terminal_rejection_surfaces_the_venue_reason() -> None:
         def emit(self, record: logging.LogRecord) -> None:
             records.append(record)
 
-    from services.executionService import logger as exec_logger
+    from pmcopy.services.executionService import logger as exec_logger
 
     handler = _Capture(level=logging.WARNING)
     exec_logger.addHandler(handler)

@@ -7,14 +7,14 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.lots import (
+from pmcopy.services.copy_tasks.lots import (
     DurableRiskLot,
     InMemoryRiskLotRepository,
     ProtectiveLotExitFill,
     RiskLotService,
     RiskLotStatus,
 )
-from services.copy_tasks.protective_exits import (
+from pmcopy.services.copy_tasks.protective_exits import (
     FillRiskLot,
     LayeredLevel,
     ProtectiveRiskPolicy,

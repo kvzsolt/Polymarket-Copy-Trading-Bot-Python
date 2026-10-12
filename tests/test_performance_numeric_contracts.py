@@ -4,9 +4,9 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.falcon.models import LeaderboardEntry, Market360Snapshot, Wallet360Snapshot
-from services.leaderScoringService import LeaderScoringService
-from domain.performance import PerformanceUnits
+from pmcopy.integrations.falcon.models import LeaderboardEntry, Market360Snapshot, Wallet360Snapshot
+from pmcopy.services.leaderScoringService import LeaderScoringService
+from pmcopy.domain.performance import PerformanceUnits
 from tests.discovery.test_runtime_scoring import _config
 
 
@@ -81,7 +81,7 @@ def test_exact_percentage_conversion(raw: str) -> None:
 
 
 def test_falcon_realized_corroboration_preserves_zero_win_rate() -> None:
-    from services.discovery.falcon_candidate_service import FalconCandidateService
+    from pmcopy.services.discovery.falcon_candidate_service import FalconCandidateService
 
     zero = FalconCandidateService._realized_pnl_corroboration(
         [{"pnl": "0", "invested": "100", "wins": 0, "losses": 10}]
@@ -94,7 +94,7 @@ def test_falcon_realized_corroboration_preserves_zero_win_rate() -> None:
 
 @pytest.mark.asyncio
 async def test_discovery_score_does_not_reward_zero_over_small_win_rate() -> None:
-    from services.discovery.falcon_candidate_service import FalconCandidateService
+    from pmcopy.services.discovery.falcon_candidate_service import FalconCandidateService
     from tests.test_falcon_candidate_service import NOW, OneWalletFalcon
 
     results = []

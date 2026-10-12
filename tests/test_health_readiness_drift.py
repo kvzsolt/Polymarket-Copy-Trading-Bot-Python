@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from services.healthServer import _STRICT_REQUIRED_KEYS, ReadinessTracker
+from pmcopy.services.healthServer import _STRICT_REQUIRED_KEYS, ReadinessTracker
 
 
 def test_strict_required_keys_include_drift_ok():

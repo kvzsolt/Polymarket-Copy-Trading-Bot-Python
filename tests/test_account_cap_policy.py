@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-from services.risk.risk_engine import (
+from pmcopy.services.risk.risk_engine import (
     AccountCapPolicy,
     compute_hard_cap,
     compute_reserve_cash,
@@ -154,7 +154,7 @@ class TestHeadroomForBuy:
 
     def test_daily_loss_respects_env_drawdown_pct(self):
         from types import SimpleNamespace
-        import services.risk.risk_engine as re
+        import pmcopy.services.risk.risk_engine as re
 
         # headroom_for_buy reads drawdown/exposure limits from injected config,
         # not from ENV — pass a mock config directly.
@@ -269,7 +269,7 @@ class TestIdempotencyKey:
     """
 
     def test_different_signal_ids_produce_different_keys(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         k1 = _effective_idempotency_key(
             user="u1",
@@ -296,7 +296,7 @@ class TestIdempotencyKey:
         assert k1 != k2
 
     def test_same_signal_same_key(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         kwargs = dict(
             user="u1",
@@ -369,24 +369,24 @@ class TestFillParsingSafety:
 
 class TestRetryBlocking:
     def test_failed_submission_does_not_block(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {"status": "failed", "order_id": None, "response": {"status": "failed"}}
         assert not _is_retry_blocking_existing(existing)
 
     def test_filled_blocks(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {"status": "filled", "order_id": "ord_123"}
         assert _is_retry_blocking_existing(existing)
 
     def test_none_does_not_block(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         assert not _is_retry_blocking_existing(None)
 
     def test_fresh_pending_blocks(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "pending",
@@ -396,7 +396,7 @@ class TestRetryBlocking:
         assert _is_retry_blocking_existing(existing, now_ts=150, pending_ttl_seconds=120)
 
     def test_stale_pending_does_not_block(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "pending",
@@ -406,13 +406,13 @@ class TestRetryBlocking:
         assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
 
     def test_pending_without_timestamp_does_not_block(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {"status": "pending", "order_id": None, "response": {"status": "pending"}}
         assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
 
     def test_pending_with_future_expiry_blocks(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "pending",
@@ -422,7 +422,7 @@ class TestRetryBlocking:
         assert _is_retry_blocking_existing(existing, now_ts=200, pending_ttl_seconds=120)
 
     def test_pending_with_expired_expiry_does_not_block(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "pending",
@@ -432,7 +432,7 @@ class TestRetryBlocking:
         assert not _is_retry_blocking_existing(existing, now_ts=230, pending_ttl_seconds=120)
 
     def test_fresh_submitted_unconfirmed_without_order_id_blocks(self):
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "submitted_unconfirmed",
@@ -444,7 +444,7 @@ class TestRetryBlocking:
     def test_stale_submitted_unconfirmed_without_order_id_still_blocks(self):
         """Ambiguous venue delivery remains blocked until reconciliation."""
 
-        from services.executionService import _is_retry_blocking_existing
+        from pmcopy.services.executionService import _is_retry_blocking_existing
 
         existing = {
             "status": "submitted_unconfirmed",
@@ -461,7 +461,7 @@ class TestRetryBlocking:
 
 class TestDayEquity:
     def test_first_call_records_equity(self, tmp_path, monkeypatch):
-        from utils import dayEquity
+        from pmcopy.utils import dayEquity
 
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
@@ -471,7 +471,7 @@ class TestDayEquity:
         assert state_file.exists()
 
     def test_second_call_same_day_returns_stored(self, tmp_path, monkeypatch):
-        from utils import dayEquity
+        from pmcopy.utils import dayEquity
 
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
@@ -481,7 +481,7 @@ class TestDayEquity:
         assert first == second == Decimal("30.0")
 
     def test_daily_loss_computation(self, tmp_path, monkeypatch):
-        from utils import dayEquity
+        from pmcopy.utils import dayEquity
 
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
@@ -491,7 +491,7 @@ class TestDayEquity:
         assert loss == Decimal("2.5")
 
     def test_no_loss_when_up(self, tmp_path, monkeypatch):
-        from utils import dayEquity
+        from pmcopy.utils import dayEquity
 
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)

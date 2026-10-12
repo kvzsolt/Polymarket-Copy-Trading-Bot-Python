@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from domain.execution import ExecutionOrderType
-from integrations.polymarket.models import VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
+from pmcopy.domain.execution import ExecutionOrderType
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
 from tests.test_execution_fak_repost_ambiguity import _build_svc, _req
 
 
@@ -119,8 +119,8 @@ async def test_retryable_fak_failure_never_waits_without_another_attempt(
 
     sleep = AsyncMock()
     jitter = MagicMock(return_value=0.01)
-    monkeypatch.setattr("services.executionService.asyncio.sleep", sleep)
-    monkeypatch.setattr("services.executionService.random.uniform", jitter)
+    monkeypatch.setattr("pmcopy.services.executionService.asyncio.sleep", sleep)
+    monkeypatch.setattr("pmcopy.services.executionService.random.uniform", jitter)
     gateway = MagicMock(spec=ClobGateway)
     gateway.submit_marketable_order = AsyncMock(
         return_value=VenueSubmitResult(

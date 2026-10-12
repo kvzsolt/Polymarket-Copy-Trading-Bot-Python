@@ -1,4 +1,4 @@
-from storage.postgres.migrations import (
+from pmcopy.storage.postgres.migrations import (
     _DISCOVERY_DDL,
     _DISCOVERY_RESET_ID,
     _LEGACY_DISCOVERY_TABLES,

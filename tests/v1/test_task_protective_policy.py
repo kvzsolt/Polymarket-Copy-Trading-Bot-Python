@@ -2,9 +2,9 @@
 
 from decimal import Decimal
 
-from services.copy_tasks.domain import CopyTask
-from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
-from storage.postgres.copy_task_repository import CopyTaskCodec
+from pmcopy.services.copy_tasks.domain import CopyTask
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+from pmcopy.storage.postgres.copy_task_repository import CopyTaskCodec
 
 
 def test_task_protective_policy_round_trip():

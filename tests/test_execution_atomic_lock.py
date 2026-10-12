@@ -18,15 +18,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import MarketDataBundle, MarketDataSource
-from storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
-from utils.createClobClient import MarketMeta
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
+from pmcopy.utils.createClobClient import MarketMeta
 from tests.conftest import make_clob_gateway
-from integrations.polymarket.models import VenueSubmitResult
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
 
 
 @contextlib.asynccontextmanager
@@ -34,7 +34,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")

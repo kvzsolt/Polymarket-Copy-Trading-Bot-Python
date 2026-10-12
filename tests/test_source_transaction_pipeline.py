@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from application.source_transaction_pipeline import SourceTransactionPipeline
-from domain.source_transactions import (
+from pmcopy.application.source_transaction_pipeline import SourceTransactionPipeline
+from pmcopy.domain.source_transactions import (
     ConfirmedTransaction,
     EvmHead,
     LeaderTradeCorrelation,

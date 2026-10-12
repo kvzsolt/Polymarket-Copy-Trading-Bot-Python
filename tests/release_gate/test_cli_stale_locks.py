@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from bot_cli.commands.stale_locks import _list_stale_locks, _resolve_stale_locks
+from pmcopy.bot_cli.commands.stale_locks import _list_stale_locks, _resolve_stale_locks
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.release_gate]
 
@@ -32,7 +32,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
 
         ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()
@@ -198,8 +198,8 @@ async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:
     from testcontainers.postgres import PostgresContainer
     import asyncpg
 
-    from storage.postgres.connection import shutdown_pool
-    from storage.postgres.migrations import apply_migrations as pg_apply
+    from pmcopy.storage.postgres.connection import shutdown_pool
+    from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
 
     try:
         ctr = PostgresContainer("postgres:16-alpine")
@@ -222,7 +222,7 @@ async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:
             execution=SimpleNamespace(pending_submission_ttl_seconds=120),
         )
         monkeypatch.setattr(
-            "bot_cli.commands.stale_locks._load_config_or_fail",
+            "pmcopy.bot_cli.commands.stale_locks._load_config_or_fail",
             lambda: fake_config,
         )
         args = SimpleNamespace(
@@ -233,7 +233,7 @@ async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:
         # run_stale_locks calls asyncio.run() internally, which conflicts
         # with the outer async test loop. Re-run the inner async path
         # directly instead, mirroring what run_stale_locks dispatches to.
-        from bot_cli.commands.stale_locks import _run_stale_locks_async
+        from pmcopy.bot_cli.commands.stale_locks import _run_stale_locks_async
 
         rc = await _run_stale_locks_async(args)
         # Ensure pool gets torn down even though _run_list_async already did.

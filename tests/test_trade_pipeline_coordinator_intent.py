@@ -20,10 +20,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from domain.execution import ExecutionOrderType
-from services.execution.coordinator import ExecutionCoordinator
-from services.executionService import ExecutionResult
-from orchestrators.trade_pipeline import _submit_copy_through_coordinator
+from pmcopy.domain.execution import ExecutionOrderType
+from pmcopy.services.execution.coordinator import ExecutionCoordinator
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
 
 
 LEADER = "0x" + "d" * 40

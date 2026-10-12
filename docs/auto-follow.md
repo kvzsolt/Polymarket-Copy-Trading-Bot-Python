@@ -3,8 +3,8 @@
 Start the durable lifecycle with either alias:
 
 ```bash
-python bot.py run --auto-trader
-python bot.py run --auto-follow
+pmcopy run --auto-trader
+pmcopy run --auto-follow
 ```
 
 The only trader-count setting is `scheduler.max_active_leaders` in

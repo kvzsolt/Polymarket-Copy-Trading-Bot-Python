@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.price_cache import (
+from pmcopy.services.copy_tasks.price_cache import (
     MarketPriceCache,
     MarketPriceCacheSink,
     PriceQuote,

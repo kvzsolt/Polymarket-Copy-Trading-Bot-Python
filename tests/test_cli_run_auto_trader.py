@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot_cli.commands import run as run_command
+from pmcopy.bot_cli.commands import run as run_command
 
 
 def test_run_parser_accepts_auto_trader_flag() -> None:
@@ -24,7 +24,7 @@ def test_run_parser_accepts_auto_trader_flag() -> None:
 
 def test_auto_follow_is_the_same_flag_without_a_second_count_setting() -> None:
     import argparse
-    from bot_cli.commands.run import register_run_command
+    from pmcopy.bot_cli.commands.run import register_run_command
 
     parser = argparse.ArgumentParser()
     register_run_command(parser.add_subparsers(dest="command"))
@@ -36,11 +36,11 @@ async def test_run_forwards_auto_trader_flag_to_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """CLI glue passes the opt-in through without changing persistent config."""
-    from app import main as app_main
+    from pmcopy.app import main as app_main
 
     mocked_main = AsyncMock(wraps=app_main)
     mocked_main.return_value = 0
-    monkeypatch.setattr("app.main", mocked_main)
+    monkeypatch.setattr("pmcopy.app.main", mocked_main)
 
     result = await run_command._run_bot(auto_trader=True)
 
@@ -62,6 +62,6 @@ def test_run_run_returns_zero_on_operator_interrupt(
     async def interrupted_main(*, auto_trader: bool) -> int:
         raise interrupt()
 
-    monkeypatch.setattr("app.main", interrupted_main)
+    monkeypatch.setattr("pmcopy.app.main", interrupted_main)
     args = argparse.Namespace(auto_trader=False)
     assert run_command.run_run(args) == 0

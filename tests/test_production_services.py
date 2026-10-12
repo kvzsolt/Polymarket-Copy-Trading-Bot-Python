@@ -10,18 +10,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.models import VenueSubmitResult
-from services.market_data_service import MarketDataBundle, MarketDataSource
-from config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
-from services.executionService import (
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
+from pmcopy.services.executionService import (
     ExecutionRequest,
     ExecutionService,
     _sanitize_submission_response,
 )
-from services.risk.risk_engine import (
+from pmcopy.services.risk.risk_engine import (
     PortfolioSnapshot,
     ProposedTrade,
     RiskEngine,
@@ -487,8 +487,8 @@ class TestExecutionService:
     async def test_reconciler_has_confirm_fill(self):
         """ReconciliationService.confirm_fill polls the CLOB gateway (issue #71)."""
         from decimal import Decimal
-        from integrations.polymarket.models import VenueOrderState
-        from services.execution.reconciliation_service import ReconciliationService
+        from pmcopy.integrations.polymarket.models import VenueOrderState
+        from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
         async def mock_get_order(order_id: str):
             return VenueOrderState(
@@ -512,8 +512,8 @@ class TestExecutionService:
 
     @pytest.mark.asyncio
     async def test_reconciler_backs_off_after_transient_confirm_fill_error(self):
-        from integrations.polymarket.errors import VenueUnavailableError
-        from services.execution.reconciliation_service import ReconciliationService
+        from pmcopy.integrations.polymarket.errors import VenueUnavailableError
+        from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
         calls = 0
 
@@ -561,7 +561,7 @@ class TestExecutionService:
         # Seed duplicate — must have order_id to block retry
         key = "d"
         repo.store = {key: {"order_id": "existing", "status": "filled"}}
-        with patch("services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
         assert res.status == "duplicate_ignored"
 
@@ -610,7 +610,7 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        with patch("services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True
@@ -662,7 +662,7 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        with patch("services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True

@@ -22,15 +22,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from domain.execution import ExecutionMetadata
-from integrations.polymarket.models import (
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.integrations.polymarket.models import (
     VenueCancelResult,
     VenueOrderState,
     VenueSubmitResult,
 )
-from interfaces.clob_gateway import ClobGateway
+from pmcopy.interfaces.clob_gateway import ClobGateway
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +54,7 @@ def _hermetic_deployment_root(
 @pytest.fixture(autouse=True)
 def _hermetic_legacy_equity_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent legacy equity helpers from reading or writing operator state."""
-    import utils.dayEquity as day_equity
+    import pmcopy.utils.dayEquity as day_equity
 
     monkeypatch.setattr(day_equity, "_STATE_FILE", tmp_path / "day_equity.json")
 

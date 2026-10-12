@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, OrderIntentKey
-from storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
+from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, OrderIntentKey
+from pmcopy.storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
 
 
 class FixedClock:

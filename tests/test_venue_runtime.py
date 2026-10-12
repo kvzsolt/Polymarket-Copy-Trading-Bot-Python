@@ -13,14 +13,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.exceptions import (
+from pmcopy.integrations.polymarket.ccxt_compat.exceptions import (
     CcxtPredictionConfigurationError,
     CcxtPredictionUnavailable,
 )
-from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.paper_execution import PaperExecutionGateway
-from integrations.polymarket.venue_runtime import (
+from pmcopy.integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.paper_execution import PaperExecutionGateway
+from pmcopy.integrations.polymarket.venue_runtime import (
     PolymarketVenueRuntime,
     build_polymarket_runtime,
 )
@@ -229,7 +229,7 @@ async def test_missing_ccxt_fails_startup_in_paper_and_live(monkeypatch) -> None
         raise CcxtPredictionUnavailable("CCXT prediction support is unavailable")
 
     monkeypatch.setattr(
-        "integrations.polymarket.ccxt_prediction_client._load_default_factory",
+        "pmcopy.integrations.polymarket.ccxt_prediction_client._load_default_factory",
         _raise_missing,
     )
 

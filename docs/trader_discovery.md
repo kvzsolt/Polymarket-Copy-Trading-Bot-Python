@@ -138,7 +138,7 @@ keeping the provider rate limit in `discovery.api` in mind.
 
 ## Durable automatic selection
 
-`python bot.py run --auto-trader` and `--auto-follow` select the same DB-backed
+`pmcopy run --auto-trader` and `--auto-follow` select the same DB-backed
 lifecycle. See [Automatic traders](auto-follow.md) for configuration and control
 plane commands.
 

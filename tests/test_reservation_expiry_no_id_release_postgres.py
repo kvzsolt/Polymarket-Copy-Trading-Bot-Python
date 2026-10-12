@@ -32,20 +32,20 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from domain.order_lifecycle import (
+from pmcopy.domain.order_lifecycle import (
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
 )
-from orchestrators.runtime_bootstrap import _bind_reservation_runtime
-from services.execution.reservation_expiry import ReservationExpiryDecision
-from services.execution.reservation_service import ReservationService
-from services.positionActionCoordinator import PositionActionCoordinator
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.reservations_repo import ReservationsRepo
+from pmcopy.orchestrators.runtime_bootstrap import _bind_reservation_runtime
+from pmcopy.services.execution.reservation_expiry import ReservationExpiryDecision
+from pmcopy.services.execution.reservation_service import ReservationService
+from pmcopy.services.positionActionCoordinator import PositionActionCoordinator
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 from tests.config_helpers import load_test_config
 
 pytestmark = pytest.mark.asyncio
@@ -62,7 +62,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover - dependency guard
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -295,7 +295,7 @@ async def test_crash_before_write_ahead_row_releases_pre_submit_orphan_once() ->
 
 
 async def test_delayed_fill_after_keep_is_applied_once_and_releases_once() -> None:
-    from integrations.polymarket.models import VenueOrderState
+    from pmcopy.integrations.polymarket.models import VenueOrderState
 
     async with _pg_pool() as pool:
         clock = _Clock(1_000)
@@ -319,7 +319,7 @@ async def test_delayed_fill_after_keep_is_applied_once_and_releases_once() -> No
 
         clock.advance(61)
         with patch(
-            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
             new=AsyncMock(return_value=None),
         ):
             # Sweep 1: the unresolved no-ID row keeps the reservation.

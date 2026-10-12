@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.execution.ambiguous_recovery import (
+from pmcopy.services.execution.ambiguous_recovery import (
     AccountCheckResult,
     AmbiguousRecoveryProgress,
     AmbiguousRecoveryResult,

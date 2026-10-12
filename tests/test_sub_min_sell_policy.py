@@ -11,7 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-from orchestrators.trade_pipeline import _resolve_leader_sell_tokens
+from pmcopy.orchestrators.trade_pipeline import _resolve_leader_sell_tokens
 
 
 def test_round_up_legacy_default():

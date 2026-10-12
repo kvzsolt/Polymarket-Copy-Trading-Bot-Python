@@ -14,8 +14,9 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -29,8 +30,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def _amain(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    from bootstrap import build_app
-    from storage.postgres.connection import shutdown_pool
+    from pmcopy.bootstrap import build_app
+    from pmcopy.storage.postgres.connection import shutdown_pool
 
     application = await build_app()
     try:
@@ -73,7 +74,7 @@ async def _amain(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from utils.event_loop import new_event_loop
+    from pmcopy.utils.event_loop import new_event_loop
 
     with asyncio.Runner(loop_factory=new_event_loop) as runner:
         return runner.run(_amain(argv))

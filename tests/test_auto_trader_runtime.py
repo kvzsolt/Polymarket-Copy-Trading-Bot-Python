@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 
-from domain.auto_trader import AutoRoster, AutoTraderScope, Trader, TraderStatus
-from orchestrators.auto_trader_runtime import AutoTraderRuntime
+from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader, TraderStatus
+from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
 from tests.test_auto_trader_service import MemoryRepository, service, A, B, SCOPE
 
 
@@ -64,7 +64,7 @@ def test_paper_qualification_defaults_are_configurable_without_another_roster_co
 
 
 async def test_falcon_adapter_retains_explicit_rejections_without_sweeping_empty_targets():
-    from orchestrators.auto_trader_runtime import FalconEvidenceProvider
+    from pmcopy.orchestrators.auto_trader_runtime import FalconEvidenceProvider
     from datetime import UTC, datetime
 
     source = SimpleNamespace(

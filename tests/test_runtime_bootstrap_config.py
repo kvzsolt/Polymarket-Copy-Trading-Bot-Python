@@ -7,19 +7,19 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-import config.app_config as app_config_mod
-from application.trading_context import TradingContext
-from config.env import SignatureType
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.config.env import SignatureType
 from tests.config_helpers import load_test_config
-import orchestrators.runtime_bootstrap as runtime_bootstrap
-from orchestrators.runtime_bootstrap import (
+import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+from pmcopy.orchestrators.runtime_bootstrap import (
     build_trading_context,
     configured_leaders,
     default_follow,
     startup_reconcile_unconfirmed,
 )
-from services.execution.reservation_expiry import ReservationExpiryDecision
-from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
+from pmcopy.services.execution.reservation_expiry import ReservationExpiryDecision
+from pmcopy.services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
 
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -183,12 +183,12 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
 
     with (
         patch(
-            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]
+            "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]
         ) as reconcile,
         patch(
-            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
         ) as reconcile_risk,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+        patch("pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
 
@@ -204,12 +204,12 @@ async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence
 
     with (
         patch(
-            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+            "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
         ) as reconcile,
         patch(
-            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3
+            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3
         ) as reconcile_risk,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+        patch("pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
 
@@ -232,12 +232,12 @@ async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
 
     with (
         patch(
-            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+            "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
         ) as reconcile,
         patch(
-            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
         ) as reconcile_risk,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+        patch("pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
 
@@ -250,7 +250,7 @@ async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
 
 @pytest.mark.asyncio
 async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_metadata():
-    from integrations.polymarket.models import VenueOrderState
+    from pmcopy.integrations.polymarket.models import VenueOrderState
 
     active = SimpleNamespace(
         id="res-1",
@@ -398,7 +398,7 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
     )
 
     with patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         runtime_bootstrap._bind_reservation_runtime(ctx, coord)
@@ -435,7 +435,7 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     )
 
     with patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         ctx = asyncio.run(
@@ -483,9 +483,9 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     )
 
     with (
-        patch("application.trading_context.CopyDecisionService") as copy_decision_cls,
+        patch("pmcopy.application.trading_context.CopyDecisionService") as copy_decision_cls,
         patch(
-            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -502,8 +502,8 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     )
 
     with (
-        patch("orchestrators.runtime_bootstrap.PositionManager") as position_manager_cls,
-        patch("orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager") as position_manager_cls,
+        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
     ):
         position_manager_instance = position_manager_cls.return_value
         execution_service_instance = execution_service_cls.return_value

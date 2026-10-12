@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrators.trade_pipeline import _reconcile_one
+from pmcopy.orchestrators.trade_pipeline import _reconcile_one
 
 
 @pytest.mark.asyncio

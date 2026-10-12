@@ -10,8 +10,8 @@ from tests.test_aethertrade_history_import import HistoryGateway, plan_dict
 def test_registered_command_defaults_to_preview_without_config_or_journal(
     tmp_path, monkeypatch, capsys
 ):
-    import bot_cli.main as entry
-    from bot_cli.commands.history_import import HistoryImportCommand
+    import pmcopy.bot_cli.main as entry
+    from pmcopy.bot_cli.commands.history_import import HistoryImportCommand
 
     path = tmp_path / "plan.json"
     path.write_text(json.dumps(plan_dict()))
@@ -29,7 +29,7 @@ def test_registered_command_defaults_to_preview_without_config_or_journal(
 
 @pytest.mark.asyncio
 async def test_explicit_collection_uses_shared_provider_runtime_and_never_publisher(tmp_path):
-    from bot_cli.commands.history_import import HistoryImportCommand
+    from pmcopy.bot_cli.commands.history_import import HistoryImportCommand
 
     class Provider:
         gateway = HistoryGateway()
@@ -41,7 +41,7 @@ async def test_explicit_collection_uses_shared_provider_runtime_and_never_publis
     provider = Provider()
     loaded = []
     command = HistoryImportCommand(lambda: loaded.append("load") or object(), lambda cfg: provider)
-    from domain.history_import import HistoryImportPlan
+    from pmcopy.domain.history_import import HistoryImportPlan
 
     result = await command.execute(HistoryImportPlan.from_dict(plan_dict()), tmp_path / "journal")
     assert result.complete and provider.closed and loaded == ["load"]
@@ -49,7 +49,7 @@ async def test_explicit_collection_uses_shared_provider_runtime_and_never_publis
 
 
 def test_drain_open_requires_existing_validated_job_and_rejects_changed_plan(tmp_path):
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.storage.history_import import HistoryImportJournal
     from tests.test_aethertrade_history_import import plan
 
     missing = tmp_path / "missing"

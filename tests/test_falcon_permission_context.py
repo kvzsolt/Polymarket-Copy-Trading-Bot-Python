@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 
-from config.app_config import DiscoveryConfig
-from integrations.falcon.client import FalconClient
-from integrations.falcon.errors import FalconPermissionError
-from services.discovery.falcon_candidate_service import (
+from pmcopy.config.app_config import DiscoveryConfig
+from pmcopy.integrations.falcon.client import FalconClient
+from pmcopy.integrations.falcon.errors import FalconPermissionError
+from pmcopy.services.discovery.falcon_candidate_service import (
     FalconCandidateService,
     FalconDiscoveryPolicy,
 )
-from services.discovery.policy_config import discovery_policy_from_config
+from pmcopy.services.discovery.policy_config import discovery_policy_from_config
 from tests.test_falcon_candidate_service import GOOD, NOW, SYBIL, FakeFalcon
 from tests.test_falcon_client import FakeHttpClient, FakeResponse
 from tests.test_falcon_premium_startup import StartupFixture
@@ -28,7 +28,7 @@ SECRET = "synthetic-provider-credential"
 @pytest.fixture
 def operator_policy() -> FalconDiscoveryPolicy:
     """Load only the shipped discovery policy without operator secrets."""
-    path = Path(__file__).resolve().parents[1] / "config" / "discovery.yml"
+    path = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "config" / "discovery.yml"
     config = DiscoveryConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
     return discovery_policy_from_config(config)
 

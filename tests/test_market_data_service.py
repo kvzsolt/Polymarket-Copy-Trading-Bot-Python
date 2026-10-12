@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, MarketStateStore, QuoteSnapshot, TickSnapshot
-from services.market_data_service import (
+from pmcopy.cache.market_state_store import BookSnapshot, MarketStateStore, QuoteSnapshot, TickSnapshot
+from pmcopy.services.market_data_service import (
     MarketDataBundle,
     MarketDataNotReady,
     MarketDataPolicy,
@@ -771,7 +771,7 @@ class TestRequireExecutionSnapshot:
     @pytest.mark.asyncio
     async def test_rest_snapshot_uses_canonical_book_tick_metadata(self) -> None:
         """Gateway OrderBook metadata should be enough; no extra meta fetch needed."""
-        from integrations.polymarket.models import OrderBook, OrderBookLevel
+        from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
 
         store = MarketStateStore()
         gw = MagicMock()
@@ -1007,7 +1007,7 @@ class TestRestSnapshotBudgetsMatchTheRoundTrip:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import services.market_data_service as mds_mod
+        import pmcopy.services.market_data_service as mds_mod
 
         store = MarketStateStore()
         now, gw = self._clock_and_gateway(
@@ -1034,7 +1034,7 @@ class TestRestSnapshotBudgetsMatchTheRoundTrip:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Characterizes the live failure the new budget fixes."""
-        import services.market_data_service as mds_mod
+        import pmcopy.services.market_data_service as mds_mod
 
         store = MarketStateStore()
         now, gw = self._clock_and_gateway(

@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import pytest
 
-from bot_cli.commands.drift import (
+from pmcopy.bot_cli.commands.drift import (
     _classify_drift,
     _list_persisted_positions,
     _live_size_index,
@@ -32,7 +32,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
 
         ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from clients.market_ws import MarketWebSocket
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.clients.market_ws import MarketWebSocket
 
 
 @pytest.mark.asyncio

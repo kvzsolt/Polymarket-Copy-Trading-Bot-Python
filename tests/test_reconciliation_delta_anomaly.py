@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ async def test_negative_delta_clamps_to_zero_logs_and_audits(caplog) -> None:
     confirm_fill = await _confirm_factory("5", status="confirmed")
 
     with (
-        patch("services.metrics.metrics.inc_sync") as inc_sync,
+        patch("pmcopy.services.metrics.metrics.inc_sync") as inc_sync,
         caplog.at_level(logging.WARNING, logger="TradePipeline"),
     ):
         applied = await svc.reconcile_trade_record(
@@ -255,7 +255,7 @@ async def test_risk_path_flags_negative_delta_anomaly() -> None:
     }
     confirm_fill = await _confirm_factory("5", status="matched")
 
-    with patch("services.metrics.metrics.inc_sync") as inc_sync:
+    with patch("pmcopy.services.metrics.metrics.inc_sync") as inc_sync:
         await svc.reconcile_risk_record(
             record,
             user_id=USER_ID,

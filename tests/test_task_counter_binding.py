@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from services.copy_tasks.domain import CopyTask, ReactionPolicy
-from services.copy_tasks.entry_permission import TaskEntryPermissionService
-from services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.copy_tasks.domain import CopyTask, ReactionPolicy
+from pmcopy.services.copy_tasks.entry_permission import TaskEntryPermissionService
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
 
 NOW = datetime(2026, 9, 8, 12, tzinfo=UTC)
 

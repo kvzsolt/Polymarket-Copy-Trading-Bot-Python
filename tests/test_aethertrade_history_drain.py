@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from config.app_config import AppConfig
-from config.evidence import EvidenceConfig
+from pmcopy.config.app_config import AppConfig
+from pmcopy.config.evidence import EvidenceConfig
 from tests.test_aethertrade_evidence_composition import (
     TestEvidenceComposition as CompositionFixture,
 )
@@ -22,7 +22,7 @@ class TestHistoryDrain:
                 EvidenceConfig(history_journal_path=path)
 
     async def test_drain_delegates_one_bounded_batch_and_closes_journal(self):
-        from orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
+        from pmcopy.orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
 
         transfer = SimpleNamespace(publish_local_once=Mock(return_value=3))
         journal = SimpleNamespace(close=Mock())
@@ -34,7 +34,7 @@ class TestHistoryDrain:
         journal.close.assert_called_once_with()
 
     async def test_app_registers_history_after_existing_evidence_owner(self, monkeypatch):
-        from orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
+        from pmcopy.orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
 
         app, config, provider, policy = CompositionFixture.prepare(monkeypatch)
         evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
@@ -50,6 +50,6 @@ class TestHistoryDrain:
         assert owners[:3] == [provider, evidence, history]
 
     def test_disabled_composition_never_opens_a_journal(self):
-        from orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
+        from pmcopy.orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
 
         assert HistoryEvidenceDrainRuntime.from_config(AppConfig().evidence, Mock()) is None

@@ -26,8 +26,8 @@ def _ctx(user_id: str):
 
 
 def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout():
-    from integrations.polymarket.ccxt_prediction_gateway import _READ_TIMEOUT_SECONDS
-    from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
+    from pmcopy.integrations.polymarket.ccxt_prediction_gateway import _READ_TIMEOUT_SECONDS
+    from pmcopy.services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
 
     timeout = _risk_pre_reconcile_timeout_seconds(0.05)
 
@@ -40,7 +40,7 @@ def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout():
 
 @pytest.mark.asyncio
 async def test_one_stalled_context_does_not_block_the_others():
-    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
+    from pmcopy.services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
     ctx_fast = _ctx("fast")
     ctx_slow = _ctx("slow")
@@ -72,14 +72,14 @@ async def test_one_stalled_context_does_not_block_the_others():
     # wait_for inside the loop still works correctly.
     with (
         patch(
-            "services.risk.risk_monitor.run_risk_check_for_context",
+            "pmcopy.services.risk.risk_monitor.run_risk_check_for_context",
             side_effect=check,
         ),
         patch(
-            "services.risk.risk_monitor._refresh_context_price_cache",
+            "pmcopy.services.risk.risk_monitor._refresh_context_price_cache",
             side_effect=refresh,
         ),
-        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
+        patch("pmcopy.services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         # Outer wait_for is 5x the per-context timeout — gives one full
         # cycle plus a sleep tick to complete before we cancel.
@@ -107,7 +107,7 @@ async def test_pre_reconcile_runs_outside_protective_exit_timeout():
     phase, and the timed protective-exit check is invoked with
     ``pre_reconcile=False`` so slow reconciliation cannot starve the stop-loss
     evaluation every cycle (sym 1)."""
-    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
+    from pmcopy.services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
     ctx = _ctx("u1")
     check_calls: list[bool] = []
@@ -132,12 +132,12 @@ async def test_pre_reconcile_runs_outside_protective_exit_timeout():
 
     with (
         patch(
-            "services.risk.risk_monitor._pre_reconcile_for_context",
+            "pmcopy.services.risk.risk_monitor._pre_reconcile_for_context",
             side_effect=slow_pre_reconcile,
         ) as prerec,
-        patch("services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
-        patch("services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
-        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
+        patch("pmcopy.services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
+        patch("pmcopy.services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
+        patch("pmcopy.services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
             await asyncio.wait_for(
@@ -161,7 +161,7 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
     After the first timeout we back off that user's pre-reconcile attempts while
     still running the risk check phase every tick.
     """
-    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
+    from pmcopy.services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
     ctx = _ctx("u-timeout")
     check_calls: list[bool] = []
@@ -189,12 +189,12 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
 
     with (
         patch(
-            "services.risk.risk_monitor._pre_reconcile_for_context",
+            "pmcopy.services.risk.risk_monitor._pre_reconcile_for_context",
             side_effect=stuck_pre_reconcile,
         ) as prerec,
-        patch("services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
-        patch("services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
-        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
+        patch("pmcopy.services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
+        patch("pmcopy.services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
+        patch("pmcopy.services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
             await asyncio.wait_for(

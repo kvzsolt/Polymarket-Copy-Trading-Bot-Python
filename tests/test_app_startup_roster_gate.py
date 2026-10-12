@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from config.app_config import DiscoveryConfig
+from pmcopy.config.app_config import DiscoveryConfig
 
-from app import _should_wait_for_discovery_roster
+from pmcopy.app import _should_wait_for_discovery_roster
 
 
 def _config(**scheduler):

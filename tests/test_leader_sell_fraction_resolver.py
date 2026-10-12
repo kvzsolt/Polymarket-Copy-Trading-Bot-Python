@@ -12,11 +12,11 @@ from typing import cast
 
 import pytest
 
-from services.onchain_detection.leader_sell_fraction_resolver import (
+from pmcopy.services.onchain_detection.leader_sell_fraction_resolver import (
     LeaderSellFractionResolver,
     SellFractionResolutionCode,
 )
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )

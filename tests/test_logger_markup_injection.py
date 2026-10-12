@@ -13,7 +13,7 @@ import io
 
 import rich.console
 
-import utils.logger as logger_mod
+import pmcopy.utils.logger as logger_mod
 
 
 def _recording_console(monkeypatch):

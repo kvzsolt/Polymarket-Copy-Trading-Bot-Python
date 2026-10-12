@@ -4,7 +4,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from services.execution.coordinator import ExecutionCoordinator, ExecutionIntent
+from pmcopy.services.execution.coordinator import ExecutionCoordinator, ExecutionIntent
 
 
 async def test_copy_admission_rejects_before_reservation_or_venue_submission():

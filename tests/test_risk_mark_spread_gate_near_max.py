@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from services.risk.risk_monitor import (
+from pmcopy.services.risk.risk_monitor import (
     _fetch_and_store_price,
     _risk_mark_passes_sanity,
     RiskPriceCache,

@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from integrations.falcon.errors import FalconUnavailableError
-from services.discovery.falcon_candidate_service import (
+from pmcopy.integrations.falcon.errors import FalconUnavailableError
+from pmcopy.services.discovery.falcon_candidate_service import (
     FalconCandidateService,
     FalconDiscoveryPolicy,
 )

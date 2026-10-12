@@ -116,7 +116,7 @@ Limitations:
 - Recovery needs the persisted `token_id` and `condition_id`. Legacy rows
   whose sanitized request payload lacks either fail closed on every cycle
   and stay duplicate-blocking until an operator resolves them with
-  `python bot.py resolve`.
+  `pmcopy resolve`.
 - Absence is only accepted after repeated *consecutive* complete scans; a
   venue outage, an incomplete page, or a concurrent copy trade that moves
   the token position resets that counter. Slow resolution is the intended

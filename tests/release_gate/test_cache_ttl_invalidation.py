@@ -15,7 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-from cache.market_state_store import MarketStateStore
+from pmcopy.cache.market_state_store import MarketStateStore
 
 
 def test_invalidate_on_fill_clears_quote_and_book() -> None:

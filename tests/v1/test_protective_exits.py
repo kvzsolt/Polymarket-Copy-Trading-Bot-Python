@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.protective_exits import (
+from pmcopy.services.copy_tasks.protective_exits import (
     FillRiskLot,
     LayeredLevel,
     ProtectiveExitDecision,

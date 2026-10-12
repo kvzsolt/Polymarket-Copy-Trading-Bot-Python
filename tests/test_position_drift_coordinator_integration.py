@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.execution.coordinator import (
+from pmcopy.services.execution.coordinator import (
     ExecutionCoordinator,
     ExecutionIntent,
 )

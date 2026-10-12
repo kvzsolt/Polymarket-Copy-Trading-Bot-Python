@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from utils.getMyBalance import _get_balance_sync, get_my_balance
+from pmcopy.utils.getMyBalance import _get_balance_sync, get_my_balance
 
 
 @pytest.fixture()
@@ -28,13 +28,13 @@ def web3_returns(monkeypatch):
     def _go(raw_balance: int):
         # Module-level config singletons (legacy-kill slice #77 replaced
         # the previous ENV.get reads with these explicit module vars).
-        monkeypatch.setattr("utils.getMyBalance._RPC_URL", "https://rpc.example")
+        monkeypatch.setattr("pmcopy.utils.getMyBalance._RPC_URL", "https://rpc.example")
         monkeypatch.setattr(
-            "utils.getMyBalance._COLLATERAL_CONTRACT_ADDRESS",
+            "pmcopy.utils.getMyBalance._COLLATERAL_CONTRACT_ADDRESS",
             "0x1111111111111111111111111111111111111111",
         )
-        monkeypatch.setattr("utils.getMyBalance._PUSD_CONTRACT_ADDRESS", "")
-        monkeypatch.setattr("utils.getMyBalance._USDC_CONTRACT_ADDRESS", "")
+        monkeypatch.setattr("pmcopy.utils.getMyBalance._PUSD_CONTRACT_ADDRESS", "")
+        monkeypatch.setattr("pmcopy.utils.getMyBalance._USDC_CONTRACT_ADDRESS", "")
         w3_mock = MagicMock()
         w3_mock.eth.get_code.return_value = b"\x01"  # truthy bytecode = "contract exists"
         contract_mock = MagicMock()
@@ -44,7 +44,7 @@ def web3_returns(monkeypatch):
         web3_cls.return_value = w3_mock
         web3_cls.HTTPProvider = MagicMock()
         web3_cls.to_checksum_address = lambda a: a
-        monkeypatch.setattr("utils.getMyBalance.Web3", web3_cls)
+        monkeypatch.setattr("pmcopy.utils.getMyBalance.Web3", web3_cls)
 
         class FakeFallbackWeb3Provider:
             def __init__(self, rpc_url, fallback_rpc_url=""):
@@ -55,7 +55,7 @@ def web3_returns(monkeypatch):
                 return w3_mock
 
         monkeypatch.setattr(
-            "utils.getMyBalance.FallbackWeb3Provider",
+            "pmcopy.utils.getMyBalance.FallbackWeb3Provider",
             FakeFallbackWeb3Provider,
         )
         return w3_mock
@@ -86,7 +86,7 @@ def test_huge_balance_keeps_cent_precision(web3_returns):
 @pytest.mark.asyncio
 async def test_get_my_balance_async_returns_decimal():
     with patch(
-        "utils.getMyBalance._get_balance_sync",
+        "pmcopy.utils.getMyBalance._get_balance_sync",
         return_value=Decimal("42.50"),
     ):
         bal = await get_my_balance("0x3333333333333333333333333333333333333333")

@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-from config.app_config import AppConfig, DiscoveryConfig, FalconApiConfig
-from integrations.falcon.client import FalconClient
-from integrations.falcon.errors import (
+from pmcopy.config.app_config import AppConfig, DiscoveryConfig, FalconApiConfig
+from pmcopy.integrations.falcon.client import FalconClient
+from pmcopy.integrations.falcon.errors import (
     FalconAuthenticationError,
     FalconBadRequestError,
     FalconConfigurationError,
@@ -22,10 +22,10 @@ from integrations.falcon.errors import (
     FalconProtocolError,
     FalconUnavailableError,
 )
-from orchestrators.leader_registry import LeaderRegistry
-from orchestrators.runtime_discovery import AutoTraderStartupBurst
-from services.discovery import operator_cli
-from services.discovery.discovery_models import DiscoveryResult
+from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.runtime_discovery import AutoTraderStartupBurst
+from pmcopy.services.discovery import operator_cli
+from pmcopy.services.discovery.discovery_models import DiscoveryResult
 from tests.test_falcon_client import FakeHttpClient, FakeResponse, page
 
 PREMIUM_ENDPOINT = "https://retriever.falconapi.net/api/v2/semantic/retrieve/parameterized"
@@ -60,7 +60,7 @@ async def test_default_client_uses_premium_endpoint_and_one_bearer_header() -> N
 
 def test_both_shipped_configuration_defaults_use_premium_endpoint() -> None:
     """The model and tracked service configuration must select the same host."""
-    config_path = Path(__file__).resolve().parents[1] / "config" / "discovery.yml"
+    config_path = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "config" / "discovery.yml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     assert FalconApiConfig().base_url == PREMIUM_ENDPOINT

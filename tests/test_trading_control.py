@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot_cli.commands.trading import register_trading_command
-from services.executionService import ExecutionRequest, ExecutionService
-from services.trading_permission import (
+from pmcopy.bot_cli.commands.trading import register_trading_command
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.trading_permission import (
     SubmissionPurpose,
     TradingPausedError,
     TradingPermissionService,
 )
-from storage.postgres.trading_control_repo import TradingControlState
+from pmcopy.storage.postgres.trading_control_repo import TradingControlState
 from tests.conftest import make_exec_config
 
 
@@ -183,7 +183,7 @@ def test_trading_cli_requires_explicit_live_confirmation() -> None:
 
 
 def test_migration_creates_paused_singleton() -> None:
-    from storage.postgres.migrations import _CORE_DDL
+    from pmcopy.storage.postgres.migrations import _CORE_DDL
 
     ddl = "\n".join(_CORE_DDL)
     assert "CREATE TABLE IF NOT EXISTS trading_control" in ddl

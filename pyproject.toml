@@ -31,18 +31,17 @@ dev = [
 ]
 
 [project.scripts]
-pmcopy = "bot_cli.main:main"
+pmcopy = "pmcopy.bot_cli.main:main"
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["app", "bootstrap", "bot"]
 
 [tool.setuptools.package-data]
-"storage.postgres" = ["migrations/*.sql"]
-config = [
+"pmcopy.storage.postgres" = ["migrations/*.sql"]
+"pmcopy.config" = [
   "*.yml",
   "*.yaml",
   "traders/*.yml",
@@ -50,25 +49,10 @@ config = [
 ]
 
 [tool.setuptools.packages.find]
-include = [
-  "cache*",
-  "clients*",
-  "config*",
-  "interfaces*",
-  "ports*",
-  "models*",
-  "services*",
-  "utils*",
-  "domain*",
-  "orchestrators*",
-  "storage*",
-  "integrations*",
-  "bot_cli*",
-  "adapters*",
-  "application*",
-  "orchestration*",
-]
+where = ["src"]
+include = ["pmcopy*"]
 exclude = ["tests*", "legacy*"]
+namespaces = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

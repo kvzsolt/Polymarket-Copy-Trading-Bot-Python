@@ -19,11 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.models import VenueOrderState, VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.models import VenueOrderState, VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 import time as _time
 
 
@@ -55,7 +55,7 @@ def _make_exec_config(*, global_kill: bool = False, exec_kill: bool = False) -> 
         meta_cache_ttl_thin=30,
         kill_switch=exec_kill,
     )
-    from config.app_config import AppServiceConfig
+    from pmcopy.config.app_config import AppServiceConfig
 
     return SimpleNamespace(
         execution=ec,

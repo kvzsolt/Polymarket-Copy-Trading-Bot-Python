@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL, _asset_id
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL, _asset_id
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "market_wss"
 
@@ -181,7 +181,7 @@ class TestHeartbeat:
 
         mock_ws.send = mock_send
 
-        with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await market_ws._heartbeat(mock_ws)
             # Should have slept for HEARTBEAT_INTERVAL each time
             assert mock_sleep.call_count >= 2
@@ -198,7 +198,7 @@ class TestHeartbeat:
         mock_ws.send.side_effect = ConnectionError("pipe broken")
         market_ws._running = True
 
-        with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
             await market_ws._heartbeat(mock_ws)
             # Should return cleanly, not raise
 
@@ -377,8 +377,8 @@ class TestReconnect:
         mock_ctx.__aenter__ = connect_factory
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         # Bootstrap should have been called
@@ -417,8 +417,8 @@ class TestReconnect:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         # Bootstrap should have been called at least once with our asset IDs
@@ -476,7 +476,7 @@ class TestAssetId:
         assert _asset_id({}) is None
 
     def test_asset_id_no_print(self) -> None:
-        import clients.market_ws as mws_module
+        import pmcopy.clients.market_ws as mws_module
 
         src = inspect.getsource(mws_module._asset_id)
         assert "print(" not in src
@@ -765,7 +765,7 @@ class TestStaleErrorDebugState:
 
     @pytest.mark.asyncio
     async def test_stale_error_includes_debug_state(self, cache: MarketStateStore) -> None:
-        from services.market_data_service import MarketDataService, MarketDataPolicy, StaleDataError
+        from pmcopy.services.market_data_service import MarketDataService, MarketDataPolicy, StaleDataError
 
         gateway = MagicMock()
         policy = MarketDataPolicy(
@@ -795,7 +795,7 @@ class TestCodeQuality:
     """Verify no raw print() calls and no canary references remain."""
 
     def test_no_print_in_market_ws(self) -> None:
-        import clients.market_ws as mws_module
+        import pmcopy.clients.market_ws as mws_module
 
         src = inspect.getsource(mws_module)
         # Allow print only inside string literals (unlikely here); reject bare calls
@@ -803,13 +803,13 @@ class TestCodeQuality:
         assert lines == [], f"Raw print() found in market_ws.py: {lines}"
 
     def test_no_canary_in_market_ws(self) -> None:
-        import clients.market_ws as mws_module
+        import pmcopy.clients.market_ws as mws_module
 
         src = inspect.getsource(mws_module)
         assert "canary" not in src.lower()
 
     def test_no_canary_in_market_state_store(self) -> None:
-        import cache.market_state_store as mss_module
+        import pmcopy.cache.market_state_store as mss_module
 
         src = inspect.getsource(mss_module)
         assert "canary" not in src.lower()

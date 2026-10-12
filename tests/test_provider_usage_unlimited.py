@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.provider_budget import BudgetSettings
-from services.provider_gateway import ProviderGateway
-from storage.provider_budget import SqliteProviderBudget
+from pmcopy.domain.provider_budget import BudgetSettings
+from pmcopy.services.provider_gateway import ProviderGateway
+from pmcopy.storage.provider_budget import SqliteProviderBudget
 
 
 class FixedClock:

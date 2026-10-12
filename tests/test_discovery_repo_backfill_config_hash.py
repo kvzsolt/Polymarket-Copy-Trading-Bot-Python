@@ -12,7 +12,7 @@ import contextlib
 
 import pytest
 
-from storage.postgres.discovery_repo import DiscoveryRepo
+from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
 
 pytestmark = pytest.mark.asyncio
 

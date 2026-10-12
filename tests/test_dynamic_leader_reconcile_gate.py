@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app import _wallets_blocked_by_reconcile_failures
+from pmcopy.app import _wallets_blocked_by_reconcile_failures
 
 
 def _ctx(user_id: str) -> SimpleNamespace:
@@ -65,7 +65,7 @@ def test_unknown_wallet_does_not_crash() -> None:
 # the leader monitors spawn.
 # ---------------------------------------------------------------------------
 
-from app import _cold_start_monitored_after_reconcile  # noqa: E402
+from pmcopy.app import _cold_start_monitored_after_reconcile  # noqa: E402
 
 
 def test_cold_start_no_failures_returns_all() -> None:

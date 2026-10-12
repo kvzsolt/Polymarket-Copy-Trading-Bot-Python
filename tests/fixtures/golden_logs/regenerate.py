@@ -53,13 +53,14 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from rich.console import Console  # noqa: E402
 
-from utils import logger as logger_module  # noqa: E402
-from utils.logger import (  # noqa: E402
+from pmcopy.utils import logger as logger_module  # noqa: E402
+from pmcopy.utils.logger import (  # noqa: E402
     APP_NAME,
     DEFAULT_BACKUP_COUNT,
     DEFAULT_LOG_SUBDIR,
@@ -152,7 +153,7 @@ def _normalize_jsonl_line(line: str) -> str:
 
 def _build_startup_health_report():
     """Construct a synthetic StartupHealthReport via the production dataclasses."""
-    from orchestrators.startup_health import (
+    from pmcopy.orchestrators.startup_health import (
         OrderStartupCleanupResult,
         PositionSyncResult,
         StartupHealthCheckItem,

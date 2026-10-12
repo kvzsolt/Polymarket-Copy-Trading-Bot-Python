@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestrators.runtime_summary import print_startup_summary
-from orchestrators.startup_health import (
+from pmcopy.orchestrators.runtime_summary import print_startup_summary
+from pmcopy.orchestrators.startup_health import (
     OrderStartupCleanupResult,
     PositionSyncResult,
     StartupHealthCheckItem,
@@ -26,8 +26,8 @@ from orchestrators.startup_health import (
     perform_startup_health_check,
     reconcile_persisted_positions_to_live,
 )
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 
 @contextlib.asynccontextmanager
@@ -35,7 +35,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -226,7 +226,7 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
 ) -> None:
     env = _summary_env()
     monkeypatch.setattr(
-        "config.app_config.sys.version_info",
+        "pmcopy.config.app_config.sys.version_info",
         SimpleNamespace(major=3, minor=14),
     )
     from tests.config_helpers import load_test_config
@@ -270,8 +270,8 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
     )
 
     with (
-        patch("orchestrators.runtime_summary.console.print"),
-        patch("orchestrators.runtime_summary.logger.info") as log_info,
+        patch("pmcopy.orchestrators.runtime_summary.console.print"),
+        patch("pmcopy.orchestrators.runtime_summary.logger.info") as log_info,
     ):
         print_startup_summary(
             wallet=env["FUNDER_ADDRESS"],
@@ -337,8 +337,8 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
         async def _ok_api():
             return StartupHealthCheckItem(status="ok", message="Polymarket API responding")
 
-        monkeypatch.setattr("orchestrators.startup_health._check_rpc", _ok_rpc)
-        monkeypatch.setattr("orchestrators.startup_health._check_polymarket_api", _ok_api)
+        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_rpc", _ok_rpc)
+        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_polymarket_api", _ok_api)
 
         report = await perform_startup_health_check(
             wallet="0xabc",
@@ -388,8 +388,8 @@ async def test_perform_startup_health_check_fails_when_orders_repo_missing(monke
         async def _ok_api():
             return StartupHealthCheckItem(status="ok", message="Polymarket API responding")
 
-        monkeypatch.setattr("orchestrators.startup_health._check_rpc", _ok_rpc)
-        monkeypatch.setattr("orchestrators.startup_health._check_polymarket_api", _ok_api)
+        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_rpc", _ok_rpc)
+        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_polymarket_api", _ok_api)
 
         report = await perform_startup_health_check(
             wallet="0xabc",

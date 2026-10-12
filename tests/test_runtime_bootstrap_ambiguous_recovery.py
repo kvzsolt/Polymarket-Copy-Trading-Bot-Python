@@ -14,12 +14,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from config.app_config import AmbiguousRecoveryConfig
-from orchestrators.runtime_bootstrap import (
+from pmcopy.config.app_config import AmbiguousRecoveryConfig
+from pmcopy.orchestrators.runtime_bootstrap import (
     _build_ambiguous_recovery_service,
     ambiguous_recovery_loop,
 )
-from services.execution.ambiguous_recovery import AmbiguousSubmissionRecoveryService
+from pmcopy.services.execution.ambiguous_recovery import AmbiguousSubmissionRecoveryService
 
 pytestmark = pytest.mark.asyncio
 

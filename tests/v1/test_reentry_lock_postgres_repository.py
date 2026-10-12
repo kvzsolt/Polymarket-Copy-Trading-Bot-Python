@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.reentry_lock import (
     MarketReentryKey,
     MarketReentryLock,
     ProtectiveExitReason,
 )
-from storage.postgres.market_reentry_lock_repository import (
+from pmcopy.storage.postgres.market_reentry_lock_repository import (
     PostgresMarketReentryLockRepository,
 )
 

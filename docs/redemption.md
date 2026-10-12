@@ -12,10 +12,10 @@ defaults to open markets. Redemption explicitly looks up each condition with
 Closed status does not prove resolution: Polygon payout data remains authoritative.
 
 ```bash
-python bot.py redeem                     # preview; no signature, database, or transaction
-python bot.py redeem --json              # preview as JSON; exact amounts are strings
-python bot.py redeem --execute           # submit gasless redemptions
-python bot.py redeem --user-id FOLLOWER --execute
+pmcopy redeem                     # preview; no signature, database, or transaction
+pmcopy redeem --json              # preview as JSON; exact amounts are strings
+pmcopy redeem --execute           # submit gasless redemptions
+pmcopy redeem --user-id FOLLOWER --execute
 ```
 
 `--dry-run` explicitly selects the default preview behavior and cannot be combined
@@ -130,7 +130,7 @@ Metadata errors block new signing and submission for the affected condition:
 
 Invalid, conflicting, and unavailable responses never trigger the open-market
 fallback or bypass identity checks. Changing Relayer credentials cannot fix these
-public metadata failures. Review the error and rerun `python bot.py redeem` to
+public metadata failures. Review the error and rerun `pmcopy redeem` to
 preview. The reconciliation reminder is shown only when the report contains an
 actual pending attempt, including one whose transaction reference is unknown.
 

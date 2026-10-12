@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
 from tests.test_aethertrade_fill_evidence import FillClock, fill_record
 from tests.test_fills_repo_dedup_key import _pg_pool
 
@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def projection():
-    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
 
     return PostgresFillEvidenceProjection(clock=FillClock())
 
@@ -91,7 +91,7 @@ async def test_reconciliation_links_only_scoped_explicit_order_metadata():
 
 
 async def test_local_append_then_crash_replays_same_event_and_only_marks_after_durability(tmp_path):
-    from storage.postgres.evidence_drain import PostgresEvidenceDrain
+    from pmcopy.storage.postgres.evidence_drain import PostgresEvidenceDrain
     from tests.test_aethertrade_evidence_outbox import outbox
 
     async with _pg_pool() as pool:
@@ -118,7 +118,7 @@ async def test_local_append_then_crash_replays_same_event_and_only_marks_after_d
 
 
 async def test_drain_rejects_corrupted_identity_without_marking_or_publishing():
-    from storage.postgres.evidence_drain import PostgresEvidenceDrain
+    from pmcopy.storage.postgres.evidence_drain import PostgresEvidenceDrain
 
     async with _pg_pool() as pool:
         await FillsRepo(pool, evidence_projection=projection()).append_fill(fill_record())
@@ -151,7 +151,7 @@ async def test_recovered_sell_keeps_inventory_absent_and_unattributed_evidence()
 
 
 async def test_drain_bounds_each_batch_and_retains_later_fill_evidence(tmp_path):
-    from storage.postgres.evidence_drain import PostgresEvidenceDrain
+    from pmcopy.storage.postgres.evidence_drain import PostgresEvidenceDrain
     from tests.test_aethertrade_evidence_outbox import outbox
 
     async with _pg_pool() as pool:
@@ -170,7 +170,7 @@ async def test_drain_bounds_each_batch_and_retains_later_fill_evidence(tmp_path)
 
 @pytest.mark.parametrize("mode", ["paper", "live", "unknown"])
 async def test_projection_never_relabels_execution_source(mode):
-    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
 
     async with _pg_pool() as pool:
         fills = FillsRepo(
@@ -184,7 +184,7 @@ async def test_projection_never_relabels_execution_source(mode):
 
 
 async def test_recovery_uses_original_mode_and_legacy_unknown_after_mode_change():
-    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
 
     async with _pg_pool() as pool:
         fills = FillsRepo(

@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interfaces.clob_gateway import ClobGateway
-from services.copy_tasks.domain import CopyTaskStatus
-from services.copy_tasks.entry_permission import TaskEntryPermissionService
-from services.copy_tasks.service import InMemoryCopyTaskRepository
-from services.executionService import ExecutionService
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.services.copy_tasks.domain import CopyTaskStatus
+from pmcopy.services.copy_tasks.entry_permission import TaskEntryPermissionService
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.executionService import ExecutionService
 from tests.test_execution_fak_repost_ambiguity import _make_config, _mock_mds, _order_repo, _req
 from tests.v1.test_copy_task_event_routing import _NOW, task
 

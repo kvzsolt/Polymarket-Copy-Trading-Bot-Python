@@ -5,9 +5,9 @@ from decimal import Decimal
 
 import pytest
 
-import integrations.polymarket.ccxt_prediction_gateway as gateway_module
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.errors import (
+import pmcopy.integrations.polymarket.ccxt_prediction_gateway as gateway_module
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.errors import (
     VenueHistoryIncompleteError,
     VenueSchemaError,
     VenueUnavailableError,

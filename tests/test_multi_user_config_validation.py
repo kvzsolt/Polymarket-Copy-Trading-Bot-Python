@@ -38,8 +38,8 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-import config.app_config as app_config_mod
-from services.multiUserConfig import load_runtime_users
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.services.multiUserConfig import load_runtime_users
 from tests.config_helpers import load_test_config
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -548,7 +548,7 @@ def test_configless_fallback_is_not_explicit(tmp_path, monkeypatch):
 
 
 def test_app_rejects_duplicate_user_state_registration():
-    from app import _reject_duplicate_user_state
+    from pmcopy.app import _reject_duplicate_user_state
 
     states: dict[str, object] = {"dup-user": object()}
     with pytest.raises(ValueError, match="dup-user"):
@@ -556,7 +556,7 @@ def test_app_rejects_duplicate_user_state_registration():
 
 
 def test_app_allows_first_user_state_registration():
-    from app import _reject_duplicate_user_state
+    from pmcopy.app import _reject_duplicate_user_state
 
     states: dict[str, object] = {}
     # A fresh id raises nothing; the caller then performs the assignment.

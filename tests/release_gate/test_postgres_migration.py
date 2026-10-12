@@ -92,7 +92,7 @@ def _pg_container():
 async def test_migration_creates_every_expected_table(_pg_container) -> None:
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -116,7 +116,7 @@ async def test_migration_is_idempotent(_pg_container) -> None:
     """Re-applying must not raise — every statement is IF NOT EXISTS."""
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -135,7 +135,7 @@ async def test_discovery_reset_preserves_existing_trading_rows(_pg_container) ->
     """The destructive rewrite is scoped to superseded discovery data."""
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -188,7 +188,7 @@ async def test_positions_table_has_3col_pk(_pg_container) -> None:
     carries over to PG."""
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -226,7 +226,7 @@ async def test_orders_order_id_unique_partial_index_present(_pg_container) -> No
     Postgres translation."""
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -257,7 +257,7 @@ async def test_order_identity_columns_are_additive_and_preserve_rows(_pg_contain
     """
     import asyncpg
 
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -331,9 +331,9 @@ async def test_position_lifecycle_upgrade_preserves_holdings_and_exact_claims(_p
     """An additive upgrade retains old rows and distinguishes active from settled."""
     import asyncpg
     from decimal import Decimal
-    from domain.position_lifecycle import PositionLifecycle
-    from storage.postgres.migrations import apply_migrations
-    from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+    from pmcopy.domain.position_lifecycle import PositionLifecycle
+    from pmcopy.storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
         "postgresql+asyncpg://", "postgresql://"
@@ -379,8 +379,8 @@ async def test_guarded_prune_uses_durable_order_scope_and_retains_pending_orders
     import asyncpg
     import json
     from decimal import Decimal
-    from storage.postgres.migrations import apply_migrations
-    from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+    from pmcopy.storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
     from tests.test_positions_repo_set_position_size import VALID_TOKEN
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
@@ -430,11 +430,11 @@ async def test_market_capacity_sql_excludes_settled_holdings(_pg_container):
     """Held-inventory capacity over the real schema ignores settled holdings."""
     import asyncpg
     from decimal import Decimal
-    from domain.position_lifecycle import PositionLifecycle
-    from storage.postgres.migrations import apply_migrations
-    from storage.postgres.positions_repo import PositionRecord, PositionsRepo
-    from storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
-    from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason
+    from pmcopy.domain.position_lifecycle import PositionLifecycle
+    from pmcopy.storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
+    from pmcopy.storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
+    from pmcopy.domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason
     from tests.test_active_position_query_contract import FixedClock
 
     dsn = _pg_container.get_connection_url(driver="asyncpg").replace(

@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-import utils.dayEquity as day_eq
+import pmcopy.utils.dayEquity as day_eq
 
 
 @pytest.fixture()

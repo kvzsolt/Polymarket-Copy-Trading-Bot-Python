@@ -6,18 +6,18 @@ from decimal import Decimal
 
 from eth_abi import encode
 
-from config.addresses import (
+from pmcopy.config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
 )
-from services.onchain_detection.calldata_decoder import MATCH_ORDERS_SELECTOR
-from services.onchain_detection.pending_tx_detector import (
+from pmcopy.services.onchain_detection.calldata_decoder import MATCH_ORDERS_SELECTOR
+from pmcopy.services.onchain_detection.pending_tx_detector import (
     PendingTxConfig,
     build_signals_from_pending_tx,
     is_stale_pending,
     pending_subscription_params,
 )
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     MAKER_SIDE_BUY,
     MAKER_SIDE_SELL,
@@ -247,7 +247,7 @@ def test_build_signals_neg_risk_exchange() -> None:
 
 
 def test_is_stale_pending_true_for_old_signal() -> None:
-    from services.onchain_detection.trade_detection_models import OnchainTradeSignal
+    from pmcopy.services.onchain_detection.trade_detection_models import OnchainTradeSignal
 
     sig = OnchainTradeSignal(
         leader_wallet=_WATCHED,

@@ -53,6 +53,10 @@ ENV/
 .env.local
 config/runtime.local.yml
 config/bot.toml
+src/pmcopy/config/runtime.local.yml
+src/pmcopy/config/bot.toml
+src/pmcopy/config/data/
+src/pmcopy/config/logs/
 .kilo
 
 # Generated config-local runtime state

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
@@ -78,7 +78,7 @@ async def test_reconcile_drift_deletes_position_when_live_is_zero():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -117,7 +117,7 @@ async def test_reconcile_drift_shrinks_position_when_live_is_smaller():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -157,7 +157,7 @@ async def test_reconcile_drift_no_drift_when_sizes_match():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -223,7 +223,7 @@ async def test_reconcile_drift_subsequent_sell_uses_updated_size():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -268,7 +268,7 @@ async def test_reconcile_drift_works_without_audit_logger():
         audit_logger=None,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -301,7 +301,7 @@ async def test_reconcile_drift_works_without_audit_logger():
 @pytest.mark.asyncio
 async def test_reconcile_drift_delete_path_cleans_reservations():
     """When drift results in deletion (live_size=0), active SELL reservations are released."""
-    from domain.order_lifecycle import IntentSide, IntentReason
+    from pmcopy.domain.order_lifecycle import IntentSide, IntentReason
 
     pos_repo = MockPositionsRepo()
     audit = MockAuditLogger()
@@ -311,7 +311,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
             self.released = []
 
         async def list_active_for_scope(self, user_id, condition_id, token_id):
-            from domain.order_lifecycle import Reservation
+            from pmcopy.domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
 
             return [
@@ -365,7 +365,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(
@@ -401,7 +401,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
 @pytest.mark.asyncio
 async def test_reconcile_drift_shrink_path_coversized_reservations():
     """When drift results in shrink, SELL reservations larger than new position are released."""
-    from domain.order_lifecycle import IntentSide, IntentReason
+    from pmcopy.domain.order_lifecycle import IntentSide, IntentReason
 
     pos_repo = MockPositionsRepo()
     audit = MockAuditLogger()
@@ -411,7 +411,7 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
             self.released = []
 
         async def list_active_for_scope(self, user_id, condition_id, token_id):
-            from domain.order_lifecycle import Reservation
+            from pmcopy.domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
 
             return [
@@ -465,7 +465,7 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
         audit_logger=audit,
     )
 
-    from storage.postgres.positions_repo import PositionRecord
+    from pmcopy.storage.postgres.positions_repo import PositionRecord
 
     await pos_repo.upsert_position(
         PositionRecord(

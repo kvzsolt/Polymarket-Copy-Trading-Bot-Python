@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from orchestrators import trade_pipeline
-from services.leader_performance import ClosedEpisodeStats, FollowerLeaderKey
+from pmcopy.orchestrators import trade_pipeline
+from pmcopy.services.leader_performance import ClosedEpisodeStats, FollowerLeaderKey
 from tests.config_helpers import load_test_config
 
 

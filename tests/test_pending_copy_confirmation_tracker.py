@@ -18,7 +18,7 @@ import logging
 
 import pytest
 
-from services.metrics import (
+from pmcopy.services.metrics import (
     GAUGE_PENDING_COPY_TRACKED,
     METRIC_PENDING_COPY_CONFIRMED,
     METRIC_PENDING_COPY_TRACKER_DROPPED,
@@ -26,7 +26,7 @@ from services.metrics import (
     MetricsRegistry,
     TELEMETRY_METRIC_SCHEMAS,
 )
-from services.onchain_detection.pending_copy_confirmation_tracker import (
+from pmcopy.services.onchain_detection.pending_copy_confirmation_tracker import (
     PendingCopyConfirmationTracker,
     TrackedPendingCopy,
 )
@@ -382,13 +382,13 @@ async def test_concurrent_polls_are_bounded() -> None:
 
 
 async def test_unconfirmed_emits_a_bounded_detection_failure_event() -> None:
-    from services.telemetry.contracts import (
+    from pmcopy.services.telemetry.contracts import (
         FailureComponent,
         FailureEvent,
         TelemetryProducer,
     )
-    from services.telemetry.hub import TelemetryHub
-    from services.telemetry.service import TelemetryService
+    from pmcopy.services.telemetry.hub import TelemetryHub
+    from pmcopy.services.telemetry.service import TelemetryService
 
     registry = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
     service = TelemetryService(

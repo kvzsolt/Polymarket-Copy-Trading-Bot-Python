@@ -1,8 +1,8 @@
 """Unit tests for order lifecycle state machine transitions."""
 
 import pytest
-from domain.order_lifecycle import OrderLifecycleStatus
-from services.execution.state_machine import assert_transition_allowed
+from pmcopy.domain.order_lifecycle import OrderLifecycleStatus
+from pmcopy.services.execution.state_machine import assert_transition_allowed
 
 
 def test_valid_transitions():

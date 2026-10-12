@@ -6,7 +6,7 @@ venue, reconciliation or an explicit operator decision must resolve it.
 
 from __future__ import annotations
 
-from services.execution.submission import (
+from pmcopy.services.execution.submission import (
     is_pending_submission_expired,
     is_retry_blocking_existing,
 )

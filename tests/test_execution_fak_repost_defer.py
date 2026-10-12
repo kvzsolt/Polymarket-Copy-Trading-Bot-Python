@@ -11,7 +11,7 @@ buying the already-filled portion. Any POST that produced an order id is
 reconciler-owned and must not be reposted.
 """
 
-from services.executionService import _is_fak_repostable_no_fill
+from pmcopy.services.executionService import _is_fak_repostable_no_fill
 
 
 def test_partial_fill_then_cancel_with_order_id_is_not_reposted():

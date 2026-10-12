@@ -7,8 +7,8 @@ import asyncpg
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from storage.postgres import migrations
-from storage.postgres.v1_migration_runner import PostgresV1MigrationRunner, V1MigrationCatalog
+from pmcopy.storage.postgres import migrations
+from pmcopy.storage.postgres.v1_migration_runner import PostgresV1MigrationRunner, V1MigrationCatalog
 
 
 @pytest.mark.asyncio

@@ -15,8 +15,8 @@ OUTPUT_JSON = Path("data/followable_traders.json")
 
 
 async def main() -> None:
-    from bootstrap import build_app
-    from storage.postgres.connection import shutdown_pool
+    from pmcopy.bootstrap import build_app
+    from pmcopy.storage.postgres.connection import shutdown_pool
 
     application = await build_app()
     try:
@@ -41,7 +41,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    from utils.event_loop import new_event_loop
+    from pmcopy.utils.event_loop import new_event_loop
 
     with asyncio.Runner(loop_factory=new_event_loop) as runner:
         runner.run(main())

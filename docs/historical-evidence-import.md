@@ -5,7 +5,7 @@ only the supplied plan file; it does not load runtime configuration, open a job
 journal, admit RPC requests, instantiate an evidence publisher, or trade.
 
 ```sh
-PYTHONPATH=. .venv/bin/python -m bot_cli.main history-import --plan /reviewed/history-plan.json
+PYTHONPATH=src .venv/bin/python -m pmcopy.bot_cli.main history-import --plan /reviewed/history-plan.json
 ```
 
 Explicit collection uses the existing `ProviderRuntime` admission ledger and its
@@ -15,7 +15,7 @@ unmetered transport. Every request uses `category="backfill"` and is subject to
 both the shared provider limits and this job's durable request/CU limits.
 
 ```sh
-PYTHONPATH=. .venv/bin/python -m bot_cli.main history-import \
+PYTHONPATH=src .venv/bin/python -m pmcopy.bot_cli.main history-import \
   --plan /reviewed/history-plan.json \
   --journal /var/lib/pmcopy/history-reviewed-job.sqlite3 \
   --execute-read-only

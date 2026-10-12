@@ -20,7 +20,7 @@ class FixedClock:
 
 def event(number=1, **changes):
     """Build a standalone exact book event through the producer boundary."""
-    from integrations.pmrecon.codec import PmreconEvidenceCodec
+    from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
 
     return PmreconEvidenceCodec.encode(
         {
@@ -37,7 +37,7 @@ def event(number=1, **changes):
 
 def outbox(path, **kwargs):
     """Inject a fixed clock and return a local SQLite producer."""
-    from storage.evidence_outbox import SqliteEvidenceOutbox
+    from pmcopy.storage.evidence_outbox import SqliteEvidenceOutbox
 
     return SqliteEvidenceOutbox(path, clock=FixedClock(), **kwargs)
 
@@ -340,7 +340,7 @@ def test_failure_during_quarantine_transaction_never_reenables_delivery(tmp_path
 
 
 def test_manually_corrupted_event_fails_safe_and_records_loss(tmp_path):
-    from domain.evidence import EvidenceEvent
+    from pmcopy.domain.evidence import EvidenceEvent
 
     box = outbox(tmp_path / "box")
     with pytest.raises(ValueError, match="evidence_invalid_payload"):

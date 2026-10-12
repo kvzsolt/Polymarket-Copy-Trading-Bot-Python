@@ -7,15 +7,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from domain.grouped_detection import TraderDetectionPolicy
-from domain.provider_budget import BudgetExhausted
-from storage.detection_state import SqliteDetectionState
+from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+from pmcopy.domain.provider_budget import BudgetExhausted
+from pmcopy.storage.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER
 
 
 def test_grouped_config_defaults_and_per_owner_policy_are_typed() -> None:
     """Current and future configured owners default to Alchemy mined detection."""
-    from config.app_config import _LayeredModel
+    from pmcopy.config.app_config import _LayeredModel
 
     config = _LayeredModel.model_validate(
         {"detection": {"native": {"traders": [{"wallet": OWNER, "mode": "pending"}]}}}
@@ -31,7 +31,7 @@ def test_grouped_config_defaults_and_per_owner_policy_are_typed() -> None:
 
 def test_production_composition_has_no_rest_trade_monitor_or_legacy_source_fallback() -> None:
     """Neither startup nor nested dynamic discovery can create REST trade loops."""
-    tree = ast.parse(Path("app.py").read_text())
+    tree = ast.parse(Path("src/pmcopy/app.py").read_text())
     runtime = next(
         node
         for node in tree.body
@@ -54,8 +54,8 @@ async def test_runtime_budget_failure_pauses_without_retries_or_restarting_risk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A hard provider budget stop affects entries while other application loops remain owned elsewhere."""
-    from orchestrators.native_detection_runtime import NativeDetectionRuntime
-    from utils.logger import get_logger
+    from pmcopy.orchestrators.native_detection_runtime import NativeDetectionRuntime
+    from pmcopy.utils.logger import get_logger
 
     app_logger = get_logger()
     monkeypatch.setattr(app_logger, "handlers", [caplog.handler])
@@ -97,7 +97,7 @@ async def test_empty_roster_never_opens_and_new_roster_stays_awaiting_restart(
     tmp_path: Path,
 ) -> None:
     """Dynamic owners remain visible but cannot start an unacknowledged source."""
-    from orchestrators.native_detection_runtime import NativeDetectionRuntime
+    from pmcopy.orchestrators.native_detection_runtime import NativeDetectionRuntime
 
     state = SqliteDetectionState(tmp_path / "state")
     factory = Mock()
@@ -118,7 +118,7 @@ async def test_unsupported_trader_does_not_disable_other_approved_owner_groups(
     tmp_path: Path,
 ) -> None:
     """Provider unavailability is visible per trader and never widens a subscription."""
-    from orchestrators.native_detection_runtime import NativeDetectionRuntime
+    from pmcopy.orchestrators.native_detection_runtime import NativeDetectionRuntime
 
     state = SqliteDetectionState(tmp_path / "state")
     groups_seen = []

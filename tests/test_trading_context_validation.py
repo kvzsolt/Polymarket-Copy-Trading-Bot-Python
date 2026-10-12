@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from application.trading_context import TradingContext
+from pmcopy.application.trading_context import TradingContext
 
 
 def _make_mock_config() -> MagicMock:

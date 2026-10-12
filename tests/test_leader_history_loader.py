@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.strategy_profile.leader_history_loader import LeaderHistoryLoader, LoadedHistory
+from pmcopy.services.strategy_profile.leader_history_loader import LeaderHistoryLoader, LoadedHistory
 
 
 def _mk_activity_rows(n: int) -> list[dict]:

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-CONFIG_ROOT: Path = Path(__file__).resolve().parents[1] / "config"
+CONFIG_ROOT: Path = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "config"
 REQUIRED_GUIDE_MARKERS: tuple[str, ...] = (
     "# Configuration guide",
     "# Options:",

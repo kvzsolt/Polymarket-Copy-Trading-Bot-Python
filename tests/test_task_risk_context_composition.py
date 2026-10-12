@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-import app
+import pmcopy.app as app
 
 
 def test_task_composition_includes_risk_only_context_and_deduplicates_shared_context():

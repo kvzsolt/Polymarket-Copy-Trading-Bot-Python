@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from services.healthServer import (
+from pmcopy.services.healthServer import (
     _DEFAULT_HEARTBEAT_STALENESS_SECONDS,
     _MIN_HEARTBEAT_STALENESS_SECONDS,
     ReadinessTracker,
@@ -47,7 +47,7 @@ async def test_readiness_tracker_logic():
 async def test_health_server_setup():
     tracker = ReadinessTracker()
     # Test that start_health_server correctly wires the tracker
-    with patch("services.healthServer.web.TCPSite") as site_cls:
+    with patch("pmcopy.services.healthServer.web.TCPSite") as site_cls:
         site_instance = AsyncMock()
         site_cls.return_value = site_instance
 
@@ -63,7 +63,7 @@ async def test_health_server_setup():
 async def test_metrics_server_uses_validated_bind_host_from_env():
     tracker = ReadinessTracker()
     with patch.dict("os.environ", {"METRICS_BIND_HOST": "127.0.0.1"}, clear=True):
-        with patch("services.healthServer.web.TCPSite") as site_cls:
+        with patch("pmcopy.services.healthServer.web.TCPSite") as site_cls:
             site_instance = AsyncMock()
             site_cls.return_value = site_instance
 
@@ -83,7 +83,7 @@ def test_strict_ready_when_heartbeats_fresh():
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
     # Both loops ticked 10s ago — well within the 90s budget.
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         tracker.update(
             last_trade_poll_ts=1_000_000 - 10,
             last_risk_check_ts=1_000_000 - 10,
@@ -96,7 +96,7 @@ def test_strict_ready_when_heartbeats_fresh():
 def test_strict_not_ready_when_trade_poll_heartbeat_stale():
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         # Trade-poll loop ticked 5 minutes ago then went silent; risk loop fresh.
         tracker.update(
             last_trade_poll_ts=1_000_000 - 300,
@@ -111,7 +111,7 @@ def test_strict_not_ready_when_trade_poll_heartbeat_stale():
 def test_strict_not_ready_when_risk_check_heartbeat_stale():
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         tracker.update(
             last_trade_poll_ts=1_000_000 - 5,
             last_risk_check_ts=1_000_000 - 300,
@@ -133,7 +133,7 @@ def test_strict_not_penalized_before_first_tick_fail_closed_on_subsystems():
     fresh = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(fresh)
     # default ts == 0 for both heartbeats
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         ok, failed = fresh.is_ready(strict=True)
     assert ok is True, f"never-ticked heartbeats must not block ready: {failed}"
     assert "trade_poll_stale" not in failed
@@ -144,7 +144,7 @@ def test_strict_disabled_risk_loop_does_not_block_ready():
     """Risk loop disabled → last_risk_check_ts stays 0 forever → not stale."""
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         # Trade-poll alive; risk loop never ticks (disabled).
         tracker.update(last_trade_poll_ts=1_000_000 - 5)
         ok, failed = tracker.is_ready(strict=True)
@@ -154,7 +154,7 @@ def test_strict_disabled_risk_loop_does_not_block_ready():
 def test_non_numeric_heartbeat_is_treated_as_stale():
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
-    with patch("services.healthServer.time.time", return_value=1_000_000):
+    with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
         tracker.update(last_trade_poll_ts="corrupt", last_risk_check_ts=1_000_000 - 5)
         ok, failed = tracker.is_ready(strict=True)
     assert ok is False
@@ -178,13 +178,13 @@ async def test_health_ready_endpoint_returns_503_on_stale_heartbeat():
     tracker = ReadinessTracker(heartbeat_staleness_seconds=90.0)
     _all_subsystems_ready(tracker)
 
-    with patch("services.healthServer.web.TCPSite") as site_cls:
+    with patch("pmcopy.services.healthServer.web.TCPSite") as site_cls:
         site_cls.return_value = AsyncMock()
         runner = await start_health_server(port=9102, tracker=tracker)
 
     try:
         # Drive a deterministic "now" so the stale check is reproducible.
-        with patch("services.healthServer.time.time", return_value=1_000_000):
+        with patch("pmcopy.services.healthServer.time.time", return_value=1_000_000):
             tracker.update(
                 last_trade_poll_ts=1_000_000 - 5,
                 last_risk_check_ts=1_000_000 - 5,

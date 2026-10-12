@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.idempotency import compute_effective_key
-from utils.idempotency import build_trade_key
+from pmcopy.services.idempotency import compute_effective_key
+from pmcopy.utils.idempotency import build_trade_key
 
 
 def _trade(**overrides) -> dict:

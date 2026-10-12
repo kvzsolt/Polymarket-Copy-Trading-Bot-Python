@@ -15,8 +15,8 @@ import asyncio
 
 import pytest
 
-from domain.position_key import PositionKey
-from services.positionActionCoordinator import PositionActionCoordinator
+from pmcopy.domain.position_key import PositionKey
+from pmcopy.services.positionActionCoordinator import PositionActionCoordinator
 
 
 def _scope(token: str = "tokA") -> PositionKey:

@@ -9,25 +9,25 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     CopyTaskStatus,
     MonitoringMode,
     TaskSpendPolicy,
 )
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.reentry_lock import (
     MarketReentryKey,
     MarketReentryLock,
     ProtectiveExitReason,
 )
-from storage.postgres.copy_task_repository import PostgresCopyTaskRepository
-from storage.postgres.market_reentry_lock_repository import (
+from pmcopy.storage.postgres.copy_task_repository import PostgresCopyTaskRepository
+from pmcopy.storage.postgres.market_reentry_lock_repository import (
     PostgresMarketReentryLockRepository,
 )
-from storage.postgres.migrations import apply_migrations, apply_v1_migrations
-from storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
+from pmcopy.storage.postgres.migrations import apply_migrations, apply_v1_migrations
+from pmcopy.storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
 
 
 @contextlib.asynccontextmanager
@@ -160,7 +160,7 @@ async def test_v1_schema_supports_reentry_lock_round_trip() -> None:
 async def test_v1_schema_supports_task_budget_reservation_round_trip() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from services.copy_tasks.budget import TaskBudgetKey, TaskBudgetReservationRequest
+    from pmcopy.services.copy_tasks.budget import TaskBudgetKey, TaskBudgetReservationRequest
 
     async with _pg_pool() as pool:
         async with pool.acquire() as conn:

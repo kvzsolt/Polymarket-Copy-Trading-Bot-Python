@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from domain.grouped_detection import TraderDetectionPolicy
-from domain.provider_budget import BudgetExhausted
-from domain.source_time import TransportReceipt
-from services.grouped_detection import DetectionSubscription
-from storage.detection_state import SqliteDetectionState
+from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+from pmcopy.domain.provider_budget import BudgetExhausted
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.storage.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
 
 
@@ -35,7 +35,7 @@ class SessionFixture:
 
     def build(self, **kwargs: object):
         """Construct only after the test imports the newly implemented boundary."""
-        from clients.network.grouped_websocket import GroupedWebSocketSession
+        from pmcopy.clients.network.grouped_websocket import GroupedWebSocketSession
 
         return GroupedWebSocketSession(
             groups=(DetectionSubscription("alchemy", "mined", (OWNER,)),),
@@ -74,7 +74,7 @@ async def test_budget_rejection_prevents_subscription_send(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_all_bytes_are_charged_and_original_arrival_precedes_recovery(tmp_path: Path) -> None:
     """Buffered notification clocks remain original; native callbacks see exact logs."""
-    from clients.network.grouped_websocket import StreamUnavailable
+    from pmcopy.clients.network.grouped_websocket import StreamUnavailable
 
     frames = [{"jsonrpc": "2.0", "id": 1, "result": "s1"}, notification(LogFixture.make())]
     fixture = SessionFixture(tmp_path / "state", frames)
@@ -114,7 +114,7 @@ async def test_delivered_budget_failure_is_visible_and_never_decoded(tmp_path: P
 @pytest.mark.asyncio
 async def test_malformed_or_unknown_subscription_stops_without_payload_leak(tmp_path: Path) -> None:
     """Unknown upstream data cannot bypass configured groups or leak in an error."""
-    from clients.network.grouped_websocket import StreamUnavailable
+    from pmcopy.clients.network.grouped_websocket import StreamUnavailable
 
     frames = [{"jsonrpc": "2.0", "id": 1, "result": "s1"}, {"error": "credential-secret"}]
     fixture = SessionFixture(tmp_path / "state", frames)
@@ -128,7 +128,7 @@ async def test_malformed_or_unknown_subscription_stops_without_payload_leak(tmp_
 @pytest.mark.asyncio
 async def test_infura_cannot_open_unmetered_standing_logs(tmp_path: Path) -> None:
     """Infura is available only through bounded RPC recovery until block billing exists."""
-    from clients.network.grouped_websocket import GroupedWebSocketSession
+    from pmcopy.clients.network.grouped_websocket import GroupedWebSocketSession
 
     fixture = SessionFixture(tmp_path / "state", [])
     with pytest.raises(ValueError, match="Alchemy"):
@@ -149,7 +149,7 @@ async def test_infura_cannot_open_unmetered_standing_logs(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_malformed_log_is_recorded_before_decode_rejection(tmp_path: Path) -> None:
     """Raw evidence survives invalid financial coordinates."""
-    from clients.network.grouped_websocket import StreamUnavailable
+    from pmcopy.clients.network.grouped_websocket import StreamUnavailable
 
     malformed = LogFixture.make() | {"blockNumber": "bad"}
     fixture = SessionFixture(
@@ -198,7 +198,7 @@ async def test_arrival_is_metered_and_recorded_while_recovery_is_blocked(tmp_pat
 @pytest.mark.asyncio
 async def test_transport_close_error_cannot_replace_sanitized_failure(tmp_path: Path) -> None:
     """Credential-bearing transport errors never escape the session shutdown boundary."""
-    from clients.network.grouped_websocket import StreamUnavailable
+    from pmcopy.clients.network.grouped_websocket import StreamUnavailable
 
     fixture = SessionFixture(tmp_path / "state", [])
     fixture.socket.close.side_effect = RuntimeError("credential-secret")

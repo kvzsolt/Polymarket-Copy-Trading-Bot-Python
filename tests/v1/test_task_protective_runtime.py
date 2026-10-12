@@ -5,11 +5,11 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
-from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
-from services.copy_tasks.protective_runtime import TaskProtectivePositionManager
+from pmcopy.services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+from pmcopy.services.copy_tasks.protective_runtime import TaskProtectivePositionManager
 from tests.v1.test_durable_risk_lots import _lot
-from services.copy_tasks.lots import ProtectiveLotExitFill
+from pmcopy.services.copy_tasks.lots import ProtectiveLotExitFill
 
 
 class Quotes:

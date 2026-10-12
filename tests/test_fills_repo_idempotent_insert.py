@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 
-from storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,7 +31,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:

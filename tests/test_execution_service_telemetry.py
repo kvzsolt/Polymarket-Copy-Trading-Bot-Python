@@ -18,16 +18,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from integrations.polymarket.errors import (
+from pmcopy.integrations.polymarket.errors import (
     VenueAuthError,
     VenueInsufficientBalanceError,
     VenueInvalidOrderError,
 )
-from integrations.polymarket.models import VenueSubmitResult
-import services.executionService as execution_module
-from services.execution.types import ExecutionResult
-from services.executionService import ExecutionService
-from services.telemetry import (
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+import pmcopy.services.executionService as execution_module
+from pmcopy.services.execution.types import ExecutionResult
+from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,
     FailureComponent,

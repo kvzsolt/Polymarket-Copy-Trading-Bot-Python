@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 
-from services.tradeScoringService import TradeScoringService
+from pmcopy.services.tradeScoringService import TradeScoringService
 from tests.config_helpers import load_test_config
 
 

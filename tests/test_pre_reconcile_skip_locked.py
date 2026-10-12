@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from domain.position_key import PositionKey
-from services.positionCoordinator import PositionCoordinator
+from pmcopy.domain.position_key import PositionKey
+from pmcopy.services.positionCoordinator import PositionCoordinator
 
 _TOKEN_ID = "1234567890"  # 10 digits — passes is_valid_clob_token_id
 
@@ -80,13 +80,13 @@ def _risk_context(coordinator: PositionCoordinator) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_trade_reconcile_skips_locked_scope_when_flagged():
-    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+    from pmcopy.orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
     coordinator = PositionCoordinator()
     context = _trade_context(coordinator)
 
     reconcile_one = AsyncMock(return_value=True)
-    with patch("orchestrators.trade_pipeline._reconcile_one", reconcile_one):
+    with patch("pmcopy.orchestrators.trade_pipeline._reconcile_one", reconcile_one):
         async with coordinator.acquire(_trade_scope()):
             reconciled = await asyncio.wait_for(
                 reconcile_submitted_unconfirmed(context, skip_locked_scopes=True),
@@ -99,13 +99,13 @@ async def test_trade_reconcile_skips_locked_scope_when_flagged():
 
 @pytest.mark.asyncio
 async def test_trade_reconcile_processes_unlocked_scope_when_flagged():
-    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+    from pmcopy.orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
     coordinator = PositionCoordinator()
     context = _trade_context(coordinator)
 
     reconcile_one = AsyncMock(return_value=True)
-    with patch("orchestrators.trade_pipeline._reconcile_one", reconcile_one):
+    with patch("pmcopy.orchestrators.trade_pipeline._reconcile_one", reconcile_one):
         reconciled = await asyncio.wait_for(
             reconcile_submitted_unconfirmed(context, skip_locked_scopes=True),
             timeout=1.0,
@@ -119,13 +119,13 @@ async def test_trade_reconcile_processes_unlocked_scope_when_flagged():
 async def test_trade_reconcile_default_still_blocks_until_lock_released():
     """execute_trades path (default flag) must keep waiting on the lock —
     BUY-visible-before-SELL ordering depends on it."""
-    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+    from pmcopy.orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
     coordinator = PositionCoordinator()
     context = _trade_context(coordinator)
 
     reconcile_one = AsyncMock(return_value=True)
-    with patch("orchestrators.trade_pipeline._reconcile_one", reconcile_one):
+    with patch("pmcopy.orchestrators.trade_pipeline._reconcile_one", reconcile_one):
         release = asyncio.Event()
 
         async def _hold_lock() -> None:
@@ -150,7 +150,7 @@ async def test_trade_reconcile_default_still_blocks_until_lock_released():
 
 @pytest.mark.asyncio
 async def test_risk_reconcile_skips_locked_scope_when_flagged():
-    from services.risk.risk_monitor import reconcile_unconfirmed_risk_orders
+    from pmcopy.services.risk.risk_monitor import reconcile_unconfirmed_risk_orders
 
     coordinator = PositionCoordinator()
     context = _risk_context(coordinator)
@@ -158,7 +158,7 @@ async def test_risk_reconcile_skips_locked_scope_when_flagged():
     reconciler = MagicMock()
     reconciler.reconcile_risk_record = AsyncMock(return_value=True)
     with patch(
-        "orchestrators.trade_pipeline.get_reconciliation_service",
+        "pmcopy.orchestrators.trade_pipeline.get_reconciliation_service",
         return_value=reconciler,
     ):
         async with coordinator.acquire(_trade_scope()):
@@ -173,7 +173,7 @@ async def test_risk_reconcile_skips_locked_scope_when_flagged():
 
 @pytest.mark.asyncio
 async def test_risk_reconcile_processes_unlocked_scope_when_flagged():
-    from services.risk.risk_monitor import reconcile_unconfirmed_risk_orders
+    from pmcopy.services.risk.risk_monitor import reconcile_unconfirmed_risk_orders
 
     coordinator = PositionCoordinator()
     context = _risk_context(coordinator)
@@ -181,7 +181,7 @@ async def test_risk_reconcile_processes_unlocked_scope_when_flagged():
     reconciler = MagicMock()
     reconciler.reconcile_risk_record = AsyncMock(return_value=True)
     with patch(
-        "orchestrators.trade_pipeline.get_reconciliation_service",
+        "pmcopy.orchestrators.trade_pipeline.get_reconciliation_service",
         return_value=reconciler,
     ):
         reconciled = await asyncio.wait_for(
@@ -197,15 +197,15 @@ async def test_risk_reconcile_processes_unlocked_scope_when_flagged():
 async def test_risk_loop_pre_reconcile_passes_skip_locked():
     """The risk-loop entrypoint opts in to non-blocking behaviour for BOTH
     reconcilers — that is the actual production fix."""
-    from services.risk.risk_monitor import _pre_reconcile_for_context
+    from pmcopy.services.risk.risk_monitor import _pre_reconcile_for_context
 
     context = SimpleNamespace(user_id="u1", execution_service=object(), extra={})
 
     trade_rec = AsyncMock(return_value=0)
     risk_rec = AsyncMock(return_value=0)
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", trade_rec),
-        patch("services.risk.risk_monitor.reconcile_unconfirmed_risk_orders", risk_rec),
+        patch("pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", trade_rec),
+        patch("pmcopy.services.risk.risk_monitor.reconcile_unconfirmed_risk_orders", risk_rec),
     ):
         await _pre_reconcile_for_context(context)
 

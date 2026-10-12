@@ -62,14 +62,14 @@ The bot operates through specialized engines, each handling a distinct domain of
 - **Language:** Python 3.14 only (`>=3.14,<3.15`; 3.11–3.13 unsupported).
 - **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
 - **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
-- **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` adds async / per-user wiring.
+- **Composition root:** `src/pmcopy/bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `src/pmcopy/app.py::main` adds async / per-user wiring.
 - **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
 - **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime.
 - **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
 - **Market data:** `clients/market_ws.py` + `clients/user_ws.py` with 5s PING, REST snapshot on reconnect, `assets_ids` subscriptions; TTL-based price caches. Decisions fail closed on stale data.
 - **Config:** typed `config.app_config.AppConfig`; production paths fail closed without it.
 - **Observability:** `services.healthServer` exposes `/health`, `/ready`, `/metrics`; structured JSONL audit logs.
-- **Operator CLI:** `bot.py` → `bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.
+- **Operator CLI:** `pmcopy` (console script, or `python -m pmcopy`) → `pmcopy.bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.
 
 ---
 
@@ -197,7 +197,7 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 
 ## Redeem resolved positions
 
-Use `python bot.py redeem` to preview resolved winning and losing holdings, and
-`python bot.py redeem --execute` to redeem them through the gasless Relayer.
+Use `pmcopy redeem` to preview resolved winning and losing holdings, and
+`pmcopy redeem --execute` to redeem them through the gasless Relayer.
 See [redemption setup and recovery](docs/redemption.md) for `secrets.env` settings
 and execution requirements.

@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from domain.provider_budget import BudgetSettings, ProviderConfigurationError
-from storage.provider_budget import SqliteProviderBudget
+from pmcopy.domain.provider_budget import BudgetSettings, ProviderConfigurationError
+from pmcopy.storage.provider_budget import SqliteProviderBudget
 
 
 class FakeClock:

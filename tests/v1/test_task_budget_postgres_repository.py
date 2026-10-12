@@ -8,13 +8,13 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.budget import (
+from pmcopy.services.copy_tasks.budget import (
     TaskBudgetInvariantError,
     TaskBudgetKey,
     TaskBudgetReservationRequest,
 )
-from services.copy_tasks.domain import TaskSpendPolicy
-from storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
+from pmcopy.services.copy_tasks.domain import TaskSpendPolicy
+from pmcopy.storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
 
 
 class FakeTransaction:

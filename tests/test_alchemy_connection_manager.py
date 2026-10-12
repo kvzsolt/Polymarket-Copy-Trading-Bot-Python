@@ -8,9 +8,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from adapters.polygon.alchemy_connection_manager import AlchemyConnectionManager
-from adapters.polygon.alchemy_json_rpc import AlchemySubscriptionOptions
-from domain.source_transactions import EvmHead
+from pmcopy.adapters.polygon.alchemy_connection_manager import AlchemyConnectionManager
+from pmcopy.adapters.polygon.alchemy_json_rpc import AlchemySubscriptionOptions
+from pmcopy.domain.source_transactions import EvmHead
 
 _CHAIN_ID = 137
 _NOW = datetime(2026, 8, 13, 10, 0, tzinfo=UTC)

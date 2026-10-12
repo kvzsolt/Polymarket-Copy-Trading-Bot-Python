@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from domain.models import TradeSignal
-from domain.ports import (
+from pmcopy.domain.models import TradeSignal
+from pmcopy.domain.ports import (
     AbstractAnalyticsClient,
     AbstractBalanceClient,
     AbstractCursorRepository,
@@ -85,7 +85,7 @@ class _StubCursorRepo(AbstractCursorRepository):
         self.store: dict[str, Any] = {}
 
     def get_cursor(self, leader_id: str):  # type: ignore[override]
-        from storage.postgres.cursors_repo import TradeCursor
+        from pmcopy.storage.postgres.cursors_repo import TradeCursor
 
         return self.store.get(leader_id.lower(), TradeCursor(timestamp=0, tx_hash=""))
 

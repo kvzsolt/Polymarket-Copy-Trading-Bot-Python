@@ -6,9 +6,9 @@ from types import TracebackType
 
 import pytest
 
-import bootstrap as bootstrap_module
-from config.app_config import AppConfig, DatabaseConfig, PolymarketConfig
-from utils import getMyBalance as balance_module
+import pmcopy.bootstrap as bootstrap_module
+from pmcopy.config.app_config import AppConfig, DatabaseConfig, PolymarketConfig
+from pmcopy.utils import getMyBalance as balance_module
 
 
 class _FakeAcquireContext:

@@ -2,8 +2,8 @@
 
 from unittest.mock import AsyncMock, Mock
 
-from orchestrators.runtime_monitor import LeaderBatchDispatcher
-from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+from pmcopy.orchestrators.runtime_monitor import LeaderBatchDispatcher
+from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
 from tests.test_onchain_signal_dispatch import _signal
 
 

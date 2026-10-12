@@ -77,7 +77,7 @@ contract:
      `doctor --live` to re-verify.
 3. Re-run doctor live (doctor-or-die):
    ```bash
-   python -m bot_cli.main doctor --live
+   python -m pmcopy.bot_cli.main doctor --live
    ```
 4. Re-run smoke checks:
    ```bash
@@ -156,7 +156,7 @@ fill of the opposite kind", so auto-resolution (in either direction) would
 risk attaching a foreign identity or double-submitting.
 
 The operator resolution path is the same as for any unresolvable row:
-`python bot.py resolve`. If the row's outcome is known from external
+`pmcopy resolve`. If the row's outcome is known from external
 evidence (the venue UI, the leader's trade), record it there; do not
 back-fill `amount_unit` by guessing.
 
@@ -171,7 +171,7 @@ The same JSON keeps a bounded tail of scan evidence (`scans[]`, default 8
 entries) with the completeness flags and account-check results observed at
 each attempt.
 
-The manual override still exists: `python bot.py resolve` remains the
+The manual override still exists: `pmcopy resolve` remains the
 operator path for a row the automatic scan cannot resolve — for example a
 legacy row with no `token_id`/`condition_id` or no persisted
 `amount_unit`, both of which fail closed forever by design. Prefer it

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 import aiohttp
 import pytest
 
-from domain.redemption import SettlementUnavailable
-from integrations.polymarket.settlement_chain import PolygonSettlementReader
+from pmcopy.domain.redemption import SettlementUnavailable
+from pmcopy.integrations.polymarket.settlement_chain import PolygonSettlementReader
 from tests.test_redemption_chain import (
     FakeRpcHttp,
     TestPolygonSettlementReader as ChainFixture,
@@ -173,7 +173,7 @@ class TestSettlementRpcHttp:
 
     async def test_non_json_503_reaches_retry_classifier_as_http_error(self) -> None:
         """Reverse-proxy HTML outages must not be misclassified as invalid chain evidence."""
-        from integrations.polymarket.settlement_rpc import SettlementRpcHttp
+        from pmcopy.integrations.polymarket.settlement_rpc import SettlementRpcHttp
 
         response = AsyncMock()
         response.raise_for_status = lambda: (_ for _ in ()).throw(

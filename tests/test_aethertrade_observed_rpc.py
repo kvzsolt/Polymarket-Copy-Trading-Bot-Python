@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from clients.network.provider_transport import ProviderEndpoints, ProviderHttpTransport
-from domain.source_time import TransportReceipt
+from pmcopy.clients.network.provider_transport import ProviderEndpoints, ProviderHttpTransport
+from pmcopy.domain.source_time import TransportReceipt
 
 
 class TestObservedRpc:
     """Native body timing cannot be reconstructed by a pending evaluator later."""
 
     async def test_production_runtime_injects_native_receipt_into_shared_gateway(self, tmp_path):
-        from orchestrators.provider_runtime import ProviderRuntime
+        from pmcopy.orchestrators.provider_runtime import ProviderRuntime
         from tests.test_aethertrade_provider_runtime import Clock, TestProviderRuntime
 
         receipt = TransportReceipt(1800000000123, 7, "finland", 1800000000123456789)
@@ -38,7 +38,7 @@ class TestObservedRpc:
             runtime.close()
 
     async def test_receipt_is_captured_before_json_decode_and_close(self, monkeypatch):
-        import clients.network.provider_transport as module
+        import pmcopy.clients.network.provider_transport as module
 
         sequence = []
         receipt = TransportReceipt(1800000000123, 7, "finland", 1800000000123456789)
@@ -83,7 +83,7 @@ class TestObservedRpc:
         io.assert_not_called()
 
     async def test_observed_gateway_admits_pending_before_single_read(self):
-        from services.observed_provider_gateway import ObservedProviderGateway
+        from pmcopy.services.observed_provider_gateway import ObservedProviderGateway
 
         sequence = []
         admitted = Mock(side_effect=lambda *a, **k: sequence.append("admitted"))
@@ -106,7 +106,7 @@ class TestObservedRpc:
         assert sequence == ["admitted", "read"]
 
     async def test_admission_failure_cannot_reach_observed_transport(self):
-        from services.observed_provider_gateway import ObservedProviderGateway
+        from pmcopy.services.observed_provider_gateway import ObservedProviderGateway
 
         transport = SimpleNamespace(request_observed=AsyncMock())
         gateway = ObservedProviderGateway(

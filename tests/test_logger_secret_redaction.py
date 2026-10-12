@@ -35,10 +35,10 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from utils import logger as logger_module  # noqa: E402
-from utils.logger import (  # noqa: E402
+from pmcopy.utils import logger as logger_module  # noqa: E402
+from pmcopy.utils.logger import (  # noqa: E402
     APP_NAME,
     JsonFormatter,
     configure_logging,
@@ -48,7 +48,7 @@ from utils.logger import (  # noqa: E402
     safe_error_detail,
     _reset_lifecycle_dedup_for_tests,
 )
-from utils.log_redaction import (  # noqa: E402
+from pmcopy.utils.log_redaction import (  # noqa: E402
     REDACTED_PLACEHOLDER,
     is_secret_key,
     redact_text,
@@ -299,7 +299,7 @@ class TestValueRegistry:
         assert canary in redact_text(f"opaque {canary}")
 
     def test_register_config_secrets_collects_all_layers(self):
-        from utils.log_redaction import register_config_secrets
+        from pmcopy.utils.log_redaction import register_config_secrets
 
         wallet_key = _canary("wallet")
         falcon_token = _canary("falcon")
@@ -317,7 +317,7 @@ class TestValueRegistry:
             assert value not in redact_text(f"context {value} context")
 
     def test_register_config_secrets_never_raises_on_broken_config(self):
-        from utils.log_redaction import register_config_secrets
+        from pmcopy.utils.log_redaction import register_config_secrets
 
         assert register_config_secrets(None) == 0
         assert register_config_secrets(SimpleNamespace(wallet=None)) == 0
@@ -505,7 +505,7 @@ class TestAllSinksViaConfigureLogging:
 
     def test_filter_installed_on_every_managed_handler(self, tmp_path):
         """Handler-level filters cover child loggers, unlike logger filters."""
-        from utils.logger import get_logger
+        from pmcopy.utils.logger import get_logger
 
         log = configure_logging(log_dir=tmp_path)
         managed = [h for h in log.handlers if getattr(h, "_pm_bot_managed", False)]

@@ -18,6 +18,9 @@ secrets.toml
 *.env.backup
 *.env.backup.*
 config/bot.toml
+src/pmcopy/config/runtime.local.yml
+src/pmcopy/config/runtime.local.*
+src/pmcopy/config/bot.toml
 
 # VCS / CI metadata — image does not need them.
 .git/

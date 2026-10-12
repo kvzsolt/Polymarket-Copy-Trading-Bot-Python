@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import app
+import pmcopy.app as app
 
 
 @pytest.mark.asyncio

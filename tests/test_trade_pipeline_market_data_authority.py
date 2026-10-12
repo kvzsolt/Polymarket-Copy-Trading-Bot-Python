@@ -15,27 +15,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import config.app_config as app_config_mod
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from tests.config_helpers import load_test_config
-from application.trading_context import TradingContext
-from domain.execution import ExecutionMetadata
-from orchestrators.trade_pipeline import execute_trades
-from services.accountingService import AccountingService
-from services.copyDecisionService import CopyDecision
-from services.executionService import ExecutionResult
-from services.market_data_service import (
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.orchestrators.trade_pipeline import execute_trades
+from pmcopy.services.accountingService import AccountingService
+from pmcopy.services.copyDecisionService import CopyDecision
+from pmcopy.services.executionService import ExecutionResult
+from pmcopy.services.market_data_service import (
     MarketDataBundle,
     MarketDataSource,
     StaleDataError,
 )
-from services.pnlTracker import PnLTracker
-from services.positionManager import PositionManager
-from services.risk.risk_engine import RiskEngine
-from storage.postgres.fills_repo import FillsRepo
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.risk.risk_engine import RiskEngine
+from pmcopy.storage.postgres.fills_repo import FillsRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -45,7 +45,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -88,7 +88,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):
@@ -266,8 +266,8 @@ def _make_context(
     # mocked ExecutionService keeps getting called.
     class _PassThrough:
         async def submit_copy_trade(self, intent):
-            from services.execution.coordinator import ExecutionCoordinatorResult
-            from services.execution.types import ExecutionRequest
+            from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
+            from pmcopy.services.execution.types import ExecutionRequest
 
             req = ExecutionRequest(
                 user_id=intent.user_id,
@@ -584,8 +584,8 @@ def _make_rest_context(pool, tmp_path, *, exec_svc, mds, runtime, decision_svc=N
 
     class _PassThrough:
         async def submit_copy_trade(self, intent):
-            from services.execution.coordinator import ExecutionCoordinatorResult
-            from services.execution.types import ExecutionRequest
+            from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
+            from pmcopy.services.execution.types import ExecutionRequest
 
             req = ExecutionRequest(
                 user_id=intent.user_id,

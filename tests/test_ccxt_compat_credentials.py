@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from integrations.polymarket.ccxt_compat.credentials import (
+from pmcopy.integrations.polymarket.ccxt_compat.credentials import (
     UserWsCredentials,
     extract_user_ws_credentials,
 )

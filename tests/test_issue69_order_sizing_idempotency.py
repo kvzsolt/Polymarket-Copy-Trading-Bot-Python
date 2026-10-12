@@ -11,8 +11,8 @@ Validates:
 
 from decimal import Decimal
 
-from services.order_sizing import size_buy_order, size_sell_order
-from services.idempotency import compute_effective_key, compute_effective_identity
+from pmcopy.services.order_sizing import size_buy_order, size_sell_order
+from pmcopy.services.idempotency import compute_effective_key, compute_effective_identity
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +692,7 @@ class TestExecutionEffectiveIdempotency:
     """Verify the execution service uses effective post-sizing idempotency."""
 
     def test_effective_key_includes_condition_id(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_a = _effective_idempotency_key(
             user="u1",
@@ -715,7 +715,7 @@ class TestExecutionEffectiveIdempotency:
         assert key_a != key_b
 
     def test_effective_key_includes_tick_size(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_a = _effective_idempotency_key(
             user="u1",
@@ -738,7 +738,7 @@ class TestExecutionEffectiveIdempotency:
         assert key_a != key_b
 
     def test_effective_key_includes_worst_price(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_a = _effective_idempotency_key(
             user="u1",
@@ -761,7 +761,7 @@ class TestExecutionEffectiveIdempotency:
         assert key_a != key_b
 
     def test_effective_key_stable_for_same_inputs(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_a = _effective_idempotency_key(
             user="u1",
@@ -791,7 +791,7 @@ class TestExecutionEffectiveIdempotency:
         legacy-kill slice (#77, commit 5868dc2); the effective key is now
         the only idempotency contract.
         """
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_low_price = _effective_idempotency_key(
             user="u1",
@@ -816,7 +816,7 @@ class TestExecutionEffectiveIdempotency:
         assert key_low_price != key_high_price
 
     def test_none_condition_id_treated_as_empty(self):
-        from services.executionService import _effective_idempotency_key
+        from pmcopy.services.executionService import _effective_idempotency_key
 
         key_none = _effective_idempotency_key(
             user="u1",

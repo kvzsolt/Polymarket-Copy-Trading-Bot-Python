@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import inspect
 
-from domain.ports import AbstractDiscoveryRepository
-from services.discovery.models import DiscoveryRepository
-from storage.postgres.discovery_repo import DiscoveryRepo
+from pmcopy.domain.ports import AbstractDiscoveryRepository
+from pmcopy.services.discovery.models import DiscoveryRepository
+from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
 
 # Methods the pre-rewrite port declared, none of which the single-generation
 # pipeline ever implemented. Re-adding one would make the port a fiction again.

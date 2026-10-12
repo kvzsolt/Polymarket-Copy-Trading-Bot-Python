@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.pnlTracker import PnLTracker, TradeRecord
+from pmcopy.services.pnlTracker import PnLTracker, TradeRecord
 
 
 def _is_decimal_or_zero(v) -> bool:

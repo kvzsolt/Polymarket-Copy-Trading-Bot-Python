@@ -7,7 +7,7 @@ renderer (so dashboards built against these names will not silently miss).
 
 from __future__ import annotations
 
-from services.metrics import (
+from pmcopy.services.metrics import (
     COPY_LATENCY_BUCKETS,
     GAUGE_PENDING_INTENTS,
     GAUGE_RESERVATION_ACTIVE,

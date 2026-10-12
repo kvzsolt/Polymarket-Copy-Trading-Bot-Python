@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.models import VenueCancelResult, VenueOrderState
-from storage.postgres.trading_control_repo import TradingControlState
+from pmcopy.integrations.polymarket.models import VenueCancelResult, VenueOrderState
+from pmcopy.storage.postgres.trading_control_repo import TradingControlState
 
 
 NOW_STATE = TradingControlState(
@@ -82,7 +82,7 @@ class RecordingTelemetry:
 async def test_core_full_stop_cancels_every_resting_order_across_gateways() -> None:
     """A durable full stop cancels resting orders on every follower gateway."""
 
-    from services.trading_control import TradingControlRuntimeSignal
+    from pmcopy.services.trading_control import TradingControlRuntimeSignal
 
     first = FakeGateway(("order-a", "order-b"))
     second = FakeGateway(("order-c",))
@@ -101,7 +101,7 @@ async def test_core_full_stop_cancels_every_resting_order_across_gateways() -> N
 async def test_core_plain_pause_never_cancels_resting_orders() -> None:
     """Entry pause keeps risk-reducing capacity; only full stop cancels."""
 
-    from services.trading_control import TradingControlRuntimeSignal
+    from pmcopy.services.trading_control import TradingControlRuntimeSignal
 
     gateway = FakeGateway(("order-a",))
     telemetry = RecordingTelemetry()
@@ -118,7 +118,7 @@ async def test_core_plain_pause_never_cancels_resting_orders() -> None:
 async def test_core_full_stop_attempts_all_cancels_then_reports_failure() -> None:
     """One failed venue interaction cannot skip the remaining accounts."""
 
-    from services.trading_control import RuntimeSafetyApplyError, TradingControlRuntimeSignal
+    from pmcopy.services.trading_control import RuntimeSafetyApplyError, TradingControlRuntimeSignal
 
     first = FakeGateway(("order-a", "order-b"), failed_order_id="order-a")
     second = FakeGateway(("order-c",))
@@ -138,7 +138,7 @@ async def test_core_full_stop_attempts_all_cancels_then_reports_failure() -> Non
 async def test_core_null_runtime_telemetry_never_raises() -> None:
     """Processes without a telemetry service still apply safety state."""
 
-    from services.trading_control import NullRuntimeTelemetry, TradingControlRuntimeSignal
+    from pmcopy.services.trading_control import NullRuntimeTelemetry, TradingControlRuntimeSignal
 
     gateway = FakeGateway(("order-a",))
     signal = TradingControlRuntimeSignal(gateways=(gateway,), telemetry=NullRuntimeTelemetry())
@@ -153,7 +153,7 @@ def test_legacy_control_plane_runtime_module_is_gone() -> None:
 
     import importlib.util
 
-    assert importlib.util.find_spec("services.control_plane") is None
+    assert importlib.util.find_spec("pmcopy.services.control_plane") is None
 
 
 class StatefulControlRepo:
@@ -191,10 +191,10 @@ def _run_stateful_trading(
 ) -> tuple[list[tuple[bool, str, str]], int]:
     import argparse
 
-    import bot_cli.commands.trading as trading_command
-    import storage.postgres.connection as pg_connection
-    import storage.postgres.migrations as pg_migrations
-    import storage.postgres.trading_control_repo as trading_control_repo
+    import pmcopy.bot_cli.commands.trading as trading_command
+    import pmcopy.storage.postgres.connection as pg_connection
+    import pmcopy.storage.postgres.migrations as pg_migrations
+    import pmcopy.storage.postgres.trading_control_repo as trading_control_repo
 
     StatefulControlRepo.state = state
 
@@ -422,12 +422,12 @@ def _config(*, trading_mode: str) -> SimpleNamespace:
 
 
 def _patch_cli_environment(monkeypatch, *, trading_mode: str, built_runtimes):
-    import bot_cli.commands.trading as trading_command
-    import integrations.polymarket.venue_runtime as venue_runtime
-    import services.multiUserConfig as multi_user_config
-    import storage.postgres.connection as pg_connection
-    import storage.postgres.migrations as pg_migrations
-    import storage.postgres.trading_control_repo as trading_control_repo
+    import pmcopy.bot_cli.commands.trading as trading_command
+    import pmcopy.integrations.polymarket.venue_runtime as venue_runtime
+    import pmcopy.services.multiUserConfig as multi_user_config
+    import pmcopy.storage.postgres.connection as pg_connection
+    import pmcopy.storage.postgres.migrations as pg_migrations
+    import pmcopy.storage.postgres.trading_control_repo as trading_control_repo
 
     pool = _fake_pool()
 
@@ -471,7 +471,7 @@ def _run_trading(
 ):
     import argparse
 
-    import bot_cli.commands.trading as trading_command
+    import pmcopy.bot_cli.commands.trading as trading_command
 
     built_runtimes = [] if built_runtimes is None else built_runtimes
     RecordingControlRepo.state = NOW_STATE if state is None else state
@@ -553,8 +553,8 @@ def test_local_cli_full_stop_keeps_durable_state_when_a_cancel_fails(monkeypatch
 
     import argparse
 
-    import bot_cli.commands.trading as trading_command
-    import integrations.polymarket.venue_runtime as venue_runtime
+    import pmcopy.bot_cli.commands.trading as trading_command
+    import pmcopy.integrations.polymarket.venue_runtime as venue_runtime
 
     pool = _fake_pool()
 
@@ -577,23 +577,23 @@ def test_local_cli_full_stop_keeps_durable_state_when_a_cancel_fails(monkeypatch
         trading_command, "load_config", lambda: _config(trading_mode="live")
     )
     monkeypatch.setattr(
-        "storage.postgres.connection.init_pool", fake_init_pool
+        "pmcopy.storage.postgres.connection.init_pool", fake_init_pool
     )
     monkeypatch.setattr(
-        "storage.postgres.connection.shutdown_pool", fake_shutdown_pool
+        "pmcopy.storage.postgres.connection.shutdown_pool", fake_shutdown_pool
     )
     monkeypatch.setattr(
-        "storage.postgres.migrations.apply_migrations", fake_apply_migrations
+        "pmcopy.storage.postgres.migrations.apply_migrations", fake_apply_migrations
     )
     monkeypatch.setattr(
-        "storage.postgres.trading_control_repo.TradingControlRepo",
+        "pmcopy.storage.postgres.trading_control_repo.TradingControlRepo",
         RecordingControlRepo,
     )
     monkeypatch.setattr(
         venue_runtime, "build_polymarket_runtime", fake_build_polymarket_runtime
     )
     monkeypatch.setattr(
-        "services.multiUserConfig.load_runtime_users",
+        "pmcopy.services.multiUserConfig.load_runtime_users",
         lambda leaders, config: [SimpleNamespace(user_id="user-1", wallet=object())],
     )
 

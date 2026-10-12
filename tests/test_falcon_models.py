@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from integrations.falcon.models import (
+from pmcopy.integrations.falcon.models import (
     LeaderboardEntry,
     Market360Snapshot,
     MarketSnapshot,

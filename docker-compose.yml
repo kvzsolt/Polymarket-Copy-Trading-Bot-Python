@@ -68,8 +68,8 @@ services:
       # Keep this tree from the same checkout as the image: config includes
       # Python modules as well as YAML. Fail instead of creating a missing path.
       - type: bind
-        source: ./config
-        target: /app/config
+        source: ./src/pmcopy/config
+        target: /app/src/pmcopy/config
         read_only: true
         bind:
           create_host_path: false

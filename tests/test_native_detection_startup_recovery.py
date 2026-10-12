@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from domain.grouped_detection import TraderDetectionPolicy
-from domain.source_time import TransportReceipt
-from services.grouped_detection import DetectionSubscription
-from services.onchain_detection.bounded_recovery import BoundedLogRecovery, RecoveryUnavailable
-from services.onchain_detection.native_observer import NativeOwnerObserver
-from services.onchain_detection.native_owner import NativeOwnerLogDecoder
-from storage.detection_state import SqliteDetectionState
+from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery, RecoveryUnavailable
+from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
+from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
+from pmcopy.storage.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
 
 
@@ -23,7 +23,7 @@ class TestStaleDetectionCheckpoint:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The reproduced 78k-block gap neither disables entries nor replays old trades."""
-        from utils.logger import get_logger
+        from pmcopy.utils.logger import get_logger
 
         app_logger = get_logger()
         monkeypatch.setattr(app_logger, "handlers", [caplog.handler])

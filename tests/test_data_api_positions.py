@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.data_api_positions import DataApiPositionSizeReader
+from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
 
 WALLET = "0x" + "1" * 40
 

@@ -19,12 +19,12 @@ from typing import Any
 
 import pytest
 
-from clients.onchain_ws import OnchainWebSocket
-from services.onchain_detection.order_filled_detector import (
+from pmcopy.clients.onchain_ws import OnchainWebSocket
+from pmcopy.services.onchain_detection.order_filled_detector import (
     ORDER_FILLED_TOPIC0,
     log_subscription_params,
 )
-from services.onchain_detection.pending_tx_detector import (
+from pmcopy.services.onchain_detection.pending_tx_detector import (
     pending_subscription_params,
 )
 
@@ -139,7 +139,7 @@ async def test_connect_log_never_contains_api_key(monkeypatch: pytest.MonkeyPatc
 
     import logging
 
-    from clients import onchain_ws as onchain_ws_module
+    from pmcopy.clients import onchain_ws as onchain_ws_module
 
     secret = "SuperSecretAlchemyKey123"
     client = OnchainWebSocket(

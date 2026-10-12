@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from orchestrators.user_data_runtime import UserDataRuntime, UserDataRuntimeStatus
-from services.healthServer import ReadinessTracker
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.orchestrators.user_data_runtime import UserDataRuntime, UserDataRuntimeStatus
+from pmcopy.services.healthServer import ReadinessTracker
 
 
 VALID_CREDS = {
@@ -133,7 +133,7 @@ class TestStartValidCreds:
     @pytest.mark.asyncio
     async def test_start_valid_creds_creates_ws_client(self) -> None:
         rt = _make_runtime()
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -149,7 +149,7 @@ class TestStartValidCreds:
         readiness = ReadinessTracker()
         rt = _make_runtime(readiness=readiness)
 
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -165,7 +165,7 @@ class TestStartValidCreds:
     async def test_start_valid_creds_creates_background_task(self) -> None:
         rt = _make_runtime()
 
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -180,7 +180,7 @@ class TestStartValidCreds:
     async def test_start_sets_running_true(self) -> None:
         rt = _make_runtime()
 
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -351,7 +351,7 @@ class TestStop:
     async def test_stop_clears_ws_client(self) -> None:
         rt = _make_runtime()
 
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -366,7 +366,7 @@ class TestStop:
     async def test_stop_cancels_ws_task(self) -> None:
         rt = _make_runtime()
 
-        with patch("orchestrators.user_data_runtime.UserWebSocket") as MockWS:
+        with patch("pmcopy.orchestrators.user_data_runtime.UserWebSocket") as MockWS:
             mock_ws = AsyncMock()
             mock_ws.connect = AsyncMock(return_value=None)
             MockWS.return_value = mock_ws
@@ -593,7 +593,7 @@ class TestWssTelemetry:
 
     @pytest.mark.asyncio
     async def test_first_authentication_reports_connected_then_reconnected(self) -> None:
-        from services.telemetry import TelemetryProducer, WssEvent, WssOutcome
+        from pmcopy.services.telemetry import TelemetryProducer, WssEvent, WssOutcome
         from tests.telemetry_helpers import recording_emitters
 
         emitters, service = recording_emitters()
@@ -642,7 +642,7 @@ class TestWssTelemetry:
         with no preceding CONNECTED. That must never raise, and must never make
         the first real authentication report RECONNECTED.
         """
-        from services.telemetry import WssEvent, WssOutcome
+        from pmcopy.services.telemetry import WssEvent, WssOutcome
         from tests.telemetry_helpers import recording_emitters
 
         emitters, service = recording_emitters()

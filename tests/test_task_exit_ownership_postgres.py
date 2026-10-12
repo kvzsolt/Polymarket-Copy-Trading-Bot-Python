@@ -6,17 +6,17 @@ from decimal import Decimal
 
 import pytest
 
-from domain.order_lifecycle import IntentReason, IntentSide
-from services.copy_tasks.domain import CopyTask
-from services.execution.reservation_service import InsufficientFreeShares
-from storage.postgres.copy_task_repository import PostgresCopyTaskRepository
-from storage.postgres.risk_lot_repository import PostgresRiskLotRepository
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.task_fill_projection import PostgresTaskFillProjection
+from pmcopy.domain.order_lifecycle import IntentReason, IntentSide
+from pmcopy.services.copy_tasks.domain import CopyTask
+from pmcopy.services.execution.reservation_service import InsufficientFreeShares
+from pmcopy.storage.postgres.copy_task_repository import PostgresCopyTaskRepository
+from pmcopy.storage.postgres.risk_lot_repository import PostgresRiskLotRepository
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.task_fill_projection import PostgresTaskFillProjection
 from tests.test_reservation_service import _pg_pool, _build_service, MockClock, create_mock_intent
 from tests.v1.test_durable_risk_lots import _lot
-from services.copy_tasks.lots import ProtectiveLotExitFill
-from services.copy_tasks.protective_exits import ProtectiveExitEngine
+from pmcopy.services.copy_tasks.lots import ProtectiveLotExitFill
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveExitEngine
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrators.trade_pipeline import build_trade_key, execute_trades
+from pmcopy.orchestrators.trade_pipeline import build_trade_key, execute_trades
 
 # Reuse the proven Postgres-backed harness + fixtures from the safety suite.
 from tests.test_trade_pipeline_safety import (  # noqa: E402
@@ -44,7 +44,7 @@ async def test_sell_skipped_failclosed_when_live_holdings_unavailable(tmp_path):
 
         # Seed a non-zero DB position so the *only* thing that stops the SELL is
         # the unavailable live-holdings read (the fail-closed branch under test).
-        from storage.postgres.positions_repo import PositionRecord
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
 
         await ctx.positions_repo.upsert_position(
             PositionRecord(
@@ -62,7 +62,7 @@ async def test_sell_skipped_failclosed_when_live_holdings_unavailable(tmp_path):
 
         # None = live size unknown (transport error). MUST NOT sell on DB size.
         with patch(
-            "orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -88,7 +88,7 @@ async def test_sell_proceeds_when_live_holdings_known(tmp_path):
     regress the known-size happy path.
     """
     async with _pg_pool() as pool:
-        from services.executionService import ExecutionResult
+        from pmcopy.services.executionService import ExecutionResult
 
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = ExecutionResult(
@@ -103,7 +103,7 @@ async def test_sell_proceeds_when_live_holdings_known(tmp_path):
         )
         ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-        from storage.postgres.positions_repo import PositionRecord
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
 
         await ctx.positions_repo.upsert_position(
             PositionRecord(
@@ -118,7 +118,7 @@ async def test_sell_proceeds_when_live_holdings_known(tmp_path):
 
         signal = _signal(side="SELL", tx_hash="0xsell-live-known")
         with patch(
-            "orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("10"),
         ):
@@ -138,7 +138,7 @@ async def test_sell_proceeds_when_live_holdings_known(tmp_path):
 def test_derive_sell_tokens_policy_unit():
     from types import SimpleNamespace
 
-    from orchestrators.trade_pipeline import _derive_sell_tokens
+    from pmcopy.orchestrators.trade_pipeline import _derive_sell_tokens
 
     sig = SimpleNamespace(condition_id="cond1")
     pos = SimpleNamespace(size_tokens=Decimal("10"))
@@ -166,7 +166,7 @@ async def test_sell_skipped_retryable_when_fraction_missing_policy_skip(tmp_path
         exec_svc = AsyncMock()
         ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-        from storage.postgres.positions_repo import PositionRecord
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
 
         await ctx.positions_repo.upsert_position(
             PositionRecord(
@@ -187,7 +187,7 @@ async def test_sell_skipped_retryable_when_fraction_missing_policy_skip(tmp_path
         trade_key = build_trade_key("user1", "leader1", signal)
 
         with patch(
-            "orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("10"),
         ):
@@ -208,7 +208,7 @@ async def test_sell_full_close_policy_preserves_legacy_dump(tmp_path):
     async with _pg_pool() as pool:
         import dataclasses
 
-        from services.executionService import ExecutionResult
+        from pmcopy.services.executionService import ExecutionResult
         from tests.test_trade_pipeline_safety import _config
 
         exec_svc = AsyncMock()
@@ -229,7 +229,7 @@ async def test_sell_full_close_policy_preserves_legacy_dump(tmp_path):
         )
         ctx = _make_context(pool, tmp_path, execution_service=exec_svc, config=cfg)
 
-        from storage.postgres.positions_repo import PositionRecord
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
 
         await ctx.positions_repo.upsert_position(
             PositionRecord(
@@ -248,7 +248,7 @@ async def test_sell_full_close_policy_preserves_legacy_dump(tmp_path):
             leader_sell_fraction=None,
         )
         with patch(
-            "orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("10"),
         ):

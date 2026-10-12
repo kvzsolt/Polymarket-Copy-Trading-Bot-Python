@@ -13,7 +13,7 @@ import inspect
 
 def test_v1_wiring_imports_resolve() -> None:
     """The lazy imports used by app.main()'s v1 wiring must resolve."""
-    from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
+    from pmcopy.orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
 
     assert callable(start_v1_copy_task_runtime)
 
@@ -21,7 +21,7 @@ def test_v1_wiring_imports_resolve() -> None:
 def test_run_application_starts_the_v1_copy_task_runtime() -> None:
     """``app._run_application`` must invoke the v1 composition seam between
     startup reconciliation/restoration and the market-data subscriptions."""
-    import app
+    import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
 
@@ -33,7 +33,7 @@ def test_run_application_starts_the_v1_copy_task_runtime() -> None:
 
 def test_startup_migrations_include_v1_schema() -> None:
     """``apply_migrations`` (the startup runner) must call the v1 runner."""
-    from storage.postgres import migrations
+    from pmcopy.storage.postgres import migrations
 
     source = inspect.getsource(migrations.apply_migrations)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.onchain_detection.leader_sell_scope_guard import LeaderSellScopeGuard
+from pmcopy.services.onchain_detection.leader_sell_scope_guard import LeaderSellScopeGuard
 
 
 class _ScopeStore:

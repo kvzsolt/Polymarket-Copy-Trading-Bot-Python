@@ -5,9 +5,9 @@ from decimal import Decimal as D
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from domain.auto_trader import AutoRoster, AutoTraderScope, Trader
-from orchestrators.auto_trader_runtime import AutoTraderRuntime
-from orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
+from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader
+from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
+from pmcopy.orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
 from tests.test_auto_trader_service import MemoryRepository, service, A
 from tests.test_auto_trader_paper_service import MemoryLedger, evaluator
 from tests.config_helpers import load_test_config
@@ -75,7 +75,7 @@ async def test_future_or_stale_entries_do_not_create_virtual_positions():
 
 
 async def test_evaluation_records_live_fills_separately_from_paper():
-    from domain.auto_trader import TraderStatus
+    from pmcopy.domain.auto_trader import TraderStatus
     from tests.test_auto_trader_lifecycle import performance
 
     live_scope = AutoTraderScope("follower", "live")
@@ -113,7 +113,7 @@ async def test_restart_preserves_inventory_but_invalidates_unobserved_interval()
 
 async def test_flat_portfolio_starts_new_evidence_window_after_gap():
     from dataclasses import replace
-    from domain.paper_evaluation import PaperLedger
+    from pmcopy.domain.paper_evaluation import PaperLedger
     from datetime import timedelta
 
     runtime, repo, _ = worker()
@@ -135,7 +135,7 @@ async def test_flat_portfolio_starts_new_evidence_window_after_gap():
 
 async def test_periodic_gap_is_consumed_and_does_not_poison_future_flat_windows():
     from dataclasses import replace
-    from domain.paper_evaluation import PaperLedger
+    from pmcopy.domain.paper_evaluation import PaperLedger
 
     runtime, repo, _ = worker(capacity=1)
     repo.ledger = PaperLedger.start(D("100"), NOW)
@@ -148,7 +148,7 @@ async def test_periodic_gap_is_consumed_and_does_not_poison_future_flat_windows(
 
 
 async def test_live_results_failure_does_not_block_paper_or_other_accounts():
-    from domain.auto_trader import TraderStatus
+    from pmcopy.domain.auto_trader import TraderStatus
     from tests.test_auto_trader_lifecycle import performance
 
     scopes = (AutoTraderScope("first", "live"), AutoTraderScope("second", "live"))

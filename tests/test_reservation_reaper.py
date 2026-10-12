@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app
+import pmcopy.app as app
 
 pytestmark = pytest.mark.asyncio
 

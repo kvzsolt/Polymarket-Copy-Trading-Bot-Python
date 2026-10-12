@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.logger import (
+from pmcopy.utils.logger import (
     RichConsoleHandler,
     _reset_lifecycle_dedup_for_tests,
     log_order_lifecycle,
@@ -123,7 +123,7 @@ def test_render_uses_correct_panel_color_for_each_status():
             if hasattr(arg, "title") and hasattr(arg, "border_style"):
                 panels.append(arg)
 
-    with patch("utils.logger.console.print", side_effect=_capture):
+    with patch("pmcopy.utils.logger.console.print", side_effect=_capture):
         for status in ("live", "confirmed", "failed", "delayed"):
             record = SimpleNamespace(
                 status=status,
@@ -182,7 +182,7 @@ def test_render_labels_projected_buy_token_size_as_estimated():
         txHash=None,
     )
 
-    with patch("utils.logger.console.print", side_effect=_capture):
+    with patch("pmcopy.utils.logger.console.print", side_effect=_capture):
         handler._render_order_lifecycle(record, ts="12:00:00 AM")
 
     assert len(panels) == 1

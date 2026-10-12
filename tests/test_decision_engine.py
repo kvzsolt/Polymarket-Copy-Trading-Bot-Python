@@ -10,10 +10,10 @@ import os
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from services.copyDecisionService import CopyDecisionService
-from services.leaderScoringService import LeaderScore
+from pmcopy.services.copyDecisionService import CopyDecisionService
+from pmcopy.services.leaderScoringService import LeaderScore
 
 
 def _test_config() -> SimpleNamespace:
@@ -459,7 +459,7 @@ class TestEffectiveIntentKey:
 
     def test_key_changes_when_effective_size_changes(self):
         from decimal import Decimal
-        from services.copyDecisionService import effective_intent_key
+        from pmcopy.services.copyDecisionService import effective_intent_key
 
         key_before = effective_intent_key(
             user="user1",
@@ -486,7 +486,7 @@ class TestEffectiveIntentKey:
 
     def test_key_deterministic(self):
         from decimal import Decimal
-        from services.copyDecisionService import effective_intent_key
+        from pmcopy.services.copyDecisionService import effective_intent_key
 
         key1 = effective_intent_key(
             user="user1",

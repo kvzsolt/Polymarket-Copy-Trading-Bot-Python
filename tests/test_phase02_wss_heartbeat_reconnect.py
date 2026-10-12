@@ -18,14 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from clients.market_ws import (
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.clients.market_ws import (
     HEARTBEAT_INTERVAL,
     MarketWebSocket,
     _MAX_RECONNECT_DELAY,
     _MIN_RECONNECT_DELAY,
 )
-from clients.ws_constants import (
+from pmcopy.clients.ws_constants import (
     MARKET_HEARTBEAT_INTERVAL,
     PONG_TIMEOUT_SECONDS,
     USER_HEARTBEAT_INTERVAL,
@@ -117,7 +117,7 @@ class TestPongTimeout:
             ws_client._last_pong_monotonic = time.monotonic() - 30.0
             ws_client._running = False  # avoid infinite loop
 
-        with patch("clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+        with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
             # Pre-seed the missed-pong state directly so the first iteration
             # detects it.
             ws_client._last_ping_monotonic = time.monotonic()
@@ -159,7 +159,7 @@ class TestPongTimeout:
         async def fake_sleep(_secs: float) -> None:
             ws_client._running = False  # one iteration only
 
-        with patch("clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+        with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
             await ws_client._heartbeat(sock)
 
         sock.close.assert_awaited()
@@ -188,7 +188,7 @@ class TestPongTimeout:
                 ws_client._last_ping_monotonic -= 30.0
             ws_client._running = False
 
-        with patch("clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+        with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
             await ws_client._heartbeat(sock)
 
         sock.close.assert_awaited()
@@ -196,8 +196,8 @@ class TestPongTimeout:
     @pytest.mark.asyncio
     async def test_user_ws_pong_detector_fires(self) -> None:
         """User WS must have the same pong-timeout detector as market WS."""
-        from cache.market_state_store import MarketStateStore as _S
-        from clients.user_ws import UserWebSocket
+        from pmcopy.cache.market_state_store import MarketStateStore as _S
+        from pmcopy.clients.user_ws import UserWebSocket
 
         ws_client = UserWebSocket(_S(), pong_timeout_seconds=10.0)
         ws_client._running = True
@@ -210,7 +210,7 @@ class TestPongTimeout:
         async def fake_sleep(_secs: float) -> None:
             ws_client._running = False  # one iteration only
 
-        with patch("clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
+        with patch("pmcopy.clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
             await ws_client._heartbeat(sock)
 
         sock.close.assert_awaited()
@@ -325,8 +325,8 @@ class TestReconnectResync:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         assert seen and seen[0] == [TOK]
@@ -354,8 +354,8 @@ class TestReconnectResync:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         assert ws._last_ping_monotonic is None
@@ -392,8 +392,8 @@ class TestExponentialBackoff:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("clients.market_ws.asyncio.sleep", side_effect=record_sleep):
+        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=record_sleep):
                 await ws._reconnect_loop()
 
         # First several backoffs should follow 1, 2, 4, 8, 16, 30 (capped).

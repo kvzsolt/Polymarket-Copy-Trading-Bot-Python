@@ -6,7 +6,7 @@ import contextlib
 
 import pytest
 
-from storage.postgres.leader_sell_target_repo import LeaderSellTargetRepo
+from pmcopy.storage.postgres.leader_sell_target_repo import LeaderSellTargetRepo
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,7 @@ async def test_distinct_tasks_keep_independent_recovery_targets() -> None:
 @pytest.mark.asyncio
 async def test_populated_legacy_targets_upgrade_without_invented_task_ownership() -> None:
     """An old unscoped target and its release claim survive the additive upgrade."""
-    from storage.postgres.migrations import apply_migrations
+    from pmcopy.storage.postgres.migrations import apply_migrations
 
     async with _pg_pool() as pool:
         async with pool.acquire() as connection:
@@ -92,7 +92,7 @@ async def _pg_pool():
         import asyncpg
         from testcontainers.postgres import PostgresContainer
 
-        from storage.postgres.migrations import apply_migrations
+        from pmcopy.storage.postgres.migrations import apply_migrations
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     container = PostgresContainer("postgres:16-alpine")

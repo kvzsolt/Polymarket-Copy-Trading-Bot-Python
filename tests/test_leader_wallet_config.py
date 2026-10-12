@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from config.app_config import EnvValidationError
-from orchestrators.runtime_bootstrap import configured_leaders
+from pmcopy.config.app_config import EnvValidationError
+from pmcopy.orchestrators.runtime_bootstrap import configured_leaders
 from tests.config_helpers import load_test_config
 
 
@@ -54,7 +54,7 @@ def test_live_roster_uses_explicit_enabled_entry_style() -> None:
     """Each checked-in trader file exposes one obvious toggle per wallet."""
     root = Path(__file__).resolve().parents[1]
 
-    trader_files = sorted((root / "config/traders").glob("*.yml"))
+    trader_files = sorted((root / "src" / "pmcopy" / "config/traders").glob("*.yml"))
     assert trader_files
 
     seen_wallets = set()
@@ -67,7 +67,7 @@ def test_live_roster_uses_explicit_enabled_entry_style() -> None:
 
     # The environment file must not define a second roster.
     live_payload = yaml.safe_load(
-        (root / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
+        (root / "src" / "pmcopy" / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
     )
     assert "wallets" not in live_payload
 
@@ -76,10 +76,10 @@ def test_roster_activation_has_one_unambiguous_owner() -> None:
     """Only config/traders files decide which wallets are followed."""
     root = Path(__file__).resolve().parents[1]
 
-    assert not (root / "config" / "leaders").exists()
+    assert not (root / "src" / "pmcopy" / "config" / "leaders").exists()
     live_payload = yaml.safe_load(
-        (root / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
+        (root / "src" / "pmcopy" / "config/environments/live/copy_trading.yml").read_text(encoding="utf-8")
     )
     assert "wallets" not in live_payload
-    base_payload = yaml.safe_load((root / "config/copy_trading.yml").read_text(encoding="utf-8"))
+    base_payload = yaml.safe_load((root / "src" / "pmcopy" / "config/copy_trading.yml").read_text(encoding="utf-8"))
     assert "wallets" not in base_payload

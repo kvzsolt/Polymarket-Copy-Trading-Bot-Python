@@ -6,18 +6,18 @@ from decimal import Decimal
 
 from eth_utils import keccak
 
-from config.addresses import (
+from pmcopy.config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
 )
-from services.onchain_detection.order_filled_detector import (
+from pmcopy.services.onchain_detection.order_filled_detector import (
     ORDER_FILLED_TOPIC0,
     ONCHAIN_EXCHANGE_ADDRESSES,
     build_signal_from_log,
     decode_order_filled_log,
     log_subscription_params,
 )
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     MAKER_SIDE_BUY,
     MAKER_SIDE_SELL,
@@ -254,7 +254,7 @@ def test_watched_params_build_maker_and_taker_filters() -> None:
     opens both subscriptions and keeps the client-side maker/taker match as
     the second guard.
     """
-    from services.onchain_detection.order_filled_detector import (
+    from pmcopy.services.onchain_detection.order_filled_detector import (
         log_subscription_params_for_watched,
     )
 
@@ -281,7 +281,7 @@ def test_watched_params_build_maker_and_taker_filters() -> None:
 
 
 def test_watched_params_pad_and_lowercase_the_address_topics() -> None:
-    from services.onchain_detection.order_filled_detector import (
+    from pmcopy.services.onchain_detection.order_filled_detector import (
         log_subscription_params_for_watched,
     )
 
@@ -300,8 +300,8 @@ def test_watched_params_cap_the_filter_and_warn_with_the_count_only() -> None:
     names only counts (never wallet addresses)."""
     import logging
 
-    from services.onchain_detection import order_filled_detector as detector_module
-    from services.onchain_detection.order_filled_detector import (
+    from pmcopy.services.onchain_detection import order_filled_detector as detector_module
+    from pmcopy.services.onchain_detection.order_filled_detector import (
         WATCHED_TOPIC_FILTER_CAP,
         log_subscription_params_for_watched,
     )
@@ -344,7 +344,7 @@ def test_watched_params_with_an_empty_roster_open_no_subscriptions() -> None:
     rotating every leader out) opens nothing; the runtime idles until the
     roster delivers a leader again.
     """
-    from services.onchain_detection.order_filled_detector import (
+    from pmcopy.services.onchain_detection.order_filled_detector import (
         log_subscription_params_for_watched,
     )
 

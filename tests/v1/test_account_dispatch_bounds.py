@@ -6,16 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
-from services.copy_tasks.account_dispatch import AccountTaskDispatcher
-from services.copy_tasks.budget import InMemoryTaskBudgetRepository, TaskBudgetReservationService
-from services.copy_tasks.event_routing import CopyTaskEventProcessor
-from services.copy_tasks.lifecycle import TaskExecutionDisposition
-from services.copy_tasks.reentry_lock import (
+from pmcopy.orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
+from pmcopy.services.copy_tasks.account_dispatch import AccountTaskDispatcher
+from pmcopy.services.copy_tasks.budget import InMemoryTaskBudgetRepository, TaskBudgetReservationService
+from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
+from pmcopy.services.copy_tasks.lifecycle import TaskExecutionDisposition
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryLockService,
 )
-from services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
 from tests.v1.test_copy_task_event_routing import (
     _LEADER,
     ExecutionRecorder,

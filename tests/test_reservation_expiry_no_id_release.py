@@ -30,13 +30,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import orchestrators.runtime_bootstrap as runtime_bootstrap
-from services.execution.reservation_expiry import (
+import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+from pmcopy.services.execution.reservation_expiry import (
     OrderRowLookup,
     ReservationExpiryDecision,
     classify_no_id_reservation_expiry,
 )
-from services.execution.reservation_service import ReservationService
+from pmcopy.services.execution.reservation_service import ReservationService
 
 _TOKEN = "71321045679252212594626385532706912750332728571942532289631379312455583992561"
 _CONDITION = "0x" + "ab" * 32
@@ -84,7 +84,7 @@ class _ReservationsRepo:
 
 
 def _reservation(*, rid: str = "res-1", order_id: str | None = None) -> SimpleNamespace:
-    from domain.order_lifecycle import IntentSide
+    from pmcopy.domain.order_lifecycle import IntentSide
 
     return SimpleNamespace(
         id=rid,
@@ -239,7 +239,7 @@ def _bind(
 
 
 def _get_filled_order(order_id: str):
-    from integrations.polymarket.models import VenueOrderState
+    from pmcopy.integrations.polymarket.models import VenueOrderState
 
     async def _fetch(oid: str):
         return VenueOrderState(
@@ -425,7 +425,7 @@ async def test_delayed_fill_after_keep_is_accounted_and_releases_once() -> None:
     )
 
     with patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         kept = await svc.reconciler_callback("res-1")
@@ -465,7 +465,7 @@ class _FakeExpiryRepo:
         self.released: list[tuple[str, str, int]] = []
 
     async def list_expired_active(self, now_ts: int):
-        from domain.order_lifecycle import IntentReason, IntentSide, Reservation
+        from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, Reservation
 
         return [
             Reservation(
@@ -559,7 +559,7 @@ async def test_legacy_bool_callback_contract_is_preserved() -> None:
 
 
 async def test_expire_with_reconciliation_maps_decisions() -> None:
-    from domain.order_lifecycle import IntentReason, IntentSide, Reservation
+    from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, Reservation
 
     res = Reservation(
         id="r1",
@@ -644,7 +644,7 @@ def _risk_context(
 
 
 async def test_risk_sell_orphan_with_unresolved_no_id_row_is_not_released() -> None:
-    from services.risk.risk_monitor import _active_sell_reserved_size
+    from pmcopy.services.risk.risk_monitor import _active_sell_reserved_size
 
     context = _risk_context(orders_repo=_RiskOrdersRepo(_order_row(order_id=None)))
 
@@ -657,7 +657,7 @@ async def test_risk_sell_orphan_with_unresolved_no_id_row_is_not_released() -> N
 
 
 async def test_risk_sell_orphan_releases_only_on_proven_absence() -> None:
-    from services.risk.risk_monitor import _active_sell_reserved_size
+    from pmcopy.services.risk.risk_monitor import _active_sell_reserved_size
 
     context = _risk_context(orders_repo=_RiskOrdersRepo(None))
 
@@ -673,7 +673,7 @@ async def test_risk_sell_orphan_releases_only_on_proven_absence() -> None:
 
 
 async def test_risk_sell_orphan_lookup_failure_keeps_reservation() -> None:
-    from services.risk.risk_monitor import _active_sell_reserved_size
+    from pmcopy.services.risk.risk_monitor import _active_sell_reserved_size
 
     context = _risk_context(
         orders_repo=_RiskOrdersRepo(None, error=RuntimeError("orders table down"))
@@ -688,7 +688,7 @@ async def test_risk_sell_orphan_lookup_failure_keeps_reservation() -> None:
 
 
 async def test_risk_sell_orphan_without_orders_lookup_fails_closed() -> None:
-    from services.risk.risk_monitor import _active_sell_reserved_size
+    from pmcopy.services.risk.risk_monitor import _active_sell_reserved_size
 
     context = _risk_context(orders_repo=None)
 
@@ -740,7 +740,7 @@ def test_from_lookup_normalizes_none_dict_and_garbage() -> None:
 
 
 def _cli_expired_row(*, rid: str = "r-expired-orphan", order_id: str | None = None) -> dict:
-    from bot_cli.commands.reservations import _classify_expired_reservation
+    from pmcopy.bot_cli.commands.reservations import _classify_expired_reservation
 
     now_ts = int(_NOW.timestamp())
     # Shape mirrors bot_cli _row_to_dict: expires_at is an epoch-seconds int.
@@ -785,7 +785,7 @@ async def test_cli_rowbacked_unresolved_no_id_reservation_is_not_safe_to_release
     The runtime never frees this capacity on TTL; the operator --apply
     channel must not contradict it.
     """
-    from bot_cli.commands.reservations import _demand_submission_evidence
+    from pmcopy.bot_cli.commands.reservations import _demand_submission_evidence
 
     row = _cli_expired_row()
     assert row["classification"] == "safe_to_release"  # pre-evidence tier
@@ -800,7 +800,7 @@ async def test_cli_rowbacked_unresolved_no_id_reservation_is_not_safe_to_release
 
 
 async def test_cli_proven_pre_submit_orphan_remains_releasable() -> None:
-    from bot_cli.commands.reservations import _demand_submission_evidence
+    from pmcopy.bot_cli.commands.reservations import _demand_submission_evidence
 
     row = _cli_expired_row()
 
@@ -812,7 +812,7 @@ async def test_cli_proven_pre_submit_orphan_remains_releasable() -> None:
 
 
 async def test_cli_orders_lookup_failure_fails_closed() -> None:
-    from bot_cli.commands.reservations import _demand_submission_evidence
+    from pmcopy.bot_cli.commands.reservations import _demand_submission_evidence
 
     row = _cli_expired_row()
 
@@ -826,7 +826,7 @@ async def test_cli_orders_lookup_failure_fails_closed() -> None:
 
 
 async def test_cli_missing_lookup_capability_fails_closed() -> None:
-    from bot_cli.commands.reservations import _demand_submission_evidence
+    from pmcopy.bot_cli.commands.reservations import _demand_submission_evidence
 
     row = _cli_expired_row()
 
@@ -838,7 +838,7 @@ async def test_cli_missing_lookup_capability_fails_closed() -> None:
 
 
 async def test_cli_linked_order_reservation_still_defers_for_reconciliation() -> None:
-    from bot_cli.commands.reservations import _demand_submission_evidence
+    from pmcopy.bot_cli.commands.reservations import _demand_submission_evidence
 
     row = _cli_expired_row(order_id="local-order-1")
     assert row["classification"] == "deferred_reconciliation_required"

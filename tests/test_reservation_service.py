@@ -8,21 +8,21 @@ from decimal import Decimal
 
 import pytest
 
-from domain.order_lifecycle import (
+from pmcopy.domain.order_lifecycle import (
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
 )
-from services.execution.reservation_service import (
+from pmcopy.services.execution.reservation_service import (
     Clock,
     InsufficientFreeQuote,
     InsufficientFreeShares,
     ReservationConflict,
     ReservationService,
 )
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.reservations_repo import ReservationsRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 
 
 @contextlib.asynccontextmanager
@@ -30,7 +30,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_market_data import (
+from pmcopy.integrations.polymarket.ccxt_prediction_market_data import (
     CcxtPredictionCapabilityError,
     CcxtPredictionMarketData,
 )

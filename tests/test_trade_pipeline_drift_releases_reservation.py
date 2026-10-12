@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 def _record(side: str = "SELL"):

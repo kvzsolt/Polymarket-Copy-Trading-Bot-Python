@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.ports import (
+from pmcopy.domain.ports import (
     AbstractCursorRepository,
     AbstractDiscoveryRepository,
     AbstractFillRepository,
@@ -26,13 +26,13 @@ from domain.ports import (
     AbstractOrderRepository,
     AbstractPositionRepository,
 )
-from services.discovery.models import Candidate
-from storage.postgres.cursors_repo import CursorsRepo, TradeCursor
-from storage.postgres.discovery_repo import DiscoveryRepo
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.leaders_repo import LeaderRosterRecord, LeadersRepo
-from storage.postgres.orders_repo import OrdersRepo, OrderSubmissionRecord
-from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from pmcopy.services.discovery.models import Candidate
+from pmcopy.storage.postgres.cursors_repo import CursorsRepo, TradeCursor
+from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.leaders_repo import LeaderRosterRecord, LeadersRepo
+from pmcopy.storage.postgres.orders_repo import OrdersRepo, OrderSubmissionRecord
+from pmcopy.storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 
 @contextlib.asynccontextmanager
@@ -42,7 +42,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:

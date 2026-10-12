@@ -18,10 +18,10 @@ from shutil import copyfile
 import pytest
 import yaml
 
-from config.app_config import SERVICE_CONFIG_FILES, load_config
+from pmcopy.config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
-LIVE_DIR = ROOT / "config" / "environments" / "live"
+LIVE_DIR = ROOT / "src" / "pmcopy" / "config" / "environments" / "live"
 LEADER_WALLETS = (
     "0xc4ac7dee4d55d1698e88a8160d5c61ede96b9722",
     "0x31864feb9d25dee93728c6225ba891530967e9ca",
@@ -36,7 +36,7 @@ def packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     live_root = config_root / "environments" / "live"
     live_root.mkdir(parents=True)
     for service in SERVICE_CONFIG_FILES:
-        source = ROOT / "config" / f"{service}.yml"
+        source = ROOT / "src" / "pmcopy" / "config" / f"{service}.yml"
         if source.exists():
             copyfile(source, config_root / source.name)
         live_source = LIVE_DIR / f"{service}.yml"
@@ -50,7 +50,7 @@ def packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             yaml.safe_dump({"name": name, "wallet": wallet, "enabled": True}),
             encoding="utf-8",
         )
-    monkeypatch.setattr("config.app_config._CONFIG_ROOT", config_root)
+    monkeypatch.setattr("pmcopy.config.app_config._CONFIG_ROOT", config_root)
     return config_root
 
 

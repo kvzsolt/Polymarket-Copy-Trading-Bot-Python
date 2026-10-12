@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from integrations.falcon.client import FalconClient
-from integrations.falcon.errors import (
+from pmcopy.integrations.falcon.client import FalconClient
+from pmcopy.integrations.falcon.errors import (
     FalconAuthenticationError,
     FalconProtocolError,
 )

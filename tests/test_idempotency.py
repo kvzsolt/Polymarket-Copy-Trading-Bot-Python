@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,7 +20,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -39,7 +39,7 @@ async def _pg_pool():
         # Patch the singleton pool getter so the module-under-test
         # acquires this testcontainer pool. Restores the prior state
         # via _reset_for_tests at exit.
-        from storage.postgres import connection as conn_mod
+        from pmcopy.storage.postgres import connection as conn_mod
 
         conn_mod._reset_for_tests()
         prev_pool = conn_mod._pool
@@ -58,7 +58,7 @@ async def _pg_pool():
 
 def test_build_trade_key():
     """Pure-function test — sync, no pool needed."""
-    from utils.idempotency import build_trade_key
+    from pmcopy.utils.idempotency import build_trade_key
 
     trade = {
         "transactionHash": "0xABC",
@@ -72,7 +72,7 @@ def test_build_trade_key():
 class TestIdempotencyStore:
     async def test_mark_and_has_processed(self):
         async with _pg_pool():
-            import utils.idempotency as idem
+            import pmcopy.utils.idempotency as idem
 
             trade = {
                 "transactionHash": "0x1",
@@ -88,7 +88,7 @@ class TestIdempotencyStore:
 
     async def test_mark_processed_all_tx_hashes_marks_aggregated(self):
         async with _pg_pool():
-            import utils.idempotency as idem
+            import pmcopy.utils.idempotency as idem
 
             trade = {
                 "transactionHash": "0xNEW",

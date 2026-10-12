@@ -8,7 +8,7 @@ import pytest
 from eth_abi import encode
 from eth_utils import function_signature_to_4byte_selector
 
-from services.onchain_detection.calldata_decoder import (
+from pmcopy.services.onchain_detection.calldata_decoder import (
     MATCH_ORDERS_SELECTOR,
     SAFE_EXEC_TRANSACTION_SELECTOR,
     SourceTransactionCalldataDecoder,

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
-from services.execution.user_order_evidence import (
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.user_order_evidence import (
     UserOrderEvidenceKind,
     UserOrderEvidenceParser,
 )
@@ -262,8 +262,8 @@ async def test_wss_wake_persists_order_evidence_before_reconciliation(
 ) -> None:
     """Runtime glue records cancellation before scanning unresolved orders."""
 
-    import app
-    import orchestrators.trade_pipeline as pipeline
+    import pmcopy.app as app
+    import pmcopy.orchestrators.trade_pipeline as pipeline
 
     call_order: list[str] = []
     reconciler = MagicMock()
@@ -308,8 +308,8 @@ async def test_wss_wake_records_evidence_while_reconcile_is_in_progress(
     trade has already settled.
     """
 
-    import app
-    import orchestrators.trade_pipeline as pipeline
+    import pmcopy.app as app
+    import pmcopy.orchestrators.trade_pipeline as pipeline
 
     call_order: list[str] = []
     started = asyncio.Event()

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrators import runtime_bootstrap
+from pmcopy.orchestrators import runtime_bootstrap
 
 WALLET = "0x" + "1" * 40
 

@@ -7,18 +7,18 @@ import json
 from pydantic import SecretStr
 import pytest
 
-from bot_cli.commands.redeem import RedemptionCommand, register_redeem_command
-from config.app_config import AppConfig
-from config.env import WalletConfig
-from config.redemption import RedemptionConfig
-from domain.redemption import (
+from pmcopy.bot_cli.commands.redeem import RedemptionCommand, register_redeem_command
+from pmcopy.config.app_config import AppConfig
+from pmcopy.config.env import WalletConfig
+from pmcopy.config.redemption import RedemptionConfig
+from pmcopy.domain.redemption import (
     RedemptionMarket,
     RedemptionReport,
     RedemptionResult,
     RedemptionSnapshot,
     RedemptionState,
 )
-from services.multiUserConfig import RuntimeUser
+from pmcopy.services.multiUserConfig import RuntimeUser
 
 WALLET = "0x" + "1" * 40
 
@@ -214,7 +214,7 @@ class TestRedeemCommand:
 
     def test_root_cli_registers_redeem(self, monkeypatch, capsys) -> None:
         """Verify root cli registers redeem."""
-        from bot_cli.main import main
+        from pmcopy.bot_cli.main import main
 
         monkeypatch.setattr("sys.argv", ["bot.py", "redeem", "--help"])
         with pytest.raises(SystemExit) as error:

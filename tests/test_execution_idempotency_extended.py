@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from services.executionService import (
+from pmcopy.services.executionService import (
     ExecutionRequest,
     ExecutionService,
     _is_pending_submission_expired,
@@ -34,12 +34,12 @@ from services.executionService import (
     _sanitize_submission_response,
     _truncate_text,
 )
-from storage.postgres.orders_repo import OrdersRepo
-from utils.createClobClient import MarketMeta
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.utils.createClobClient import MarketMeta
 from tests.conftest import make_clob_gateway
-from integrations.polymarket.models import VenueSubmitResult
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ from services.market_data_service import MarketDataBundle, MarketDataSource
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset the circuit breaker around every test."""
-    import services.executionService as _es
+    import pmcopy.services.executionService as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -161,7 +161,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")
@@ -349,7 +349,7 @@ class TestStaleLockExpiry:
             key = "test-stale-idem-key"
             now = time.time()
             with patch(
-                "services.executionService._effective_idempotency_key",
+                "pmcopy.services.executionService._effective_idempotency_key",
                 return_value=key,
             ):
                 await svc._save_submission(
@@ -575,7 +575,7 @@ class TestOrderRepoLockCycle:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
 
-            from storage.postgres.orders_repo import OrderSubmissionRecord
+            from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord
 
             await repo.save_submission(
                 OrderSubmissionRecord(
@@ -956,7 +956,7 @@ class TestAtomicLockConcurrencyStress:
             key = "test-expiry-race-key"
             now = time.time()
             with patch(
-                "services.executionService._effective_idempotency_key",
+                "pmcopy.services.executionService._effective_idempotency_key",
                 return_value=key,
             ):
                 # Seed an expired pending lock: no order_id, pending TTL elapsed.

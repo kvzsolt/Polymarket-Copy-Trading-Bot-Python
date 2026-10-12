@@ -21,20 +21,20 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PRODUCTION_ROOTS: tuple[str, ...] = (
-    "bootstrap.py",
-    "app.py",
-    "bot.py",
-    "bot_cli",
-    "clients",
-    "config",
-    "domain",
-    "integrations",
-    "interfaces",
-    "orchestrators",
+    "src/pmcopy/bootstrap.py",
+    "src/pmcopy/app.py",
+    "src/pmcopy/bot.py",
+    "src/pmcopy/bot_cli",
+    "src/pmcopy/clients",
+    "src/pmcopy/config",
+    "src/pmcopy/domain",
+    "src/pmcopy/integrations",
+    "src/pmcopy/interfaces",
+    "src/pmcopy/orchestrators",
     "scripts",
-    "services",
-    "storage",
-    "utils",
+    "src/pmcopy/services",
+    "src/pmcopy/storage",
+    "src/pmcopy/utils",
 )
 
 FORBIDDEN_PREFIXES: tuple[str, ...] = (
@@ -42,9 +42,9 @@ FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "test_probe",
     "test_doctor",
     # Removed settlement package paths must not re-enter production code.
-    "services.redemption",
-    "services.redemptionService",
-    "services.autoRedeem",
+    "pmcopy.services.redemption",
+    "pmcopy.services.redemptionService",
+    "pmcopy.services.autoRedeem",
 )
 
 DELETED_PROBE_FILES: tuple[str, ...] = (
@@ -157,9 +157,9 @@ def test_removed_settlement_package_has_no_python_files() -> None:
         "test_doctor_detect",
         "test_doctor_gnosis",
         "test_doctor_anything_else",
-        "services.redemption",
-        "services.redemption.redemption_service",
-        "services.autoRedeem",
+        "pmcopy.services.redemption",
+        "pmcopy.services.redemption.redemption_service",
+        "pmcopy.services.autoRedeem",
         "scripts.test_probe2",  # nested-segment match (issue #77 PR review)
         "some.pkg.legacy.foo",  # nested-segment match
         "pkg.subpkg.test_doctor_x",  # nested-segment + wildcard match
@@ -172,8 +172,8 @@ def test_is_forbidden_matches_wildcard_and_nested(target: str) -> None:
 @pytest.mark.parametrize(
     "target",
     [
-        "config.app_config",
-        "services.executionService",
+        "pmcopy.config.app_config",
+        "pmcopy.services.executionService",
         "tests.helpers",  # 'tests' is not 'test_'
         "polymarket_legacy_tools",  # head doesn't start with 'legacy'
         "doctor",  # different prefix

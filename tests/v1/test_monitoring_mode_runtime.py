@@ -7,22 +7,22 @@ from decimal import Decimal
 
 import pytest
 
-from domain.detection import DetectionFinality
-from services.copy_tasks.admission import CopyTaskAdmissionEngine
-from services.copy_tasks.domain import (
+from pmcopy.domain.detection import DetectionFinality
+from pmcopy.services.copy_tasks.admission import CopyTaskAdmissionEngine
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     MonitoringMode,
     SourceTrade,
     TaskAdmissionContext,
 )
-from services.copy_tasks.entry_price import CopyTaskEntryPriceService
-from services.copy_tasks.monitoring import CopyMonitoringModePolicy
-from services.copy_tasks.reaction import CopyReactionEngine
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from pmcopy.services.copy_tasks.monitoring import CopyMonitoringModePolicy
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine
+from pmcopy.services.copy_tasks.reentry_lock import (
     InMemoryMarketReentryLockRepository,
     MarketReentryLockService,
 )
-from services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
+from pmcopy.services.copy_tasks.runtime import CopyTaskRuntimeCoordinator
 
 
 class SizingDecision:

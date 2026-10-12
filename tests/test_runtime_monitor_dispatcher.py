@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrators.runtime_monitor import LeaderBatchDispatcher, run_leader_monitor
-from services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
+from pmcopy.orchestrators.runtime_monitor import LeaderBatchDispatcher, run_leader_monitor
+from pmcopy.services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
 from tests.telemetry_helpers import raising_emitters, recording_emitters
 
 
@@ -170,7 +170,7 @@ async def test_run_leader_monitor_forwards_the_detection_emitter(
     async def fake_trade_monitor(_params, callback, **_kwargs) -> None:
         await callback([_row(TX_A)])
 
-    monkeypatch.setattr("orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
+    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
 
     await run_leader_monitor(
         LEADER,
@@ -194,7 +194,7 @@ async def test_mixed_case_roster_leader_publishes_the_lowercase_reference() -> N
     entry and the on-chain dispatcher's lower-cased wallet publish the same
     leader under two references.
     """
-    from services.telemetry import leader_ref, safe_ref
+    from pmcopy.services.telemetry import leader_ref, safe_ref
 
     checksummed = "0x" + "AB" * 20
     assert checksummed != checksummed.lower()
@@ -219,7 +219,7 @@ async def test_mixed_case_roster_leader_publishes_the_lowercase_reference() -> N
 @pytest.mark.asyncio
 async def test_polling_and_onchain_spellings_collapse_onto_one_leader() -> None:
     """Cross-source proof: both dispatch paths report one ``leader_ref``."""
-    from services.telemetry import leader_ref
+    from pmcopy.services.telemetry import leader_ref
 
     emitters, service = recording_emitters()
     checksummed = "0x" + "AB" * 20

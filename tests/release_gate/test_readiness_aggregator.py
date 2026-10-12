@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.healthServer import _STRICT_REQUIRED_KEYS, ReadinessTracker
+from pmcopy.services.healthServer import _STRICT_REQUIRED_KEYS, ReadinessTracker
 
 
 def _all_ready() -> ReadinessTracker:

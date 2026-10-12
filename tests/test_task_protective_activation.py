@@ -5,10 +5,10 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.domain import CopyTask
-from services.copy_tasks.entry_permission import TaskEntryPermissionService
-from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
-from services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.services.copy_tasks.domain import CopyTask
+from pmcopy.services.copy_tasks.entry_permission import TaskEntryPermissionService
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
 
 
 def task() -> CopyTask:

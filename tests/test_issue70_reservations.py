@@ -19,29 +19,29 @@ from decimal import Decimal
 
 import pytest
 
-from domain.order_lifecycle import (
+from pmcopy.domain.order_lifecycle import (
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
 )
-from services.execution.reservation_service import (
+from pmcopy.services.execution.reservation_service import (
     InsufficientFreeQuote,
     InsufficientFreeShares,
     ReservationConflict,
     ReservationService,
 )
-from services.intentRegistry import (
+from pmcopy.services.intentRegistry import (
     DuplicateIntentError,
     IntentRegistry,
     IntentSide as RegistryIntentSide,
     IntentState,
     Reservation,
 )
-from services.positionActionCoordinator import PositionScope
-from services.positionCoordinator import PositionCoordinator
-from storage.postgres.positions_repo import PositionsRepo
-from storage.postgres.reservations_repo import ReservationsRepo
+from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 
 pytestmark = pytest.mark.integration
 
@@ -70,7 +70,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     ctr = PostgresContainer("postgres:16-alpine")

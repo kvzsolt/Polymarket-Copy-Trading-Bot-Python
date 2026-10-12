@@ -12,7 +12,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.detection import (
+from pmcopy.domain.detection import (
     DetectionFinality,
     DetectionMode,
     LeaderTradeEvent,

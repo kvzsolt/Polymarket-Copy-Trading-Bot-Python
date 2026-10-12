@@ -8,10 +8,10 @@ from decimal import Decimal as D
 import asyncpg
 from testcontainers.community.postgres import PostgresContainer
 
-from domain.auto_trader import AutoTraderScope
-from domain.paper_evaluation import PaperFill, PaperLedger
-from storage.postgres.migrations import apply_migrations
-from storage.postgres.paper_evaluation_repository import (
+from pmcopy.domain.auto_trader import AutoTraderScope
+from pmcopy.domain.paper_evaluation import PaperFill, PaperLedger
+from pmcopy.storage.postgres.migrations import apply_migrations
+from pmcopy.storage.postgres.paper_evaluation_repository import (
     PaperLedgerCodec,
     PostgresPaperLedgerRepository,
 )

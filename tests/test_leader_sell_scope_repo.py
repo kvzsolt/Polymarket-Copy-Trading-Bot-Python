@@ -6,7 +6,7 @@ import contextlib
 
 import pytest
 
-from storage.postgres.leader_sell_scope_repo import LeaderSellSafetyScopeRepo
+from pmcopy.storage.postgres.leader_sell_scope_repo import LeaderSellSafetyScopeRepo
 
 
 @contextlib.asynccontextmanager
@@ -17,7 +17,7 @@ async def _pg_pool():
         import asyncpg
         from testcontainers.postgres import PostgresContainer
 
-        from storage.postgres.migrations import apply_migrations
+        from pmcopy.storage.postgres.migrations import apply_migrations
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     container = PostgresContainer("postgres:16-alpine")

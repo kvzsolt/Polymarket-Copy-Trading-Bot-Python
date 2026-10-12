@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from application.trading_context import TradingContext
-from domain.position_lifecycle import PositionLifecycle
-from orchestrators.task_protection import TaskProtectiveRuntimeBindings
-from services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
-from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
-from services.execution.coordinator import ExecutionCoordinator
-from services.market_data_service import MarketDataService
+from pmcopy.application.trading_context import TradingContext
+from pmcopy.domain.position_lifecycle import PositionLifecycle
+from pmcopy.orchestrators.task_protection import TaskProtectiveRuntimeBindings
+from pmcopy.services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+from pmcopy.services.execution.coordinator import ExecutionCoordinator
+from pmcopy.services.market_data_service import MarketDataService
 from tests.v1.test_durable_risk_lots import _lot
 
 

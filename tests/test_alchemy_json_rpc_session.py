@@ -8,12 +8,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from adapters.polygon.alchemy_json_rpc import (
+from pmcopy.adapters.polygon.alchemy_json_rpc import (
     AlchemyJsonRpcSession,
     AlchemyRpcDisconnectedError,
     AlchemySubscriptionOptions,
 )
-from domain.source_transactions import EvmHead, EvmReceipt, ReceiptStatus
+from pmcopy.domain.source_transactions import EvmHead, EvmReceipt, ReceiptStatus
 
 _CHAIN_ID = 137
 _NOW = datetime(2026, 8, 13, 10, 0, tzinfo=UTC)

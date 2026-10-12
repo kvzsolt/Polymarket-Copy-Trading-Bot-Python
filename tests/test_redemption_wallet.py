@@ -13,8 +13,8 @@ from pydantic import SecretStr
 import pytest
 from web3 import Web3
 
-from domain.redemption import RedemptionMarket, RedemptionSnapshot
-from integrations.polymarket.settlement_wallet import DepositWalletCodec, SettlementContracts
+from pmcopy.domain.redemption import RedemptionMarket, RedemptionSnapshot
+from pmcopy.integrations.polymarket.settlement_wallet import DepositWalletCodec, SettlementContracts
 
 
 class TestDepositWalletCodec:

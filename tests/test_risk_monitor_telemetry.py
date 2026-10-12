@@ -17,12 +17,12 @@ from decimal import Decimal
 
 import pytest
 
-from services.execution.types import ExecutionResult
-from services.risk.risk_monitor import (
+from pmcopy.services.execution.types import ExecutionResult
+from pmcopy.services.risk.risk_monitor import (
     rehydrate_position_manager,
     run_risk_check_for_context,
 )
-from services.telemetry import (
+from pmcopy.services.telemetry import (
     FailureComponent,
     FailureEvent,
     OrderOutcome,
@@ -31,8 +31,8 @@ from services.telemetry import (
     TelemetryProducer,
     safe_ref,
 )
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.positions_repo import PositionsRepo
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
 from tests.telemetry_helpers import raising_emitters, recording_emitters
 from tests.test_issue72_risk_block_correctness import (
     FAKE_TOKEN_ID,
@@ -133,7 +133,7 @@ async def test_filled_protective_exit_reports_triggered_then_filled() -> None:
 @pytest.mark.asyncio
 async def test_protective_exit_keeps_unknown_fee_in_accounting_and_evidence() -> None:
     """Immediate risk exits must not publish absent venue fees as measured zero."""
-    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
     from tests.test_aethertrade_fill_evidence import FillClock
     from tests.test_aethertrade_fill_evidence_postgres import events
 

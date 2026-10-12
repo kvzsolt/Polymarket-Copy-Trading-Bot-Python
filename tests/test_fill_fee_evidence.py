@@ -4,11 +4,11 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.models import VenueFill
-from services.execution.reconciliation_service import ReconciliationService
-from services.leader_performance import ClosedEpisodeAccumulator, PerformanceFill
-from domain.detection import TradeSide
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.models import VenueFill
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.leader_performance import ClosedEpisodeAccumulator, PerformanceFill
+from pmcopy.domain.detection import TradeSide
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange
 from unittest.mock import AsyncMock
 from tests.test_reconciler_idempotent_transitions import _make_service, _record

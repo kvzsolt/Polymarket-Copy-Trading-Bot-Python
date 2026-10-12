@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.balance_regime import (
+from pmcopy.services.balance_regime import (
     BalanceDecision,
     BalanceRegime,
     _DailySpendLedger,

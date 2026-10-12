@@ -20,9 +20,9 @@ from __future__ import annotations
 import ast
 import pathlib
 
-from config.app_config import CopyTradingConfig
+from pmcopy.config.app_config import CopyTradingConfig
 
-_APP_PY = pathlib.Path(__file__).resolve().parent.parent / "app.py"
+_APP_PY = pathlib.Path(__file__).resolve().parent.parent / "src" / "pmcopy" / "app.py"
 
 
 def test_app_copy_trading_attribute_accesses_exist_on_config() -> None:

@@ -6,13 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 from eth_abi import encode
 
-from domain.source_transactions import SourceSide, WatchedRole
-from services.onchain_detection.calldata_decoder import (
+from pmcopy.domain.source_transactions import SourceSide, WatchedRole
+from pmcopy.services.onchain_detection.calldata_decoder import (
     MATCH_ORDERS_SELECTOR,
     SAFE_EXEC_TRANSACTION_SELECTOR,
     SourceTransactionCalldataDecoder,
 )
-from services.onchain_detection.pending_transaction_factory import PendingTransactionFactory
+from pmcopy.services.onchain_detection.pending_transaction_factory import PendingTransactionFactory
 
 _CHAIN_ID = 137
 _NOW = datetime(2026, 8, 13, 10, 0, tzinfo=UTC)

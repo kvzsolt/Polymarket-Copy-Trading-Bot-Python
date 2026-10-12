@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from clients.user_ws import UserWebSocket
-from utils.logger import _reset_lifecycle_dedup_for_tests
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.clients.user_ws import UserWebSocket
+from pmcopy.utils.logger import _reset_lifecycle_dedup_for_tests
 
 
 @pytest.fixture(autouse=True)
@@ -55,8 +55,8 @@ def _fill_event(trade_status: str, *, order_id: str = "ord-1", token: str = "0xt
 def test_wss_event_emits_canonical_lifecycle_status(trade_status, canonical):
     ws = _ws()
     with (
-        patch("clients.user_ws._log_lc_fallback", create=True),
-        patch("utils.logger.log_order_lifecycle") as lc,
+        patch("pmcopy.clients.user_ws._log_lc_fallback", create=True),
+        patch("pmcopy.utils.logger.log_order_lifecycle") as lc,
     ):
         ws._handle_fill(_fill_event(trade_status, order_id=f"ord-{canonical}"))
     assert lc.call_count == 1
@@ -68,7 +68,7 @@ def test_wss_event_emits_canonical_lifecycle_status(trade_status, canonical):
 
 def test_unknown_trade_status_does_not_emit_lifecycle_log():
     ws = _ws()
-    with patch("utils.logger.log_order_lifecycle") as lc:
+    with patch("pmcopy.utils.logger.log_order_lifecycle") as lc:
         ws._handle_fill(_fill_event("WEIRD_STATUS"))
     lc.assert_not_called()
 

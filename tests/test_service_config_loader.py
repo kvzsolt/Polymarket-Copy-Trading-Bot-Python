@@ -12,6 +12,7 @@ process PMCOPY__* environment. The environment is selected explicitly
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from config.app_config import (
+from pmcopy.config.app_config import (
     EnvValidationError,
     dump_config_payload,
     load_config,
@@ -283,7 +284,7 @@ def reject_runtime_import(event, arguments):
         raise RuntimeError('Configuration imported the venue runtime')
 
 sys.addaudithook(reject_runtime_import)
-from config.app_config import load_config
+from pmcopy.config.app_config import load_config
 directory = Path(sys.argv[1])
 load_config(json.loads(sys.argv[2]), config_dir=directory, secrets_path=directory / 'absent.env')
 assert 'ccxt' not in sys.modules
@@ -291,6 +292,7 @@ assert 'ccxt' not in sys.modules
     result = subprocess.run(
         [sys.executable, "-c", probe, str(config_dir), json.dumps(_overrides())],
         cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
         capture_output=True,
         text=True,
         timeout=10,

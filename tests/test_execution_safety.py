@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from application.execution_safety import (
+from pmcopy.application.execution_safety import (
     ExecutionBlockedError,
     ExecutionSafetyIntent,
     ExecutionSide,
@@ -19,7 +19,7 @@ from application.execution_safety import (
     RiskSnapshot,
     TradingMode,
 )
-from application.reconciliation_service import (
+from pmcopy.application.reconciliation_service import (
     ReconciliationObservation,
     ReconciliationService,
 )

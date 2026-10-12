@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrators.runtime_monitor import (
+from pmcopy.orchestrators.runtime_monitor import (
     LeaderBatchDispatcher,
     _coalesce_trade_batches,
     run_leader_monitor,
@@ -203,7 +203,7 @@ async def test_v1_source_callback_acknowledges_only_after_atomic_batch_admission
         callback_returned.set()
         await finish_monitor.wait()
 
-    monkeypatch.setattr("orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
+    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
     runtime = asyncio.create_task(
         run_leader_monitor(
             "0xleader",
@@ -244,7 +244,7 @@ async def test_v1_monitor_does_not_require_legacy_follower_contexts(
         assert kwargs["aggregate_signals"] is False
         await callback([{"id": "trade-a"}])
 
-    monkeypatch.setattr("orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
+    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
 
     await run_leader_monitor(
         "0xleader",

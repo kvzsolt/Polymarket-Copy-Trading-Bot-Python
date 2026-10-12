@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from domain.source_time import TransportReceipt
+from pmcopy.domain.source_time import TransportReceipt
 
 
 class Clock:
@@ -34,7 +34,7 @@ class TestMarketEvidence:
     """Tests exercise actual input callbacks, not a separate synthetic book feed."""
 
     def test_original_text_and_ns_survive_and_disconnect_advances_stream(self):
-        from services.market_evidence import MarketEvidenceTap
+        from pmcopy.services.market_evidence import MarketEvidenceTap
 
         recorder = Recorder()
         tap = MarketEvidenceTap(recorder, Clock(), stream_id="account-market")
@@ -51,7 +51,7 @@ class TestMarketEvidence:
         assert recorder.events[-1]["stream_id"] != first["stream_id"]
 
     def test_heartbeat_does_not_create_book_and_bad_utf8_latches_loss(self):
-        from services.market_evidence import MarketEvidenceTap
+        from pmcopy.services.market_evidence import MarketEvidenceTap
 
         recorder = Recorder()
         tap = MarketEvidenceTap(recorder, Clock(), stream_id="m")
@@ -62,7 +62,7 @@ class TestMarketEvidence:
         assert recorder.events == [{"invalid": "invalid_market_frame"}]
 
     def test_local_failure_does_not_stop_risk_market_updates(self):
-        from services.market_evidence import MarketEvidenceTap
+        from pmcopy.services.market_evidence import MarketEvidenceTap
 
         recorder = Recorder()
         recorder.fail = True
@@ -71,7 +71,7 @@ class TestMarketEvidence:
         assert recorder.events[-1]["invalid"] == "market_evidence_unavailable"
 
     async def test_socket_capture_precedes_normalizer(self):
-        from clients.market_ws import MarketWebSocket
+        from pmcopy.clients.market_ws import MarketWebSocket
 
         order = []
         evidence = SimpleNamespace(observe=lambda raw: order.append(("raw", raw)))
@@ -91,9 +91,9 @@ class TestMarketEvidence:
         assert [step[0] for step in order] == ["raw", "decoded"]
 
     async def test_market_runtime_passes_tap_and_invalidates_on_disconnect(self, monkeypatch):
-        from cache.market_state_store import MarketStateStore
-        from orchestrators.market_data_runtime import MarketDataRuntime
-        from services.healthServer import ReadinessTracker
+        from pmcopy.cache.market_state_store import MarketStateStore
+        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.services.healthServer import ReadinessTracker
         from tests.test_market_data_runtime import _FakeMarketWebSocket
 
         seen = []
@@ -101,7 +101,7 @@ class TestMarketEvidence:
             seen.append(kwargs)
             return _FakeMarketWebSocket(**kwargs)
 
-        monkeypatch.setattr("orchestrators.market_data_runtime.MarketWebSocket", socket)
+        monkeypatch.setattr("pmcopy.orchestrators.market_data_runtime.MarketWebSocket", socket)
         tap = SimpleNamespace(disconnected=Mock())
         runtime = MarketDataRuntime(market_store=MarketStateStore(), gateway=SimpleNamespace(),
                                     readiness=ReadinessTracker(), config=SimpleNamespace(), evidence=tap,
@@ -113,9 +113,9 @@ class TestMarketEvidence:
         await runtime.stop()
 
     async def test_application_composes_existing_stream_with_same_writer(self, monkeypatch):
-        import app
+        import pmcopy.app as app
         from unittest.mock import AsyncMock
-        from services.healthServer import ReadinessTracker
+        from pmcopy.services.healthServer import ReadinessTracker
 
         seen = []
         def runtime(**kwargs):
@@ -123,7 +123,7 @@ class TestMarketEvidence:
             return SimpleNamespace(start=AsyncMock())
 
         monkeypatch.setattr(app, "MarketDataRuntime", runtime)
-        monkeypatch.setattr("adapters.clock.SystemReceiptClock", Clock)
+        monkeypatch.setattr("pmcopy.adapters.clock.SystemReceiptClock", Clock)
         writer = Recorder()
         await app._start_market_data_runtimes(
             runtime_users=[SimpleNamespace(user_id="a")],

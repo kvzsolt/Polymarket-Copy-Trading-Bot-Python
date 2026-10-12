@@ -7,8 +7,8 @@ from unittest.mock import Mock
 import aiohttp
 import pytest
 
-from domain.redemption import RedemptionState
-from services.settlement import RedemptionService
+from pmcopy.domain.redemption import RedemptionState
+from pmcopy.services.settlement import RedemptionService
 from tests.test_redemption_gateway import CONDITION, GatewayScenario
 from tests.test_redemption_service import FakeClock, FakeJournal
 

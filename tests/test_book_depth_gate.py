@@ -16,10 +16,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.models import VenueSubmitResult
-from services.execution.book_spread import calculate_book_depth_metrics
-from services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.services.execution.book_spread import calculate_book_depth_metrics
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def _make_bundle_with_book(bids: dict, asks: dict) -> MarketDataBundle:
 
 
 def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
-    from services.executionService import ExecutionService
+    from pmcopy.services.executionService import ExecutionService
 
     mds = AsyncMock()
     mds.require_fresh_data = AsyncMock(return_value=_make_bundle_with_book(bids, asks))
@@ -187,7 +187,7 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
 
 
 def _req(side: str = "BUY", amount: str = "5"):
-    from services.executionService import ExecutionRequest
+    from pmcopy.services.executionService import ExecutionRequest
 
     return ExecutionRequest(
         user_id="user1",
@@ -202,7 +202,7 @@ def _req(side: str = "BUY", amount: str = "5"):
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
-    import services.executionService as _es
+    import pmcopy.services.executionService as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
+from pmcopy.config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
 
 EXCHANGE = POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower()
 OWNER = "0x" + "11" * 20
@@ -44,7 +44,7 @@ class LogFixture:
 @pytest.mark.parametrize("counterparty", [COUNTERPARTY, EXCHANGE])
 def test_native_owner_fill_has_its_own_side_token_and_fee(side: int, counterparty: str) -> None:
     """Native taker summary still owns topic2 and must not be inverted/dropped."""
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 
     fill = NativeOwnerLogDecoder().decode(LogFixture.make(side=side, counterparty=counterparty))
     assert fill.owner == OWNER
@@ -58,7 +58,7 @@ def test_native_owner_fill_has_its_own_side_token_and_fee(side: int, counterpart
 
 def test_repeated_fills_and_reinclusions_have_distinct_correct_identities() -> None:
     """Action ID retains every log; inclusion ID changes when its block changes."""
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 
     decoder = NativeOwnerLogDecoder()
     first = decoder.decode(LogFixture.make())
@@ -71,7 +71,7 @@ def test_repeated_fills_and_reinclusions_have_distinct_correct_identities() -> N
 
 def test_removed_first_is_preserved_as_evidence_and_not_a_fresh_signal() -> None:
     """The decoder does not discard a tombstone before an add has been observed."""
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 
     fill = NativeOwnerLogDecoder().decode(LogFixture.make() | {"removed": True})
     assert fill.removed is True
@@ -93,7 +93,7 @@ def test_removed_first_is_preserved_as_evidence_and_not_a_fresh_signal() -> None
 )
 def test_malformed_native_log_is_rejected(mutation: dict[str, object]) -> None:
     """Malformed coordinates or log shape cannot create guessed economic evidence."""
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 
     with pytest.raises(ValueError):
         NativeOwnerLogDecoder().decode(LogFixture.make() | mutation)
@@ -101,7 +101,7 @@ def test_malformed_native_log_is_rejected(mutation: dict[str, object]) -> None:
 
 def test_nonzero_address_padding_is_rejected() -> None:
     """Truncating malformed indexed topics would invent a different wallet owner."""
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 
     log = deepcopy(LogFixture.make())
     log["topics"][2] = "0x" + "11" * 32

@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orchestrators.leader_registry import LeaderRegistry
-from services.discovery.cycle_summary import DiscoveryCycleSummary
+from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.services.discovery.cycle_summary import DiscoveryCycleSummary
 
 
 def _discovery() -> SimpleNamespace:

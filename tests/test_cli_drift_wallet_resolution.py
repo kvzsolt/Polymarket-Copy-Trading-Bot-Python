@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot_cli.commands import drift as drift_mod
-from config.env import SignatureType, WalletConfig
-from services.multiUserConfig import RuntimeUser, UserFollowConfig
+from pmcopy.bot_cli.commands import drift as drift_mod
+from pmcopy.config.env import SignatureType, WalletConfig
+from pmcopy.services.multiUserConfig import RuntimeUser, UserFollowConfig
 
 _PRIVATE_KEY = "0x" + "a" * 64
 _FUNDER = "0x" + "d" * 40
@@ -63,9 +63,9 @@ class _Harness:
             patch.object(drift_mod, "load_config", return_value=_config(paper=paper)),
             patch.object(drift_mod, "load_runtime_users", return_value=users),
             patch.object(drift_mod, "_list_persisted_positions", AsyncMock(return_value=[])),
-            patch("storage.postgres.connection.init_pool", AsyncMock(return_value=MagicMock())),
-            patch("storage.postgres.connection.shutdown_pool", AsyncMock()),
-            patch("orchestrators.runtime_bootstrap.fetch_live_positions", self.fetch_live),
+            patch("pmcopy.storage.postgres.connection.init_pool", AsyncMock(return_value=MagicMock())),
+            patch("pmcopy.storage.postgres.connection.shutdown_pool", AsyncMock()),
+            patch("pmcopy.orchestrators.runtime_bootstrap.fetch_live_positions", self.fetch_live),
         )
 
     def __enter__(self) -> _Harness:

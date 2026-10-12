@@ -8,7 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from config.v1_runtime import V1RuntimeConfig
+from pmcopy.config.v1_runtime import V1RuntimeConfig
 from tests.config_helpers import load_test_config
 
 
@@ -42,7 +42,7 @@ def test_v1_runtime_rejects_unknown_or_unbounded_values() -> None:
 def test_packaged_copy_trading_yaml_copy_tasks_is_paper_safe() -> None:
     """The packaged copy_trading.yml carries the v1 engine settings now."""
     payload = yaml.safe_load(
-        (Path(__file__).parents[2] / "config/copy_trading.yml").read_text(encoding="utf-8")
+        (Path(__file__).parents[2] / "src" / "pmcopy" / "config/copy_trading.yml").read_text(encoding="utf-8")
     )
     config = V1RuntimeConfig.model_validate({"copy_tasks": payload["copy_tasks"]})
 

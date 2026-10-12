@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.risk.exit_policy import evaluate_exit
+from pmcopy.services.risk.exit_policy import evaluate_exit
 
 
 # ---------------------------------------------------------------------------

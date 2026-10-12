@@ -17,9 +17,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from integrations.polymarket.errors import VenueOrderNotFoundError
-from services.execution.reconciliation_service import ReconciliationService
-from services.execution.submission import sanitize_submission_response
+from pmcopy.integrations.polymarket.errors import VenueOrderNotFoundError
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.submission import sanitize_submission_response
 
 ROW_ORDER_ID = "0xROWHASH"
 ATTEMPTED_ORDER_ID = "0xATT1"
@@ -222,7 +222,7 @@ def test_sanitize_submission_response_preserves_attempted_order_ids():
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset the process-wide circuit breaker around every test."""
-    import services.executionService as _es
+    import pmcopy.services.executionService as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -268,10 +268,10 @@ class _FeeSvc:
 
 @pytest.mark.asyncio
 async def test_execution_service_persists_attempted_order_ids():
-    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from services.executionService import ExecutionRequest, ExecutionService
-    from services.market_data_service import MarketDataBundle, MarketDataSource
-    from integrations.polymarket.models import VenueSubmitResult
+    from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.integrations.polymarket.models import VenueSubmitResult
 
     now = time.monotonic()
     bundle = MarketDataBundle(

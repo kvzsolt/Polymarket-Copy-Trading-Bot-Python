@@ -8,13 +8,13 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from web3 import Web3
 
-from adapters.polygon.historical_erc1155_balance import (
+from pmcopy.adapters.polygon.historical_erc1155_balance import (
     Web3HistoricalErc1155BalanceReader,
 )
-from integrations.polymarket.leader_sell_fraction_data_api import (
+from pmcopy.integrations.polymarket.leader_sell_fraction_data_api import (
     DataApiLeaderSellFractionReader,
 )
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )

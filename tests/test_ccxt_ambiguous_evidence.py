@@ -18,14 +18,14 @@ from typing import Any
 
 import pytest
 
-from integrations.polymarket.ccxt_ambiguous_evidence import CcxtAmbiguousEvidenceSource
-from integrations.polymarket.errors import (
+from pmcopy.integrations.polymarket.ccxt_ambiguous_evidence import CcxtAmbiguousEvidenceSource
+from pmcopy.integrations.polymarket.errors import (
     VenueHistoryIncompleteError,
     VenueSchemaError,
     VenueUnavailableError,
 )
-from integrations.polymarket.models import VenueFill, VenueOrderState
-from services.execution.ambiguous_recovery import (
+from pmcopy.integrations.polymarket.models import VenueFill, VenueOrderState
+from pmcopy.services.execution.ambiguous_recovery import (
     AccountCheckResult,
     AmbiguousSubmission,
     EvidenceCollectionOutcome,
@@ -967,7 +967,7 @@ class _RawHistoryExchange:
 
 
 async def _gateway_scan(exchange: _RawHistoryExchange) -> Any:
-    from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+    from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 
     source, _ = _source(gateway=CcxtPredictionGateway(exchange))  # type: ignore[arg-type]
     return await source.scan(_submission())

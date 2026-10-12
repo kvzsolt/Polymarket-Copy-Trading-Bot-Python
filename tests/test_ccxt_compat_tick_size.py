@@ -13,7 +13,7 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.tick_size import (
+from pmcopy.integrations.polymarket.ccxt_compat.tick_size import (
     InvalidTickSize,
     PolymarketTickSizeResolver,
     PublicClobTickSizeSource,

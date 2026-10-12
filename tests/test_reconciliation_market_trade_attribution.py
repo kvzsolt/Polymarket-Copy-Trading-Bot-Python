@@ -19,8 +19,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from integrations.polymarket.errors import VenueOrderNotFoundError
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.integrations.polymarket.errors import VenueOrderNotFoundError
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 ROW_ORDER_ID = "0xROWHASH"
 SIBLING_ORDER_ID = "0xSIBLING"

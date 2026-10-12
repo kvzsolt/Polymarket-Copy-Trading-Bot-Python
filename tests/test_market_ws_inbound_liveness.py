@@ -11,7 +11,7 @@ finally closed it ~10-15s later — long enough to serve a stale book past the
 
 import time
 
-from cache.market_state_store import MarketStateStore
+from pmcopy.cache.market_state_store import MarketStateStore
 
 
 def test_outbound_heartbeat_alone_does_not_prove_liveness():

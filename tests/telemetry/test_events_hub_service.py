@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from services.metrics import (
+from pmcopy.services.metrics import (
     METRIC_TELEMETRY_COPY_OUTCOME,
     METRIC_TELEMETRY_EMIT_FAILURE,
     TELEMETRY_METRIC_SCHEMAS,
@@ -18,7 +18,7 @@ from services.metrics import (
     MetricKind,
     MetricsRegistry,
 )
-from services.telemetry import (
+from pmcopy.services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,
     DiscoveryEvent,

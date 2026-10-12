@@ -108,7 +108,7 @@ def tearDownModule():  # noqa: N802
         pass
 
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -146,7 +146,7 @@ class TestPositionExitSystem(unittest.TestCase):
         }
         defaults.update(env_overrides)
 
-        import services.positionManager as pm_mod
+        import pmcopy.services.positionManager as pm_mod
 
         def _csv_floats(s):
             if not s:
@@ -239,7 +239,7 @@ class TestPositionExitSystem(unittest.TestCase):
         Decision output must stay unchanged across all evaluations.
         """
         import logging
-        import services.positionManager as pm_mod
+        import pmcopy.services.positionManager as pm_mod
 
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
@@ -267,7 +267,7 @@ class TestPositionExitSystem(unittest.TestCase):
     def test_near_max_full_exit_relogs_after_price_drops_back(self):
         """A genuine re-entry (price falls below then re-crosses) logs INFO again."""
         import logging
-        import services.positionManager as pm_mod
+        import pmcopy.services.positionManager as pm_mod
 
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
@@ -365,7 +365,7 @@ class TestPositionExitSystem(unittest.TestCase):
 
     def test_staged_tp_uses_typed_config_defaults(self):
         from tests.config_helpers import load_test_config
-        from services.positionManager import PositionManager
+        from pmcopy.services.positionManager import PositionManager
 
         cfg = load_test_config(
             {
@@ -390,7 +390,7 @@ class TestPositionExitSystem(unittest.TestCase):
 
     def test_staged_tp_normalizes_whole_number_ratio_values(self):
         from tests.config_helpers import load_test_config
-        from services.positionManager import PositionManager
+        from pmcopy.services.positionManager import PositionManager
 
         cfg = load_test_config(
             {
@@ -419,7 +419,7 @@ class TestPositionExitSystem(unittest.TestCase):
 
     def test_staged_tp_preserves_decimal_ratio_above_one(self):
         from tests.config_helpers import load_test_config
-        from services.positionManager import PositionManager
+        from pmcopy.services.positionManager import PositionManager
 
         cfg = load_test_config(
             {
@@ -448,7 +448,7 @@ class TestPositionExitSystem(unittest.TestCase):
 
     def test_staged_tp_accepts_legacy_percentage_levels(self):
         from tests.config_helpers import load_test_config
-        from services.positionManager import PositionManager
+        from pmcopy.services.positionManager import PositionManager
 
         cfg = load_test_config(
             {
@@ -641,7 +641,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
         }
 
     def test_scoring_without_discovery(self):
-        import services.leaderScoringService as ls_mod
+        import pmcopy.services.leaderScoringService as ls_mod
 
         scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         result = scorer.score_leader(
@@ -653,7 +653,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
         assert result.score > 0.0
 
     def test_trust_multiplier(self):
-        import services.leaderScoringService as ls_mod
+        import pmcopy.services.leaderScoringService as ls_mod
 
         scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         assert scorer.trust_multiplier(0.0) == pytest.approx(0.50)
@@ -687,7 +687,7 @@ class TestFeatureFlags(unittest.TestCase):
         }
         defaults.update(overrides)
 
-        import services.positionManager as pm_mod
+        import pmcopy.services.positionManager as pm_mod
 
         def _csv_floats(s):
             if not s:

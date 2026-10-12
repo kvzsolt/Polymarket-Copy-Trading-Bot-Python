@@ -24,7 +24,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover - env without docker
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -64,8 +64,8 @@ async def _fill_count(pool, order_id):
 
 
 async def test_reapply_same_cumulative_is_deduped_and_applied_once():
-    from storage.postgres.fills_repo import FillRecord, FillsRepo
-    from storage.postgres.positions_repo import PositionsRepo
+    from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+    from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
     async with _pg_pool() as pool:
         fills = FillsRepo(pool)
@@ -109,8 +109,8 @@ async def test_reapply_same_cumulative_is_deduped_and_applied_once():
 async def test_no_dedup_key_falls_back_to_legacy_behaviour():
     # Non-reconciler callers pass no dedup_key; the partial index does not apply
     # to them, so their existing fill_ts dedup is unchanged.
-    from storage.postgres.fills_repo import FillRecord, FillsRepo
-    from storage.postgres.positions_repo import PositionsRepo
+    from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+    from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
     async with _pg_pool() as pool:
         fills = FillsRepo(pool)

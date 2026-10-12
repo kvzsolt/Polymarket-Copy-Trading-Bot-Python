@@ -17,11 +17,11 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.paper_execution import PaperExecutionGateway
-from integrations.polymarket.venue_runtime import build_polymarket_runtime
-from services.executionService import ExecutionService
+from pmcopy.integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.paper_execution import PaperExecutionGateway
+from pmcopy.integrations.polymarket.venue_runtime import build_polymarket_runtime
+from pmcopy.services.executionService import ExecutionService
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -79,7 +79,7 @@ def _config(mode: str) -> SimpleNamespace:
 def test_packaged_execution_config_is_ccxt_only_paper_safe() -> None:
     """Ship paper mode with no venue selector and no SDK keys."""
 
-    payload = yaml.safe_load((ROOT / "config" / "execution.yml").read_text(encoding="utf-8"))
+    payload = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "execution.yml").read_text(encoding="utf-8"))
 
     assert payload["trading_mode"] == "paper"
     assert "venue_backend" not in payload
@@ -152,12 +152,12 @@ def test_no_sdk_module_exists() -> None:
     """The SDK and hybrid adapter modules must not exist."""
 
     for removed in (
-        "integrations/polymarket/sdk_client.py",
-        "integrations/polymarket/clob_v2_gateway.py",
-        "integrations/polymarket/hybrid_gateway.py",
-        "integrations/polymarket/backend_factory.py",
-        "integrations/polymarket/runtime_gateway.py",
-        "integrations/polymarket/ccxt_precision.py",
+        "src/pmcopy/integrations/polymarket/sdk_client.py",
+        "src/pmcopy/integrations/polymarket/clob_v2_gateway.py",
+        "src/pmcopy/integrations/polymarket/hybrid_gateway.py",
+        "src/pmcopy/integrations/polymarket/backend_factory.py",
+        "src/pmcopy/integrations/polymarket/runtime_gateway.py",
+        "src/pmcopy/integrations/polymarket/ccxt_precision.py",
     ):
         assert not (ROOT / removed).exists(), f"removed module still present: {removed}"
 
@@ -165,9 +165,9 @@ def test_no_sdk_module_exists() -> None:
 def test_no_backend_selector_or_sdk_imports_in_production() -> None:
     """Production source must not import the removed SDK/selector surface."""
 
-    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
-    bootstrap_source = (ROOT / "orchestrators" / "runtime_bootstrap.py").read_text(encoding="utf-8")
-    package_source = (ROOT / "integrations" / "polymarket" / "__init__.py").read_text(
+    app_source = (ROOT / "src" / "pmcopy" / "app.py").read_text(encoding="utf-8")
+    bootstrap_source = (ROOT / "src" / "pmcopy" / "orchestrators" / "runtime_bootstrap.py").read_text(encoding="utf-8")
+    package_source = (ROOT / "src" / "pmcopy" / "integrations" / "polymarket" / "__init__.py").read_text(
         encoding="utf-8"
     )
 
@@ -191,11 +191,11 @@ def test_no_venue_selector_imports_resolvable() -> None:
     """Importing the removed modules must fail."""
 
     for removed in (
-        "integrations.polymarket.sdk_client",
-        "integrations.polymarket.clob_v2_gateway",
-        "integrations.polymarket.hybrid_gateway",
-        "integrations.polymarket.backend_factory",
-        "integrations.polymarket.runtime_gateway",
+        "pmcopy.integrations.polymarket.sdk_client",
+        "pmcopy.integrations.polymarket.clob_v2_gateway",
+        "pmcopy.integrations.polymarket.hybrid_gateway",
+        "pmcopy.integrations.polymarket.backend_factory",
+        "pmcopy.integrations.polymarket.runtime_gateway",
     ):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(removed)
@@ -204,12 +204,12 @@ def test_no_venue_selector_imports_resolvable() -> None:
 def test_ccxt_is_required_in_paper_and_live() -> None:
     """Missing CCXT fails startup in both modes."""
 
-    from integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
+    from pmcopy.integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
 
     def _raise(*_args, **_kwargs):
         raise CcxtPredictionUnavailable("CCXT prediction support is unavailable")
 
-    import integrations.polymarket.ccxt_prediction_client as client_module
+    import pmcopy.integrations.polymarket.ccxt_prediction_client as client_module
 
     original = client_module._load_default_factory
     client_module._load_default_factory = _raise  # type: ignore[assignment]
@@ -250,7 +250,7 @@ def test_paper_mode_cannot_perform_live_writes() -> None:
     # never reached.
     from decimal import Decimal
 
-    from integrations.polymarket.models import MarketableOrderRequest
+    from pmcopy.integrations.polymarket.models import MarketableOrderRequest
 
     result = asyncio.run(
         runtime.gateway.submit_marketable_order(
@@ -273,5 +273,5 @@ def test_ci_mypy_gate_no_longer_lists_sdk_gateway() -> None:
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "clob_v2_gateway.py" not in workflow
-    assert "integrations/polymarket/ccxt_prediction_client.py" in workflow
-    assert "integrations/polymarket/venue_runtime.py" in workflow
+    assert "src/pmcopy/integrations/polymarket/ccxt_prediction_client.py" in workflow
+    assert "src/pmcopy/integrations/polymarket/venue_runtime.py" in workflow

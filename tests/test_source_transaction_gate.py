@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.source_transactions import (
+from pmcopy.domain.source_transactions import (
     ConfirmedExecutionClaim,
     ConfirmedSourceFill,
     EvmHead,
@@ -23,7 +23,7 @@ from domain.source_transactions import (
     TransactionState,
     WatchedRole,
 )
-from services.onchain_detection.source_transaction_gate import (
+from pmcopy.services.onchain_detection.source_transaction_gate import (
     SourceTransactionGate,
     SourceTransactionRegistry,
 )

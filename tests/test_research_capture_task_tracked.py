@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.tradeMonitor import (
+from pmcopy.services.tradeMonitor import (
     _research_capture_tasks,
     _spawn_research_capture,
 )

@@ -5,10 +5,10 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.tick_size import PolymarketTickSizeResolver
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.errors import VenueInvalidOrderError
-from integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
+from pmcopy.integrations.polymarket.ccxt_compat.tick_size import PolymarketTickSizeResolver
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.errors import VenueInvalidOrderError
+from pmcopy.integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
 
 TOKEN = "123"
 

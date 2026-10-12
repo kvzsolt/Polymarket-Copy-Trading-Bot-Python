@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, OrderIntentKey
-from services.execution.reservation_service import (
+from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, OrderIntentKey
+from pmcopy.services.execution.reservation_service import (
     DefaultClock,
     ReservationService,
 )

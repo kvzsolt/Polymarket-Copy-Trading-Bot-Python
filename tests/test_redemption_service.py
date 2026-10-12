@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from decimal import Decimal
 
-from domain.redemption import (
+from pmcopy.domain.redemption import (
     RedemptionAuthorization,
     RedemptionAttempt,
     RedemptionConfirmation,
@@ -16,7 +16,7 @@ from domain.redemption import (
     SettlementMarketError,
     SettlementStorageError,
 )
-from services.settlement import RedemptionService
+from pmcopy.services.settlement import RedemptionService
 
 WALLET = "0x" + "1" * 40
 

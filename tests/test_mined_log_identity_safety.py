@@ -2,7 +2,7 @@
 
 import pytest
 
-from services.onchain_detection.order_filled_detector import decode_order_filled_log
+from pmcopy.services.onchain_detection.order_filled_detector import decode_order_filled_log
 from tests.test_order_filled_detector import _build_log
 
 

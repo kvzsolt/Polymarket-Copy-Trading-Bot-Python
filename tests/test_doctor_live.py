@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-import config.app_config as app_config_mod
-from config.env import SignatureType
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.config.env import SignatureType
 from tests.config_helpers import load_test_config
 
 
@@ -32,7 +32,7 @@ _BASE_LIVE_ENV = {
 
 
 def test_doctor_formats_deposit_wallet_diagnostics() -> None:
-    from bot_cli.commands.doctor import _wallet_signature_detail
+    from pmcopy.bot_cli.commands.doctor import _wallet_signature_detail
 
     detail = _wallet_signature_detail(
         detected_signature_type=SignatureType.DEPOSIT_WALLET,
@@ -72,7 +72,7 @@ class _PgFixture:
         try:
             from testcontainers.postgres import PostgresContainer
             import asyncpg
-            from storage.postgres.migrations import apply_migrations as pg_apply
+            from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
         except Exception as exc:
             pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
         try:
@@ -93,7 +93,7 @@ class _PgFixture:
 
         # The doctor's init_pool is module-singleton — make sure prior
         # state is cleared so it picks up this DSN cleanly.
-        from storage.postgres.connection import _reset_for_tests, shutdown_pool
+        from pmcopy.storage.postgres.connection import _reset_for_tests, shutdown_pool
 
         try:
             await shutdown_pool()
@@ -103,7 +103,7 @@ class _PgFixture:
         return self._dsn
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        from storage.postgres.connection import _reset_for_tests, shutdown_pool
+        from pmcopy.storage.postgres.connection import _reset_for_tests, shutdown_pool
 
         try:
             await shutdown_pool()
@@ -131,9 +131,9 @@ async def _run_doctor(
         overrides = dict(env_overrides or {})
         overrides["DATABASE_URL"] = dsn
         loader = _config_loader(overrides)
-        from bot_cli.commands import doctor as doctor_mod
-        import orchestrators.startup_health as startup_health_mod
-        import services.compliance as compliance_mod
+        from pmcopy.bot_cli.commands import doctor as doctor_mod
+        import pmcopy.orchestrators.startup_health as startup_health_mod
+        import pmcopy.services.compliance as compliance_mod
 
         async def _fake_rpc(_url):
             from types import SimpleNamespace
@@ -154,7 +154,7 @@ async def _run_doctor(
         if tmp_log is not None:
             patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
             patches.append(
-                patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "app.jsonl")
+                patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "pmcopy.app.jsonl")
             )
 
         from contextlib import ExitStack
@@ -299,7 +299,7 @@ async def test_doctor_live_blocks_when_discovery_credentials_are_missing(tmp_pat
 
 
 def test_console_summary_renders_fix_line(tmp_path):
-    from bot_cli.commands.doctor import _render_console_summary
+    from pmcopy.bot_cli.commands.doctor import _render_console_summary
 
     fake = {
         "status": "blocked",
@@ -332,7 +332,7 @@ async def test_saved_automatic_roster_can_restore_without_provider_credentials(
     tmp_path, monkeypatch
 ):
     from unittest.mock import AsyncMock
-    from bot_cli.commands import doctor
+    from pmcopy.bot_cli.commands import doctor
 
     monkeypatch.setattr(
         doctor, "_automatic_rosters_available", AsyncMock(return_value=True), raising=False

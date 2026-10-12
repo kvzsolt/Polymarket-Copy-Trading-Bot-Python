@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.copy_sizing_v5.policy import CopySizingPolicy, copy_sizing_policy_from_config
+from pmcopy.services.copy_sizing_v5.policy import CopySizingPolicy, copy_sizing_policy_from_config
 
 
 def test_branch_sizing_config_maps_user_requested_fields_and_v5_defaults() -> None:

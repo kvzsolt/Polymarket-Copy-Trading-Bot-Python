@@ -19,12 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from integrations.polymarket.errors import VenueUnavailableError
-from interfaces.clob_gateway import ClobGateway
-from services.circuitBreaker import CircuitBreaker
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.integrations.polymarket.errors import VenueUnavailableError
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.services.circuitBreaker import CircuitBreaker
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 def _make_exec_config() -> SimpleNamespace:
@@ -168,7 +168,7 @@ def test_shared_breaker_honours_config_failure_threshold():
     module breaker, which must adopt ``config.execution.circuit_failure_threshold``
     so the typed config value is not dead. Default-injected path only.
     """
-    from services.executionService import _CLOB_CIRCUIT
+    from pmcopy.services.executionService import _CLOB_CIRCUIT
 
     original_threshold = _CLOB_CIRCUIT.failure_threshold
     try:

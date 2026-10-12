@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from bot_cli.commands.reservations import (
+from pmcopy.bot_cli.commands.reservations import (
     _list_reservations,
     _resolve_expired_reservations,
     _summarize,
@@ -30,7 +30,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
 
         ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()
@@ -241,8 +241,8 @@ async def test_run_reservations_invocation_exits_zero(capsys, monkeypatch) -> No
     """End-to-end ``run_reservations`` against a live PG testcontainer."""
     from types import SimpleNamespace
 
-    from bot_cli.commands.reservations import _run_reservations_async
-    from storage.postgres.connection import shutdown_pool
+    from pmcopy.bot_cli.commands.reservations import _run_reservations_async
+    from pmcopy.storage.postgres.connection import shutdown_pool
 
     async with _pg_pool() as (pool, dsn):
         await _seed(pool)
@@ -251,7 +251,7 @@ async def test_run_reservations_invocation_exits_zero(capsys, monkeypatch) -> No
 
         fake_config = SimpleNamespace(database=SimpleNamespace(dsn=dsn, db_path=""))
         monkeypatch.setattr(
-            "bot_cli.commands.reservations._load_config_or_fail",
+            "pmcopy.bot_cli.commands.reservations._load_config_or_fail",
             lambda: fake_config,
         )
 

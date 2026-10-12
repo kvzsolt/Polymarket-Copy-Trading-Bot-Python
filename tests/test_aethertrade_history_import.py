@@ -4,14 +4,14 @@ from copy import deepcopy
 
 import pytest
 
-from config.addresses import (
+from pmcopy.config.addresses import (
     POLYGON_USDCE_ADDRESS,
     POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_PUSD_ADDRESS,
 )
-from domain.observed_rpc import ObservedRpcResult
-from domain.provider_budget import BudgetExhausted
-from domain.source_time import TransportReceipt
+from pmcopy.domain.observed_rpc import ObservedRpcResult
+from pmcopy.domain.provider_budget import BudgetExhausted
+from pmcopy.domain.source_time import TransportReceipt
 
 CTF, PUSD, USDCE = (
     value.lower()
@@ -62,7 +62,7 @@ def plan_dict(**changes):
 
 
 def plan(**changes):
-    from domain.history_import import HistoryImportPlan
+    from pmcopy.domain.history_import import HistoryImportPlan
 
     return HistoryImportPlan.from_dict(plan_dict(**changes))
 
@@ -144,7 +144,7 @@ class HistoryGateway:
 
 def test_preview_is_pure_and_plan_identity_is_stable():
     original = plan_dict()
-    from domain.history_import import HistoryImportPlan
+    from pmcopy.domain.history_import import HistoryImportPlan
 
     parsed = HistoryImportPlan.from_dict(original)
     preview = parsed.preview()
@@ -182,7 +182,7 @@ def test_plan_rejects_unbounded_or_unreviewed_reads(changes):
 
 
 def test_job_reservations_and_cached_native_receipts_survive_restart(tmp_path):
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected = plan(max_requests=1)
     path = tmp_path / "history.sqlite3"
@@ -201,8 +201,8 @@ def test_job_reservations_and_cached_native_receipts_survive_restart(tmp_path):
 
 @pytest.mark.asyncio
 async def test_collector_captures_full_emitters_headers_receipts_and_pinned_boundaries(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected, gateway = plan(), HistoryGateway()
     journal = HistoryImportJournal(tmp_path / "history", selected)
@@ -233,8 +233,8 @@ async def test_collector_captures_full_emitters_headers_receipts_and_pinned_boun
 
 @pytest.mark.asyncio
 async def test_budget_failure_keeps_partial_chunk_uncommitted_and_restart_reuses_evidence(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected, path = plan(), tmp_path / "history"
     journal = HistoryImportJournal(path, selected)
@@ -265,8 +265,8 @@ async def test_budget_failure_keeps_partial_chunk_uncommitted_and_restart_reuses
 
 @pytest.mark.asyncio
 async def test_receipt_omitting_a_returned_log_cannot_advance_cursor(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected = plan()
     journal = HistoryImportJournal(tmp_path / "history", selected)
@@ -283,7 +283,7 @@ async def test_receipt_omitting_a_returned_log_cannot_advance_cursor(tmp_path):
 
 
 def test_shared_provider_price_query_does_not_admit_or_mutate_a_ledger():
-    from storage.provider_budget import SqliteProviderBudget
+    from pmcopy.storage.provider_budget import SqliteProviderBudget
 
     assert SqliteProviderBudget.rpc_cost("alchemy", "eth_getLogs") == 60
     assert SqliteProviderBudget.rpc_cost("infura", "eth_getLogs") == 255
@@ -318,7 +318,7 @@ def coverage_value():
 
 
 def test_coverage_codec_preserves_bounded_explicit_unknown_scope():
-    from integrations.pmrecon.codec import PmreconEvidenceCodec
+    from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
 
     event = PmreconEvidenceCodec.encode(coverage_value())
     wire = event.wire()
@@ -330,8 +330,8 @@ def test_coverage_codec_preserves_bounded_explicit_unknown_scope():
 
 
 def test_state_calls_are_hash_pinned_exact_abi_reads():
-    from domain.history_import import HistoryStateRead
-    from services.history_state_reads import HistoryStateReadAdapter
+    from pmcopy.domain.history_import import HistoryStateRead
+    from pmcopy.services.history_state_reads import HistoryStateReadAdapter
 
     read = HistoryStateRead(PUSD, "balanceOf", (OWNER,))
     block_hash = HistoryGateway.block(15)["hash"]
@@ -362,8 +362,8 @@ def test_state_calls_are_hash_pinned_exact_abi_reads():
 def test_state_result_types_do_not_guess_position_or_approval_values(
     method, args, payload, expected
 ):
-    from domain.history_import import HistoryStateRead
-    from services.history_state_reads import HistoryStateReadAdapter
+    from pmcopy.domain.history_import import HistoryStateRead
+    from pmcopy.services.history_state_reads import HistoryStateReadAdapter
 
     assert HistoryStateReadAdapter.value(HistoryStateRead(CTF, method, args), payload) == expected
 
@@ -371,7 +371,7 @@ def test_state_result_types_do_not_guess_position_or_approval_values(
 def test_direct_scope_construction_cannot_bypass_review_validation():
     import json
     from dataclasses import replace
-    from domain.history_import import ReviewedHistoryScope
+    from pmcopy.domain.history_import import ReviewedHistoryScope
 
     selected = plan()
     scope = selected.scope.wire()
@@ -391,8 +391,8 @@ def test_direct_scope_construction_cannot_bypass_review_validation():
     ],
 )
 async def test_hard_job_caps_keep_a_durable_incomplete_claim(tmp_path, changes, reason):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected = plan(**changes)
     journal = HistoryImportJournal(tmp_path / "job", selected)
@@ -407,8 +407,8 @@ async def test_hard_job_caps_keep_a_durable_incomplete_claim(tmp_path, changes, 
 
 @pytest.mark.asyncio
 async def test_changed_closing_anchor_cannot_commit_a_chunk(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     class ChangedGateway(HistoryGateway):
         async def call_observed(self, provider, method, params, *, category):
@@ -435,9 +435,9 @@ async def test_changed_closing_anchor_cannot_commit_a_chunk(tmp_path):
 
 @pytest.mark.asyncio
 async def test_local_drain_replays_same_bytes_after_append_before_mark_crash(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
-    from orchestrators.history_import_runtime import HistoryImportRuntime
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
+    from pmcopy.orchestrators.history_import_runtime import HistoryImportRuntime
 
     selected = plan()
     journal = HistoryImportJournal(tmp_path / "job", selected)
@@ -475,8 +475,8 @@ async def test_local_drain_replays_same_bytes_after_append_before_mark_crash(tmp
 
 @pytest.mark.asyncio
 async def test_repeated_hard_limit_reuses_original_diagnostic_with_real_clock_advancement(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     class AdvancingClock:
         def __init__(self):
@@ -500,7 +500,7 @@ async def test_repeated_hard_limit_reuses_original_diagnostic_with_real_clock_ad
 
 @pytest.mark.parametrize("changed", [{"recovery": 1}, {"schema_version": 2.0}, {"chain_id": 137.0}])
 def test_history_producer_rejects_coerced_literal_scalars(changed):
-    from integrations.pmrecon.codec import PmreconEvidenceCodec
+    from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
 
     with pytest.raises(ValueError):
         PmreconEvidenceCodec.encode(coverage_value() | changed)
@@ -508,8 +508,8 @@ def test_history_producer_rejects_coerced_literal_scalars(changed):
 
 @pytest.mark.asyncio
 async def test_exhausted_retention_cap_never_spends_provider_budget_on_resume(tmp_path):
-    from services.history_import import HistoryImportCollector
-    from storage.history_import import HistoryImportJournal
+    from pmcopy.services.history_import import HistoryImportCollector
+    from pmcopy.storage.history_import import HistoryImportJournal
 
     selected = plan(max_rows=1)
     journal = HistoryImportJournal(tmp_path / "job", selected)

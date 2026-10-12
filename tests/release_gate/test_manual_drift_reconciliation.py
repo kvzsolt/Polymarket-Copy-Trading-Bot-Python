@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
 
 def _make_service(local_size: Decimal | None) -> tuple[ReconciliationService, MagicMock, list]:

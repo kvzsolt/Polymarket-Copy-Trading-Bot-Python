@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from integrations.polymarket.models import VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
-from storage.postgres.orders_repo import OrdersRepo
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.positions_repo import PositionsRepo
-from services.execution.fill_accounting import FillAccountingConflict
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.storage.postgres.orders_repo import OrdersRepo
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
+from pmcopy.services.execution.fill_accounting import FillAccountingConflict
 from tests.test_execution_fak_repost_ambiguity import _build_svc, _req
 from tests.test_reservation_service import _pg_pool
 

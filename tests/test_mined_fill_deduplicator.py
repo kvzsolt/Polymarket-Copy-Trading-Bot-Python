@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from services.onchain_detection.mined_fill_deduplicator import MinedFillDeduplicator
+from pmcopy.services.onchain_detection.mined_fill_deduplicator import MinedFillDeduplicator
 
 
 @pytest.mark.asyncio

@@ -13,13 +13,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
-from services.metrics import METRIC_DETECTION_SIGNALS, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
-from services.onchain_detection.trade_detection_models import (
+from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+from pmcopy.services.metrics import METRIC_DETECTION_SIGNALS, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )
-from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
+from pmcopy.storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 
 _LEADER = "0x" + "ab" * 20
 _TX = "0x" + "cd" * 32
@@ -229,7 +229,7 @@ async def test_resolves_sell_fraction_before_legacy_dispatch() -> None:
 
     from dataclasses import replace
 
-    from services.onchain_detection.leader_sell_fraction_resolver import (
+    from pmcopy.services.onchain_detection.leader_sell_fraction_resolver import (
         LeaderSellResolutionOutcome,
     )
 
@@ -256,7 +256,7 @@ async def test_resolves_sell_fraction_before_legacy_dispatch() -> None:
 async def test_resolver_denial_stops_buy_before_v1_or_legacy_dispatch() -> None:
     """A degraded scope BUY is dropped before either copy runtime sees it."""
 
-    from services.onchain_detection.leader_sell_fraction_resolver import (
+    from pmcopy.services.onchain_detection.leader_sell_fraction_resolver import (
         LeaderSellResolutionOutcome,
     )
 
@@ -327,8 +327,8 @@ async def test_pipeline_error_is_logged_not_raised(caplog: pytest.LogCaptureFixt
 
 
 def test_detection_signals_metric_schema_is_bounded() -> None:
-    from domain.detection import DetectionMode
-    from services.metrics import DETECTION_SOURCE_LABEL_VALUES, MetricKind
+    from pmcopy.domain.detection import DetectionMode
+    from pmcopy.services.metrics import DETECTION_SOURCE_LABEL_VALUES, MetricKind
 
     schema = {s.name: s for s in TELEMETRY_METRIC_SCHEMAS}[METRIC_DETECTION_SIGNALS]
     assert schema.kind is MetricKind.COUNTER
@@ -370,8 +370,8 @@ def _polling_row() -> dict:
 async def test_onchain_signal_skipped_when_polling_claimed_tx(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from orchestrators.trade_pipeline import build_trade_key
-    from services.metrics import METRIC_DETECTION_SIGNALS_DEDUPED
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.services.metrics import METRIC_DETECTION_SIGNALS_DEDUPED
 
     repo = _FakeOrdersRepo()
     # Polling already claimed the tx-level key (its per-fill key IS the tx-level key).
@@ -408,8 +408,8 @@ async def test_onchain_signal_skipped_when_polling_claimed_tx(
 @pytest.mark.asyncio
 async def test_polling_skips_when_onchain_claimed_tx() -> None:
     """The on-chain tx-level claim collides with the key polling would build."""
-    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     adapter, pipeline, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
@@ -478,7 +478,7 @@ async def test_logs_only_mined_signal_claims_tx_level_identity(
     """
     from dataclasses import replace
 
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     adapter, pipeline, metrics = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
@@ -512,7 +512,7 @@ async def test_second_onchain_fill_in_same_tx_is_dispatched_as_sibling(
     """
     from dataclasses import replace
 
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     adapter, pipeline, metrics = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
@@ -560,7 +560,7 @@ async def test_lost_claim_with_probe_error_skips_with_unknown_winner(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Never attribute a lost claim to polling when the probe fails."""
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     class _ProbeBrokenRepo(_FakeOrdersRepo):
         async def get_processed_trade(self, trade_key: str) -> dict | None:
@@ -588,7 +588,7 @@ async def test_lost_claim_with_probe_error_skips_with_unknown_winner(
 
 @pytest.mark.asyncio
 async def test_claim_released_when_pipeline_raises(caplog: pytest.LogCaptureFixture) -> None:
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(fail_for={"u1"})
@@ -613,7 +613,7 @@ async def test_claim_released_when_pipeline_raises(caplog: pytest.LogCaptureFixt
 async def test_claim_released_when_every_result_is_skipped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(outcomes=[SimpleNamespace(status="skipped", reason="risk_blocked")])
@@ -633,7 +633,7 @@ async def test_claim_released_when_every_result_is_skipped(
 
 @pytest.mark.asyncio
 async def test_claim_kept_when_a_result_executed() -> None:
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(
@@ -660,7 +660,7 @@ def _onchain_fill_key(user_id: str = "u1", *, log_index: int = 7) -> str:
     """Per-fill key the pipeline claims for the on-chain raw signal."""
     from dataclasses import replace
 
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     signal = replace(_signal(provisional=False), log_index=log_index)
     return build_trade_key(user_id, _LEADER, signal.as_raw_signal_dict())
@@ -677,7 +677,7 @@ async def test_claim_kept_when_skip_is_post_submission_duplicate(
     there lets the next REST polling tick claim the same key and submit a
     second copy of the same leader fill.
     """
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(
@@ -707,7 +707,7 @@ async def test_claim_kept_when_skip_is_reservation_conflict_without_order_id(
     ``services/execution/coordinator.py`` returns the duplicate status without
     an order id, so the reason — not only the order id — has to block release.
     """
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(
@@ -736,7 +736,7 @@ async def test_claim_kept_when_exception_after_fill_persisted(
     presence — not its ``order_id`` — is what proves the pipeline reached its
     own claim, so the tx-level claim must stay kept.
     """
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
@@ -770,7 +770,7 @@ async def test_claim_kept_when_exception_after_pipeline_claim_in_progress(
     — regardless of status or ``order_id`` — means the pipeline's own claim
     already exists, so an absent row is the only proof that nothing happened.
     """
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
@@ -797,7 +797,7 @@ async def test_claim_released_when_exception_before_pipeline_claim(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """I2 preserved: no per-fill row means the pipeline never submitted anything."""
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(fail_for={"u1"})
@@ -821,7 +821,7 @@ async def test_claim_kept_when_the_per_fill_probe_fails(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An unreadable per-fill row cannot prove "nothing happened" — fail closed."""
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     class _ProbeBrokenRepo(_FakeOrdersRepo):
         async def get_processed_trade(self, trade_key: str) -> dict | None:
@@ -845,7 +845,7 @@ async def test_claim_kept_when_the_per_fill_probe_fails(
 @pytest.mark.asyncio
 async def test_release_goes_through_the_status_guarded_repo_method() -> None:
     """The release must never use an unguarded ``DELETE`` on the tx-level key."""
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     pipeline = _Pipeline(outcomes=[SimpleNamespace(status="skipped", reason="risk_blocked")])
@@ -860,9 +860,9 @@ async def test_release_goes_through_the_status_guarded_repo_method() -> None:
 @pytest.mark.asyncio
 async def test_decision_carries_the_per_fill_key() -> None:
     """``CrossSourceClaimDecision`` exposes the key the pipeline itself claims."""
-    from domain.detection import DetectionMode
-    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
-    from orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.domain.detection import DetectionMode
+    from pmcopy.orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
 
     repo = _FakeOrdersRepo()
     ctx = _ctx_with_repo("u1", repo)
@@ -1177,7 +1177,7 @@ async def test_the_recorded_stamp_shares_the_trackers_monotonic_time_base() -> N
 
 
 def test_pending_copy_metric_schemas_are_bounded() -> None:
-    from services.metrics import (
+    from pmcopy.services.metrics import (
         GAUGE_PENDING_COPY_TRACKED,
         METRIC_PENDING_COPY_CONFIRMED,
         METRIC_PENDING_COPY_TRACKER_DROPPED,
@@ -1233,7 +1233,7 @@ def _telemetry_adapter(
 @pytest.mark.asyncio
 async def test_dispatch_emits_one_signal_received_per_signal() -> None:
     """Exactly one detection event per signal, correlated by transaction hash."""
-    from services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
+    from pmcopy.services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
     from tests.telemetry_helpers import recording_emitters
 
     emitters, service = recording_emitters()
@@ -1257,7 +1257,7 @@ async def test_dispatch_emits_one_signal_received_per_signal() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_emits_signal_received_on_the_v1_path_too() -> None:
     """The v1 runtime short-circuits the legacy fan-out, never the detection emit."""
-    from services.telemetry import LeaderEvent, LeaderOutcome
+    from pmcopy.services.telemetry import LeaderEvent, LeaderOutcome
     from tests.telemetry_helpers import recording_emitters
 
     emitters, service = recording_emitters()
@@ -1280,8 +1280,8 @@ async def test_dispatch_emits_signal_received_on_the_v1_path_too() -> None:
 @pytest.mark.asyncio
 async def test_cross_source_dedup_emits_signal_deduplicated() -> None:
     """A fill polling already claimed reports a DEDUP leader event."""
-    from orchestrators.trade_pipeline import build_trade_key
-    from services.telemetry import LeaderEvent, LeaderOutcome, safe_ref
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.services.telemetry import LeaderEvent, LeaderOutcome, safe_ref
     from tests.telemetry_helpers import recording_emitters
 
     emitters, service = recording_emitters()
@@ -1347,7 +1347,7 @@ async def test_mixed_case_leader_publishes_the_lowercase_reference() -> None:
     polling roster keeps the operator's (often checksummed) spelling. Both must
     reach the stream under the same reference or a UI sees two leaders.
     """
-    from services.telemetry import LeaderEvent, leader_ref, safe_ref
+    from pmcopy.services.telemetry import LeaderEvent, leader_ref, safe_ref
     from tests.telemetry_helpers import recording_emitters
 
     checksummed = "0x" + "AB" * 20
@@ -1370,8 +1370,8 @@ async def test_mixed_case_leader_publishes_the_lowercase_reference() -> None:
 @pytest.mark.asyncio
 async def test_mixed_case_dedup_uses_the_same_reference() -> None:
     """The dedup site case-folds too, so both events group under one leader."""
-    from orchestrators.trade_pipeline import build_trade_key
-    from services.telemetry import LeaderEvent, leader_ref
+    from pmcopy.orchestrators.trade_pipeline import build_trade_key
+    from pmcopy.services.telemetry import LeaderEvent, leader_ref
     from tests.telemetry_helpers import recording_emitters
 
     checksummed = "0x" + "AB" * 20

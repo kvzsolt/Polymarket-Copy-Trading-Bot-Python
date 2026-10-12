@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.redemption import RedemptionMarket, RedemptionSnapshot
+from pmcopy.domain.redemption import RedemptionMarket, RedemptionSnapshot
 
 
 class TestRedemptionSnapshot:

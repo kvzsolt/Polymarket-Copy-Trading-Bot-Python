@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from services.execution.reconciliation_service import ReconciliationService
-from utils.logger import _reset_lifecycle_dedup_for_tests
+from pmcopy.services.execution.reconciliation_service import ReconciliationService
+from pmcopy.utils.logger import _reset_lifecycle_dedup_for_tests
 
 
 @pytest.fixture(autouse=True)

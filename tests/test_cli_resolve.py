@@ -15,7 +15,7 @@ from decimal import Decimal
 
 import pytest
 
-from bot_cli.commands.resolve import ResolveCommand, register_resolve_command
+from pmcopy.bot_cli.commands.resolve import ResolveCommand, register_resolve_command
 
 ORDER_ID = "0xROWHASH"
 
@@ -468,8 +468,8 @@ def _patch_composition(
     """Patch the production composition helpers used by ``_compose_redriver``."""
     from types import SimpleNamespace
 
-    import orchestrators.runtime_bootstrap as bootstrap
-    import services.multiUserConfig as multi_user
+    import pmcopy.orchestrators.runtime_bootstrap as bootstrap
+    import pmcopy.services.multiUserConfig as multi_user
 
     monkeypatch.setattr(bootstrap, "configured_leaders", lambda config: ["0xleader"])
     monkeypatch.setattr(multi_user, "load_runtime_users", lambda leaders, config: list(users))
@@ -492,7 +492,7 @@ def _patch_composition(
 @pytest.mark.asyncio
 async def test_compose_redriver_binds_only_the_owning_runtime_user(monkeypatch, tmp_path):
     """The re-driver is bound to the follower wallet that owns the order."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     sentinel = object()
     venue = _VenueRuntime()
@@ -533,7 +533,7 @@ async def test_compose_redriver_skips_when_no_runtime_user_owns_the_order(
     monkeypatch, tmp_path
 ):
     """A foreign order must never borrow another wallet's venue runtime."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     _patch_composition(monkeypatch, users=[_RuntimeUser("0xOTHER")], venue_runtime=_VenueRuntime())
 
@@ -552,7 +552,7 @@ async def test_compose_redriver_skips_when_no_runtime_user_owns_the_order(
 @pytest.mark.asyncio
 async def test_compose_redriver_skips_ambiguous_runtime_user(monkeypatch, tmp_path):
     """Duplicate runtime users for one wallet must not pick a venue arbitrarily."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     _patch_composition(
         monkeypatch,
@@ -575,7 +575,7 @@ async def test_compose_redriver_skips_ambiguous_runtime_user(monkeypatch, tmp_pa
 @pytest.mark.asyncio
 async def test_compose_redriver_skips_unknown_order_user(monkeypatch, tmp_path):
     """An order with no follower identity cannot be bound to a venue runtime."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     _patch_composition(monkeypatch, users=[_RuntimeUser("0xUSER")], venue_runtime=_VenueRuntime())
 
@@ -594,7 +594,7 @@ async def test_compose_redriver_skips_unknown_order_user(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_compose_redriver_skips_missing_order_row(monkeypatch, tmp_path):
     """A vanished order row reports a missing row instead of composing a venue."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     _patch_composition(monkeypatch, users=[_RuntimeUser("0xUSER")], venue_runtime=_VenueRuntime())
 
@@ -613,7 +613,7 @@ async def test_compose_redriver_skips_missing_order_row(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_compose_redriver_fails_closed_on_composition_error(monkeypatch, tmp_path):
     """A broken venue composition downgrades the delegation, never the resolution."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     _patch_composition(
         monkeypatch,
@@ -636,7 +636,7 @@ async def test_compose_redriver_fails_closed_on_composition_error(monkeypatch, t
 @pytest.mark.asyncio
 async def test_compose_redriver_reports_missing_execution_coordinator(monkeypatch, tmp_path):
     """A state without a target service skips the re-drive but still frees the venue."""
-    from bot_cli.commands.resolve import _compose_redriver
+    from pmcopy.bot_cli.commands.resolve import _compose_redriver
 
     from types import SimpleNamespace
 
@@ -664,10 +664,10 @@ def _patch_run_resolve(monkeypatch, compose):
     """Patch config, pool and repositories so ``run_resolve`` can run offline."""
     from types import SimpleNamespace
 
-    import bot_cli.commands.resolve as resolve_module
-    import storage.postgres.connection as connection
-    import storage.postgres.orders_repo as orders_module
-    import storage.postgres.reservations_repo as reservations_module
+    import pmcopy.bot_cli.commands.resolve as resolve_module
+    import pmcopy.storage.postgres.connection as connection
+    import pmcopy.storage.postgres.orders_repo as orders_module
+    import pmcopy.storage.postgres.reservations_repo as reservations_module
 
     monkeypatch.setattr(
         resolve_module,
@@ -694,7 +694,7 @@ def _patch_run_resolve(monkeypatch, compose):
 
 def test_run_resolve_dry_run_never_composes_a_venue_runtime(monkeypatch, tmp_path, capsys):
     """A read-only report must never build an authenticated venue runtime."""
-    import bot_cli.commands.resolve as resolve_module
+    import pmcopy.bot_cli.commands.resolve as resolve_module
 
     composed: list = []
 
@@ -714,7 +714,7 @@ def test_run_resolve_dry_run_never_composes_a_venue_runtime(monkeypatch, tmp_pat
 
 def test_run_resolve_apply_closes_the_venue_runtime(monkeypatch, tmp_path, capsys):
     """An applied resolution reuses and then closes the composed venue runtime."""
-    import bot_cli.commands.resolve as resolve_module
+    import pmcopy.bot_cli.commands.resolve as resolve_module
 
     venue = _VenueRuntime()
     redriver = _Redriver()

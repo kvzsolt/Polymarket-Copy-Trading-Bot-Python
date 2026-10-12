@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.copy_tasks.domain import (
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     PriceOffsetDirection,
     PriceOffsetMode,
     TaskPricePolicy,
 )
-from services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from pmcopy.services.copy_tasks.entry_price import CopyTaskEntryPriceService
 
 
 def task(price: TaskPricePolicy) -> CopyTask:

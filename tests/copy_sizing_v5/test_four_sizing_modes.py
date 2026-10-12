@@ -6,9 +6,9 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_sizing_v5.domain import CopySizingRequest
-from services.copy_sizing_v5.engine import CopySizingEngine
-from services.copy_sizing_v5.policy import CopySizingPolicy
+from pmcopy.services.copy_sizing_v5.domain import CopySizingRequest
+from pmcopy.services.copy_sizing_v5.engine import CopySizingEngine
+from pmcopy.services.copy_sizing_v5.policy import CopySizingPolicy
 
 
 @pytest.mark.parametrize(

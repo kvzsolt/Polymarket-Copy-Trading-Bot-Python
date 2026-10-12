@@ -9,7 +9,7 @@ cannot find (memory: feedback_user_id_casing). condition_id / token_id remain
 lowercased: they are case-insensitive hashes the venue returns lowercased.
 """
 
-from domain.position_key import PositionKey
+from pmcopy.domain.position_key import PositionKey
 
 # A real EIP-55 checksum address (mixed case).
 CHECKSUM = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"

@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from application.confirmed_signal_execution_adapter import ConfirmedSignalExecutionAdapter
-from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-from orchestrators.v1_event_adapters import LeaderEventNormalizer
-from domain.detection import DetectionMode
+from pmcopy.application.confirmed_signal_execution_adapter import ConfirmedSignalExecutionAdapter
+from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+from pmcopy.domain.detection import DetectionMode
 from tests.test_onchain_detection_runtime import _WATCHED, _build_log
 from tests.test_confirmed_signal_execution_adapter import FakeClock, FakeSignalSink, _claim
 
@@ -80,7 +80,7 @@ def test_explicit_millisecond_epoch_does_not_depend_on_its_magnitude():
 @pytest.mark.parametrize("timestamp", [None, 2001])
 def test_pending_unknown_or_future_receipt_cannot_pass_staleness(timestamp):
     from dataclasses import replace
-    from services.onchain_detection.pending_tx_detector import is_stale_pending
+    from pmcopy.services.onchain_detection.pending_tx_detector import is_stale_pending
     from tests.test_onchain_detection_runtime import _make_pending_signal
 
     signal = replace(_make_pending_signal(event_ts=1000), event_ts=timestamp)

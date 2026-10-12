@@ -6,10 +6,10 @@ from decimal import Decimal as D
 import asyncpg
 from testcontainers.community.postgres import PostgresContainer
 
-from domain.auto_trader import AutoTraderScope
-from storage.postgres.auto_trader_performance import PostgresAutoTraderPerformance
-from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.migrations import apply_migrations
+from pmcopy.domain.auto_trader import AutoTraderScope
+from pmcopy.storage.postgres.auto_trader_performance import PostgresAutoTraderPerformance
+from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
+from pmcopy.storage.postgres.migrations import apply_migrations
 
 
 async def test_live_performance_is_scoped_and_excludes_paper_fills():

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from integrations.polymarket.models import VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
 from tests.test_execution_fak_repost_ambiguity import _build_svc, _req
 
 

@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.source_time import TransportReceipt
-from storage.postgres.fills_repo import FillRecord
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.storage.postgres.fills_repo import FillRecord
 
 
 class FillClock:
@@ -37,7 +37,7 @@ def fill_record(**changes):
 
 
 def test_fill_builder_preserves_unknowns_receipt_precision_and_account_identity():
-    from services.evidence_fills import FollowerFillEvidenceBuilder
+    from pmcopy.services.evidence_fills import FollowerFillEvidenceBuilder
 
     builder = FollowerFillEvidenceBuilder()
     first = builder.build(7, fill_record(), FillClock().capture())
@@ -57,7 +57,7 @@ def test_fill_builder_preserves_unknowns_receipt_precision_and_account_identity(
 
 
 def test_fill_builder_requires_native_receipt_and_keeps_explicit_zero_fee():
-    from services.evidence_fills import FollowerFillEvidenceBuilder
+    from pmcopy.services.evidence_fills import FollowerFillEvidenceBuilder
 
     builder = FollowerFillEvidenceBuilder()
     with pytest.raises(ValueError, match="native"):
@@ -74,7 +74,7 @@ def test_fill_builder_requires_native_receipt_and_keeps_explicit_zero_fee():
 
 @pytest.mark.parametrize("mode", ["paper", "live", "unknown"])
 def test_fill_builder_preserves_explicit_execution_source(mode):
-    from services.evidence_fills import FollowerFillEvidenceBuilder
+    from pmcopy.services.evidence_fills import FollowerFillEvidenceBuilder
 
     wire = (
         FollowerFillEvidenceBuilder()
@@ -85,7 +85,7 @@ def test_fill_builder_preserves_explicit_execution_source(mode):
 
 
 def test_fill_projection_requires_a_declared_supported_execution_mode():
-    from storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
+    from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
 
     with pytest.raises(ValueError, match="execution mode"):
         PostgresFillEvidenceProjection(clock=FillClock(), execution_mode="simulated-live")
@@ -93,12 +93,12 @@ def test_fill_projection_requires_a_declared_supported_execution_mode():
 
 @pytest.mark.asyncio
 async def test_native_action_survives_both_normalizers_and_order_metadata(tmp_path):
-    from domain.detection import DetectionMode
-    from orchestrators.trade_pipeline import _copy_entry_price_plan, normalize_signals
-    from orchestrators.v1_event_adapters import LeaderEventNormalizer
-    from services.onchain_detection.native_observer import NativeOwnerObserver
-    from services.onchain_detection.native_owner import NativeOwnerLogDecoder
-    from storage.detection_state import SqliteDetectionState
+    from pmcopy.domain.detection import DetectionMode
+    from pmcopy.orchestrators.trade_pipeline import _copy_entry_price_plan, normalize_signals
+    from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+    from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
+    from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
+    from pmcopy.storage.detection_state import SqliteDetectionState
     from tests.test_aethertrade_native_owner import OWNER, LogFixture
 
     state = SqliteDetectionState(tmp_path / "state")
@@ -142,7 +142,7 @@ async def test_native_action_survives_both_normalizers_and_order_metadata(tmp_pa
 
 @pytest.mark.asyncio
 async def test_task_execution_persists_only_explicit_native_action():
-    from orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
+    from pmcopy.orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
     from tests.v1.test_v1_event_adapters import command, context
 
     follower = context()
@@ -162,8 +162,8 @@ async def test_task_execution_persists_only_explicit_native_action():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["paper", "live", "unknown"])
 async def test_both_submit_paths_preserve_the_original_execution_mode(mode):
-    from orchestrators.trade_pipeline import _copy_entry_price_plan
-    from orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
+    from pmcopy.orchestrators.trade_pipeline import _copy_entry_price_plan
+    from pmcopy.orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
     from tests.v1.test_v1_event_adapters import command, context
 
     follower = context()

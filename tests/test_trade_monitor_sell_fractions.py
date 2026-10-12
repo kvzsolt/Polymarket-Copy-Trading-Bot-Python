@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from services.tradeMonitor import _annotate_sell_fractions
+from pmcopy.services.tradeMonitor import _annotate_sell_fractions
 
 _LEADER = "0x" + "d" * 40
 
@@ -40,8 +40,8 @@ async def test_annotation_retries_then_succeeds():
     trades = [_sell_trade()]
     fetch = AsyncMock(side_effect=[RuntimeError("503"), RuntimeError("503"), [_position(5.0)]])
     with (
-        patch("services.tradeMonitor._guarded_leader_fetch", fetch),
-        patch("services.tradeMonitor.asyncio.sleep", new_callable=AsyncMock),
+        patch("pmcopy.services.tradeMonitor._guarded_leader_fetch", fetch),
+        patch("pmcopy.services.tradeMonitor.asyncio.sleep", new_callable=AsyncMock),
     ):
         await _annotate_sell_fractions(trades, _LEADER)
 
@@ -56,8 +56,8 @@ async def test_annotation_all_retries_fail_sets_sentinel():
     trades = [_sell_trade(), _sell_trade(tokenID="tok2"), {"side": "BUY"}]
     fetch = AsyncMock(side_effect=RuntimeError("503"))
     with (
-        patch("services.tradeMonitor._guarded_leader_fetch", fetch),
-        patch("services.tradeMonitor.asyncio.sleep", new_callable=AsyncMock),
+        patch("pmcopy.services.tradeMonitor._guarded_leader_fetch", fetch),
+        patch("pmcopy.services.tradeMonitor.asyncio.sleep", new_callable=AsyncMock),
     ):
         await _annotate_sell_fractions(trades, _LEADER)
 
@@ -73,7 +73,7 @@ async def test_annotation_all_retries_fail_sets_sentinel():
 async def test_annotation_non_list_payload_sets_sentinel():
     trades = [_sell_trade()]
     fetch = AsyncMock(return_value={"error": "rate limited"})
-    with patch("services.tradeMonitor._guarded_leader_fetch", fetch):
+    with patch("pmcopy.services.tradeMonitor._guarded_leader_fetch", fetch):
         await _annotate_sell_fractions(trades, _LEADER)
 
     assert fetch.await_count == 1

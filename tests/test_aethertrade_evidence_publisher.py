@@ -24,8 +24,8 @@ class FakeTransport:
 
 
 async def test_ambiguous_post_retries_exact_events_after_restart(tmp_path):
-    from domain.evidence import EvidenceHttpResponse
-    from services.evidence_publisher import EvidencePublisher
+    from pmcopy.domain.evidence import EvidenceHttpResponse
+    from pmcopy.services.evidence_publisher import EvidencePublisher
 
     path = tmp_path / "box"
     box = outbox(path)
@@ -50,8 +50,8 @@ async def test_ambiguous_post_retries_exact_events_after_restart(tmp_path):
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 413, 422])
 async def test_terminal_remote_rejection_blocks_without_silent_gap(tmp_path, status):
-    from domain.evidence import EvidenceHttpResponse
-    from services.evidence_publisher import EvidencePublisher
+    from pmcopy.domain.evidence import EvidenceHttpResponse
+    from pmcopy.services.evidence_publisher import EvidencePublisher
 
     path = tmp_path / "box"
     box = outbox(path, max_events=3)
@@ -79,8 +79,8 @@ async def test_terminal_remote_rejection_blocks_without_silent_gap(tmp_path, sta
 
 
 async def test_malformed_success_retains_every_item(tmp_path):
-    from domain.evidence import EvidenceHttpResponse
-    from services.evidence_publisher import EvidencePublisher
+    from pmcopy.domain.evidence import EvidenceHttpResponse
+    from pmcopy.services.evidence_publisher import EvidencePublisher
 
     box = outbox(tmp_path / "box")
     box.append(event())
@@ -92,8 +92,8 @@ async def test_malformed_success_retains_every_item(tmp_path):
 
 
 async def test_local_append_never_waits_for_hungary_response(tmp_path):
-    from domain.evidence import EvidenceHttpResponse
-    from services.evidence_publisher import EvidencePublisher
+    from pmcopy.domain.evidence import EvidenceHttpResponse
+    from pmcopy.services.evidence_publisher import EvidencePublisher
 
     started, release = asyncio.Event(), asyncio.Event()
     box = outbox(tmp_path / "box")

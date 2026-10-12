@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.errors import (
+from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from pmcopy.integrations.polymarket.errors import (
     VenueAuthError,
     VenueInsufficientBalanceError,
     VenueInvalidOrderError,
@@ -15,7 +15,7 @@ from integrations.polymarket.errors import (
     VenueSchemaError,
     VenueUnavailableError,
 )
-from integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
+from pmcopy.integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
 
 TOKEN = "123"
 

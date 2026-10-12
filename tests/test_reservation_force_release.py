@@ -16,8 +16,8 @@ from decimal import Decimal
 
 import pytest
 
-from domain.order_lifecycle import IntentReason, IntentSide, Reservation
-from services.execution.reservation_service import ReservationService
+from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, Reservation
+from pmcopy.services.execution.reservation_service import ReservationService
 
 pytestmark = pytest.mark.asyncio
 

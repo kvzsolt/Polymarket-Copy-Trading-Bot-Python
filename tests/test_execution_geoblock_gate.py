@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from domain.models import ComplianceDecision
-from integrations.polymarket.models import VenueOrderState, VenueSubmitResult
-from interfaces.clob_gateway import ClobGateway
-from services.executionService import ExecutionRequest, ExecutionService
-from services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from pmcopy.domain.models import ComplianceDecision
+from pmcopy.integrations.polymarket.models import VenueOrderState, VenueSubmitResult
+from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 def _make_exec_config() -> SimpleNamespace:

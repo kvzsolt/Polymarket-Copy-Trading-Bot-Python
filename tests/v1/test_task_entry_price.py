@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.execution.entry_admission import (
+from pmcopy.services.execution.entry_admission import (
     EntryAdmissionDecision,
     EntryAdmissionEngine,
     EntryPolicy,

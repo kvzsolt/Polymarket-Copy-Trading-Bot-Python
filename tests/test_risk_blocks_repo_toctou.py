@@ -21,7 +21,7 @@ import contextlib
 
 import pytest
 
-from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,7 +31,7 @@ async def _pg_pool():
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
-        from storage.postgres.migrations import apply_migrations as pg_apply
+        from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:

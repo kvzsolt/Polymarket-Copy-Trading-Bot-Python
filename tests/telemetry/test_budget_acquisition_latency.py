@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.copy_tasks.budget import TaskBudgetKey
-from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
-from services.telemetry.latency import PipelineLatency
-from storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
+from pmcopy.services.copy_tasks.budget import TaskBudgetKey
+from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.telemetry.latency import PipelineLatency
+from pmcopy.storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
 from tests.telemetry.test_pipeline_latency import ReceiptClock
 
 

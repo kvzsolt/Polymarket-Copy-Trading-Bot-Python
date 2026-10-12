@@ -7,15 +7,15 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.lifecycle import (
+from pmcopy.services.copy_tasks.lifecycle import (
     CopyTaskFillLifecycleService,
     TaskBudgetLifecycleAction,
     TaskExecutionDisposition,
     TaskExecutionOutcome,
 )
-from services.copy_tasks.lots import DurableRiskLot, RiskLotStatus
-from services.copy_tasks.protective_exits import FillRiskLot, ProtectiveRiskPolicy
-from services.copy_tasks.reentry_lock import (
+from pmcopy.services.copy_tasks.lots import DurableRiskLot, RiskLotStatus
+from pmcopy.services.copy_tasks.protective_exits import FillRiskLot, ProtectiveRiskPolicy
+from pmcopy.services.copy_tasks.reentry_lock import (
     MarketReentryKey,
     MarketReentryLockResult,
     ProtectiveExitFill,

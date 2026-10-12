@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from domain.detection import DetectionFinality, DetectionMode, TradeSide
-from domain.execution import ExecutionMetadata
-from orchestrators.v1_event_adapters import (
+from pmcopy.domain.detection import DetectionFinality, DetectionMode, TradeSide
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.orchestrators.v1_event_adapters import (
     CopyTaskRuntimeIngress,
     DeferredCopyTaskEventHandler,
     LeaderEventNormalizer,
@@ -20,15 +20,15 @@ from orchestrators.v1_event_adapters import (
     TradingContextTaskExecutionAdapter,
     TradingContextTaskSnapshotProvider,
 )
-from services.copy_tasks.domain import CopyTask, ReactionPolicy
-from services.copy_tasks.event_routing import (
+from pmcopy.services.copy_tasks.domain import CopyTask, ReactionPolicy
+from pmcopy.services.copy_tasks.event_routing import (
     CopyTaskSourceEvent,
     TaskExecutionCommand,
 )
-from services.copy_tasks.lifecycle import TaskExecutionDisposition
-from services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
+from pmcopy.services.copy_tasks.lifecycle import TaskExecutionDisposition
+from pmcopy.services.copy_tasks.lots import InMemoryRiskLotRepository, RiskLotService
 from tests.v1.test_durable_risk_lots import _lot
-from services.execution.coordinator import ExecutionCoordinatorResult
+from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
 
 _LEADER = "0x1111111111111111111111111111111111111111"
 _NOW = datetime(2026, 8, 11, 12, tzinfo=UTC)

@@ -12,8 +12,8 @@ The lifecycle emitter previously (a) only checked the camelCase
 emitter is logging-only; settlement remains reconciler-owned.
 """
 
-import clients.user_ws as user_ws
-import utils.logger as logger_mod
+import pmcopy.clients.user_ws as user_ws
+import pmcopy.utils.logger as logger_mod
 
 
 def _capture_lifecycle(monkeypatch):

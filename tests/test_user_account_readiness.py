@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app
-from services.healthServer import ReadinessTracker
+import pmcopy.app as app
+from pmcopy.services.healthServer import ReadinessTracker
 from tests.test_book_update_atomicity import seeded_store
 from tests.test_user_data_runtime import _make_runtime, VALID_CREDS
 
@@ -20,7 +20,7 @@ async def test_peer_authentication_cannot_hide_disconnected_account(monkeypatch)
         await stopped.wait()
 
     monkeypatch.setattr(
-        "orchestrators.user_data_runtime.UserWebSocket",
+        "pmcopy.orchestrators.user_data_runtime.UserWebSocket",
         lambda **kwargs: SimpleNamespace(connect=connect, stop=AsyncMock()),
     )
     monkeypatch.setattr(app, "_user_ws_api_creds", lambda state: dict(VALID_CREDS))

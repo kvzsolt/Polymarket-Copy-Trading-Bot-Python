@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from config.app_config import EnvValidationError, dump_config_payload, load_config
-from config.env import secret_value
+from pmcopy.config.app_config import EnvValidationError, dump_config_payload, load_config
+from pmcopy.config.env import secret_value
 
 
 class TestRedemptionConfig:

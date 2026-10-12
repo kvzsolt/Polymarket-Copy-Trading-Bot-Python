@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from services.order_sizing import size_buy_order, size_sell_order
+from pmcopy.services.order_sizing import size_buy_order, size_sell_order
 
 
 def test_size_buy_accepts_decimal_inputs():

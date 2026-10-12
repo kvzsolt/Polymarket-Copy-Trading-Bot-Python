@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_sizing_v5.balance_provider import CachedPusdBalanceProvider
+from pmcopy.services.copy_sizing_v5.balance_provider import CachedPusdBalanceProvider
 
 
 @pytest.mark.asyncio

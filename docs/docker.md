@@ -31,8 +31,8 @@ The password must match the existing database if its volume is already initializ
 changing `POSTGRES_PASSWORD` does not rotate an existing PostgreSQL user's password.
 Populate the required wallet/RPC settings from `secrets.env.example`.
 
-Compose mounts the checkout's `config/` read-only, including service YAML,
-`config/environments/`, and `config/traders/`. Keep that directory and the image
+Compose mounts the checkout's `src/pmcopy/config/` read-only, including service YAML,
+`src/pmcopy/config/environments/`, and `src/pmcopy/config/traders/`. Keep that directory and the image
 from the same checkout because the directory also contains Python configuration
 modules. The old `runtime.local.example.yml` copy step is no longer needed.
 An existing `config/runtime.local.yml` still participates in the loader's

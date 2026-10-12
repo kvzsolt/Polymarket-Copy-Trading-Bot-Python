@@ -11,8 +11,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import config.app_config as app_config_mod
-from bot_cli.commands.config import _config_to_dict, _redact_value, run_config
+import pmcopy.config.app_config as app_config_mod
+from pmcopy.bot_cli.commands.config import _config_to_dict, _redact_value, run_config
 from tests.config_helpers import load_test_config
 
 
@@ -58,7 +58,7 @@ def test_run_config_print_does_not_leak_secret(capsys, monkeypatch) -> None:
     cfg = _load_cfg()
 
     monkeypatch.setattr(
-        "bot_cli.commands.config.load_config",
+        "pmcopy.bot_cli.commands.config.load_config",
         lambda *_args, **_kwargs: cfg,
     )
     args = SimpleNamespace(

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from integrations.pmrecon.codec import PmreconEvidenceCodec
-from integrations.pmrecon.observation_sink import PmreconObservationSink
+from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
+from pmcopy.integrations.pmrecon.observation_sink import PmreconObservationSink
 from tests.test_aethertrade_evidence_outbox import outbox
 
 

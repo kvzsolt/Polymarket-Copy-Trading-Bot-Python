@@ -7,9 +7,9 @@ import aiohttp
 from pydantic import SecretStr
 import pytest
 
-from clients.network.http_client import HttpRetryPolicy
-from config.redemption import RedemptionConfig
-from domain.redemption import (
+from pmcopy.clients.network.http_client import HttpRetryPolicy
+from pmcopy.config.redemption import RedemptionConfig
+from pmcopy.domain.redemption import (
     RedemptionAttempt,
     RedemptionMarket,
     RedemptionSnapshot,
@@ -19,8 +19,8 @@ from domain.redemption import (
     SettlementMarketError,
     SettlementUnavailable,
 )
-from integrations.polymarket.settlement_gateway import PolymarketSettlementGateway
-from integrations.polymarket.settlement_wallet import DepositWalletCodec
+from pmcopy.integrations.polymarket.settlement_gateway import PolymarketSettlementGateway
+from pmcopy.integrations.polymarket.settlement_wallet import DepositWalletCodec
 from tests.test_redemption_service import FakeClock
 
 CONDITION = "0x" + "ab" * 32
@@ -264,7 +264,7 @@ class TestPolymarketSettlementGateway:
 
     async def test_real_http_writer_attempts_ambiguous_request_once(self) -> None:
         """Verify real http writer attempts ambiguous request once."""
-        from clients.network.http_client import AsyncHttpClient
+        from pmcopy.clients.network.http_client import AsyncHttpClient
 
         class FailedSession:
             """Fail at the transport boundary before any response, without sleeping."""

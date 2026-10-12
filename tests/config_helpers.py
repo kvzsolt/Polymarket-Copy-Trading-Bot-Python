@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from config.app_config import SERVICE_CONFIG_FILES, load_config
+from pmcopy.config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _leaf_paths() -> dict[str, list[tuple[str, ...]]]:
     payload: dict[str, Any] = {}
     for service in SERVICE_CONFIG_FILES:
-        path = ROOT / "config" / f"{service}.yml"
+        path = ROOT / "src" / "pmcopy" / "config" / f"{service}.yml"
         if not path.exists():
             continue
         payload[service] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

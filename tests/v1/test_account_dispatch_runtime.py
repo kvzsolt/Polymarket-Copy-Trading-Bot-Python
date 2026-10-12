@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
-from services.copy_tasks.service import InMemoryCopyTaskRepository
+from pmcopy.orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
+from pmcopy.services.copy_tasks.service import InMemoryCopyTaskRepository
 from tests.v1.test_copy_task_event_routing import _LEADER, _NOW, task
 from tests.v1.test_v1_runtime_bootstrap import _FakePool, _app_config, _copy_tasks_config
 
@@ -46,10 +46,10 @@ async def test_fast_account_processes_later_source_events_while_other_account_wa
     )
     with (
         patch(
-            "orchestrators.v1_runtime_bootstrap.PostgresCopyTaskRepository", return_value=repository
+            "pmcopy.orchestrators.v1_runtime_bootstrap.PostgresCopyTaskRepository", return_value=repository
         ),
         patch(
-            "orchestrators.v1_runtime_bootstrap.TradingContextTaskSnapshotProvider",
+            "pmcopy.orchestrators.v1_runtime_bootstrap.TradingContextTaskSnapshotProvider",
             return_value=snapshots,
         ),
     ):

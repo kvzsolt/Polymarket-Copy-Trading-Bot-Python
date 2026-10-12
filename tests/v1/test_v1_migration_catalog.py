@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from storage.postgres.v1_migration_runner import V1MigrationCatalog
+from pmcopy.storage.postgres.v1_migration_runner import V1MigrationCatalog
 
 
 def test_catalog_lists_every_sql_migration_in_immutable_order() -> None:

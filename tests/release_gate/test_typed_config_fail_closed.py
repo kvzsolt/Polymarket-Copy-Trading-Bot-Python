@@ -21,8 +21,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config.app_config import EnvValidationError, load_config
-from services.executionService import ExecutionService
+from pmcopy.config.app_config import EnvValidationError, load_config
+from pmcopy.services.executionService import ExecutionService
 
 
 def test_app_config_rejects_empty_env() -> None:

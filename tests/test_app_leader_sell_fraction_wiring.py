@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import app
+import pmcopy.app as app
 
 
 def test_builds_historical_and_data_fallback_resolver_from_runtime_config() -> None:
@@ -30,16 +30,16 @@ def test_builds_historical_and_data_fallback_resolver_from_runtime_config() -> N
 
     with (
         patch(
-            "adapters.polygon.historical_erc1155_balance."
+            "pmcopy.adapters.polygon.historical_erc1155_balance."
             "Web3HistoricalErc1155BalanceReader.from_rpc_url",
             return_value=historical,
         ) as build_historical,
         patch(
-            "integrations.polymarket.leader_sell_fraction_data_api.DataApiLeaderSellFractionReader",
+            "pmcopy.integrations.polymarket.leader_sell_fraction_data_api.DataApiLeaderSellFractionReader",
             return_value=data_fallback,
         ) as build_fallback,
         patch(
-            "services.onchain_detection.leader_sell_fraction_resolver.LeaderSellFractionResolver",
+            "pmcopy.services.onchain_detection.leader_sell_fraction_resolver.LeaderSellFractionResolver",
             return_value=resolver,
         ) as build_resolver,
     ):
@@ -87,13 +87,13 @@ async def test_fallback_runtime_reader_preserves_decimal_json_values() -> None:
     client = SimpleNamespace(get_json=AsyncMock(side_effect=read_json))
     with (
         patch(
-            "adapters.polygon.historical_erc1155_balance.Web3HistoricalErc1155BalanceReader.from_rpc_url"
+            "pmcopy.adapters.polygon.historical_erc1155_balance.Web3HistoricalErc1155BalanceReader.from_rpc_url"
         ),
         patch(
-            "integrations.polymarket.leader_sell_fraction_data_api.DataApiLeaderSellFractionReader"
+            "pmcopy.integrations.polymarket.leader_sell_fraction_data_api.DataApiLeaderSellFractionReader"
         ) as fallback,
-        patch("utils.fetchData._get_http_client", return_value=client),
-        patch("utils.fetchData.fetch_data", AsyncMock(return_value=json.loads(body))),
+        patch("pmcopy.utils.fetchData._get_http_client", return_value=client),
+        patch("pmcopy.utils.fetchData.fetch_data", AsyncMock(return_value=json.loads(body))),
     ):
         app._build_leader_sell_fraction_resolver(config)
         payload = await fallback.call_args.kwargs["fetch_json"]("https://example.invalid/data")

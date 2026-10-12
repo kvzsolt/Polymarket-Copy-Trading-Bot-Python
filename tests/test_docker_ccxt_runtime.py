@@ -15,7 +15,7 @@ import tomllib
 import pytest
 import yaml
 
-from config.app_config import load_config
+from pmcopy.config.app_config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,15 +87,15 @@ def test_compose_mounts_current_config_without_a_legacy_setup_file() -> None:
     artifacts = ContainerArtifacts()
     mounts = artifacts.compose["services"]["bot"]["volumes"]
     mount = next(
-        (item for item in mounts if isinstance(item, dict) and item["target"] == "/app/config"),
+        (item for item in mounts if isinstance(item, dict) and item["target"] == "/app/src/pmcopy/config"),
         None,
     )
     assert mount is not None, "Compose must mount the canonical config tree"
     assert mount["type"] == "bind"
-    assert mount["source"] == "./config"
+    assert mount["source"] == "./src/pmcopy/config"
     assert mount["read_only"] is True
     assert mount["bind"]["create_host_path"] is False
-    assert artifacts.environment().get("PYTHONPATH") == "/app", (
+    assert artifacts.environment().get("PYTHONPATH") == "/app/src", (
         "The installed pmcopy command must import config from the mounted tree"
     )
     assert "runtime.local.yml" not in str(mounts)

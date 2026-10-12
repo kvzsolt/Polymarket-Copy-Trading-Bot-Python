@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from services.risk.risk_monitor import rehydrate_position_manager
+from pmcopy.services.risk.risk_monitor import rehydrate_position_manager
 
 
 @pytest.mark.asyncio

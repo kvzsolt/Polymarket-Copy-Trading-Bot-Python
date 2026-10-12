@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.capabilities import (
+from pmcopy.integrations.polymarket.ccxt_compat.capabilities import (
     CCXT_CAPABILITY_METHODS,
     build_ccxt_health_payload,
 )
-from integrations.polymarket.ccxt_compat.version_guard import (
+from pmcopy.integrations.polymarket.ccxt_compat.version_guard import (
     ensure_supported_ccxt_version,
     parse_ccxt_version,
 )

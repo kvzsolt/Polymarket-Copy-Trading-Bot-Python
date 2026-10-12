@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from config.app_config import AppConfig, load_config
-from services.balance_regime import BalanceRegime
-from services.risk.risk_engine import headroom_for_buy
+from pmcopy.config.app_config import AppConfig, load_config
+from pmcopy.services.balance_regime import BalanceRegime
+from pmcopy.services.risk.risk_engine import headroom_for_buy
 
 BANKROLL = Decimal("350")
 PER_COPY_CAP = Decimal("17.5")

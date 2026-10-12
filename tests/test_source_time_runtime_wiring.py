@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app
-from domain.detection import DetectionMode
-from orchestrators.detection_source_factory import DetectionSourceRequest
+import pmcopy.app as app
+from pmcopy.domain.detection import DetectionMode
+from pmcopy.orchestrators.detection_source_factory import DetectionSourceRequest
 from tests.config_helpers import load_test_config
 from tests.test_confirmed_signal_execution_adapter import _claim
 from tests.test_onchain_detection_runtime import _WATCHED, _build_log
@@ -27,7 +27,7 @@ async def test_selected_detector_receives_hash_verified_public_timestamp_reader(
             "timestamp": "0x64",
         },
     }
-    monkeypatch.setattr("utils.fetchData._get_http_client", lambda: header_client)
+    monkeypatch.setattr("pmcopy.utils.fetchData._get_http_client", lambda: header_client)
     monkeypatch.setattr(
         app, "_build_onchain_condition_id_resolver", lambda: AsyncMock(return_value="condition")
     )

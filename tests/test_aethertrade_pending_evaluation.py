@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from domain.observed_rpc import ObservedRpcResult
-from domain.provider_budget import BudgetExhausted
-from domain.source_time import TransportReceipt
+from pmcopy.domain.observed_rpc import ObservedRpcResult
+from pmcopy.domain.provider_budget import BudgetExhausted
+from pmcopy.domain.source_time import TransportReceipt
 from tests.test_aethertrade_evidence_outbox import outbox
 from tests.test_aethertrade_order_verification import (
     OWNER,
@@ -102,9 +102,9 @@ class Gateway:
 
 
 def setup(tmp_path, *, globally_enabled=True, policies=None, **limits):
-    from domain.grouped_detection import TraderDetectionPolicy
-    from domain.pending_evaluation import PendingEvaluationLimits
-    from services.pending_evaluation import BoundedPendingEvaluator
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.domain.pending_evaluation import PendingEvaluationLimits
+    from pmcopy.services.pending_evaluation import BoundedPendingEvaluator
 
     clock, budget, box = Clock(), Budget(), outbox(tmp_path / "box")
     gateway = Gateway(clock)
@@ -164,7 +164,7 @@ async def test_charge_every_frame_before_filter_and_durable_per_owner_attributio
 
 @pytest.mark.parametrize("reason", ["global", "mined", "disabled"])
 async def test_desired_pending_flags_never_enable_unconfigured_traders(tmp_path, reason):
-    from domain.grouped_detection import TraderDetectionPolicy
+    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
 
     policy = TraderDetectionPolicy(
         OWNER, mode="mined" if reason == "mined" else "pending", enabled=reason != "disabled"
@@ -278,7 +278,7 @@ async def test_transport_failure_backs_off_without_new_polling_then_session_cap_
 
 
 def test_pending_stage_schema_rejects_backdating_and_fabricated_attribution():
-    from integrations.pmrecon.codec import PmreconEvidenceCodec
+    from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
 
     base = {
         "kind": "pending_observation",
@@ -300,7 +300,7 @@ def test_pending_stage_schema_rejects_backdating_and_fabricated_attribution():
 
 
 async def test_attribution_work_past_deadline_preserves_unknown(tmp_path):
-    from integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
+    from pmcopy.integrations.pmrecon.pending_decoder import V2PendingCalldataDecoder
 
     evaluator, clock, _, _, box = setup(tmp_path, body_timeout_ns=1_000_000)
 
@@ -367,7 +367,7 @@ async def test_already_mined_body_retained_with_original_receipt_without_candida
 
 
 def test_raw_body_v2_cannot_label_later_attribution_as_original_body_receipt():
-    from integrations.pmrecon.codec import PmreconEvidenceCodec
+    from pmcopy.integrations.pmrecon.codec import PmreconEvidenceCodec
     from tests.test_aethertrade_order_verification import source
 
     raw = source().wire()

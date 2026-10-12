@@ -4,9 +4,9 @@ import asyncio
 from unittest.mock import Mock
 
 import pytest
-from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
+from pmcopy.clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
 
-from clients.network.web3_adapter import AsyncWeb3Adapter
+from pmcopy.clients.network.web3_adapter import AsyncWeb3Adapter
 
 
 class _FakeResponse:
@@ -92,7 +92,7 @@ async def test_slow_web3_call_does_not_block_event_loop():
         return func(*args, **kwargs)
 
     # Keep test in-process (no real threads) while still validating adapter uses to_thread.
-    import clients.network.web3_adapter as web3_adapter_module
+    import pmcopy.clients.network.web3_adapter as web3_adapter_module
 
     original_to_thread = web3_adapter_module.asyncio.to_thread
     web3_adapter_module.asyncio.to_thread = fake_to_thread

@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrators.account_inventory_startup import InitialInventorySync
-from services.healthServer import ReadinessTracker
+from pmcopy.orchestrators.account_inventory_startup import InitialInventorySync
+from pmcopy.services.healthServer import ReadinessTracker
 
 
 @pytest.mark.asyncio

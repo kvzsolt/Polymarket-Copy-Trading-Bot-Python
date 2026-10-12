@@ -18,10 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cache.market_state_store import MarketStateStore
-from clients.market_ws import MarketWebSocket
-from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
-from services.market_data_service import (
+from pmcopy.cache.market_state_store import MarketStateStore
+from pmcopy.clients.market_ws import MarketWebSocket
+from pmcopy.clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
+from pmcopy.services.market_data_service import (
     MarketDataPolicy,
     MarketDataService,
     MarketDataSource,
@@ -299,7 +299,7 @@ class TestMarketDataConfig:
     """MarketDataConfig parsing and defaults."""
 
     def test_market_data_config_defaults(self) -> None:
-        from config.app_config import MarketDataConfig
+        from pmcopy.config.app_config import MarketDataConfig
 
         cfg = MarketDataConfig()
         assert cfg.primary_source == "rest_snapshot"
@@ -315,14 +315,14 @@ class TestMarketDataConfig:
 
     def test_market_data_config_is_frozen(self) -> None:
         import dataclasses
-        from config.app_config import MarketDataConfig
+        from pmcopy.config.app_config import MarketDataConfig
 
         cfg = MarketDataConfig()
         with pytest.raises((dataclasses.FrozenInstanceError, TypeError)):
             cfg.primary_source = "wss"  # type: ignore[misc]
 
     def test_app_config_has_market_data_field(self) -> None:
-        from config.app_config import AppConfig
+        from pmcopy.config.app_config import AppConfig
         import dataclasses
 
         field_names = {f.name for f in dataclasses.fields(AppConfig)}
@@ -332,7 +332,7 @@ class TestMarketDataConfig:
         from types import SimpleNamespace
 
         monkeypatch.setattr(
-            "config.app_config.sys.version_info", SimpleNamespace(major=3, minor=14)
+            "pmcopy.config.app_config.sys.version_info", SimpleNamespace(major=3, minor=14)
         )
         from tests.config_helpers import load_test_config
 
@@ -446,7 +446,7 @@ class TestIsWssDown:
     """MarketDataRuntime.is_wss_down health tracking."""
 
     def test_is_wss_down_true_when_not_running(self) -> None:
-        from orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -457,7 +457,7 @@ class TestIsWssDown:
         assert rt.is_wss_down(threshold_seconds=15.0) is True
 
     def test_is_wss_down_true_when_no_messages_received(self) -> None:
-        from orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -471,7 +471,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_false_when_recent_message(self) -> None:
         import time
-        from orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -486,7 +486,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_true_after_threshold(self) -> None:
         import time
-        from orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -581,7 +581,7 @@ class TestSafetyInvariants:
 
     @pytest.mark.asyncio
     async def test_market_resolved_prevents_execution(self) -> None:
-        from services.market_data_service import MarketDataNotReady
+        from pmcopy.services.market_data_service import MarketDataNotReady
 
         cache = MarketStateStore()
         _seed_executable_wss(cache, TOKEN_A)

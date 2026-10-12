@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.app_config import AppConfig
-from domain.position_lifecycle import PositionLifecycle
-from orchestrators import runtime_summary, trade_pipeline
-from services.risk.account_snapshot import AccountRiskSnapshotBuilder
+from pmcopy.config.app_config import AppConfig
+from pmcopy.domain.position_lifecycle import PositionLifecycle
+from pmcopy.orchestrators import runtime_summary, trade_pipeline
+from pmcopy.services.risk.account_snapshot import AccountRiskSnapshotBuilder
 from tests.test_legacy_marked_risk_snapshot import FixedQuote
 
 

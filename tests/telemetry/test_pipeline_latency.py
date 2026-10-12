@@ -1,8 +1,8 @@
 """Only observed durations within one boot enter bounded latency histograms."""
 
-from domain.source_time import TransportReceipt
-from services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
-from services.telemetry.latency import PipelineLatency
+from pmcopy.domain.source_time import TransportReceipt
+from pmcopy.services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.telemetry.latency import PipelineLatency
 
 
 class ReceiptClock:

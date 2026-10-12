@@ -137,7 +137,7 @@ python -m pytest -q -x -p no:cacheprovider          # full suite must stay green
 python scripts/export_api_contract.py --check       # must still pass
 ```
 Paper dry-run (optional, operator-run): `PMCOPY_ENVIRONMENT=paper PMCOPY__DETECTION__MODE=on_chain_confirmed
-PMCOPY__DETECTION__ONCHAIN__CONFIRMED_SOURCE=logs_only python bot.py run` → log markers `detection_mode_selected | mode=on_chain_confirmed`,
+PMCOPY__DETECTION__ONCHAIN__CONFIRMED_SOURCE=logs_only pmcopy run` → log markers `detection_mode_selected | mode=on_chain_confirmed`,
 `OnchainWS[orderfilled]: subscribed` (×2), `/metrics` `onchain_ws_connected{stream="orderfilled"} 1`; then Alchemy usage
 should show only `logs` (+ `eth_subscribe`) CU, no `alchemy_pendingTransactions`.
 

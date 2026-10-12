@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from domain.order_lifecycle import IntentSide
-from orchestrators.runtime_bootstrap import _build_execution_coordinator
-from services.execution.reservation_service import InsufficientFreeQuote
-from storage.postgres.positions_repo import PositionsRepo
+from pmcopy.domain.order_lifecycle import IntentSide
+from pmcopy.orchestrators.runtime_bootstrap import _build_execution_coordinator
+from pmcopy.services.execution.reservation_service import InsufficientFreeQuote
+from pmcopy.storage.postgres.positions_repo import PositionsRepo
 from tests.config_helpers import load_test_config
 from tests.test_reservation_service import _pg_pool, create_mock_intent
 
@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 async def test_distinct_tasks_cannot_exceed_combined_market_cap(monkeypatch):
     """Two six-collateral allocations cannot both reserve against a ten-collateral cap."""
-    monkeypatch.setattr("utils.getMyBalance.get_my_balance", AsyncMock(return_value=Decimal("100")))
+    monkeypatch.setattr("pmcopy.utils.getMyBalance.get_my_balance", AsyncMock(return_value=Decimal("100")))
     async with _pg_pool() as pool:
         config = load_test_config(
             execution={"reservations_enabled": True},

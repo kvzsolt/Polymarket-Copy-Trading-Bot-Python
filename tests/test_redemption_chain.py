@@ -5,14 +5,14 @@ from decimal import Decimal
 import pytest
 from web3 import Web3
 
-from domain.redemption import (
+from pmcopy.domain.redemption import (
     RedemptionMarket,
     SettlementAuthError,
     SettlementMarketError,
     SettlementUnavailable,
 )
-from integrations.polymarket.settlement_chain import PolygonSettlementReader
-from integrations.polymarket.settlement_wallet import SettlementContracts
+from pmcopy.integrations.polymarket.settlement_chain import PolygonSettlementReader
+from pmcopy.integrations.polymarket.settlement_wallet import SettlementContracts
 from tests.test_redemption_service import FakeClock
 
 WALLET = "0x" + "1" * 40

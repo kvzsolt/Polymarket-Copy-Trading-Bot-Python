@@ -56,7 +56,7 @@ class TestRecoveryInventoryReader:
 
     @staticmethod
     def _reader(shares: AsyncMock):
-        module = importlib.import_module("services.execution.recovery_inventory")
+        module = importlib.import_module("pmcopy.services.execution.recovery_inventory")
         return module.CompleteRecoveryInventoryReader(
             SimpleNamespace(shares=shares), wallet_by_user={"user-1": WALLET}
         )

@@ -11,35 +11,35 @@ import logging
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from config.app_config import load_config
-from config.env import WalletConfig
-from domain.execution import ExecutionMetadata
-from integrations.polymarket.models import VenueSubmitResult
-from integrations.polymarket.models import OrderBook, OrderBookLevel
-from orchestrators.runtime_bootstrap import (
+from pmcopy.config.app_config import load_config
+from pmcopy.config.env import WalletConfig
+from pmcopy.domain.execution import ExecutionMetadata
+from pmcopy.integrations.polymarket.models import VenueSubmitResult
+from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
+from pmcopy.orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
 )
-from orchestrators.trade_pipeline import get_reconciliation_service
-from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
-from services.copy_tasks.domain import (
+from pmcopy.orchestrators.trade_pipeline import get_reconciliation_service
+from pmcopy.orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
+from pmcopy.services.copy_tasks.domain import (
     CopyTask,
     CopyTaskStatus,
     TaskSizingPolicy,
     TaskSpendPolicy,
 )
-from services.copy_tasks.protective_exits import ProtectiveRiskPolicy
-from services.copy_tasks.event_routing import CopyTaskEventProcessor
-from services.execution.pending_order_reconciliation import PendingOrderReconciliationQueryService
-from services.multiUserConfig import RuntimeUser, UserFollowConfig
-from services.metrics import LatencyPhase
-from services.telemetry.latency import PipelineLatency
+from pmcopy.services.copy_tasks.protective_exits import ProtectiveRiskPolicy
+from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
+from pmcopy.services.execution.pending_order_reconciliation import PendingOrderReconciliationQueryService
+from pmcopy.services.multiUserConfig import RuntimeUser, UserFollowConfig
+from pmcopy.services.metrics import LatencyPhase
+from pmcopy.services.telemetry.latency import PipelineLatency
 from tests.telemetry.test_pipeline_latency import ReceiptClock, histogram
-from services.telemetry import TelemetryEmitters, TelemetryHub, TelemetryService
-from storage.postgres.migrations import apply_migrations
-from storage.postgres.connection import init_pool, shutdown_pool
-from storage.postgres.fills_repo import FillRecord
+from pmcopy.services.telemetry import TelemetryEmitters, TelemetryHub, TelemetryService
+from pmcopy.storage.postgres.migrations import apply_migrations
+from pmcopy.storage.postgres.connection import init_pool, shutdown_pool
+from pmcopy.storage.postgres.fills_repo import FillRecord
 from tests.conftest import make_clob_gateway
 
 LEADER = "0x" + "1" * 40
@@ -82,7 +82,7 @@ async def test_activated_task_executes_accounts_partial_fills_and_recovers(monke
     """Bind real services, submit once, account fills, and restart the runtime."""
     monkeypatch.chdir(tmp_path)
     balance = FixedBalance()
-    monkeypatch.setattr("utils.getMyBalance.get_my_balance", balance.read)
+    monkeypatch.setattr("pmcopy.utils.getMyBalance.get_my_balance", balance.read)
     gateway = make_clob_gateway()
     gateway.get_fee_rate_bps = AsyncMock(return_value=Decimal("0"))
     gateway.get_price = AsyncMock(return_value={"price": "0.5"})
