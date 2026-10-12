@@ -9,8 +9,10 @@ Pins the post-Review-B behavior so regressions get caught:
     import fails (no silent no-lock SELL).
   * C6 contract — two scopes that share (condition_id, token_id) but differ
     on user_id must not collide in the coordinator's lock registry.
-  * C7 — runtime_bootstrap must raise (not silently swallow) when it cannot
-    attach position_coordinator to execution_coordinator.
+  * C7 — (superseded by A04) the execution coordinator is now BORN with the
+    account-owned position_coordinator via ``_build_execution_coordinator``;
+    the old post-construction attach (and its failure branch) no longer
+    exists. The posture test below pins the construction-time wiring.
 
 These tests do not duplicate the broader coordinator integration suite; they
 only nail down the specific posture asked for in Review B.
@@ -278,43 +280,31 @@ async def test_coordinator_per_user_isolation_on_same_cond_token():
 
 
 # ---------------------------------------------------------------------------
-# C7 — runtime_bootstrap raises (not swallows) if coord rejects assignment
+# C7 (A04 posture) — the execution coordinator is BORN with the account-owned
+# position_coordinator; the old post-construction attach was removed.
 # ---------------------------------------------------------------------------
 
 
-def test_runtime_bootstrap_raises_when_coordinator_wiring_blocked():
-    """If the execution_coordinator is slotted/frozen and rejects
-    `coord.position_coordinator = ...`, the failure must surface as a
-    RuntimeError instead of being silently swallowed.
+def test_runtime_bootstrap_helper_wires_account_coordinator_at_construction():
+    """``_build_execution_coordinator`` must inject the account-owned
+    position_coordinator at construction so the execution funnel serializes
+    on the same lock map as every per-binding TradingContext — with no
+    post-construction rewiring left to silently drop.
     """
-    from orchestrators import runtime_bootstrap as rb
+    from orchestrators.runtime_bootstrap import _build_execution_coordinator
+    from services.positionCoordinator import PositionCoordinator
 
-    pos_coord = PositionActionCoordinator()
-
-    class _FrozenCoord:
-        __slots__ = ()
-
-    coord = _FrozenCoord()
-
-    context = SimpleNamespace(
-        user_id="u-frozen",
+    pos_coord = PositionCoordinator()
+    coord = _build_execution_coordinator(
+        pool=MagicMock(),
+        positions_repo=MagicMock(),
+        order_repo=MagicMock(),
+        fills_repo=MagicMock(),
+        execution_service=MagicMock(),
+        funder_address="0x" + "9" * 40,
         position_coordinator=pos_coord,
     )
 
-    # Replicate the exact wiring snippet from build_user_context here. We
-    # can't easily call build_user_context end-to-end without a full app
-    # fixture, so we lift the exact post-build attach block out and assert
-    # its posture matches the patched implementation.
-    with pytest.raises(RuntimeError, match="failed to attach position_coordinator"):
-        try:
-            coord.position_coordinator = context.position_coordinator  # type: ignore[attr-defined]
-        except Exception as exc:
-            rb.logger.error(
-                "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"),
-                exc,
-            )
-            raise RuntimeError(
-                "runtime_bootstrap: failed to attach position_coordinator to "
-                f"execution_coordinator for user {getattr(context, 'user_id', '?')}"
-            ) from exc
+    assert coord is not None
+    assert coord.position_coordinator is pos_coord
+    assert coord.position_coordinator.intent_registry is pos_coord.intent_registry

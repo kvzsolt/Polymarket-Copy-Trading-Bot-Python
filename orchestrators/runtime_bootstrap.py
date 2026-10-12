@@ -33,6 +33,7 @@ from services.pnlTracker import PnLTracker
 from services.leader_performance import LeaderPerformanceReader
 from storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader
 from services.positionManager import PositionManager
+from services.positionCoordinator import PositionCoordinator
 from services.risk.risk_engine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
@@ -216,6 +217,16 @@ class UserRuntimeState:
     # Bounded, read-only recovery for no-order-id lost-POST rows. Optional so
     # paper / wallet-less test contexts keep constructing state without it.
     ambiguous_recovery: "AmbiguousSubmissionRecoveryService | None" = None
+    # A04 — the ONE account-owned coordination state (per-scope lock map +
+    # intent registry) shared by every per-leader TradingContext, the risk
+    # context, and the ExecutionCoordinator for this follower account.
+    # Constructed in ``build_user_state``; per-binding contexts must never
+    # mint their own instance (see ``build_trading_context``).
+    position_coordinator: PositionCoordinator = field(default_factory=PositionCoordinator)
+    # Guard for the once-per-account intent-recovery seeding in
+    # ``build_trading_context``: intents from every leader binding land in the
+    # ONE account-owned registry, seeded exactly once per process.
+    intents_recovered: bool = False
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -256,11 +267,28 @@ def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollo
 def ensure_runtime_follows(
     runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig
 ) -> None:
-    """Return validated runtime follower bindings."""
-    for runtime_user in runtime_users:
-        for leader in leaders:
-            if leader not in runtime_user.follows:
-                runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
+    """Return validated runtime follower bindings.
+
+    Per-copier ``follows`` are explicit whitelists and the source of truth: a
+    leader with no follow entry is NOT followed. There is no implicit union
+    of the global leader set into every copier.
+
+    LEGACY MIGRATION (documented in ``docs/02-configuration.md``): when
+    exactly ONE user account exists AND its follows configuration is
+    empty/absent, the historical default applies — that lone account
+    auto-follows every global leader. This preserves today's single-account
+    operator behavior (including the auto-trader startup path, which loads
+    its single runtime user with an empty follows map) without a follows
+    configuration. In every other case — multiple accounts, or any explicit
+    follows entry (enabled or disabled) — absence of a follow entry means
+    NOT following.
+    """
+    if not (len(runtime_users) == 1 and not runtime_users[0].follows):
+        return
+    runtime_user = runtime_users[0]
+    for leader in leaders:
+        if leader not in runtime_user.follows:
+            runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
 async def fetch_live_positions(wallet: str) -> list[dict[str, object]] | None:
@@ -392,6 +420,14 @@ def build_user_state(
         ),
     )
 
+    # A04 — exactly ONE PositionCoordinator (per-scope lock map + intent
+    # registry) per follower account. Owned by the account runtime here,
+    # injected into the shared ExecutionCoordinator at construction and into
+    # every per-leader TradingContext in ``build_trading_context`` so copy
+    # entries, protective exits, and reconciliation serialize on one
+    # mutual-exclusion domain. Never rebuilt or re-pointed per binding.
+    position_coordinator = PositionCoordinator()
+
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
     # are wired per user so trade pipeline and risk monitor share reservation
     # and collision scope.
@@ -406,6 +442,7 @@ def build_user_state(
         provider_runtime=provider_runtime,
         latency=emitters.latency,
         copy_admission=copy_admission,
+        position_coordinator=position_coordinator,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
@@ -479,6 +516,7 @@ def build_user_state(
         telemetry=emitters,
         leader_performance=PostgresLeaderPerformanceReader(pool),
         ambiguous_recovery=ambiguous_recovery,
+        position_coordinator=position_coordinator,
     )
 
 
@@ -756,11 +794,15 @@ def _build_execution_coordinator(
     latency: PipelineLatency | None = None,
     copy_admission: CopyAdmission | None = None,
     provider_runtime: Any = None,
+    position_coordinator: PositionCoordinator | None = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
     Wraps ReservationService around ExecutionService so every production
-    submit path applies reservation + collision semantics. Returns None when
+    submit path applies reservation + collision semantics. The account-owned
+    ``position_coordinator`` (A04) is injected at construction so the
+    execution funnel serializes on the same lock map as every per-binding
+    TradingContext; there is no post-construction rewiring. Returns None when
     the funder address is missing so test contexts that build a partial state
     keep working.
     """
@@ -808,6 +850,7 @@ def _build_execution_coordinator(
         fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
+        position_coordinator=position_coordinator,
         latency=latency,
         copy_admission=copy_admission,
     )
@@ -1149,6 +1192,17 @@ async def build_trading_context(
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
         config=config,
+        # A04 — the ONE account-owned PositionCoordinator from
+        # ``build_user_state``. Leader bindings are immutable policy
+        # references; they must never mint or re-point coordination state.
+        # The fallback only serves foreign/test states constructed without
+        # ``build_user_state`` (the TradingContext default factory exists for
+        # direct test construction; production always passes this explicitly).
+        position_coordinator=(
+            user_state.position_coordinator
+            if getattr(user_state, "position_coordinator", None) is not None
+            else PositionCoordinator()
+        ),
         entry_permission_service=EntryPermissionService(user_state.risk_blocks_repo),
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,
@@ -1172,42 +1226,39 @@ async def build_trading_context(
     )
     if user_state.risk_triggers_repo is not None:
         context.risk_triggers_repo = user_state.risk_triggers_repo
-    # PR6 — bind execution coordinator and give it the per-context scope lock.
+    # PR6 — bind the account-owned execution coordinator. A04: the
+    # coordinator is BORN with the account-owned position_coordinator (see
+    # ``build_user_state`` / ``_build_execution_coordinator``); per-binding
+    # rewiring of ``coord.position_coordinator`` is forbidden — it let the
+    # last-built leader binding win the shared coordinator while earlier
+    # bindings kept private lock maps and intent registries.
     coord = getattr(user_state, "execution_coordinator", None)
     if coord is not None:
-        try:
-            coord.position_coordinator = context.position_coordinator
-        except Exception as exc:
-            # If coord is frozen/slotted the silent bypass would leave live
-            # submits without the per-context position coordinator.
-            # Surface the wiring failure loudly so ops can fix it.
-            logger.error(
-                "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"),
-                exc,
-            )
-            raise RuntimeError(
-                "runtime_bootstrap: failed to attach position_coordinator to "
-                f"execution_coordinator for user {getattr(context, 'user_id', '?')}"
-            ) from exc
-        assert getattr(coord, "position_coordinator", None) is context.position_coordinator, (
-            "runtime_bootstrap: position_coordinator attach silently dropped"
-        )
         context.execution_coordinator = coord
         _bind_reservation_runtime(context, coord)
-    # Phase 4 — seed IntentRegistry from durable reservation rows on restart.
-    # Must run after _bind_reservation_runtime so context.extra["reservations_repo"]
-    # is populated.  A missing reservations_repo (test contexts, no-reservation
-    # deployments) is silently skipped — the registry starts empty which is safe.
+    # Phase 4 / A04 — seed the ACCOUNT-owned IntentRegistry from durable
+    # reservation rows on restart. Must run after _bind_reservation_runtime so
+    # context.extra["reservations_repo"] is populated. The registry is shared
+    # by every leader binding of this account, so recovery runs ONCE per
+    # account (guarded by ``user_state.intents_recovered``) and is scoped to
+    # this account's rows: intents from all leaders land in the one registry,
+    # and another account's ownership never does. A missing reservations_repo
+    # (test contexts, no-reservation deployments) is silently skipped — the
+    # registry starts empty which is safe.
     _reservations_repo = context.extra.get("reservations_repo")
-    if _reservations_repo is not None:
+    if (
+        _reservations_repo is not None
+        and not getattr(user_state, "intents_recovered", False)
+    ):
         try:
             from services.execution.intent_recovery import recover_intents_from_db
 
             _recovered = await recover_intents_from_db(
                 registry=context.position_coordinator.intent_registry,
                 reservations_repo=_reservations_repo,
+                account_user_id=context.user_id,
             )
+            user_state.intents_recovered = True
             if _recovered:
                 logger.info(
                     "runtime_bootstrap.intent_recovery user_id=%s recovered=%d",

@@ -54,6 +54,15 @@ class TradingContext:
     leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
+    # A04 — account-owned coordination state (per-scope lock map + intent
+    # registry). Production wiring ALWAYS passes the shared per-account
+    # instance built once in ``orchestrators.runtime_bootstrap.build_user_state``
+    # so every leader binding, the risk context, and the ExecutionCoordinator
+    # for one follower account serialize on ONE lock map and ONE intent
+    # registry. The default factory exists ONLY for direct/test construction
+    # of TradingContext outside the bootstrap; nothing in production may rely
+    # on it, and ``build_trading_context`` never re-points it after
+    # construction.
     position_coordinator: PositionCoordinator = field(default_factory=PositionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
     risk_triggers_repo: Any | None = None

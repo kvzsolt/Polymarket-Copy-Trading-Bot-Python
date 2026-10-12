@@ -27,3 +27,27 @@ The bot uses a strictly typed configuration system (`config.app_config.AppConfig
 
 ## Multi-User / Allocator Mode
 If running for multiple sub-accounts, you can specify `MULTI_USER_CONFIG_FILE`. Keep this blank for standard single-wallet operations.
+
+## Follow Whitelists (who gets copied)
+
+Per-copier `follows` configuration is an **explicit whitelist** and the source
+of truth. A leader wallet with no follow entry for a copier is **not** copied —
+there is no implicit union of the global/discovered leader set into every
+account. This applies at startup, to newly discovered leaders, and to the CLI.
+
+**Legacy single-account migration.** When exactly ONE user account exists AND
+its follows configuration is empty or absent, the historical default still
+applies: that lone account auto-follows every global leader (sized by the
+global `sizing`/`risk` configuration). This preserves the behavior of
+single-account operators — including `--auto-trader` startup, which loads its
+single runtime user with an empty follows map — without requiring a follows
+configuration. The moment a second account exists, or the single account lists
+any follow entry (enabled or disabled), the migration no longer applies and
+absence of an entry means not-following.
+
+An empty whitelist (or disabling all entries) stops **new** copy entries only.
+Existing open positions keep their protective exits, reconciliation, and risk
+monitoring: the runtime builds risk-only contexts for accounts with open
+positions, and all of it runs through the same account-owned coordination
+state (one position lock map and one intent registry per follower account,
+shared by every leader binding and the execution coordinator).

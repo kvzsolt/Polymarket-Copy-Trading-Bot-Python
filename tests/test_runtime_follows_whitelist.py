@@ -80,7 +80,7 @@ def test_single_account_with_empty_follows_applies_legacy_default():
         assert follow.max_market_exposure_usdc == 123.0
 
 
-def test_legacy_default_does_not_duplicate_existing_entries():
+def test_legacy_default_does_not_duplicate_or_overwrite_entries():
     from services.multiUserConfig import UserFollowConfig
 
     existing = UserFollowConfig("user-1", LEADER_1, True, 0.5, 10, 77)
@@ -88,8 +88,10 @@ def test_legacy_default_does_not_duplicate_existing_entries():
 
     ensure_runtime_follows([user], [LEADER_1, LEADER_2], _config())
 
-    assert len(user.follows) == 2
-    assert user.follows[LEADER_1] is existing, "existing explicit entry must be preserved"
+    # Any explicit entry means the legacy default does not apply: the
+    # whitelist stays exactly as configured and the entry is never replaced
+    # by a config-derived default.
+    assert user.follows == {LEADER_1: existing}
 
 
 def test_legacy_default_with_no_leaders_leaves_follows_empty():

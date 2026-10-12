@@ -36,27 +36,51 @@ def _registry_side(side: LifecycleIntentSide | str) -> RegistryIntentSide:
 async def recover_intents_from_db(
     registry: IntentRegistry,
     reservations_repo: ReservationsRepo,
+    *,
+    account_user_id: str | None = None,
 ) -> int:
     """Recover active reservations into the in-memory IntentRegistry.
 
     Only active rows from ``order_reservations`` are recovered. Released rows
     have already reached a terminal decision and must not re-open an intent.
+
+    When ``account_user_id`` is supplied the registry is an account-owned
+    registry (A04: exactly one per follower account); rows belonging to any
+    other account are skipped so restart never seeds one account's registry
+    with another account's reservation ownership.
     """
-    return await IntentRecoveryService(registry, reservations_repo).restore()
+    return await IntentRecoveryService(
+        registry, reservations_repo, account_user_id=account_user_id
+    ).restore()
 
 
 class IntentRecoveryService:
     """Rebuild every allocation from durable reservation ownership or fail startup."""
 
-    def __init__(self, registry: IntentRegistry, reservations_repo: ReservationsRepo) -> None:
+    def __init__(
+        self,
+        registry: IntentRegistry,
+        reservations_repo: ReservationsRepo,
+        *,
+        account_user_id: str | None = None,
+    ) -> None:
         """Inject the process projection and the existing durable reader."""
         self._registry = registry
         self._reservations = reservations_repo
+        self._account_user_id = account_user_id
 
     async def restore(self) -> int:
         """Return the number of restored rows, preserving cancellation and sanitized failures."""
         try:
             active = await self._reservations.list_active()
+            if self._account_user_id is not None:
+                # The durable read is global; the registry is account-owned.
+                # Filter to this account's ownership before restoring.
+                active = [
+                    reservation
+                    for reservation in active
+                    if str(reservation.user_id) == self._account_user_id
+                ]
             for reservation in active:
                 await self._registry.restore_intent(
                     IntentRecord(
