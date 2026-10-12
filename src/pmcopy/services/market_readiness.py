@@ -35,7 +35,14 @@ class MarketReadinessGroup:
         return MarketReadinessScope(self, account)
 
     def publish(self, account: str, fields: Mapping[str, object]) -> None:
-        """Apply one account's observation and publish the aggregate."""
+        """Apply one account's observation and publish the aggregate.
+
+        Aggregates stay the fail-closed ``all(...)`` projections the strict
+        readiness gate reads; the per-account maps (multi-copier addon §7)
+        ride alongside so a degraded account's runtime is *named* in the
+        snapshot rather than concealed by one global boolean. Account ids
+        are the configured follower roster, so both maps are bounded.
+        """
         previous = self._states[account]
         state = _MarketState(
             connected=self._boolean(fields, "wss_market_ok", previous.connected),
@@ -57,6 +64,12 @@ class MarketReadinessGroup:
             "subscribed_token_count": sum(row.subscribed for row in rows),
             "stale_token_count": sum(row.stale for row in rows),
             "dirty_token_count": sum(row.dirty for row in rows),
+            "wss_market_accounts": {
+                name: row.connected for name, row in self._states.items()
+            },
+            "market_data_accounts": {
+                name: (row.connected and row.ready) for name, row in self._states.items()
+            },
         }
         if "last_error" in fields:
             aggregate["last_error"] = error

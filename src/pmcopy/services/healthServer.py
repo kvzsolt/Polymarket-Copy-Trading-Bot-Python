@@ -279,9 +279,17 @@ class ReadinessTracker:
         return stale
 
     def snapshot(self) -> dict[str, Any]:
-        """Return a point-in-time readiness snapshot."""
+        """Return a point-in-time readiness snapshot.
+
+        Includes the per-account drift map (multi-copier addon §7) so a
+        degraded account is named rather than concealed by the aggregate
+        ``drift_ok`` boolean. The map is bounded by the configured account
+        roster registered at startup.
+        """
         with self._lock:
             snapshot = deepcopy(self._state)
+            if self._account_drift:
+                snapshot["account_drift"] = dict(self._account_drift)
             snapshot["checks"] = {
                 key: {
                     "ready": check.ready,
