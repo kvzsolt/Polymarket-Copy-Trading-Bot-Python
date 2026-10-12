@@ -522,3 +522,91 @@ async def test_provenance_mapping_helper_is_explicit_and_unambiguous():
             s.idempotency_key
             for s in await repo.list_no_id_ambiguous_submissions(user_id=_USER_B, limit=10)
         ] == []
+
+
+async def test_save_submission_persists_identity_and_reader_surfaces_units():
+    """A02: writers fill the identity columns; readers require them for new rows.
+
+    ``save_submission`` (and the lock insert it mirrors) must persist
+    ``token_id``/``amount_unit``/``order_kind``/``effective_price_limit``/
+    ``correlation_ids`` for every new row, and the ambiguous-recovery reader
+    must surface the outcome token and amount unit on the submission so
+    matching can be outcome-token-exact and unit-strict.
+    """
+    from services.execution.ambiguous_recovery import SubmissionAmountUnit
+    from storage.postgres.orders_repo import OrderSubmissionRecord
+
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        await repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="identity-buy",
+                user_id=_USER_A,
+                leader_id="leader-1",
+                order_id=None,
+                status="submitted_unconfirmed",
+                request_payload={
+                    **_request_payload(_USER_A),
+                    "amount_unit": "quote",
+                    "order_kind": "market",
+                    "signal_id": "signal-1",
+                    "recovery_metadata": {"source_promotion_id": "promo-1"},
+                },
+                response_payload={"status": "submitted_unconfirmed", "pending_since": 1.0},
+            )
+        )
+        await repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="identity-sell",
+                user_id=_USER_A,
+                leader_id="leader-1",
+                order_id=None,
+                status="submitted_unconfirmed",
+                request_payload={
+                    "user_id": _USER_A,
+                    "token_id": _TOKEN,
+                    "condition_id": _CONDITION,
+                    "side": "SELL",
+                    "amount": "4",
+                    "price_limit": "0.5",
+                    "amount_unit": "shares",
+                },
+                response_payload={"status": "submitted_unconfirmed", "pending_since": 1.0},
+            )
+        )
+
+        async with pool.acquire() as conn:
+            buy_row = await conn.fetchrow(
+                "SELECT token_id, amount_unit, order_kind, effective_price_limit, "
+                "correlation_ids FROM orders WHERE idempotency_key = 'identity-buy'"
+            )
+        assert buy_row["token_id"] == _TOKEN
+        assert buy_row["amount_unit"] == "quote"
+        assert buy_row["order_kind"] == "market"
+        assert buy_row["effective_price_limit"] == "0.625"
+        assert buy_row["correlation_ids"]["signal_id"] == "signal-1"
+        assert buy_row["correlation_ids"]["source_promotion_id"] == "promo-1"
+
+        submissions = await repo.list_no_id_ambiguous_submissions(user_id=_USER_A, limit=10)
+        by_key = {s.idempotency_key: s for s in submissions}
+        assert by_key["identity-buy"].token_id == _TOKEN
+        assert by_key["identity-buy"].amount_unit is SubmissionAmountUnit.QUOTE
+        assert by_key["identity-sell"].amount_unit is SubmissionAmountUnit.SHARES
+
+        # The submission lock insert persists the same identity columns.
+        acquired = await repo.try_acquire_submission_lock(
+            "identity-lock",
+            _USER_A,
+            "leader-1",
+            {**_request_payload(_USER_A), "amount_unit": "quote", "order_kind": "market"},
+        )
+        assert acquired is True
+        async with pool.acquire() as conn:
+            lock_row = await conn.fetchrow(
+                "SELECT token_id, amount_unit, order_kind, effective_price_limit "
+                "FROM orders WHERE idempotency_key = 'identity-lock'"
+            )
+        assert lock_row["token_id"] == _TOKEN
+        assert lock_row["amount_unit"] == "quote"
+        assert lock_row["order_kind"] == "market"
+        assert lock_row["effective_price_limit"] == "0.625"

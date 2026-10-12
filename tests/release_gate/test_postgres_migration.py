@@ -247,6 +247,86 @@ async def test_orders_order_id_unique_partial_index_present(_pg_container) -> No
 
 
 @pytest.mark.asyncio
+async def test_order_identity_columns_are_additive_and_preserve_rows(_pg_container) -> None:
+    """A02: orders carries explicit identity columns, added additively.
+
+    ``token_id``, ``amount_unit``, ``order_kind``, ``effective_price_limit``
+    and ``correlation_ids`` must exist after migration, and applying the
+    migration to a table that already holds legacy rows must leave those
+    rows untouched (NULL identity — never fabricated).
+    """
+    import asyncpg
+
+    from storage.postgres.migrations import apply_migrations
+
+    dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("DROP SCHEMA public CASCADE")
+        await conn.execute("CREATE SCHEMA public")
+        # A pre-A02 orders table with one legacy row.
+        await conn.execute(
+            """
+            CREATE TABLE orders (
+                idempotency_key text PRIMARY KEY,
+                user_id         text NOT NULL DEFAULT '',
+                leader_id       text,
+                order_id        text,
+                status          text NOT NULL DEFAULT 'created',
+                request_json    jsonb NOT NULL DEFAULT '{}'::jsonb,
+                response_json   jsonb,
+                attempt_count   integer NOT NULL DEFAULT 1,
+                last_error      text,
+                matched_total   text NOT NULL DEFAULT '0',
+                created_at      timestamptz NOT NULL DEFAULT now(),
+                updated_at      timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.execute(
+            "INSERT INTO orders (idempotency_key, user_id, status) "
+            "VALUES ('legacy', 'user', 'submitted_unconfirmed')"
+        )
+
+        await apply_migrations(conn)
+
+        for column in (
+            "token_id",
+            "amount_unit",
+            "order_kind",
+            "effective_price_limit",
+            "correlation_ids",
+        ):
+            present = await conn.fetchval(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'orders' AND column_name = $1",
+                column,
+            )
+            assert present is not None, f"orders.{column} missing after migration"
+
+        legacy = await conn.fetchrow(
+            "SELECT user_id, status, token_id, amount_unit, order_kind, "
+            "effective_price_limit, correlation_ids "
+            "FROM orders WHERE idempotency_key = 'legacy'"
+        )
+        assert legacy["user_id"] == "user"
+        assert legacy["status"] == "submitted_unconfirmed"
+        # Legacy identity stays NULL — nothing is fabricated for old rows.
+        assert legacy["token_id"] is None
+        assert legacy["amount_unit"] is None
+        assert legacy["order_kind"] is None
+        assert legacy["effective_price_limit"] is None
+        assert legacy["correlation_ids"] is None
+
+        # Idempotent re-apply keeps the additive shape.
+        await apply_migrations(conn)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_position_lifecycle_upgrade_preserves_holdings_and_exact_claims(_pg_container):
     """An additive upgrade retains old rows and distinguishes active from settled."""
     import asyncpg

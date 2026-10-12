@@ -23,6 +23,7 @@ from services.execution.ambiguous_recovery import (
     AccountCheckResult,
     AmbiguousSubmission,
     RecoveryMatchSource,
+    SubmissionAmountUnit,
     SubmissionSide,
 )
 
@@ -156,7 +157,20 @@ def _submission(
     token_id: str | None = _TOKEN,
     condition_id: str | None = _CONDITION,
     age_seconds: int = 300,
+    amount_unit: SubmissionAmountUnit | None = None,
 ) -> AmbiguousSubmission:
+    # The recorded unit mirrors the submit semantics: BUY amount is quote
+    # spend, SELL amount is outcome shares.  Pass ``amount_unit`` explicitly
+    # to model a legacy row (``None``) or a corrupt record.
+    unit = (
+        amount_unit
+        if amount_unit is not None
+        else (
+            SubmissionAmountUnit.QUOTE
+            if side is SubmissionSide.BUY
+            else SubmissionAmountUnit.SHARES
+        )
+    )
     return AmbiguousSubmission(
         idempotency_key="copy:leader:event",
         user_id="user-1",
@@ -167,6 +181,7 @@ def _submission(
         amount=amount,
         price_limit=price_limit,
         submitted_at=_NOW - timedelta(seconds=age_seconds),
+        amount_unit=unit,
     )
 
 
@@ -175,10 +190,12 @@ def _fill(
     order_id: str = "venue-order-1",
     token_id: str = _TOKEN,
     side: str = "BUY",
-    size: str = "10",
+    size: str = "20",
     price: str = "0.5",
     timestamp: int = int(_NOW.timestamp()) - 120,
 ) -> VenueFill:
+    # Default leg: 20 shares @ 0.5 = exactly the 10-quote BUY submission
+    # amount the ``_submission`` helper builds.
     return VenueFill(
         fill_id=f"fill-{order_id}",
         order_id=order_id,
@@ -203,6 +220,7 @@ def _order(
     price: str = "0.5",
     size: str = "10",
     created_at: datetime | None = None,
+    token_id: str | None = _TOKEN,
 ) -> VenueOrderState:
     return VenueOrderState(
         order_id=order_id,
@@ -211,6 +229,7 @@ def _order(
         price=Decimal(price),
         size=Decimal(size),
         created_at=created_at or (_NOW - timedelta(seconds=120)),
+        token_id=token_id,
         raw={},
     )
 
@@ -289,10 +308,12 @@ async def test_unique_complete_fill_recovers_venue_order_id() -> None:
 
 
 async def test_partial_fills_of_one_order_id_aggregate_to_a_match() -> None:
+    # BUY amount is quote spend: 12 shares @ 0.5 (6 quote) + 8 shares @ 0.5
+    # (4 quote) aggregate to exactly the 10-quote submission.
     gateway = _FakeGateway(
         fills=[
-            _fill(order_id="venue-order-7", size="6", price="0.5"),
-            _fill(order_id="venue-order-7", size="4", price="0.5"),
+            _fill(order_id="venue-order-7", size="12", price="0.5"),
+            _fill(order_id="venue-order-7", size="8", price="0.5"),
         ]
     )
     source, _ = _source(gateway=gateway)
@@ -329,8 +350,9 @@ async def test_fill_for_another_token_side_price_or_window_never_matches() -> No
         scan = await source.scan(_submission())
         assert scan.match is None, gateway.calls
 
-    # A SELL submission accepts a fill at or above its floor.
-    sell_gateway = _FakeGateway(fills=[_fill(side="SELL", price="0.5")])
+    # A SELL submission accepts a fill at or above its floor; its amount is
+    # shares, so 10 shares @ 0.5 aggregate to the 10-share submission.
+    sell_gateway = _FakeGateway(fills=[_fill(side="SELL", price="0.5", size="10")])
     sell_source, _ = _source(gateway=sell_gateway)
     sell_scan = await sell_source.scan(
         _submission(side=SubmissionSide.SELL, amount=Decimal("10"), price_limit=Decimal("0.5"))
@@ -356,6 +378,208 @@ async def test_unresolved_identity_never_matches() -> None:
     scan = await source.scan(_submission())
 
     assert scan.match is None
+
+
+# ---------------------------------------------------------------------------
+# Outcome-token-exact order matching (A02)
+# ---------------------------------------------------------------------------
+
+
+async def test_yes_and_no_orders_never_cross_match() -> None:
+    """Two outcomes of one condition share price/size/side but not a token.
+
+    A submission for the YES token must never attach a NO order id, and a
+    venue whose only candidate is the opposite outcome must yield no match
+    at all.
+    """
+
+    no_token = "9" * len(_TOKEN)
+    both = _FakeGateway(
+        orders=[
+            _order(order_id="venue-yes", token_id=_TOKEN),
+            _order(order_id="venue-no", token_id=no_token),
+        ]
+    )
+    only_no = _FakeGateway(orders=[_order(order_id="venue-no", token_id=no_token)])
+
+    both_source, _ = _source(gateway=both)
+    both_scan = await both_source.scan(_submission())
+    assert both_scan.match is not None
+    assert both_scan.match.venue_order_id == "venue-yes"
+    assert both_scan.match.source is RecoveryMatchSource.PRIVATE_ORDERS
+
+    no_source, _ = _source(gateway=only_no)
+    no_scan = await no_source.scan(_submission())
+    assert no_scan.match is None
+
+
+async def test_order_without_token_identity_never_matches() -> None:
+    """A resting order missing its token cannot prove outcome identity."""
+
+    gateway = _FakeGateway(orders=[_order(order_id="venue-anon", token_id=None)])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.match is None
+
+
+async def test_fill_for_the_opposite_outcome_never_matches_even_with_equal_numbers():
+    no_token = "9" * len(_TOKEN)
+    gateway = _FakeGateway(fills=[_fill(order_id="venue-no", token_id=no_token)])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.match is None
+
+
+async def test_conflicting_fill_and_order_evidence_blocks_attachment() -> None:
+    """Two complete collections disagreeing about the identity attach nothing."""
+
+    gateway = _FakeGateway(
+        fills=[_fill(order_id="venue-fills")],
+        orders=[_order(order_id="venue-orders")],
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission())
+
+    assert scan.match is None
+    assert scan.private_fills_complete is True
+    assert scan.private_orders_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Unit-strict fill matching (A02)
+# ---------------------------------------------------------------------------
+
+
+async def test_sell_amount_never_matches_a_numerically_equal_quote_aggregate() -> None:
+    """A 1-share SELL must not match a 2-share fill whose quote equals 1.
+
+    Pre-A02 matching accepted ``total_quote == amount`` for a SELL, so BUY
+    spend semantics and SELL share semantics were interchangeable.  The SELL
+    amount is shares: only the share aggregate may match.
+    """
+
+    gateway = _FakeGateway(fills=[_fill(side="SELL", size="2", price="0.5")])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(
+        _submission(
+            side=SubmissionSide.SELL,
+            amount=Decimal("1"),
+            price_limit=Decimal("0.5"),
+        )
+    )
+
+    assert scan.match is None
+
+
+async def test_buy_amount_never_matches_a_numerically_equal_share_aggregate() -> None:
+    """A 2-quote BUY must not match a 2-share fill whose quote is 0.5."""
+
+    gateway = _FakeGateway(fills=[_fill(size="2", price="0.25")])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount=Decimal("2")))
+
+    assert scan.match is None
+
+
+async def test_buy_partial_fills_accumulate_by_quote_spend() -> None:
+    """BUY legs aggregate in quote: 5@0.8 + 7.5@0.8 = 10 quote spent."""
+
+    gateway = _FakeGateway(
+        fills=[
+            _fill(order_id="venue-order-7", size="5", price="0.8"),
+            _fill(order_id="venue-order-7", size="7.5", price="0.8"),
+        ]
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount=Decimal("10"), price_limit=Decimal("0.8")))
+
+    assert scan.match is not None
+    assert scan.match.venue_order_id == "venue-order-7"
+
+
+async def test_sell_partial_fills_accumulate_by_shares() -> None:
+    """SELL legs aggregate in shares: 2 + 3 = 5 shares sold."""
+
+    gateway = _FakeGateway(
+        fills=[
+            _fill(order_id="venue-order-7", side="SELL", size="2", price="0.4"),
+            _fill(order_id="venue-order-7", side="SELL", size="3", price="0.6"),
+        ]
+    )
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(
+        _submission(
+            side=SubmissionSide.SELL,
+            amount=Decimal("5"),
+            price_limit=Decimal("0.4"),
+        )
+    )
+
+    assert scan.match is not None
+    assert scan.match.venue_order_id == "venue-order-7"
+
+
+# ---------------------------------------------------------------------------
+# Legacy rows without unit identity fail closed (A02)
+# ---------------------------------------------------------------------------
+
+
+async def test_submission_without_unit_identity_fails_closed_without_private_reads() -> None:
+    """A row that persisted an amount but no unit can never be unit-verified.
+
+    Legacy rows cannot have identity fabricated for them: the scan is a
+    complete fail-closed no-op (no private read, no match, no absence
+    progress) so the row stays duplicate-blocking for the operator.
+    """
+
+    gateway = _FakeGateway(fills=[_fill()], orders=[_order()])
+    source, calls = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount_unit=None))
+
+    assert scan.match is None
+    assert scan.private_orders_complete is False
+    assert scan.private_fills_complete is False
+    assert scan.position_check is AccountCheckResult.INCOMPLETE
+    assert scan.balance_check is AccountCheckResult.INCOMPLETE
+    assert scan.qualifies_as_complete_absence is False
+    assert gateway.calls == []
+    assert calls["local"] == []
+
+
+async def test_unit_side_mismatch_fails_closed() -> None:
+    """A BUY recorded in shares (or a SELL in quote) is corrupt: never match."""
+
+    gateway = _FakeGateway(fills=[_fill()])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount_unit=SubmissionAmountUnit.SHARES))
+
+    assert scan.match is None
+    assert scan.private_fills_complete is False
+    assert scan.qualifies_as_complete_absence is False
+
+
+async def test_missing_amount_still_scans_without_unit_requirements() -> None:
+    """A row without any amount keeps its pre-A02 scan behaviour."""
+
+    gateway = _FakeGateway(fills=[_fill(order_id="venue-order-7", size="7", price="0.5")])
+    source, _ = _source(gateway=gateway)
+
+    scan = await source.scan(_submission(amount=None, amount_unit=None))
+
+    assert scan.private_fills_complete is True
+    assert scan.match is not None
+    assert scan.match.venue_order_id == "venue-order-7"
 
 
 # ---------------------------------------------------------------------------

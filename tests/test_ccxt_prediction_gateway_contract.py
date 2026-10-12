@@ -508,14 +508,54 @@ async def test_order_state_uses_real_average_and_never_substitutes_limit_price()
 async def test_open_order_filters_are_exact() -> None:
     exchange = FakeExchange()
     exchange.open_orders = [
-        exchange.order,
+        {**exchange.order, "info": {"market": "market-1"}},
         {**exchange.order, "id": "other", "info": {"market": "other-market"}},
+        # A market-scoped read must reject a row with no market identity:
+        # it cannot prove which condition (let alone outcome) it belongs to.
+        # The row deliberately passes the order_id filter so only the strict
+        # market filter can drop it.
+        {**exchange.order, "id": "order-1", "info": {}},
     ]
     gateway = CcxtPredictionGateway(exchange)
 
     orders = await gateway.list_open_orders(order_id="order-1", market="market-1")
     assert [order.order_id for order in orders] == ["order-1"]
     assert orders[0].status == "open"
+
+
+@pytest.mark.asyncio
+async def test_order_state_translates_outcome_token_identity() -> None:
+    """Parsed orders carry ``outcomeId``; raw CLOB rows carry ``asset_id``.
+
+    Both are the normalized outcome token at the adapter boundary (verified
+    against the installed ccxt ``parse_prediction_order``: ``outcomeId``
+    falls back to the raw ``asset_id`` token whenever the outcome cache
+    misses), so either shape yields the same token identity.
+    """
+
+    exchange = FakeExchange()
+    exchange.order = {**exchange.order, "outcomeId": TOKEN}
+    gateway = CcxtPredictionGateway(exchange)
+
+    parsed = await gateway.get_order("order-1")
+    assert parsed.token_id == TOKEN
+
+    raw_exchange = FakeExchange()
+    raw_exchange.open_orders = [
+        {
+            "id": "raw-order-1",
+            "status": "LIVE",
+            "side": "BUY",
+            "price": "0.42",
+            "original_size": "10",
+            "size_matched": "0",
+            "created_at": 1_750_000_000,
+            "market": "market-1",
+            "asset_id": "token-raw-1",
+        }
+    ]
+    raw_orders = await CcxtPredictionGateway(raw_exchange).list_open_orders(market="market-1")
+    assert [order.token_id for order in raw_orders] == ["token-raw-1"]
 
 
 @pytest.mark.asyncio
