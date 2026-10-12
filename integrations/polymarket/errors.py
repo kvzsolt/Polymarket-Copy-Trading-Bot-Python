@@ -28,6 +28,32 @@ class VenueUnavailableError(RetryableVenueError):
     pass
 
 
+class VenueHistoryIncompleteError(VenueUnavailableError):
+    """Private history pagination could not prove the collection complete.
+
+    Raised when the cursor repeats or the page budget is exhausted: rows may
+    exist, but the collection is provably PARTIAL.  Subclasses
+    ``VenueUnavailableError`` so every existing retryable handler keeps
+    catching it, while the ambiguous-evidence boundary can distinguish a
+    partial read from an unavailable one.
+    """
+
+    pass
+
+
+class VenueSchemaError(VenueUnavailableError):
+    """A venue 200 response whose payload shape cannot be trusted.
+
+    Raised when a private-history page lacks a recognized collection key or
+    carries rows that are not objects.  Such a payload is indistinguishable
+    from a legitimately empty page once a reader defaults missing keys to an
+    empty list, so it must fail closed instead of silently becoming absence
+    evidence.
+    """
+
+    pass
+
+
 class VenueRateLimitError(RetryableVenueError):
     """The venue rate-limited the request."""
 

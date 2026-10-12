@@ -59,6 +59,43 @@ class RecoveryMatchSource(StrEnum):
     PRIVATE_FILLS = "private_fills"
 
 
+class EvidenceCollectionOutcome(StrEnum):
+    """Outcome of one authoritative private-history collection read.
+
+    Audit A03: ``complete``/``incomplete`` booleans alone could not distinguish
+    a genuinely exhausted-but-empty collection from a misread or truncated one.
+    The five outcomes are total and mutually exclusive:
+
+    * ``complete_empty`` — the venue answered a recognized, exhausted
+      collection with zero rows.  The ONLY outcome that can support an
+      absence proof.
+    * ``complete_nonempty`` — exhausted with rows; supports identity
+      matching but never an absence proof, because activity exists on the
+      market and the matcher may simply have failed to recognize it.
+    * ``partial`` — rows may exist but pagination could not prove
+      exhaustion (cursor loop or page-budget cutoff).
+    * ``unavailable`` — the read could not be performed (transport,
+      timeout, auth, rate limit).
+    * ``invalid`` — the venue answered a payload whose shape cannot be
+      trusted as history (schema drift, error body in a 200).
+    """
+
+    COMPLETE_EMPTY = "complete_empty"
+    COMPLETE_NONEMPTY = "complete_nonempty"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether the collection was proven exhausted (either emptiness)."""
+
+        return self in (
+            EvidenceCollectionOutcome.COMPLETE_EMPTY,
+            EvidenceCollectionOutcome.COMPLETE_NONEMPTY,
+        )
+
+
 class RecoveryDisposition(StrEnum):
     """One bounded recovery attempt's durable or fail-closed outcome."""
 
@@ -148,9 +185,12 @@ class AuthoritativeRecoveryScan:
 
     ``private_*_complete`` means the adapter exhausted the authenticated
     collection, including pagination.  A recovered match is valid only when
-    its corresponding collection is complete.  Absence is stronger: both
-    collections and both account checks must be complete and consistent with
-    no execution.
+    its corresponding collection is complete.  Absence is stronger and, since
+    audit A03, requires BOTH collections to declare the
+    ``complete_empty`` outcome: an exhausted-but-nonempty collection means
+    there IS venue activity on the market, and ``partial``/``unavailable``/
+    ``invalid`` outcomes mean the emptiness was never proven at all.  A scan
+    constructed without an outcome declaration can never qualify.
     """
 
     private_orders_complete: bool
@@ -158,12 +198,24 @@ class AuthoritativeRecoveryScan:
     position_check: AccountCheckResult
     balance_check: AccountCheckResult
     match: RecoveryMatch | None = None
+    private_orders_outcome: EvidenceCollectionOutcome | None = None
+    private_fills_outcome: EvidenceCollectionOutcome | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.position_check, AccountCheckResult):
             raise TypeError("position_check must be an AccountCheckResult")
         if not isinstance(self.balance_check, AccountCheckResult):
             raise TypeError("balance_check must be an AccountCheckResult")
+        for outcome, complete, name in (
+            (self.private_orders_outcome, self.private_orders_complete, "private_orders"),
+            (self.private_fills_outcome, self.private_fills_complete, "private_fills"),
+        ):
+            if outcome is None:
+                continue
+            if not isinstance(outcome, EvidenceCollectionOutcome):
+                raise TypeError(f"{name}_outcome must be an EvidenceCollectionOutcome")
+            if outcome.is_complete != bool(complete):
+                raise ValueError(f"{name}_outcome contradicts {name}_complete")
         if self.match is None:
             return
         if (
@@ -183,8 +235,8 @@ class AuthoritativeRecoveryScan:
 
         return (
             self.match is None
-            and self.private_orders_complete
-            and self.private_fills_complete
+            and self.private_orders_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
+            and self.private_fills_outcome is EvidenceCollectionOutcome.COMPLETE_EMPTY
             and self.position_check is AccountCheckResult.CONSISTENT_WITH_ABSENCE
             and self.balance_check is AccountCheckResult.CONSISTENT_WITH_ABSENCE
         )
@@ -523,6 +575,7 @@ __all__ = [
     "AmbiguousSubmissionRepository",
     "AuthoritativeRecoveryScan",
     "Clock",
+    "EvidenceCollectionOutcome",
     "RecoveryDisposition",
     "RecoveryMatch",
     "RecoveryMatchSource",

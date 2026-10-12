@@ -29,11 +29,16 @@ from services.execution.ambiguous_recovery import (
     AmbiguousSubmission,
     AuthoritativeRecoveryScan,
     Clock,
+    EvidenceCollectionOutcome,
     RecoveryMatch,
     RecoveryMatchSource,
     SubmissionAmountUnit,
     SubmissionSide,
     SystemClock,
+)
+from integrations.polymarket.errors import (
+    VenueHistoryIncompleteError,
+    VenueSchemaError,
 )
 from utils.logger import get_logger
 
@@ -176,10 +181,10 @@ class CcxtAmbiguousEvidenceSource:
             )
             return _fail_closed_scan()
 
-        fills, fills_complete = await self._collect(
+        fills, fills_outcome = await self._collect(
             self._private_history.get_fills(market=condition_id)
         )
-        orders, orders_complete = await self._collect(
+        orders, orders_outcome = await self._collect(
             self._private_history.list_open_orders(market=condition_id)
         )
 
@@ -187,15 +192,17 @@ class CcxtAmbiguousEvidenceSource:
             submission,
             fills,
             orders,
-            fills_complete=fills_complete,
-            orders_complete=orders_complete,
+            fills_complete=fills_outcome.is_complete,
+            orders_complete=orders_outcome.is_complete,
         )
         position_check = await self._position_check(submission, token_id, condition_id)
         balance_check = await self._balance_check(submission)
 
         return AuthoritativeRecoveryScan(
-            private_orders_complete=orders_complete,
-            private_fills_complete=fills_complete,
+            private_orders_complete=orders_outcome.is_complete,
+            private_fills_complete=fills_outcome.is_complete,
+            private_orders_outcome=orders_outcome,
+            private_fills_outcome=fills_outcome,
             position_check=position_check,
             balance_check=balance_check,
             match=match,
@@ -204,19 +211,55 @@ class CcxtAmbiguousEvidenceSource:
     # ------------------------------------------------------------------
     # Bounded reads
     # ------------------------------------------------------------------
-    async def _collect(self, awaitable: Awaitable[Sequence[Any]]) -> tuple[tuple[Any, ...], bool]:
-        """Await one private collection; ``False`` means it is not complete."""
+    async def _collect(
+        self, awaitable: Awaitable[Sequence[Any]]
+    ) -> tuple[tuple[Any, ...], EvidenceCollectionOutcome]:
+        """Await one private collection and classify how the read ended.
+
+        Audit A03 mapping (kept deliberately narrow):
+
+        * venue :class:`VenueSchemaError` — the payload shape cannot be
+          trusted → ``invalid``;
+        * venue :class:`VenueHistoryIncompleteError` — pagination could not
+          prove exhaustion → ``partial``;
+        * any other exception (transport, timeout, auth) → ``unavailable``;
+        * a returned non-collection (``None`` included) → ``invalid``;
+        * a recognized collection → ``complete_empty``/``complete_nonempty``.
+
+        Cancellation is never caught: ``asyncio.CancelledError`` is a
+        ``BaseException`` and must propagate, never become an outcome.
+        """
 
         try:
             async with asyncio.timeout(self._read_timeout_seconds):
                 values = await awaitable
+        except VenueSchemaError as exc:
+            logger.warning(
+                "ambiguous_evidence_collection_invalid error_type=%s",
+                type(exc).__name__,
+            )
+            return (), EvidenceCollectionOutcome.INVALID
+        except VenueHistoryIncompleteError as exc:
+            logger.warning(
+                "ambiguous_evidence_collection_partial error_type=%s",
+                type(exc).__name__,
+            )
+            return (), EvidenceCollectionOutcome.PARTIAL
         except Exception as exc:  # noqa: BLE001 - any failure is incomplete evidence
             logger.warning(
                 "ambiguous_evidence_collection_unavailable error_type=%s",
                 type(exc).__name__,
             )
-            return (), False
-        return tuple(values or ()), True
+            return (), EvidenceCollectionOutcome.UNAVAILABLE
+        if not isinstance(values, (list, tuple)):
+            logger.warning(
+                "ambiguous_evidence_collection_invalid value_type=%s",
+                type(values).__name__,
+            )
+            return (), EvidenceCollectionOutcome.INVALID
+        if not values:
+            return (), EvidenceCollectionOutcome.COMPLETE_EMPTY
+        return tuple(values), EvidenceCollectionOutcome.COMPLETE_NONEMPTY
 
     async def _bounded(self, awaitable: Awaitable[Any]) -> Any:
         """Await one account read; any failure is unknown, never absence."""

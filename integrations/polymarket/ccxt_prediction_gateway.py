@@ -40,11 +40,13 @@ from integrations.polymarket.ccxt_compat.tick_size import (
 from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
 from integrations.polymarket.errors import (
     VenueAuthError,
+    VenueHistoryIncompleteError,
     VenueInsufficientBalanceError,
     VenueInvalidOrderError,
     VenueOrderNotFoundError,
     VenueOrderbookNotFoundError,
     VenueRateLimitError,
+    VenueSchemaError,
     VenueUnavailableError,
 )
 from integrations.polymarket.models import (
@@ -484,6 +486,13 @@ class CcxtPredictionGateway:
         terminal value. The unified method remains a compatibility fallback for
         public/paper test doubles, but authenticated compatibility rejects a
         client that lacks the raw paginated methods.
+
+        Envelope authority (audit A03): an HTTP-200 page whose payload carries
+        no recognized collection key — or whose rows are not objects — is an
+        INVALID page, not an empty one.  Reconciliation and absence proofs are
+        built on these collections, so a schema-drifted payload must fail
+        closed as :class:`VenueSchemaError` instead of being read as
+        authoritative emptiness.
         """
 
         raw_method = self._resolve_method(*raw_method_names)
@@ -504,8 +513,18 @@ class CcxtPredictionGateway:
                     collection = values.get(key)
                     if isinstance(collection, list):
                         return collection
-                return []
-            return list(values or ())
+                raise VenueSchemaError(
+                    "CCXT private-history fallback response had no recognized "
+                    f"collection key {collection_keys}; refusing to treat an "
+                    "unrecognized payload as empty history"
+                )
+            if not isinstance(values, (list, tuple)):
+                raise VenueSchemaError(
+                    "CCXT private-history fallback response was not a "
+                    f"collection ({type(values).__name__}); refusing to treat "
+                    "an unrecognized payload as empty history"
+                )
+            return list(values)
 
         await self._ensure_api_credentials()
         rows: list[Any] = []
@@ -527,25 +546,16 @@ class CcxtPredictionGateway:
             except BaseException as exc:
                 _raise_read_error(exc, not_found="order")
 
-            if isinstance(response, list):
-                rows.extend(response)
-                return rows
-
-            payload = _maybe_dict(response)
-            page_rows: list[Any] = []
-            for key in collection_keys:
-                value = payload.get(key)
-                if isinstance(value, list):
-                    page_rows = value
-                    break
+            page_rows = self._private_page_rows(response, collection_keys=collection_keys)
             rows.extend(page_rows)
 
+            payload = _maybe_dict(response)
             cursor_raw = _first(payload, "next_cursor", "nextCursor")
             cursor = str(cursor_raw or "").strip()
             if cursor in _PRIVATE_CURSOR_TERMINALS:
                 return rows
             if cursor in seen_cursors:
-                raise VenueUnavailableError(
+                raise VenueHistoryIncompleteError(
                     "CCXT private-history pagination cursor repeated; "
                     "refusing partial reconciliation data"
                 )
@@ -553,9 +563,42 @@ class CcxtPredictionGateway:
             request = dict(params)
             request["next_cursor"] = cursor
 
-        raise VenueUnavailableError(
+        raise VenueHistoryIncompleteError(
             "CCXT private-history pagination exceeded privateHistoryMaxPages; "
             "refusing partial reconciliation data"
+        )
+
+    @staticmethod
+    def _private_page_rows(
+        response: Any,
+        *,
+        collection_keys: tuple[str, ...],
+    ) -> list[Any]:
+        """Validate and return one raw cursor page's rows.
+
+        The raw CLOB data endpoints answer with a keyed envelope
+        (``{"data": [...], "next_cursor": ...}``).  A payload without a
+        recognized collection key, a null/absent collection, a bare list, or
+        non-object rows is schema drift: none of it may be read as history —
+        and especially not as empty history, which would manufacture absence
+        evidence.
+        """
+
+        payload = _maybe_dict(response)
+        for key in collection_keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                for row in value:
+                    if not isinstance(row, dict):
+                        raise VenueSchemaError(
+                            "CCXT private-history page row was not an object "
+                            f"({type(row).__name__}); refusing malformed history"
+                        )
+                return value
+        raise VenueSchemaError(
+            "CCXT private-history page had no recognized collection key "
+            f"{collection_keys} ({type(response).__name__}); refusing to treat "
+            "an unrecognized payload as empty history"
         )
 
     async def _fetch_raw_order_book(self, token_id: str) -> dict[str, Any]:
