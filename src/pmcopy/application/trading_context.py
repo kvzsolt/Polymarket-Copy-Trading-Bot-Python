@@ -56,6 +56,12 @@ class TradingContext:
     buy_min_amount: float = 1.0
     buy_max_amount: float | Decimal = 100.0
     max_market_exposure_usdc: float | Decimal = 300.0
+    # Task 24 fix — True iff ``max_market_exposure_usdc`` came from an
+    # explicitly configured copier-level open-exposure cap (schema v2
+    # ``limits.max_open_exposure_quote`` / v1 explicit follow field). Only
+    # then does the trade pipeline enforce the cap; the default value stays
+    # informational exactly as before.
+    market_exposure_cap_explicit: bool = False
     rank_size_multiplier: Decimal = Decimal("1")
     leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None

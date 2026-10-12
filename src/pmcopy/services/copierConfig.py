@@ -336,8 +336,7 @@ def _parse_sizing(
     """
     if not isinstance(payload, dict):
         raise ValueError(
-            f"{where}: field 'sizing' must be a mapping with a 'mode', "
-            f"got {type(payload).__name__}"
+            f"{where}: field 'sizing' must be a mapping with a 'mode', got {type(payload).__name__}"
         )
     _reject_unknown_keys(payload, _SIZING_KEYS, where=f"{where}: sizing")
     mode_value = _require_str(payload, "mode", where=f"{where}: sizing")
@@ -405,8 +404,7 @@ def _parse_follows(
         entry_where = f"{where}: follows[{index}]"
         if not isinstance(item, dict):
             raise ValueError(
-                f"{entry_where}: each follow must be a mapping, "
-                f"got {type(item).__name__}"
+                f"{entry_where}: each follow must be a mapping, got {type(item).__name__}"
             )
         _reject_unknown_keys(item, _FOLLOW_KEYS, where=entry_where)
         leader_address = _validate_eth_address(
@@ -436,7 +434,11 @@ def _parse_follows(
             ),
             allocation_pct=allocation_pct,
             max_trade_usdc=max_trade_usdc,
+            # The schema v2 limits block is required and validated, so every
+            # v2 binding carries an EXPLICITLY configured copier-level
+            # open-exposure cap the pipeline enforces.
             max_market_exposure_usdc=max_open_exposure_quote,
+            market_exposure_cap_explicit=True,
         )
     return follows
 
@@ -457,8 +459,7 @@ def _copier_runtime_user(
     """
     if not isinstance(payload, dict):
         raise ValueError(
-            f"copiers[{index}]: each copier must be a mapping, "
-            f"got {type(payload).__name__}"
+            f"copiers[{index}]: each copier must be a mapping, got {type(payload).__name__}"
         )
     raw_id = payload.get("id")
     if isinstance(raw_id, str) and raw_id.strip():
@@ -484,16 +485,13 @@ def _copier_runtime_user(
         )
     label = f"copiers[{index}] ({copier_id})"
 
-    enabled = _parse_strict_bool(
-        payload.get("enabled", True), where=label, field_name="enabled"
-    )
+    enabled = _parse_strict_bool(payload.get("enabled", True), where=label, field_name="enabled")
 
     mode_value = _require_str(payload, "mode", where=label)
     mode = mode_value.strip().lower()
     if mode not in _MODES:
         raise ValueError(
-            f"{label}: field 'mode' must be one of {sorted(_MODES)}, "
-            f"got {mode_value!r}"
+            f"{label}: field 'mode' must be one of {sorted(_MODES)}, got {mode_value!r}"
         )
     if mode != trading_mode:
         raise ValueError(
@@ -539,9 +537,7 @@ def _copier_runtime_user(
             "mode (an env-var NAME referencing the signing key)"
         )
 
-    max_order_quote, max_open_exposure_quote = _parse_limits(
-        payload.get("limits"), where=label
-    )
+    max_order_quote, max_open_exposure_quote = _parse_limits(payload.get("limits"), where=label)
     follows = _parse_follows(
         payload.get("follows"),
         user_id=copier_id,
@@ -635,9 +631,7 @@ def _copier_runtime_user(
     )
 
 
-def load_runtime_users_from_copiers(
-    copiers_file: str, config: "AppConfig"
-) -> list[RuntimeUser]:
+def load_runtime_users_from_copiers(copiers_file: str, config: "AppConfig") -> list[RuntimeUser]:
     """Load the schema v2 copiers roster as ``RuntimeUser`` rows.
 
     Raises ``ValueError`` (fail-closed, secret-safe messages) on any schema,
@@ -652,18 +646,14 @@ def load_runtime_users_from_copiers(
         # BaseLoader: every scalar arrives as text so this module performs
         # every conversion through the strict Task 14 parsers. No YAML
         # float/bool resolution can bypass decimal-text or strict-bool rules.
-        payload = yaml.load(
-            resolved.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
-        )
+        payload = yaml.load(resolved.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     except yaml.YAMLError as exc:
         raise ValueError(
-            f"app.copiers_config_file {resolved.name!r} is not valid YAML: "
-            f"{exc}"
+            f"app.copiers_config_file {resolved.name!r} is not valid YAML: {exc}"
         ) from exc
     except OSError as exc:
         raise ValueError(
-            f"app.copiers_config_file could not be read: {resolved} "
-            f"({exc.__class__.__name__})"
+            f"app.copiers_config_file could not be read: {resolved} ({exc.__class__.__name__})"
         ) from exc
 
     if not isinstance(payload, dict):
@@ -686,8 +676,7 @@ def load_runtime_users_from_copiers(
     copiers_payload = payload["copiers"]
     if not isinstance(copiers_payload, list):
         raise ValueError(
-            "copiers config payload 'copiers' must be a list, "
-            f"got {type(copiers_payload).__name__}"
+            f"copiers config payload 'copiers' must be a list, got {type(copiers_payload).__name__}"
         )
 
     # Process-wide single mode: the authoritative control stays

@@ -707,7 +707,7 @@ def _build_ambiguous_recovery_service(
             return Decimal("0")
         try:
             return Decimal(str(getattr(record, "size_tokens", 0) or 0))
-        except (InvalidOperation, TypeError, ValueError):
+        except InvalidOperation, TypeError, ValueError:
             return None
 
     async def _reserved_quote(uid: str) -> Decimal | None:
@@ -723,7 +723,7 @@ def _build_ambiguous_recovery_service(
             return None
         try:
             return Decimal(str(total or 0))
-        except (InvalidOperation, TypeError, ValueError):
+        except InvalidOperation, TypeError, ValueError:
             return None
 
     async def _balance(address: str) -> Decimal | None:
@@ -1272,10 +1272,11 @@ async def build_trading_context(
         # through its shortest exact decimal text. The winner flows on as a
         # Decimal; ``copyStrategy._to_decimal`` passes Decimals through
         # untouched, so sizing math stays exact end-to-end.
-        buy_max_amount=min(
-            Decimal(str(config.sizing.buy_max_amount)), follow.max_trade_usdc
-        ),
+        buy_max_amount=min(Decimal(str(config.sizing.buy_max_amount)), follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
+        # Duck-typed tolerance mirrors ``follows_explicit``: foreign/test
+        # follows constructed before the flag keep legacy semantics.
+        market_exposure_cap_explicit=bool(getattr(follow, "market_exposure_cap_explicit", False)),
         rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
@@ -1311,10 +1312,7 @@ async def build_trading_context(
     # (test contexts, no-reservation deployments) is silently skipped — the
     # registry starts empty which is safe.
     _reservations_repo = context.extra.get("reservations_repo")
-    if (
-        _reservations_repo is not None
-        and not getattr(user_state, "intents_recovered", False)
-    ):
+    if _reservations_repo is not None and not getattr(user_state, "intents_recovered", False):
         try:
             from pmcopy.services.execution.intent_recovery import recover_intents_from_db
 
@@ -1648,9 +1646,7 @@ async def build_context_maps(
                 enabled=False,
                 allocation_pct=Decimal("0"),
                 max_trade_usdc=Decimal("0"),
-                max_market_exposure_usdc=Decimal(
-                    str(config.risk.max_market_exposure_usdc)
-                ),
+                max_market_exposure_usdc=Decimal(str(config.risk.max_market_exposure_usdc)),
             )
         context = await build_trading_context(
             risk_user_state,

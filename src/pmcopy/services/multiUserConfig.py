@@ -69,6 +69,13 @@ class UserFollowConfig:
     allocation_pct: Decimal
     max_trade_usdc: Decimal
     max_market_exposure_usdc: Decimal
+    # Task 24 fix — True only when the COPIER-level open-exposure cap was
+    # EXPLICITLY configured by the operator (schema v2
+    # ``limits.max_open_exposure_quote``, or the v1 follow field present in
+    # the payload). The trade pipeline enforces the cap only when this is
+    # set; legacy/default-derived values keep their historical inert
+    # behavior so no existing deployment sees new rejections.
+    market_exposure_cap_explicit: bool = False
 
 
 @dataclass
@@ -105,7 +112,16 @@ _FOLLOW_KEYS = frozenset(
 # sanctioned credential field — the existing wallet transport — and is held
 # as ``SecretStr``. Any other credential-shaped key is rejected: inline
 # secrets beyond the wallet key are not part of this configuration surface.
-_CREDENTIAL_KEY_FRAGMENTS = ("private", "secret", "api", "token", "password", "credential", "auth", "key")
+_CREDENTIAL_KEY_FRAGMENTS = (
+    "private",
+    "secret",
+    "api",
+    "token",
+    "password",
+    "credential",
+    "auth",
+    "key",
+)
 
 
 def _reject_credential_shaped_keys(keys: Any, *, where: str) -> None:
@@ -121,9 +137,7 @@ def _reject_credential_shaped_keys(keys: Any, *, where: str) -> None:
             )
 
 
-def _reject_unknown_keys(
-    payload: dict, allowed: frozenset[str], *, where: str
-) -> None:
+def _reject_unknown_keys(payload: dict, allowed: frozenset[str], *, where: str) -> None:
     unknown = sorted(str(key) for key in payload if key not in allowed)
     if not unknown:
         return
@@ -146,7 +160,7 @@ def _parse_strict_bool(value: Any, *, where: str, field_name: str) -> bool:
             return False
     raise ValueError(
         f"{where}: field {field_name!r} must be a JSON boolean or the "
-        f"string \"true\"/\"false\" (case-insensitive); got "
+        f'string "true"/"false" (case-insensitive); got '
         f"{type(value).__name__}"
     )
 
@@ -162,33 +176,28 @@ def _parse_money(
     if isinstance(value, bool) or isinstance(value, (int, float)):
         raise ValueError(
             f"{where}: field {field_name!r} must be decimal TEXT (a JSON "
-            f"string like \"12.5\"), not a JSON number ({type(value).__name__}); "
+            f'string like "12.5"), not a JSON number ({type(value).__name__}); '
             "binary JSON numbers lose exact money semantics"
         )
     if not isinstance(value, (str, Decimal)):
         raise ValueError(
             f"{where}: field {field_name!r} must be decimal TEXT (a JSON "
-            f"string like \"12.5\"); got {type(value).__name__}"
+            f'string like "12.5"); got {type(value).__name__}'
         )
     try:
         amount = Decimal(value.strip()) if isinstance(value, str) else value
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         raise ValueError(
             f"{where}: field {field_name!r} is not valid decimal text: {value!r}"
         ) from None
     if not amount.is_finite():
-        raise ValueError(
-            f"{where}: field {field_name!r} must be a finite decimal, "
-            f"got {value!r}"
-        )
+        raise ValueError(f"{where}: field {field_name!r} must be a finite decimal, got {value!r}")
     if amount <= 0:
-        raise ValueError(
-            f"{where}: field {field_name!r} must be > 0, got {value!r}"
-        )
+        raise ValueError(f"{where}: field {field_name!r} must be > 0, got {value!r}")
     if maximum is not None and amount > maximum:
         raise ValueError(
             f"{where}: field {field_name!r} must be <= {maximum} "
-            f"(it is a fraction of leader notional; \"0.07\" = 7%), got {value!r}"
+            f'(it is a fraction of leader notional; "0.07" = 7%), got {value!r}'
         )
     return amount
 
@@ -205,9 +214,7 @@ def _decimal_from_config(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
-def _validate_eth_address(
-    value: Any, *, where: str, field_name: str, required: bool
-) -> str:
+def _validate_eth_address(value: Any, *, where: str, field_name: str, required: bool) -> str:
     text = str(value or "").strip()
     if not text:
         if required:
@@ -231,8 +238,7 @@ def _parse_follows(
     """Parse one user's follows list with strict per-entry validation."""
     if items is None or not isinstance(items, list):
         raise ValueError(
-            f"{label}: field 'follows' must be a list of follow objects, "
-            f"got {type(items).__name__}"
+            f"{label}: field 'follows' must be a list of follow objects, got {type(items).__name__}"
         )
     follows: dict[str, UserFollowConfig] = {}
     seen_leaders: dict[str, int] = {}
@@ -240,8 +246,7 @@ def _parse_follows(
         where = f"{label}: follows[{index}]"
         if not isinstance(item, dict):
             raise ValueError(
-                f"{where}: each follow must be a JSON object, "
-                f"got {type(item).__name__}"
+                f"{where}: each follow must be a JSON object, got {type(item).__name__}"
             )
         _reject_unknown_keys(item, _FOLLOW_KEYS, where=where)
         leader_id = _validate_eth_address(
@@ -296,30 +301,26 @@ def _parse_follows(
                 if "max_market_exposure_usdc" in item
                 else _decimal_from_config(config.risk.max_market_exposure_usdc)
             ),
+            # An operator-supplied v1 exposure field is explicit policy —
+            # enforce it. The config-default branch stays inert (legacy).
+            market_exposure_cap_explicit="max_market_exposure_usdc" in item,
         )
         follows[leader_id] = cfg
     return follows
 
 
-def _runtime_user_from_payload(
-    payload: Any, config: "AppConfig", *, index: int
-) -> RuntimeUser:
+def _runtime_user_from_payload(payload: Any, config: "AppConfig", *, index: int) -> RuntimeUser:
     if not isinstance(payload, dict):
         raise ValueError(
             f"multi-user config users[{index}]: each user must be a JSON "
             f"object, got {type(payload).__name__}"
         )
     user_id_raw = payload.get("user_id")
-    provisional = (
-        user_id_raw.strip() if isinstance(user_id_raw, str) else f"users[{index}]"
-    )
+    provisional = user_id_raw.strip() if isinstance(user_id_raw, str) else f"users[{index}]"
     label = f"multi-user config users[{index}] ({provisional or f'users[{index}]'})"
     _reject_unknown_keys(payload, _USER_KEYS, where=label)
     if not isinstance(user_id_raw, str) or not user_id_raw.strip():
-        raise ValueError(
-            f"{label}: field 'user_id' is required and must be a non-empty "
-            "string"
-        )
+        raise ValueError(f"{label}: field 'user_id' is required and must be a non-empty string")
     user_id = user_id_raw.strip()
     label = f"multi-user config users[{index}] ({user_id})"
 
@@ -536,12 +537,9 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
                 enabled=True,
                 # Trusted typed-config defaults, converted to exact Decimal
                 # at this internal boundary (see module docstring).
-                allocation_pct=_decimal_from_config(config.sizing.percentage)
-                / Decimal("100"),
+                allocation_pct=_decimal_from_config(config.sizing.percentage) / Decimal("100"),
                 max_trade_usdc=_decimal_from_config(config.sizing.buy_max_amount),
-                max_market_exposure_usdc=_decimal_from_config(
-                    config.risk.max_market_exposure_usdc
-                ),
+                max_market_exposure_usdc=_decimal_from_config(config.risk.max_market_exposure_usdc),
             )
             for leader in leader_wallets
         }
@@ -580,12 +578,10 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     users_payload = payload["users"]
     if not isinstance(users_payload, list):
         raise ValueError(
-            'MULTI_USER_CONFIG_FILE "users" must be a list, '
-            f"got {type(users_payload).__name__}"
+            f'MULTI_USER_CONFIG_FILE "users" must be a list, got {type(users_payload).__name__}'
         )
     users = [
-        _runtime_user_from_payload(p, config, index=index)
-        for index, p in enumerate(users_payload)
+        _runtime_user_from_payload(p, config, index=index) for index, p in enumerate(users_payload)
     ]
     _reject_duplicate_users(users)
     return users

@@ -184,7 +184,7 @@ def _observe_copy_latency(
 def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     return max(1, value)
 
@@ -1096,7 +1096,7 @@ def _position_pct_cap_snapshot_is_fresh(
         if cached_at_raw is None:
             return False
         cached_at = float(cached_at_raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     cached_balance = _to_decimal(
         context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
@@ -1122,7 +1122,7 @@ def _max_non_terminal_failure_attempts(context: TradingContext) -> int:
     raw = _trade_config(context).execution.non_terminal_failure_max_attempts
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = 3
     return max(1, value)
 
@@ -1147,7 +1147,7 @@ def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = N
             suffix = text.replace(prefix, "", 1)
             try:
                 return int(suffix)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return 0
     return 0
 
@@ -1282,6 +1282,44 @@ def _resolve_leader_sell_tokens(
             return Decimal("0")
         return min_tokens if max_sell_tokens >= min_tokens else Decimal("0")
     return target
+
+
+def _explicit_copier_exposure_cap(context: TradingContext) -> Decimal | None:
+    """The copier-level open-exposure cap, but ONLY when explicitly configured.
+
+    Schema v2 ``limits.max_open_exposure_quote`` (and an explicit v1 follow
+    field) mark the cap as operator policy; every legacy/default-derived
+    value stays informational and returns ``None`` here so behavior is
+    exactly as before the cap existed.
+    """
+    if not bool(getattr(context, "market_exposure_cap_explicit", False)):
+        return None
+    try:
+        cap = Decimal(str(getattr(context, "max_market_exposure_usdc", 0)))
+    except Exception:
+        return None
+    return cap if cap > 0 else None
+
+
+def copier_open_exposure_headroom(
+    *,
+    cap: Decimal,
+    open_exposure: Decimal | None,
+    reserved_quote: Decimal,
+) -> Decimal | None:
+    """Headroom for one more copied entry under a copier open-exposure cap.
+
+    The exposure basis is the existing cost-basis accounting
+    (``AccountRiskSnapshot.total_exposure_usdc`` — shares x entry price over
+    open positions; the same valuation the account-level risk policy uses).
+    ``reserved_quote`` adds the account's ACTIVE BUY reservations so
+    in-flight entries count toward the cap before their fills confirm.
+    Unknown open exposure (``None``) is never treated as zero: the result is
+    ``None`` and the caller must fail closed.
+    """
+    if open_exposure is None:
+        return None
+    return cap - open_exposure - reserved_quote
 
 
 async def _fetch_balance_snapshot(
@@ -1473,7 +1511,7 @@ async def _buy_fee_bps_or_none(context: TradingContext, token_id: str) -> int | 
         return None
     try:
         return int(fee_bps)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -1792,7 +1830,7 @@ def _decision_live_price(signal: Any, bundle: Any) -> float:
     del bundle
     try:
         return float(getattr(signal, "price", 0) or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
 
 
@@ -2046,7 +2084,7 @@ async def _execute_trades_impl(
                     tick_size_by_token[str(token_id)] = tick_size
                     market_min_size_by_token[str(token_id)] = min_order_size
                     neg_risk_by_token[str(token_id)] = neg_risk
-                except (AttributeError, TypeError, ValueError):
+                except AttributeError, TypeError, ValueError:
                     market_data_stale_tokens.add(str(token_id))
         for token_id, bundle in bundles_by_token.items():
             try:
@@ -2056,7 +2094,7 @@ async def _execute_trades_impl(
                 if not isinstance(neg_risk, bool):
                     raise ValueError("invalid neg_risk metadata")
                 neg_risk_by_token[token_id] = neg_risk
-            except (TypeError, ValueError, AttributeError):
+            except TypeError, ValueError, AttributeError:
                 # Defensive: a malformed bundle should not crash the loop.
                 market_data_stale_tokens.add(token_id)
                 market_min_size_by_token.pop(token_id, None)
@@ -2609,6 +2647,86 @@ async def _execute_trades_impl(
                         max_notional_for_decision,
                         buy_risk_cap.cap_notional_usdc,
                     )
+
+                # Task 24 fix — schema-v2 copier open-exposure cap
+                # (``limits.max_open_exposure_quote``). Total per-copier open
+                # exposure = CONFIRMED open exposure (the snapshot's existing
+                # cost-basis accounting) + IN-FLIGHT reserved quote (this
+                # account's ACTIVE BUY reservations). Enforced for copied
+                # ENTRY admission only — this whole block sits in the BUY
+                # branch, so protective SELL exits and reductions can never
+                # be blocked by an exposure cap. Independently of (and in
+                # addition to) the account-level risk policy above.
+                copier_exposure_cap = _explicit_copier_exposure_cap(context)
+                if copier_exposure_cap is not None:
+                    reserved_quote = Decimal("0")
+                    cap_evidence_failed = snapshot.total_exposure_usdc is None
+                    _reservations_repo = context.extra.get("reservations_repo")
+                    if _reservations_repo is not None:
+                        try:
+                            reserved_quote = await _reservations_repo.sum_active_quote_for_user(
+                                context.user_id
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "copier_exposure_cap_reserved_lookup_failed | "
+                                "user=%s error_type=%s",
+                                context.user_id,
+                                type(exc).__name__,
+                            )
+                            cap_evidence_failed = True
+                    headroom = copier_open_exposure_headroom(
+                        cap=copier_exposure_cap,
+                        open_exposure=snapshot.total_exposure_usdc,
+                        reserved_quote=reserved_quote,
+                    )
+                    if cap_evidence_failed or headroom is None:
+                        reason = "copier_open_exposure_unavailable"
+                        detail = (
+                            "open exposure or reserved quote could not be "
+                            "established — failing closed under the configured cap"
+                        )
+                    elif headroom <= 0:
+                        reason = "copier_open_exposure_cap"
+                        detail = (
+                            f"open {snapshot.total_exposure_usdc} + reserved "
+                            f"{reserved_quote} leaves no room under cap "
+                            f"{copier_exposure_cap}"
+                        )
+                    else:
+                        reason = None
+                    if reason is not None:
+                        print_skip_reason("Copier open-exposure cap reached", detail)
+                        log_trade_skip(
+                            logger,
+                            side=signal.side,
+                            condition_id=signal.condition_id,
+                            asset=signal.token_id,
+                            size=float(signal.size) if signal.size else None,
+                            price=live_price,
+                            usdc_value=float(signal.usdc_size),
+                            skip_code=reason,
+                            reason=detail,
+                            event_slug=signal.event_slug,
+                            meta={"user_id": context.user_id, "leader_id": leader_id},
+                        )
+                        metrics.inc(
+                            "trades_skipped_total",
+                            labels={**labels, "reason": reason},
+                        )
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=trade_key,
+                            user_id=context.user_id,
+                            leader_id=leader_id,
+                            tx_hash=signal.tx_hash,
+                            side=signal.side,
+                            asset=signal.token_id,
+                            condition_id=signal.condition_id,
+                            status=f"skipped_{reason}",
+                        )
+                        results.append(TradePipelineResult(trade_key, "skipped", reason, None))
+                        continue
+                    max_notional_for_decision = min(max_notional_for_decision, headroom)
 
                 policy_enabled = _account_cap_policy_enabled(context)
 
