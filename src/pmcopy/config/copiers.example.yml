@@ -3,8 +3,9 @@
 # limits, and explicit follow whitelists in one versioned file.
 # Options: enable by pointing app.copiers_config_file at a copy of this file
 # (e.g. PMCOPY__APP__COPIERS_CONFIG_FILE in secrets.env); ids are stable
-# persisted account identities; sizing.mode is fixed (quote_amount per order)
-# or proportional (leader_share fraction of leader notional).
+# persisted account identities; sizing.mode is fixed (a 1:1 mirror of the
+# leader's notional capped at quote_amount per order) or proportional
+# (leader_share fraction of leader notional).
 # Trade-offs: one roster file is authoritative — legacy PMCOPY__WALLET__*
 # single-account values are ignored while it is set and combining it with
 # app.multi_user_config_file is an error; every copier must declare the same

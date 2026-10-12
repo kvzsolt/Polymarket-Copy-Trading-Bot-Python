@@ -64,10 +64,14 @@ Rules on top of the Task 14 contracts:
   identity: renames create a new account, so ids must be stable.
   ``default`` is reserved for the legacy single-account fallback (Deposit
   Wallet binding re-keys it at runtime; a configured copier must never use
-  it). Duplicate copier ids, duplicate resolved wallet identities
-  (case-insensitive funder compare across DIFFERENT env names, non-empty
-  private-key compare), and duplicate follow leaders per copier are hard
-  errors via the shared Task 14 checks.
+  it). Duplicate copier ids, duplicate wallet references, duplicate
+  resolved wallet identities (case-insensitive funder compare across
+  DIFFERENT env names, non-empty private-key compare), and duplicate
+  follow leaders per copier are hard errors. Duplicate rejection is
+  UNQUALIFIED (addon §3): ids, funder/private-key env references, and
+  resolvable public funder addresses are compared across EVERY declared
+  copier — a disabled twin of an enabled id or wallet is rejected exactly
+  like an enabled one.
 * **Disabled copiers** — ``enabled: false`` copiers are fully validated but
   not constructed (no lease, no runtime, no routing) and their secret
   references are not required to resolve. An operator who still needs
@@ -79,6 +83,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -128,6 +133,97 @@ _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _SIZING_MODES = frozenset({"fixed", "proportional"})
 
 
+@dataclass(frozen=True)
+class _CopierIdentity:
+    """Identity facets of ONE declared copier — enabled or disabled.
+
+    Used for the ALL-entries duplicate pass (addon §3 rejects duplicates
+    unqualified): ids, funder references, and private-key references are
+    compared across every declared copier BEFORE the enabled filter, so a
+    disabled twin of an enabled id/wallet cannot slip through. Env-var
+    NAMES are compared directly (one variable holds one value, so a shared
+    name IS a shared identity); resolved funder addresses are compared
+    when resolvable (the funder is public on-chain identity, never a
+    secret). Private-key VALUES are compared only among enabled copiers
+    via the shared Task 14 check — a disabled copier's key reference is
+    never resolved.
+    """
+
+    copier_id: str
+    funder_env: str
+    funder_address: str
+    private_key_env: str
+
+
+def _reject_duplicate_copier_identities(identities: list[_CopierIdentity]) -> None:
+    """Reject duplicate ids/wallet references across ALL declared copiers."""
+    seen_ids: dict[str, int] = {}
+    for position, identity in enumerate(identities):
+        previous = seen_ids.get(identity.copier_id)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate copier id {identity.copier_id!r} in the copiers "
+                f"roster (entries {previous} and {position}); copier ids must "
+                "be unique across every declared copier, enabled or disabled"
+            )
+        seen_ids[identity.copier_id] = position
+
+    # Wallet identity by shared funder reference: one env var holds one
+    # address, so a shared funder_address_env name is a shared wallet even
+    # when the variable is unset (e.g. two disabled entries).
+    seen_funder_envs: dict[str, int] = {}
+    for position, identity in enumerate(identities):
+        if not identity.funder_env:
+            continue
+        previous = seen_funder_envs.get(identity.funder_env)
+        if previous is not None:
+            raise ValueError(
+                f"copiers roster entries {previous} "
+                f"({identities[previous].copier_id!r}) and {position} "
+                f"({identity.copier_id!r}) both reference funder_address_env "
+                f"{identity.funder_env!r}; one environment variable holds one "
+                "address, so one wallet may back exactly one copier entry"
+            )
+        seen_funder_envs[identity.funder_env] = position
+
+    # Wallet identity by resolved address (public identity): catches
+    # DIFFERENT env names resolving to the same address, including a
+    # disabled entry whose variable happens to be set.
+    seen_funder_addresses: dict[str, int] = {}
+    for position, identity in enumerate(identities):
+        if not identity.funder_address:
+            continue
+        key = identity.funder_address.lower()
+        previous = seen_funder_addresses.get(key)
+        if previous is not None:
+            raise ValueError(
+                f"copiers roster entries {previous} "
+                f"({identities[previous].copier_id!r}) and {position} "
+                f"({identity.copier_id!r}) resolve to the same funder address "
+                f"{identity.funder_address}; one wallet may back exactly one "
+                "copier entry"
+            )
+        seen_funder_addresses[key] = position
+
+    # Signing identity by shared private-key reference: one env var holds
+    # one key. Values are never resolved or compared here — only names.
+    seen_key_envs: dict[str, int] = {}
+    for position, identity in enumerate(identities):
+        if not identity.private_key_env:
+            continue
+        previous = seen_key_envs.get(identity.private_key_env)
+        if previous is not None:
+            raise ValueError(
+                f"copiers roster entries {previous} "
+                f"({identities[previous].copier_id!r}) and {position} "
+                f"({identity.copier_id!r}) both reference private_key_env "
+                f"{identity.private_key_env!r}; one environment variable "
+                "holds one key, so one wallet may back exactly one copier "
+                "entry"
+            )
+        seen_key_envs[identity.private_key_env] = position
+
+
 def select_runtime_copiers(
     runtime_users: list[RuntimeUser], copier_id: str | None
 ) -> list[RuntimeUser]:
@@ -162,14 +258,21 @@ def _require_str(container: dict, key: str, *, where: str) -> str:
 
 
 def _validate_env_reference(value: Any, *, where: str, field_name: str) -> str:
-    """Validate an env-var NAME (a reference — the value never passes here)."""
+    """Validate an env-var NAME (a reference — the value never passes here).
+
+    Rejections never echo the supplied content: a raw secret pasted into a
+    ``*_env`` field is exactly the mistake this guard exists to catch, and
+    the error text flows to startup output, doctor details, and
+    ``config validate`` stdout. Only a length hint is given.
+    """
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{where}: field {field_name!r} must be an environment variable name")
     name = value.strip()
     if not _ENV_NAME_RE.match(name):
         raise ValueError(
             f"{where}: field {field_name!r} must be an environment variable "
-            f"NAME ([A-Za-z_][A-Za-z0-9_]*), not a value; got {name!r}"
+            f"NAME ([A-Za-z_][A-Za-z0-9_]*), not a value (supplied content: "
+            f"{len(name)} characters — never echoed)"
         )
     return name
 
@@ -345,16 +448,25 @@ def _copier_runtime_user(
     index: int,
     trading_mode: str,
     environ: dict[str, str],
-) -> RuntimeUser | None:
-    """Parse one copier entry; ``None`` for a validated-but-disabled copier."""
+) -> tuple[RuntimeUser | None, "_CopierIdentity"]:
+    """Parse one copier entry.
+
+    Returns the constructed runtime user (``None`` for a
+    validated-but-disabled copier) plus the entry's identity record, which
+    the loader deduplicates across ALL declared copiers — enabled or not.
+    """
     if not isinstance(payload, dict):
         raise ValueError(
             f"copiers[{index}]: each copier must be a mapping, "
             f"got {type(payload).__name__}"
         )
     raw_id = payload.get("id")
-    provisional = raw_id.strip() if isinstance(raw_id, str) else f"copiers[{index}]"
-    label = f"copiers[{index}] ({provisional})"
+    if isinstance(raw_id, str) and raw_id.strip():
+        label = f"copiers[{index}] ({raw_id.strip()})"
+    else:
+        # No usable id yet — the positional label alone (a parenthetical
+        # would just repeat it).
+        label = f"copiers[{index}]"
     _reject_unknown_keys(payload, _COPIER_KEYS, where=label)
 
     copier_id = _require_str(payload, "id", where=label)
@@ -439,11 +551,28 @@ def _copier_runtime_user(
     )
 
     # A disabled copier is fully validated above but NOT constructed: no
-    # lease, no runtime, no routing — and its secret references are not
+    # lease, no runtime, no routing — and its SECRET references are not
     # demanded. An operator who still needs protective exits/reconciliation
     # for the wallet keeps it enabled with an empty follows list instead.
+    # Its PUBLIC funder identity is still resolved non-demandingly (when the
+    # variable is set) so cross-copier wallet deduplication covers it.
     if not enabled:
-        return None
+        parked_funder = ""
+        if funder_env:
+            parked_funder = (environ.get(funder_env) or "").strip()
+            if parked_funder:
+                parked_funder = _validate_eth_address(
+                    parked_funder,
+                    where=label,
+                    field_name=f"funder_address_env value (from {funder_env!r})",
+                    required=True,
+                )
+        return None, _CopierIdentity(
+            copier_id=copier_id,
+            funder_env=funder_env,
+            funder_address=parked_funder,
+            private_key_env=key_env,
+        )
 
     funder_address = ""
     if funder_env:
@@ -498,6 +627,11 @@ def _copier_runtime_user(
         # A schema v2 follows list is explicit operator policy — even when
         # empty. Whitelist semantics apply; no legacy union.
         follows_explicit=True,
+    ), _CopierIdentity(
+        copier_id=copier_id,
+        funder_env=funder_env,
+        funder_address=funder_address,
+        private_key_env=key_env,
     )
 
 
@@ -561,22 +695,25 @@ def load_runtime_users_from_copiers(
     trading_mode = str(config.execution.trading_mode or "paper").strip().lower()
     environ = dict(os.environ)
 
-    users = [
-        user
-        for user in (
-            _copier_runtime_user(
-                entry,
-                config=config,
-                index=index,
-                trading_mode=trading_mode,
-                environ=environ,
-            )
-            for index, entry in enumerate(copiers_payload)
+    parsed = [
+        _copier_runtime_user(
+            entry,
+            config=config,
+            index=index,
+            trading_mode=trading_mode,
+            environ=environ,
         )
-        if user is not None
+        for index, entry in enumerate(copiers_payload)
     ]
-    # Shared Task 14 identity checks: duplicate ids, duplicate resolved
-    # funders (case-insensitive), duplicate non-empty private keys.
+    # addon §3 — duplicate rejection is unqualified: ids, wallet references,
+    # and resolved public identities are compared across EVERY declared
+    # copier (enabled or disabled) before the enabled filter drops the
+    # non-started entries.
+    _reject_duplicate_copier_identities([identity for _, identity in parsed])
+    users = [user for user, _ in parsed if user is not None]
+    # Shared Task 14 identity checks on the constructed users: duplicate
+    # ids, duplicate resolved funders (case-insensitive), duplicate
+    # non-empty private-key VALUES (resolved only for enabled copiers).
     _reject_duplicate_users(users)
     return users
 

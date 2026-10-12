@@ -727,6 +727,97 @@ def test_duplicate_copier_ids_rejected(tmp_path, monkeypatch):
         _load(_paper_yaml(one, one), tmp_path, monkeypatch)
 
 
+def _copier_block(
+    copier_id: str,
+    *,
+    enabled: str = "true",
+    funder_env: str = "PRIMARY_FUNDER_ADDRESS",
+    key_env: str = "",
+) -> str:
+    key_line = f"      private_key_env: {key_env}\n" if key_env else ""
+    return f"""  - id: {copier_id}
+    enabled: {enabled}
+    mode: paper
+    wallet:
+      funder_address_env: {funder_env}
+{key_line}    limits:
+      max_order_quote: "5.00"
+      max_open_exposure_quote: "50.00"
+    follows: []
+"""
+
+
+def test_duplicate_id_spanning_enabled_and_disabled_rejected(tmp_path, monkeypatch):
+    # addon §3: duplicate ids are rejected unqualified — a DISABLED twin of
+    # an enabled copier id is the same config mistake.
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    text = _paper_yaml(
+        _copier_block("primary"),
+        _copier_block("primary", enabled="false"),
+    )
+    with pytest.raises(ValueError, match="duplicate.*primary"):
+        _load(text, tmp_path, monkeypatch, set_env=False)
+
+
+def test_duplicate_id_disabled_only_rejected(tmp_path, monkeypatch):
+    text = _paper_yaml(
+        _copier_block("primary", enabled="false"),
+        _copier_block("primary", enabled="false"),
+    )
+    with pytest.raises(ValueError, match="duplicate.*primary"):
+        _load(text, tmp_path, monkeypatch)
+
+
+def test_duplicate_wallet_env_name_spanning_enabled_and_disabled_rejected(
+    tmp_path, monkeypatch,
+):
+    # One env var holds one address, so two copiers referencing the SAME
+    # funder variable share a wallet identity — enabled or not.
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    text = _paper_yaml(
+        _copier_block("primary", funder_env="PRIMARY_FUNDER_ADDRESS"),
+        _copier_block("secondary", enabled="false", funder_env="PRIMARY_FUNDER_ADDRESS"),
+    )
+    with pytest.raises(ValueError, match="PRIMARY_FUNDER_ADDRESS"):
+        _load(text, tmp_path, monkeypatch, set_env=False)
+
+
+def test_duplicate_resolved_wallet_spanning_enabled_and_disabled_rejected(
+    tmp_path, monkeypatch,
+):
+    # Different env NAMES resolving to the same address: the disabled
+    # entry's public funder identity is resolved non-demandingly (the
+    # variable is set), so the collision is caught without demanding any
+    # of the disabled copier's secrets.
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    monkeypatch.setenv("PARKED_FUNDER_ADDRESS", FUNDER_A)
+    text = _paper_yaml(
+        _copier_block("primary", funder_env="PRIMARY_FUNDER_ADDRESS"),
+        _copier_block("parked", enabled="false", funder_env="PARKED_FUNDER_ADDRESS"),
+    )
+    with pytest.raises(ValueError, match="funder"):
+        _load(text, tmp_path, monkeypatch, set_env=False)
+
+
+def test_duplicate_private_key_env_name_spanning_enabled_and_disabled_rejected(
+    tmp_path, monkeypatch,
+):
+    # One env var holds one key: sharing the private_key reference is
+    # sharing the wallet, even when one copier is disabled.
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
+    monkeypatch.setenv("PARKED_FUNDER_ADDRESS", FUNDER_B)
+    monkeypatch.setenv("SHARED_PRIVATE_KEY", KEY_A)
+    text = _paper_yaml(
+        _copier_block("primary", key_env="SHARED_PRIVATE_KEY"),
+        _copier_block(
+            "parked", enabled="false", funder_env="PARKED_FUNDER_ADDRESS",
+            key_env="SHARED_PRIVATE_KEY",
+        ),
+    )
+    with pytest.raises(ValueError, match="private_key"):
+        _load(text, tmp_path, monkeypatch, set_env=False)
+
+
 def test_duplicate_resolved_funder_rejected_across_env_names(tmp_path, monkeypatch):
     # Two DIFFERENT env var names resolving to the SAME address are one
     # canonical wallet identity — rejected.
@@ -1025,6 +1116,33 @@ def test_private_key_env_value_that_is_actually_a_key_is_rejected(tmp_path, monk
     )
     with pytest.raises(ValueError, match="private_key_env"):
         _load(text, tmp_path, monkeypatch)
+
+
+def test_env_reference_error_never_echoes_supplied_value(tmp_path, monkeypatch):
+    # T14 invariant: no error message ever echoes a supplied secret value.
+    # A raw key pasted into private_key_env (the exact mistake the env-name
+    # guard exists for) must be rejected WITHOUT the canary appearing in
+    # the error text (which flows to startup print_error, doctor detail,
+    # and config validate stdout).
+    import uuid
+
+    canary = "0x" + (uuid.uuid4().hex + uuid.uuid4().hex)[:64]
+    text = _paper_yaml(
+        f"""  - id: primary
+    mode: paper
+    wallet:
+      funder_address_env: PRIMARY_FUNDER_ADDRESS
+      private_key_env: "{canary}"
+    limits:
+      max_order_quote: "5.00"
+      max_open_exposure_quote: "50.00"
+    follows: []
+"""
+    )
+    with pytest.raises(ValueError, match="private_key_env") as excinfo:
+        _load(text, tmp_path, monkeypatch)
+    assert canary not in str(excinfo.value)
+    assert canary[:16] not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
