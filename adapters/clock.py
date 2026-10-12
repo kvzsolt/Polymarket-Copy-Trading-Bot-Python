@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from time import time_ns, monotonic_ns
+from time import time_ns, monotonic, monotonic_ns
+from typing import Protocol
 from uuid import uuid4
 from os import getpid
 from domain.source_time import TransportReceipt
@@ -18,6 +19,24 @@ class SystemClock:
         """Return current UTC time."""
 
         return datetime.now(UTC)
+
+
+class MonotonicClock(Protocol):
+    """Monotonic clock seam for deterministic throttling and uptime."""
+
+    def monotonic(self) -> float:
+        """Return monotonic seconds."""
+
+        ...
+
+
+class SystemMonotonicClock:
+    """Production monotonic clock."""
+
+    def monotonic(self) -> float:
+        """Return process-local monotonic seconds."""
+
+        return monotonic()
 
 
 class SystemReceiptClock:
@@ -37,4 +56,4 @@ class SystemReceiptClock:
         return TransportReceipt(wall_ns // 1_000_000, monotonic_ns(), self._boot_id, wall_ns)
 
 
-__all__ = ["SystemClock", "SystemReceiptClock"]
+__all__ = ["MonotonicClock", "SystemClock", "SystemMonotonicClock", "SystemReceiptClock"]

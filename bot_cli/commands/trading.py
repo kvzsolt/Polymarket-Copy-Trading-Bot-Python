@@ -6,10 +6,12 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from dataclasses import asdict
 from datetime import datetime
 
 from config.app_config import load_config
+from services.trading_control import FULL_STOP_REASON
 
 
 def register_trading_command(subparsers: argparse._SubParsersAction) -> None:
@@ -24,6 +26,15 @@ def register_trading_command(subparsers: argparse._SubParsersAction) -> None:
     pause.add_argument("--reason", required=True)
     pause.add_argument("--operator", default=os.getenv("USER", "cli"))
 
+    stop = actions.add_parser(
+        "full-stop",
+        help=(
+            "Durable full stop: block every live submission and cancel all "
+            "resting venue orders (live mode only)"
+        ),
+    )
+    stop.add_argument("--operator", default=os.getenv("USER", "cli"))
+
     resume = actions.add_parser("resume", help="Allow live venue submissions")
     resume.add_argument("--confirm", required=True, help="Must be exactly LIVE")
     resume.add_argument("--reason", required=True)
@@ -36,6 +47,48 @@ def _json_state(state) -> str:
         if isinstance(value, datetime):
             payload[key] = value.isoformat()
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+async def _apply_full_stop_to_live_venues(config) -> None:
+    """Cancel every resting order through one gateway per follower account.
+
+    The durable ``trading_control`` row is the submission authority and is
+    written before this runs, so a failed cancellation never weakens the stop;
+    it only raises so the operator sees that resting orders remain. Paper mode
+    never builds authenticated venue clients, so the apply is live-only, which
+    matches how the remote runtime wired this safety path.
+    """
+
+    from integrations.polymarket.venue_runtime import build_polymarket_runtime
+    from services.multiUserConfig import load_runtime_users
+    from services.trading_control import (
+        NullRuntimeTelemetry,
+        TradingControlRuntimeSignal,
+    )
+
+    mode = str(getattr(config.execution, "trading_mode", "paper") or "paper").strip().lower()
+    if mode != "live":
+        print(f"full-stop venue cancel apply skipped (trading_mode={mode})")
+        return
+
+    runtimes = []
+    try:
+        for runtime_user in load_runtime_users([], config):
+            runtimes.append(await build_polymarket_runtime(
+                runtime_user=runtime_user,
+                config=config,
+            ))
+        signal = TradingControlRuntimeSignal(
+            gateways=tuple(runtime.gateway for runtime in runtimes),
+            telemetry=NullRuntimeTelemetry(),
+        )
+        await signal.apply(entries_paused=True, full_stop=True)
+    finally:
+        for runtime in runtimes:
+            try:
+                await runtime.close()
+            except Exception:
+                pass
 
 
 async def _run_trading_async(args: argparse.Namespace) -> int:
@@ -63,6 +116,26 @@ async def _run_trading_async(args: argparse.Namespace) -> int:
                 reason=args.reason,
                 updated_by=args.operator,
             )
+        elif args.trading_action == "full-stop":
+            # Persist first: the durable row stays authoritative even when a
+            # venue cancellation fails. The stored reason is the fixed
+            # machine-readable full-stop signal enforced before every POST.
+            state = await repo.set_enabled(
+                False,
+                reason=FULL_STOP_REASON,
+                updated_by=args.operator,
+            )
+            print(_json_state(state))
+            try:
+                await _apply_full_stop_to_live_venues(config)
+            except Exception as exc:
+                print(
+                    "full stop is durable but resting orders could not all be "
+                    f"canceled: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
         elif args.trading_action == "resume":
             if args.confirm != "LIVE":
                 print("Refusing resume: --confirm must be exactly LIVE")

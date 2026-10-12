@@ -76,6 +76,7 @@ from services.control_plane.queries_trading import (
     RiskQueryService,
 )
 from services.control_plane.runtime import (
+    EntryControlRuntimeSignal,
     OpenOrderControlGateway,
     RuntimeTelemetry,
     TradingControlRuntimeSignal,
@@ -386,9 +387,11 @@ class ControlPlaneRuntimeFactory:
         if config.execution.trading_mode == "live":
             runtime_commands = RuntimeCommandService(
                 entry_control=entry_control_repository,
-                runtime_signal=TradingControlRuntimeSignal(
-                    gateways=runtime_gateways,
-                    telemetry=telemetry_service,
+                runtime_signal=EntryControlRuntimeSignal(
+                    TradingControlRuntimeSignal(
+                        gateways=runtime_gateways,
+                        telemetry=telemetry_service,
+                    )
                 ),
                 audit_sink=audit_repository,
                 clock=self._clock,

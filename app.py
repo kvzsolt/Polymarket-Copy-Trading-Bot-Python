@@ -39,7 +39,7 @@ from config.app_config import AppConfig, AppConfigSemanticValidator, EnvValidati
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
 from domain.grouped_detection import TraderDetectionState
-from integrations.control_plane import SystemMonotonicClock
+from adapters.clock import SystemMonotonicClock
 from integrations.polymarket.venue_runtime import build_polymarket_runtime
 from orchestrators.control_plane_bootstrap import (
     AiohttpControlPlaneServerFactory,
@@ -50,7 +50,6 @@ from orchestrators.control_plane_bootstrap import (
 from orchestrators.control_plane_reads import (
     ControlPlaneRuntimeReads,
     FollowerScopedPositions,
-    PendingConfirmationStatsProbe,
 )
 from orchestrators.control_plane_runtime import (
     InactiveWorkerStateReader,
@@ -97,9 +96,9 @@ from orchestrators.telemetry_bootstrap import TelemetryRuntime
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.healthServer import ReadinessTracker, start_health_server
 from services.metrics import MetricsRegistry, metrics
-from services.control_plane.runtime import OpenOrderControlGateway
+from services.trading_control import OpenOrderControlGateway
 from services.control_plane.commands import DiscoveryCommandPort
-from services.control_plane.contracts_reads import AccountView, PendingConfirmationStatsView
+from services.control_plane.contracts_reads import AccountView
 from services.control_plane.queries import CachedPortfolioQueryPort
 from services.control_plane.tasks import TaskActivationGuard
 from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
@@ -1331,7 +1330,6 @@ def _build_control_plane_reads(
     configured_leaders: tuple[str, ...],
     monitored_leaders: Callable[[], Iterable[str]],
     detection_counters: Any,
-    pending_stats: Callable[[], PendingConfirmationStatsView | None],
     portfolio_cache: CachedPortfolioQueryPort | None,
     native_states: Callable[[], tuple[TraderDetectionState, ...] | None] | None = None,
 ) -> ControlPlaneRuntimeReads:
@@ -1350,7 +1348,6 @@ def _build_control_plane_reads(
         configured_leaders: Operator-configured leader wallets.
         monitored_leaders: Late-bound reader of monitored leader wallets.
         detection_counters: Detection telemetry emitter counter source.
-        pending_stats: Late-bound provisional-copy tracker probe.
         portfolio_cache: Optional local-only follower portfolio cache.
 
     Returns:
@@ -1401,7 +1398,6 @@ def _build_control_plane_reads(
     return ControlPlaneRuntimeReads(
         accounts=_accounts,
         detection_counters=detection_counters,
-        pending_stats=pending_stats,
         native_states=native_states,
         pnl_trackers=pnl_trackers,
         positions=FollowerScopedPositions(positions),
@@ -2349,7 +2345,6 @@ async def _run_application(
         backend_version = metadata.version("polymarket-copy-trading-bot")
     except metadata.PackageNotFoundError:
         backend_version = "0.1.0"
-    pending_confirmation_stats = PendingConfirmationStatsProbe()
     onchain_runtime = None
     control_plane_reads = _build_control_plane_reads(
         readiness=application.readiness,
@@ -2363,7 +2358,6 @@ async def _run_application(
         ),
         native_states=lambda: onchain_runtime.states() if onchain_runtime is not None else None,
         detection_counters=telemetry_emitters.detection,
-        pending_stats=pending_confirmation_stats,
         portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
     )
     await _start_control_plane_runtime(

@@ -7,7 +7,6 @@ import logging
 import math
 import re
 import secrets
-import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -441,22 +440,10 @@ class ControlPlanePermissionPolicy:
             )
 
 
-class MonotonicClock(Protocol):
-    """Monotonic clock seam for deterministic throttling."""
-
-    def monotonic(self) -> float:
-        """Return monotonic seconds."""
-
-        ...
-
-
-class SystemMonotonicClock:
-    """Production monotonic clock."""
-
-    def monotonic(self) -> float:
-        """Return process-local monotonic seconds."""
-
-        return time.monotonic()
+# The monotonic clock seam moved to the trading-core adapter module. These
+# aliases keep the historical transport import path working until the control
+# plane transport is deleted; remove them with that deletion.
+from adapters.clock import MonotonicClock, SystemMonotonicClock  # noqa: F401
 
 
 @dataclass(frozen=True, slots=True)
