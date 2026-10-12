@@ -13,6 +13,8 @@ eggs/
 .env
 secrets.env
 secrets.env.bak-*
+db.env
+db.env.bak-*
 secrets.toml
 *.env.bak
 *.env.bak.*

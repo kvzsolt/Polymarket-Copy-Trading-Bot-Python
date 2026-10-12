@@ -4,6 +4,7 @@ The bot uses a strictly typed configuration system (`config.app_config.AppConfig
 
 ## File Structure
 - `secrets.env`: Holds sensitive keys (ignored by git).
+- `db.env`: Holds only `POSTGRES_PASSWORD` for the Compose PostgreSQL service (ignored by git).
 - `config/runtime.local.env`: Holds your operational overrides (leaders, sizing, limits).
 
 ## Core Variables

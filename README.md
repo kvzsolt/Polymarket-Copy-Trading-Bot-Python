@@ -111,7 +111,12 @@ Copy the configuration templates to set up your environment:
 cp config/runtime.local.example config/runtime.local.env
 cp secrets.env.example secrets.env
 chmod 600 secrets.env
+cp db.env.example db.env
+chmod 600 db.env
 ```
+`secrets.env` holds the bot's credentials (wallet key, database DSN, discovery
+token); `db.env` holds only `POSTGRES_PASSWORD` for the Compose PostgreSQL
+service, which never receives `secrets.env`.
 Open `secrets.env` and add your sensitive credentials:
 ```env
 PRIVATE_KEY=0xYourHexPrivateKey

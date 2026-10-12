@@ -187,11 +187,13 @@ jobs:
     needs: [unit]
     steps:
       - uses: actions/checkout@v4
-      - name: docker compose config (secrets.env only)
+      - name: docker compose config (secrets.env + db.env)
         run: |
           install -m 600 secrets.env.example secrets.env
-          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" secrets.env
+          install -m 600 db.env.example db.env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" db.env
           test "$(stat -c '%a' secrets.env)" = "600"
+          test "$(stat -c '%a' db.env)" = "600"
           env -u POSTGRES_PASSWORD docker compose --env-file secrets.env config >/dev/null
       - name: docker build
         run: docker build -t polymarket-copy-trader:ci .

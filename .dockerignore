@@ -5,6 +5,9 @@
 secrets.env
 secrets.env.*
 !secrets.env.example
+db.env
+db.env.*
+!db.env.example
 .env
 .env.*
 config/runtime.local.yml

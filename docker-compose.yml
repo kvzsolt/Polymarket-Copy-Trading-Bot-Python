@@ -5,10 +5,14 @@
 #   docker compose up --build -d   # bot + PG from the current checkout
 #   docker compose run --rm bot doctor
 #
-# Set POSTGRES_PASSWORD and PMCOPY__DATABASE__DSN in mode-0600 secrets.env (see
-# secrets.env.example). Both services pick them up via env_file, so no
-# --env-file flag is needed. There is deliberately no production default
-# password; postgres itself refuses to start if POSTGRES_PASSWORD is unset.
+# Secrets are split across two mode-0600 files, each read by exactly one
+# service via env_file, so no --env-file flag is needed: db.env carries only
+# POSTGRES_PASSWORD for the postgres service (see db.env.example), and
+# secrets.env carries the bot's wallet key, DSN, discovery token, and relayer
+# credentials (see secrets.env.example) — postgres never receives the bot's
+# secret file, and the bot never receives the DB-only one. There is
+# deliberately no production default password; postgres itself refuses to
+# start if POSTGRES_PASSWORD is unset.
 #
 # The current service YAML, environment overlays, and trader files are mounted
 # read-only. No deprecated runtime.local.yml setup file is required.
@@ -18,8 +22,9 @@ services:
     image: postgres:16-alpine
     container_name: polymarket-bot-postgres
     restart: unless-stopped
+    # DB-only credential file: POSTGRES_PASSWORD and nothing else.
     env_file:
-      - secrets.env
+      - db.env
     environment:
       POSTGRES_USER: bot
       POSTGRES_DB: polymarket_copytrading_python

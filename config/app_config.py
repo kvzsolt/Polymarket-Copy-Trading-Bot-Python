@@ -2351,9 +2351,11 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
     for raw_key, value in values.items():
         key = str(raw_key)
         if key in ("POSTGRES_PASSWORD", "PMCOPY_ENVIRONMENT"):
-            # Compose consumes POSTGRES_PASSWORD directly; PMCOPY_ENVIRONMENT
-            # is the documented environment selector, consumed before this
-            # layer by _resolve_environment.
+            # POSTGRES_PASSWORD is tolerated so a legacy secrets.env that still
+            # carries it keeps loading; compose reads it from db.env now
+            # (postgres-only file). PMCOPY_ENVIRONMENT is the documented
+            # environment selector, consumed before this layer by
+            # _resolve_environment.
             continue
         if not key.startswith("PMCOPY__"):
             raise EnvValidationError(

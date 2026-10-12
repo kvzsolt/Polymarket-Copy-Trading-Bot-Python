@@ -12,10 +12,16 @@ Use Docker Engine with the Compose plugin. For a new installation only:
 ```bash
 cp secrets.env.example secrets.env
 chmod 600 secrets.env
+cp db.env.example db.env
+chmod 600 db.env
 ```
 
-Keep an existing `secrets.env` when upgrading. Set `POSTGRES_PASSWORD` and
-`PMCOPY__DATABASE__DSN` privately. Inside Compose, the database hostname is
+Keep existing `secrets.env` and `db.env` files when upgrading. The two secret
+files are split per service: `db.env` holds only `POSTGRES_PASSWORD` and is
+read only by the compose postgres service; `secrets.env` holds the bot's
+credentials (wallet key, DSN, discovery token, relayer keys) and is read only
+by the bot service. Set `POSTGRES_PASSWORD` privately in `db.env` and
+`PMCOPY__DATABASE__DSN` privately in `secrets.env`. Inside Compose, the database hostname is
 `postgres`, for example
 `postgresql://bot:<URL-encoded-password>@postgres:5432/polymarket_copytrading_python`.
 The password must match the existing database if its volume is already initialized;

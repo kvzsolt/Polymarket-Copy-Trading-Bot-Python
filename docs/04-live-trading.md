@@ -47,7 +47,9 @@ it automatically.
 
 ## Docker
 
-Set a non-default `POSTGRES_PASSWORD`, keep `secrets.env` mode `0600`, and run:
+Set a non-default `POSTGRES_PASSWORD` in `db.env` (see `db.env.example`; the
+postgres service reads nothing else), keep `secrets.env` and `db.env` mode
+`0600`, and run:
 
 ```bash
 docker compose up -d
