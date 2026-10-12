@@ -275,6 +275,10 @@ async def test_active_sell_reserved_size_sums_only_active_sell_scope():
 
 @pytest.mark.asyncio
 async def test_active_sell_reserved_size_releases_expired_orphan_before_sum():
+    # A14: the orphan release needs POSITIVE proof — the orders lookup must
+    # succeed and find no persisted submission for the reservation. An
+    # unresolved no-ID submission keeps its shares reserved (covered in
+    # tests/test_reservation_expiry_no_id_release.py).
     expired = datetime.fromtimestamp(time.time() - 10, tz=timezone.utc)
     repo = MagicMock()
     repo.list_active_for_scope = AsyncMock(
@@ -290,6 +294,8 @@ async def test_active_sell_reserved_size_releases_expired_orphan_before_sum():
             )
         ]
     )
+    orders_repo = MagicMock()
+    orders_repo.get_by_reservation_id = AsyncMock(return_value=None)
     reservation_service = SimpleNamespace(
         reservations_repo=repo,
         release_terminal=AsyncMock(),
@@ -299,6 +305,7 @@ async def test_active_sell_reserved_size_releases_expired_orphan_before_sum():
             reservations_repo=repo,
             reservation_service=reservation_service,
         ),
+        orders_repo=orders_repo,
         extra={},
     )
 
@@ -310,6 +317,7 @@ async def test_active_sell_reserved_size_releases_expired_orphan_before_sum():
     )
 
     assert reserved == Decimal("0")
+    orders_repo.get_by_reservation_id.assert_awaited_once_with("res-orphan")
     reservation_service.release_terminal.assert_awaited_once_with(
         "res-orphan",
         reason="expired_orphan_before_risk_exit",

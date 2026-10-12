@@ -18,6 +18,7 @@ from orchestrators.runtime_bootstrap import (
     default_follow,
     startup_reconcile_unconfirmed,
 )
+from services.execution.reservation_expiry import ReservationExpiryDecision
 from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
 
 
@@ -401,7 +402,7 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
         runtime_bootstrap._bind_reservation_runtime(ctx, coord)
         released = await reservation_service.reconciler_callback("res-1")
 
-    assert released is True
+    assert released is ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE
     assert reservation_service.released == [("res-1", "confirmed")]
     assert fills_repo.fills
     assert positions_repo.applied[0]["fill_size"] == Decimal("2")
