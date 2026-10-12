@@ -29,9 +29,9 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
     runtime_ccxt = [
         dependency for dependency in runtime_requirements if dependency.startswith("ccxt")
     ]
-    assert project_ccxt == ["ccxt==4.5.78"]
-    assert exported_ccxt == ["ccxt==4.5.78"]
-    assert runtime_ccxt == ["ccxt==4.5.78"]
+    assert project_ccxt == ["ccxt==4.5.85"]
+    assert exported_ccxt == ["ccxt==4.5.85"]
+    assert runtime_ccxt == ["ccxt==4.5.85"]
 
     # The official SDK must not reappear in any dependency surface.
     for banned in ("polymarket-client", "py-clob-client"):
@@ -52,7 +52,7 @@ def test_standalone_constraint_uses_the_verified_exact_release() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert constraints == ["ccxt==4.5.78"]
+    assert constraints == ["ccxt==4.5.85"]
 
 
 def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
@@ -70,8 +70,8 @@ def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
         if dependency["name"] == "ccxt"
     ]
 
-    assert locked_versions == ["4.5.78"]
-    assert ccxt_requirements == ["==4.5.78"]
+    assert locked_versions == ["4.5.85"]
+    assert ccxt_requirements == ["==4.5.85"]
     assert not {"polymarket-client", "py-clob-client"}.intersection(
         package["name"] for package in packages
     )
