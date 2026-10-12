@@ -23,8 +23,10 @@ from pmcopy.services.copierConfig import load_runtime_users_from_copiers
 from pmcopy.services.multiUserConfig import load_runtime_users
 
 from tests.multicopier.conftest import (
+    CONDITION,
     FUNDER_ALPHA,
     LEADER_1,
+    TOKEN,
     USER_ALPHA,
     build_account_state,
     follow,
@@ -179,3 +181,188 @@ def test_copier_exposure_headroom_arithmetic():
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2 — the reservation TRANSACTION must be cap-authoritative
+# ---------------------------------------------------------------------------
+
+
+class _CapRecordingRepo:
+    """Repo double capturing what the checked BUY transaction receives."""
+
+    def __init__(self, existing=None):
+        self.existing = existing
+        self.checked_calls: list[dict] = []
+        self.sum_calls: list[str] = []
+
+    async def get_active_by_intent_key(self, _key):
+        return self.existing
+
+    async def sum_active_quote_for_user(self, user_id):
+        self.sum_calls.append(user_id)
+        return Decimal("0")
+
+    async def create_buy_reservation_checked_by_intent(
+        self,
+        intent,
+        reserved_usdc,
+        expires_at,
+        available_balance,
+        *,
+        open_exposure_cap=None,
+        confirmed_open_exposure=None,
+    ):
+        from datetime import datetime, timezone
+
+        from pmcopy.domain.order_lifecycle import Reservation
+
+        self.checked_calls.append(
+            {
+                "reserved_usdc": reserved_usdc,
+                "open_exposure_cap": open_exposure_cap,
+                "confirmed_open_exposure": confirmed_open_exposure,
+            }
+        )
+        return (
+            None,
+            Reservation(
+                id="res-1",
+                user_id=intent.key.user_id,
+                intent_key=intent.key.stable_key(),
+                condition_id=intent.key.condition_id,
+                token_id=intent.key.token_id,
+                side=intent.key.side,
+                reason=intent.key.reason,
+                reserved_usdc=Decimal(str(reserved_usdc)),
+                reserved_size=Decimal("0"),
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc),
+            ),
+            None,
+        )
+
+
+def _buy_intent(user_id: str = USER_ALPHA):
+    from datetime import datetime, timezone
+
+    from pmcopy.domain.order_lifecycle import (
+        IntentReason,
+        IntentSide,
+        OrderIntent,
+        OrderIntentKey,
+    )
+
+    return OrderIntent(
+        key=OrderIntentKey(
+            user_id=user_id,
+            leader_wallet=LEADER_1,
+            condition_id=CONDITION,
+            token_id=TOKEN,
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            source_event_id="0xsig-cap",
+        ),
+        size=Decimal("100"),
+        price=Decimal("0.50"),
+        max_slippage_bps=200,
+        created_at=datetime.fromtimestamp(1_000, tz=timezone.utc),
+    )
+
+
+def _service(repo, *, cap=None, reader=None):
+    from pmcopy.services.execution.reservation_service import ReservationService
+
+    async def _balance(_address):
+        return Decimal("1000")
+
+    return ReservationService(
+        reservations_repo=repo,
+        positions_repo=None,
+        get_balance_func=_balance,
+        funder_address=FUNDER_ALPHA,
+        open_exposure_cap=cap,
+        confirmed_exposure_reader=reader,
+    )
+
+
+@pytest.mark.asyncio
+async def test_capped_reservation_forwards_cap_and_confirmed_exposure_to_the_transaction():
+    repo = _CapRecordingRepo()
+
+    async def _reader(user_id):
+        return Decimal("25")
+
+    service = _service(repo, cap=Decimal("60"), reader=_reader)
+    reservation = await service.reserve_for_intent(_buy_intent())
+
+    assert reservation.id == "res-1"
+    assert repo.checked_calls == [
+        {
+            "reserved_usdc": Decimal("50"),
+            "open_exposure_cap": Decimal("60"),
+            "confirmed_open_exposure": Decimal("25"),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uncapped_reservation_passes_no_cap_parameters_and_never_reads_exposure():
+    repo = _CapRecordingRepo()
+    reader_calls: list[str] = []
+
+    async def _reader(user_id):
+        reader_calls.append(user_id)
+        return Decimal("0")
+
+    service = _service(repo, cap=None, reader=_reader)
+    await service.reserve_for_intent(_buy_intent())
+
+    # Legacy accounts: NO cap parameters reach the reservation transaction
+    # and the exposure reader is never invoked — byte-identical overhead.
+    assert repo.checked_calls == [
+        {
+            "reserved_usdc": Decimal("50"),
+            "open_exposure_cap": None,
+            "confirmed_open_exposure": None,
+        }
+    ]
+    assert reader_calls == []
+
+
+@pytest.mark.asyncio
+async def test_transaction_cap_rejection_maps_to_the_cap_error():
+    from pmcopy.services.execution.reservation_service import (
+        CopierOpenExposureCapExceeded,
+    )
+
+    class _CapRejectingRepo(_CapRecordingRepo):
+        async def create_buy_reservation_checked_by_intent(
+            self, intent, reserved_usdc, expires_at, available_balance, **_kwargs
+        ):
+            self.checked_calls.append({"rejected": True})
+            return None, None, "copier_open_exposure_cap"
+
+    async def _reader(_user_id):
+        return Decimal("0")
+
+    service = _service(_CapRejectingRepo(), cap=Decimal("60"), reader=_reader)
+    with pytest.raises(CopierOpenExposureCapExceeded):
+        await service.reserve_for_intent(_buy_intent())
+
+
+@pytest.mark.asyncio
+async def test_cap_with_unreadable_confirmed_exposure_fails_closed():
+    from pmcopy.services.execution.reservation_service import (
+        CopierOpenExposureCapExceeded,
+    )
+
+    async def _broken_reader(_user_id):
+        raise RuntimeError("positions unavailable")
+
+    repo = _CapRecordingRepo()
+    service = _service(repo, cap=Decimal("60"), reader=_broken_reader)
+    with pytest.raises(CopierOpenExposureCapExceeded):
+        await service.reserve_for_intent(_buy_intent())
+    assert repo.checked_calls == [], "no transaction may open without evidence"

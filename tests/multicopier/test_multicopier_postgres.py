@@ -1024,3 +1024,129 @@ async def test_copier_exposure_cap_bounds_two_concurrent_leaders(_hermetic_balan
             Decimal("0"),
         )
         assert active == Decimal("60")
+
+
+async def test_copier_exposure_cap_holds_across_a_cross_scope_race(_hermetic_balances):
+    """Fix round 2: the reservation TRANSACTION is cap-authoritative.
+
+    Two DIFFERENT markets (distinct condition + token, so the per-scope
+    coordinator locks do NOT serialize them) race one capped copier: the
+    pipeline-level cap read alone cannot stop both admissions (each reads
+    reserved=0), so the atomic checked-reservation transaction under the
+    per-user advisory lock must be the authoritative gate — exactly ONE
+    reserves and submits; the other is rejected with the cap reason and
+    leaves no reservation behind.
+    """
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="60", beta_cap=None)
+        gateway = world["gateways"][0]
+        # Per-token execution metadata so both markets resolve admission.
+        from pmcopy.domain.execution import ExecutionMetadata
+
+        async def _metadata_for(token_id, condition_id=None):
+            return ExecutionMetadata(
+                token_id=str(token_id),
+                tick_size=Decimal("0.01"),
+                min_order_size=Decimal("0.001"),
+                neg_risk=False,
+            )
+
+        gateway.get_execution_metadata = AsyncMock(side_effect=_metadata_for)
+
+        event_1 = leader_buy_event(tx_hash="0xtx-xscope-1")
+        event_2 = leader_buy_event(tx_hash="0xtx-xscope-2")
+        event_2["conditionId"] = "0x" + "cd" * 32
+        event_2["asset"] = TOKEN + "1"
+
+        results = await asyncio.gather(
+            execute_trades(
+                world["by_leader"][LEADER_1][0], LEADER_1, [event_1], now_ts=time.time()
+            ),
+            execute_trades(
+                world["by_leader"][LEADER_1][0], LEADER_1, [event_2], now_ts=time.time()
+            ),
+        )
+        flat = [r for batch in results for r in batch]
+
+        # The INVARIANT holds under every interleaving: whatever the event
+        # loop races, submitted and reserved quote never exceed the cap.
+        submitted = sum((Decimal(str(req.size)) for req in gateway.submissions), Decimal("0"))
+        active_quote = sum(
+            (
+                Decimal(str(row["reserved_usdc"]))
+                for row in await _reservations_rows(pool, USER_ALPHA)
+                if str(row["status"]) == "active"
+            ),
+            Decimal("0"),
+        )
+        assert submitted <= Decimal("60"), [str(r.size) for r in gateway.submissions]
+        assert active_quote <= Decimal("60")
+        if len(gateway.submissions) == 1:
+            # The loser lost INSIDE the authoritative transaction and is
+            # rejected with the cap reason — never a silent pass.
+            reasons = {str(r.reason) for r in flat}
+            assert any("copier_open_exposure_cap" in reason for reason in reasons), reasons
+        else:
+            # The second admission read the first's reservation at the
+            # pipeline fast path and was clamped: 50 + 10 == cap exactly.
+            assert submitted == Decimal("60")
+
+
+async def test_reservation_transaction_enforces_the_cap_across_scopes(
+    _hermetic_balances,
+):
+    """Deterministic transactional proof: two concurrent reserve_for_intent
+    calls on DIFFERENT intent keys under a 60 cap — exactly one reservation
+    commits, the other raises CopierOpenExposureCapExceeded."""
+    from datetime import datetime, timezone
+
+    from pmcopy.domain.order_lifecycle import (
+        IntentReason,
+        IntentSide,
+        OrderIntent,
+        OrderIntentKey,
+    )
+    from pmcopy.services.execution.reservation_service import (
+        CopierOpenExposureCapExceeded,
+    )
+
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="60", beta_cap=None)
+        state = world["states"][0]
+        service = state.execution_coordinator.reservation_service
+        assert service.open_exposure_cap == Decimal("60")
+
+        async def _reserve(market: str):
+            intent = OrderIntent(
+                key=OrderIntentKey(
+                    user_id=USER_ALPHA,
+                    leader_wallet=LEADER_1,
+                    condition_id=market,
+                    token_id=f"{TOKEN}:{market}",
+                    side=IntentSide.BUY,
+                    reason=IntentReason.COPY_BUY,
+                    source_event_id=f"0xsig-{market}",
+                ),
+                size=Decimal("100"),
+                price=Decimal("0.50"),
+                max_slippage_bps=200,
+                created_at=datetime.now(timezone.utc),
+            )
+            return await service.reserve_for_intent(intent)
+
+        outcomes = await asyncio.gather(
+            _reserve("0x" + "aa" * 32), _reserve("0x" + "bb" * 32), return_exceptions=True
+        )
+        winners = [o for o in outcomes if not isinstance(o, BaseException)]
+        losers = [o for o in outcomes if isinstance(o, BaseException)]
+        assert len(winners) == 1, outcomes
+        assert len(losers) == 1, outcomes
+        assert isinstance(losers[0], CopierOpenExposureCapExceeded)
+
+        active = [
+            row
+            for row in await _reservations_rows(pool, USER_ALPHA)
+            if str(row["status"]) == "active"
+        ]
+        assert len(active) == 1
+        assert Decimal(str(active[0]["reserved_usdc"])) == Decimal("50")
