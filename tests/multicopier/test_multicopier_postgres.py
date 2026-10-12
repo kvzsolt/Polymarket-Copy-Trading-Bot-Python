@@ -339,7 +339,7 @@ async def test_same_leader_event_yields_independent_intents_and_reservations(
 async def test_two_leaders_same_token_serialize_and_respect_shared_limits(
     _hermetic_balances,
 ):
-    """§9 bullet 3, two faces:
+    """§9 bullet 3, three faces:
 
     1. CONCURRENT: two leaders targeting one wallet's same token serialize on
        the account-owned coordinator — the venue never sees two overlapping
@@ -349,12 +349,11 @@ async def test_two_leaders_same_token_serialize_and_respect_shared_limits(
        market-exposure limit blocks further BUYs on that market from ANY
        leader (balance-tiered account-cap policy).
 
-    NOTE (characterized limitation, see task-24 report): the follow-level
-    ``max_market_exposure_usdc`` field is carried on every binding but is not
-    read by the trade pipeline; the enforced market limit is the ACCOUNT-level
-    ``risk.max_market_exposure_usdc``. Concurrent in-flight intents are also
-    not counted toward exposure until their fills confirm — the reservation
-    domain bounds them by wallet balance only.
+    3. COPIER CAP (schema v2 ``limits.max_open_exposure_quote``): the
+       explicitly configured per-copier open-exposure cap counts CONFIRMED
+       open exposure (existing cost-basis accounting) plus IN-FLIGHT reserved
+       quote; its dedicated concurrency proof is
+       ``test_copier_exposure_cap_bounds_two_concurrent_leaders`` below.
     """
     async with _pg_pool() as pool:
         # ---- Face 2: shared account-level market limit across leaders. ----
@@ -763,3 +762,265 @@ async def test_startup_without_evidence_keeps_unresolved_no_id_reservation(
         order = (await _orders_rows(pool, USER_ALPHA))[0]
         assert order["order_id"] is None
         assert str(order["status"]) == "submitted_unconfirmed"
+
+
+# ---------------------------------------------------------------------------
+# Task 24 fix — schema-v2 copier open-exposure cap enforcement (behavioral)
+# ---------------------------------------------------------------------------
+
+
+async def _capped_world(pool, balances, *, alpha_cap: str | None, beta_cap: str | None):
+    """Compose two copiers; a non-None cap is an EXPLICIT schema-v2 cap."""
+    config = _config()
+    follows_alpha = {
+        LEADER_1: follow(
+            USER_ALPHA,
+            LEADER_1,
+            allocation_pct="0.50",
+            **(
+                {"max_market_exposure_usdc": alpha_cap, "explicit_exposure_cap": True}
+                if alpha_cap is not None
+                else {}
+            ),
+        )
+    }
+    follows_beta = {
+        LEADER_1: follow(
+            USER_BETA,
+            LEADER_1,
+            allocation_pct="0.50",
+            **(
+                {"max_market_exposure_usdc": beta_cap, "explicit_exposure_cap": True}
+                if beta_cap is not None
+                else {}
+            ),
+        )
+    }
+    return await _compose_two_accounts(
+        pool, config, balances=balances, follows_alpha=follows_alpha, follows_beta=follows_beta
+    )
+
+
+async def test_copier_exposure_cap_rejects_entry_beyond_cap_without_reserving(
+    _hermetic_balances,
+):
+    """Beyond the configured cap: skipped with the cap reason, no reservation."""
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="40", beta_cap=None)
+        state_a = world["states"][0]
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
+
+        # Confirmed open position already at 40 quote of cost basis.
+        await state_a.positions_repo.upsert_position(
+            PositionRecord(
+                user_id=USER_ALPHA,
+                condition_id=CONDITION,
+                token_id=TOKEN,
+                leader_id=LEADER_1,
+                size_tokens=Decimal("80"),
+                avg_entry_price=Decimal("0.50"),
+            )
+        )
+        ctx_a = world["by_leader"][LEADER_1][0]
+        results = await execute_trades(
+            ctx_a, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-reject")], now_ts=time.time()
+        )
+        assert [r.status for r in results] == ["skipped"]
+        assert results[0].reason == "copier_open_exposure_cap"
+        # No submission, no reservation consumed, claim row marks the skip.
+        assert world["gateways"][0].submissions == []
+        assert await _reservations_rows(pool, USER_ALPHA) == []
+        async with pool.acquire() as conn:
+            claim = await conn.fetchrow(
+                "SELECT status FROM processed_trades WHERE user_id = $1", USER_ALPHA
+            )
+        assert str(claim["status"]) == "skipped_copier_open_exposure_cap"
+
+
+async def test_copier_exposure_cap_admits_entry_within_cap(_hermetic_balances):
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="60", beta_cap=None)
+        ctx_a = world["by_leader"][LEADER_1][0]
+        results = await execute_trades(
+            ctx_a, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-admit")], now_ts=time.time()
+        )
+        assert [r.status for r in results] == ["submitted_unconfirmed"]
+        assert len(world["gateways"][0].submissions) == 1
+
+
+async def test_copier_exposure_cap_counts_inflight_reservations(_hermetic_balances):
+    """An unfilled first BUY's reservation consumes the cap for the second."""
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="60", beta_cap=None)
+        ctx_a = world["by_leader"][LEADER_1][0]
+        # First entry: 50 quote, unfilled (reservation stays active).
+        first = await execute_trades(
+            ctx_a, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-inflight-1")], now_ts=time.time()
+        )
+        assert first[0].status == "submitted_unconfirmed"
+        # Second entry on ANOTHER market condition would want another 50:
+        # reserved 50 leaves 10 headroom → clamped down, never above the cap.
+        other_event = leader_buy_event(tx_hash="0xtx-cap-inflight-2")
+        other_event["conditionId"] = "0x" + "cd" * 32
+        second = await execute_trades(ctx_a, LEADER_1, [other_event], now_ts=time.time())
+        assert second, "the second entry must be admitted (clamped, not dropped)"
+        gateway = world["gateways"][0]
+        assert len(gateway.submissions) == 2
+        assert Decimal(str(gateway.submissions[1].size)) <= Decimal("10")
+        assert Decimal(str(gateway.submissions[1].size)) > Decimal("0")
+        active = [
+            row
+            for row in await _reservations_rows(pool, USER_ALPHA)
+            if str(row["status"]) == "active"
+        ]
+        assert sum((Decimal(str(r["reserved_usdc"])) for r in active), Decimal("0")) <= Decimal(
+            "60"
+        )
+
+
+async def test_copier_exposure_cap_never_blocks_protective_exits(_hermetic_balances):
+    """A protective SELL/reduction is never blocked by an exposure cap."""
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="10", beta_cap=None)
+        state_a = world["states"][0]
+        ctx_a = world["by_leader"][LEADER_1][0]
+        # Held position far beyond the tiny cap, on the copied condition.
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
+
+        await state_a.positions_repo.upsert_position(
+            PositionRecord(
+                user_id=USER_ALPHA,
+                condition_id=CONDITION,
+                token_id=TOKEN,
+                leader_id=LEADER_1,
+                size_tokens=Decimal("100"),
+                avg_entry_price=Decimal("0.50"),
+            )
+        )
+        sell_event = leader_buy_event(tx_hash="0xtx-cap-sell")
+        sell_event["side"] = "SELL"
+        sell_event["_leader_sell_fraction"] = 1.0
+
+        # Deterministic live-holdings reader so the exit path runs to
+        # submission (the holdings probe itself is not under test).
+        class _Holdings:
+            async def shares(self, _wallet, _token):
+                return Decimal("100")
+
+        ctx_a.holdings_reader = _Holdings()
+        results = await execute_trades(ctx_a, LEADER_1, [sell_event], now_ts=time.time())
+        # The exit is admitted — never skipped for the exposure cap.
+        assert all(r.reason != "copier_open_exposure_cap" for r in results), results
+        assert all(r.status != "skipped" for r in results), results
+        assert world["gateways"][0].submissions, "the protective exit must submit"
+
+
+async def test_copier_exposure_cap_legacy_paths_stay_unchanged(_hermetic_balances):
+    """Legacy bindings (cap value present but NOT explicit) never reject."""
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap=None, beta_cap=None)
+        # Even with open exposure beyond the numeric default (300), the
+        # legacy value is inert exactly as before the fix.
+        state_a = world["states"][0]
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
+
+        await state_a.positions_repo.upsert_position(
+            PositionRecord(
+                user_id=USER_ALPHA,
+                condition_id=CONDITION,
+                token_id=TOKEN,
+                leader_id=LEADER_1,
+                size_tokens=Decimal("1000"),
+                avg_entry_price=Decimal("0.50"),
+            )
+        )
+        ctx_a = world["by_leader"][LEADER_1][0]
+        results = await execute_trades(
+            ctx_a, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-legacy")], now_ts=time.time()
+        )
+        assert all(r.reason != "copier_open_exposure_cap" for r in results), results
+
+
+async def test_copier_exposure_cap_isolates_accounts(_hermetic_balances):
+    """A capped copier's rejection never affects an uncapped copier."""
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="10", beta_cap=None)
+        state_a = world["states"][0]
+        from pmcopy.storage.postgres.positions_repo import PositionRecord
+
+        await state_a.positions_repo.upsert_position(
+            PositionRecord(
+                user_id=USER_ALPHA,
+                condition_id=CONDITION,
+                token_id=TOKEN,
+                leader_id=LEADER_1,
+                size_tokens=Decimal("40"),
+                avg_entry_price=Decimal("0.50"),
+            )
+        )
+        ctx_a = world["by_leader"][LEADER_1][0]
+        ctx_b = world["by_leader"][LEADER_1][1]
+        await execute_trades(
+            ctx_a, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-iso-a")], now_ts=time.time()
+        )
+        results_b = await execute_trades(
+            ctx_b, LEADER_1, [leader_buy_event(tx_hash="0xtx-cap-iso-b")], now_ts=time.time()
+        )
+        assert world["gateways"][0].submissions == []
+        assert world["gateways"][1].submissions, "uncapped beta still enters"
+        assert results_b[0].status == "submitted_unconfirmed"
+        assert await _reservations_rows(pool, USER_BETA), "beta's budget is consumed only by beta"
+
+
+async def test_copier_exposure_cap_bounds_two_concurrent_leaders(_hermetic_balances):
+    """Concurrency twin: two leaders race one copier's token under a 60 cap.
+
+    The account-owned scope lock serializes the two admissions; because the
+    cap counts IN-FLIGHT reserved quote (not just confirmed fills), the
+    second admission sees the first's reservation and clamps, so submitted
+    and reserved quote can never collectively exceed the configured cap —
+    even with zero confirmed positions yet.
+    """
+    async with _pg_pool() as pool:
+        world = await _capped_world(pool, _hermetic_balances, alpha_cap="60", beta_cap=None)
+        # The capped copier follows BOTH leaders on the same token.
+        alpha = world["users"][0]
+        alpha.follows[LEADER_2] = follow(
+            USER_ALPHA,
+            LEADER_2,
+            allocation_pct="0.50",
+            max_market_exposure_usdc="60",
+            explicit_exposure_cap=True,
+        )
+        contexts_by_leader, _ = await build_context_maps(
+            [alpha], {USER_ALPHA: world["states"][0]}, [LEADER_1, LEADER_2], _config()
+        )
+        gateway = world["gateways"][0]
+        await asyncio.gather(
+            execute_trades(
+                contexts_by_leader[LEADER_1][0],
+                LEADER_1,
+                [leader_buy_event(tx_hash="0xtx-caprace-l1")],
+                now_ts=time.time(),
+            ),
+            execute_trades(
+                contexts_by_leader[LEADER_2][0],
+                LEADER_2,
+                [leader_buy_event(tx_hash="0xtx-caprace-l2")],
+                now_ts=time.time(),
+            ),
+        )
+        submitted = sum((Decimal(str(req.size)) for req in gateway.submissions), Decimal("0"))
+        assert submitted == Decimal("60"), (
+            f"expected 50 + clamped 10 under the 60 cap, got "
+            f"{[str(r.size) for r in gateway.submissions]}"
+        )
+        active = sum(
+            (
+                Decimal(str(row["reserved_usdc"]))
+                for row in await _reservations_rows(pool, USER_ALPHA)
+                if str(row["status"]) == "active"
+            ),
+            Decimal("0"),
+        )
+        assert active == Decimal("60")

@@ -63,8 +63,15 @@ def follow(
     allocation_pct: str = "0.05",
     max_trade_usdc: str = "50",
     max_market_exposure_usdc: str = "300",
+    explicit_exposure_cap: bool = False,
 ) -> UserFollowConfig:
-    """One explicit follow binding with exact-decimal money."""
+    """One explicit follow binding with exact-decimal money.
+
+    ``explicit_exposure_cap`` marks a COPIER-level open-exposure cap that the
+    operator explicitly configured (schema v2 ``limits.max_open_exposure_quote``
+    or the v1 follow field) — the pipeline enforces only explicitly
+    configured caps; default-derived values keep the legacy behavior.
+    """
     return UserFollowConfig(
         user_id=user_id,
         leader_id=leader_id,
@@ -72,6 +79,7 @@ def follow(
         allocation_pct=Decimal(allocation_pct),
         max_trade_usdc=Decimal(max_trade_usdc),
         max_market_exposure_usdc=Decimal(max_market_exposure_usdc),
+        market_exposure_cap_explicit=explicit_exposure_cap,
     )
 
 

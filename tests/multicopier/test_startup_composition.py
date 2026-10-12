@@ -34,6 +34,7 @@ from tests.multicopier.conftest import (
     USER_ALPHA,
     USER_BETA,
     make_config,
+    synth_private_key,
 )
 
 
@@ -356,10 +357,7 @@ async def test_invalid_secret_reference_is_rejected_before_execution(monkeypatch
         }
     )
 
-    class _LiveHarness(_StartupHarness):
-        pass
-
-    harness = _LiveHarness(monkeypatch, tmp_path, live_config)
+    harness = _StartupHarness(monkeypatch, tmp_path, live_config)
     result = await _run_with_harness(harness)
     assert result == 1
     # Rejection is fail-closed and silent about key material.
@@ -370,6 +368,39 @@ def _assert_no_execution_for(harness):
     assert harness.venue_users == []
     assert harness.user_state_users == []
     assert harness.leases_acquired == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_paper_live_roster_is_rejected_before_execution(monkeypatch, tmp_path, capsys):
+    """§9 bullet 11, row 2: mixed paper/live copier modes fail at startup."""
+    monkeypatch.chdir(tmp_path)
+    live_body = f"""\
+        - id: {USER_BETA}
+          enabled: true
+          mode: live
+          wallet:
+            funder_address_env: BETA_FUNDER
+            private_key_env: BETA_PRIVATE_KEY
+          limits:
+            max_order_quote: "3.00"
+            max_open_exposure_quote: "20.00"
+          follows:
+            - leader_address: "{LEADER_2}"
+              enabled: true
+              sizing: {{mode: fixed, quote_amount: "1.00"}}
+        """
+    monkeypatch.setenv("ALPHA_FUNDER", FUNDER_ALPHA)
+    monkeypatch.setenv("BETA_FUNDER", FUNDER_BETA)
+    monkeypatch.setenv("BETA_PRIVATE_KEY", synth_private_key("9"))
+    config = make_config(
+        **{"app": {"copiers_config_file": _copiers_yaml(tmp_path, _GOOD_PRIMARY, live_body)}}
+    )
+    harness = _StartupHarness(monkeypatch, tmp_path, config)
+    result = await _run_with_harness(harness)
+
+    assert result == 1
+    assert "mixed paper/live copiers are rejected" in capsys.readouterr().out
+    _assert_no_execution(harness)
 
 
 # ---------------------------------------------------------------------------
