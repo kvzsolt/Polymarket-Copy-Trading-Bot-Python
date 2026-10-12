@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import time
 from collections import defaultdict
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from config.app_config import EnvValidationError, load_config
+from services.execution.reservation_expiry import (
+    OrderRowLookup,
+    ReservationExpiryDecision,
+    classify_no_id_reservation_expiry,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -76,6 +82,11 @@ def _row_to_dict(row) -> dict:
 
 
 def _classify_expired_reservation(row: dict, *, now_ts: int) -> dict:
+    """First-tier classification from the reservation row alone.
+
+    A no-link expired row is provisionally ``safe_to_release``; the caller
+    must confirm with :func:`_demand_submission_evidence` before releasing.
+    """
     linked_order = bool(row.get("order_id") or row.get("venue_order_id"))
     classified = {
         **row,
@@ -86,6 +97,55 @@ def _classify_expired_reservation(row: dict, *, now_ts: int) -> dict:
         "action": "defer" if linked_order else "release",
     }
     return classified
+
+
+async def _demand_submission_evidence(row: dict, orders_repo: Any) -> dict:
+    """Reclassify a no-link expired reservation per the typed expiry proof.
+
+    ``safe_to_release`` survives only on POSITIVE proof of a pre-submit
+    orphan: the orders lookup succeeded and found no submission row linked
+    through ``recovery_metadata`` (the same link the runtime expiry
+    classifier uses), so no venue POST can have occurred. A reservation
+    backed by any submission row — especially an unresolved no-ID
+    ``submitted_unconfirmed`` row — defers to the recovery machinery, and a
+    failed or unavailable lookup fails closed. An explicit ``--apply`` can
+    therefore never contradict the runtime's typed classification.
+    """
+    if row.get("classification") != "safe_to_release":
+        return row
+    lookup = getattr(orders_repo, "get_by_reservation_id", None)
+    if not callable(lookup):
+        return {
+            **row,
+            "classification": "recovery_pending",
+            "action": "defer",
+            "defer_reason": "orders_lookup_unavailable",
+        }
+    try:
+        lookup_result = lookup(row["id"])
+        order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
+    except Exception:
+        return {
+            **row,
+            "classification": "recovery_pending",
+            "action": "defer",
+            "defer_reason": "orders_lookup_unavailable",
+        }
+    decision = classify_no_id_reservation_expiry(OrderRowLookup.from_lookup(order_row))
+    if decision is ReservationExpiryDecision.RELEASE_PRE_SUBMIT_ORPHAN:
+        return row
+    defer_reason = (
+        "unresolved_submission_row"
+        if decision is ReservationExpiryDecision.KEEP_PENDING_RECOVERY
+        or decision is ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE
+        else "orders_lookup_unavailable"
+    )
+    return {
+        **row,
+        "classification": "recovery_pending",
+        "action": "defer",
+        "defer_reason": defer_reason,
+    }
 
 
 async def _list_reservations(
@@ -112,7 +172,7 @@ async def _list_reservations(
 
 
 async def _list_expired_reservation_candidates(
-    pool: "asyncpg.Pool", *, user_id: str | None
+    pool: "asyncpg.Pool", *, user_id: str | None, orders_repo: Any = None
 ) -> list[dict]:
     now_ts = int(time.time())
     query = "SELECT * FROM order_reservations WHERE status = 'active' AND expires_at < $1"
@@ -125,7 +185,16 @@ async def _list_expired_reservation_candidates(
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
 
-    return [_classify_expired_reservation(_row_to_dict(row), now_ts=now_ts) for row in rows]
+    if orders_repo is None:
+        from storage.postgres.orders_repo import OrdersRepo
+
+        orders_repo = OrdersRepo(pool)
+    candidates = []
+    for row in rows:
+        classified = _classify_expired_reservation(_row_to_dict(row), now_ts=now_ts)
+        classified = await _demand_submission_evidence(classified, orders_repo)
+        candidates.append(classified)
+    return candidates
 
 
 async def _resolve_expired_reservations(
@@ -135,9 +204,7 @@ async def _resolve_expired_reservations(
 
     candidates = await _list_expired_reservation_candidates(pool, user_id=user_id)
     safe_rows = [row for row in candidates if row["classification"] == "safe_to_release"]
-    deferred_rows = [
-        row for row in candidates if row["classification"] == "deferred_reconciliation_required"
-    ]
+    deferred_rows = [row for row in candidates if row["action"] == "defer"]
     released_rows: list[dict] = []
     if apply:
         repo = ReservationsRepo(pool)

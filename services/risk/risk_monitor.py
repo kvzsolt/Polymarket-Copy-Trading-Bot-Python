@@ -1158,7 +1158,7 @@ async def _expired_orphan_release_is_proven(
     except Exception:
         logger.debug("risk_orphan_submission_lookup_failed", exc_info=True)
         return False
-    return classify_no_id_reservation_expiry(OrderRowLookup.found(order_row)).allows_release
+    return classify_no_id_reservation_expiry(OrderRowLookup.from_lookup(order_row)).allows_release
 
 
 def _is_expired_orphan_reservation(reservation: object) -> bool:

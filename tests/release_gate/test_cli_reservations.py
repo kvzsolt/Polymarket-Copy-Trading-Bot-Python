@@ -167,6 +167,76 @@ async def test_resolve_expired_reservations_apply_releases_only_orphan() -> None
     assert by_id["r-fresh"]["status"] == "active"
 
 
+async def _seed_rowbacked_candidate(pool) -> None:
+    """An expired no-link reservation WITH a live no-ID submission row.
+
+    The orders row is linked to the reservation only through the persisted
+    ``recovery_metadata.reservation_id`` — the same link the runtime expiry
+    classifier uses. It is unresolved post-submit state, never safe_to_release.
+    """
+    now = int(time.time())
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO order_reservations
+            (id, user_id, order_intent_key, condition_id, token_id, side, reason,
+             reserved_usdc, reserved_size, status, created_at, updated_at, expires_at,
+             order_id, venue_order_id, metadata_json)
+            VALUES
+            ('r-expired-rowbacked','u-test','k-exp-rowbacked','cond-x','tok-x','BUY','copy',
+             '9.00','0','active',$1,$1,$2,NULL,NULL,'{}'::jsonb)
+            """,
+            now,
+            now - 600,
+        )
+        await conn.execute(
+            """
+            INSERT INTO orders
+            (idempotency_key, user_id, leader_id, order_id, status,
+             request_json, response_json, attempt_count, last_error,
+             created_at, updated_at)
+            VALUES
+            ('idem-rowbacked','u-test','leader-1',NULL,'submitted_unconfirmed',
+             $1::jsonb, $2::jsonb, 1, NULL, now(), now())
+            """,
+            json.dumps(
+                {
+                    "user_id": "u-test",
+                    "leader_id": "leader-1",
+                    "condition_id": "cond-x",
+                    "token_id": "tok-x",
+                    "side": "BUY",
+                    "signal_id": "event-rowbacked",
+                    "recovery_metadata": {"reservation_id": "r-expired-rowbacked"},
+                }
+            ),
+            json.dumps({"status": "submitted_unconfirmed", "success": False}),
+        )
+
+
+async def test_resolve_defers_rowbacked_unresolved_no_id_reservation() -> None:
+    """A14: --apply must not release a reservation with a live no-ID row."""
+    async with _pg_pool() as (pool, _dsn):
+        await _seed_rowbacked_candidate(pool)
+        dry = await _resolve_expired_reservations(pool, user_id=None, apply=False)
+        applied = await _resolve_expired_reservations(pool, user_id=None, apply=True)
+        async with pool.acquire() as conn:
+            status = await conn.fetchval(
+                "SELECT status FROM order_reservations WHERE id = 'r-expired-rowbacked'"
+            )
+
+    assert dry["applied"] is False
+    assert dry["summary"]["would_release"] == 0
+    assert dry["summary"]["deferred_reconciliation_required"] == 1
+    deferred = dry["deferred_reconciliation_required"][0]
+    assert deferred["id"] == "r-expired-rowbacked"
+    assert deferred["classification"] == "recovery_pending"
+    assert deferred["defer_reason"] == "unresolved_submission_row"
+
+    assert applied["summary"]["released"] == 0
+    assert status == "active"
+
+
 async def test_run_reservations_invocation_exits_zero(capsys, monkeypatch) -> None:
     """End-to-end ``run_reservations`` against a live PG testcontainer."""
     from types import SimpleNamespace

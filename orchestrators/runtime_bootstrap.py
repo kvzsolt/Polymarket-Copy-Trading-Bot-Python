@@ -922,7 +922,7 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
             order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception as exc:
             return OrderRowLookup.unavailable(exc)
-        return OrderRowLookup.found(order_row)
+        return OrderRowLookup.from_lookup(order_row)
 
     async def _lookup_order_by_order_id(order_id: str | None) -> OrderRowLookup:
         if not order_id:
@@ -937,7 +937,7 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
             order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception as exc:
             return OrderRowLookup.unavailable(exc)
-        return OrderRowLookup.found(order_row)
+        return OrderRowLookup.from_lookup(order_row)
 
     async def _reservation_is_released(reservation_id: str) -> bool:
         if reservations_repo is None:

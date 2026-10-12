@@ -69,8 +69,12 @@ class OrderRowLookup:
     error: BaseException | None = None
 
     @classmethod
-    def found(cls, order_row: dict[str, Any] | None) -> "OrderRowLookup":
-        return cls(order_row=order_row if isinstance(order_row, dict) else None, error=None)
+    def found(cls, order_row: dict[str, Any]) -> "OrderRowLookup":
+        if not isinstance(order_row, dict):
+            # A garbage lookup return is an evidence error, never proof of
+            # absence — fail closed to ``unavailable``.
+            return cls.unavailable(TypeError("orders lookup returned a non-dict row"))
+        return cls(order_row=order_row, error=None)
 
     @classmethod
     def absent(cls) -> "OrderRowLookup":
@@ -80,6 +84,18 @@ class OrderRowLookup:
     @classmethod
     def unavailable(cls, error: BaseException) -> "OrderRowLookup":
         return cls(order_row=None, error=error)
+
+    @classmethod
+    def from_lookup(cls, order_row: Any) -> "OrderRowLookup":
+        """Normalize a raw lookup return value.
+
+        ``None`` is a successful lookup that found no row (proven absence);
+        a dict is a found row; anything else is an evidence error.
+        """
+
+        if order_row is None:
+            return cls.absent()
+        return cls.found(order_row)
 
     @property
     def lookup_succeeded(self) -> bool:
