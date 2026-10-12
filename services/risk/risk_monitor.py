@@ -1062,6 +1062,13 @@ async def _active_sell_reserved_size(
     owns some or all free shares. The risk loop must not keep submitting fresh
     stop-loss intents against the same held shares while that reservation is
     waiting for reconciliation.
+
+    An expired reservation with no linked order may only be released here on
+    the typed expiry outcomes that PROVE release is safe (positive proof that
+    no submission was ever persisted, or a terminal no-ID row status). An
+    unresolved no-ID submission keeps its shares reserved — releasing it on
+    TTL alone would open a double-spend window while the ambiguous venue
+    order may still be live.
     """
     coordinator = getattr(context, "execution_coordinator", None)
     reservation_service = getattr(coordinator, "reservation_service", None)
@@ -1094,30 +1101,64 @@ async def _active_sell_reserved_size(
         if side != "SELL" or status != "active":
             continue
         if _is_expired_orphan_reservation(reservation):
-            release = getattr(reservation_service, "release_terminal", None)
-            if callable(release):
-                try:
-                    release_result = release(
-                        reservation.id,
-                        reason="expired_orphan_before_risk_exit",
-                    )
-                    if inspect.isawaitable(release_result):
-                        await release_result
-                    logger.info(
-                        "risk_released_expired_orphan_reservation | "
-                        "reservation_id=%s cond=%s token=%s",
-                        getattr(reservation, "id", None),
-                        condition_id[:12],
-                        token_id[:12],
-                    )
-                    continue
-                except Exception:
-                    logger.debug(
-                        "risk_release_orphan_reservation_failed",
-                        exc_info=True,
-                    )
+            if await _expired_orphan_release_is_proven(context, reservation):
+                release = getattr(reservation_service, "release_terminal", None)
+                if callable(release):
+                    try:
+                        release_result = release(
+                            reservation.id,
+                            reason="expired_orphan_before_risk_exit",
+                        )
+                        if inspect.isawaitable(release_result):
+                            await release_result
+                        logger.info(
+                            "risk_released_expired_orphan_reservation | "
+                            "reservation_id=%s cond=%s token=%s",
+                            getattr(reservation, "id", None),
+                            condition_id[:12],
+                            token_id[:12],
+                        )
+                        continue
+                    except Exception:
+                        logger.debug(
+                            "risk_release_orphan_reservation_failed",
+                            exc_info=True,
+                        )
         total += _decimal_or_zero(getattr(reservation, "reserved_size", "0"))
     return total
+
+
+async def _expired_orphan_release_is_proven(
+    context: TradingContext,
+    reservation: object,
+) -> bool:
+    """Return whether an expired no-link reservation may be released.
+
+    Reuses the typed expiry classification: only ``RELEASE_PRE_SUBMIT_ORPHAN``
+    (the persisted-submission lookup SUCCEEDED and found no row — no venue
+    POST can have occurred) or ``RELEASE_TERMINAL_EVIDENCE`` (a terminal
+    no-ID row status) authorize release. A failed lookup, a missing lookup
+    capability, or an unresolved no-ID submission all fail closed to keep.
+    """
+    from services.execution.reservation_expiry import (
+        OrderRowLookup,
+        classify_no_id_reservation_expiry,
+    )
+
+    reservation_id = str(getattr(reservation, "id", "") or "").strip()
+    if not reservation_id:
+        return False
+    orders_repo = getattr(context, "orders_repo", None)
+    lookup = getattr(orders_repo, "get_by_reservation_id", None)
+    if not callable(lookup):
+        return False
+    try:
+        lookup_result = lookup(reservation_id)
+        order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
+    except Exception:
+        logger.debug("risk_orphan_submission_lookup_failed", exc_info=True)
+        return False
+    return classify_no_id_reservation_expiry(OrderRowLookup.found(order_row)).allows_release
 
 
 def _is_expired_orphan_reservation(reservation: object) -> bool:
@@ -1971,9 +2012,7 @@ async def run_risk_check_for_context(
                             size_tokens=fill_size,
                             price=fill_price,
                             fee=(
-                                None
-                                if result.fees_paid is None
-                                else Decimal(str(result.fees_paid))
+                                None if result.fees_paid is None else Decimal(str(result.fees_paid))
                             ),
                             fill_ts=_fill_ts,
                         ),

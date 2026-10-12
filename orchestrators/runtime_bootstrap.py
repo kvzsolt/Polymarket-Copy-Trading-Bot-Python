@@ -21,6 +21,11 @@ from services.accountingService import AccountingService
 from services.compliance import GeoblockGate
 from services.executionService import ExecutionService
 from services.execution.coordinator import CopyAdmission
+from services.execution.reservation_expiry import (
+    OrderRowLookup,
+    ReservationExpiryDecision,
+    classify_no_id_reservation_expiry,
+)
 from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
@@ -906,29 +911,33 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         }
         return side, record
 
-    async def _lookup_order_by_reservation(reservation_id: str) -> dict[str, Any] | None:
+    async def _lookup_order_by_reservation(reservation_id: str) -> OrderRowLookup:
         order_lookup = getattr(context.orders_repo, "get_by_reservation_id", None)
         if not callable(order_lookup):
-            return None
+            return OrderRowLookup.unavailable(
+                RuntimeError("orders repository cannot look up submissions by reservation id")
+            )
         try:
             lookup_result = order_lookup(reservation_id)
             order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
-        except Exception:
-            return None
-        return order_row if isinstance(order_row, dict) else None
+        except Exception as exc:
+            return OrderRowLookup.unavailable(exc)
+        return OrderRowLookup.found(order_row)
 
-    async def _lookup_order_by_order_id(order_id: str | None) -> dict[str, Any] | None:
+    async def _lookup_order_by_order_id(order_id: str | None) -> OrderRowLookup:
         if not order_id:
-            return None
+            return OrderRowLookup.absent()
         order_lookup = getattr(context.orders_repo, "get_by_order_id", None)
         if not callable(order_lookup):
-            return None
+            return OrderRowLookup.unavailable(
+                RuntimeError("orders repository cannot look up submissions by order id")
+            )
         try:
             lookup_result = order_lookup(order_id)
             order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
-        except Exception:
-            return None
-        return order_row if isinstance(order_row, dict) else None
+        except Exception as exc:
+            return OrderRowLookup.unavailable(exc)
+        return OrderRowLookup.found(order_row)
 
     async def _reservation_is_released(reservation_id: str) -> bool:
         if reservations_repo is None:
@@ -980,8 +989,21 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
             )
             return False
 
-    async def _reconcile_expired_reservation(reservation_id: str) -> bool:
-        """Run canonical reconciliation before an expired reservation releases."""
+    async def _reconcile_expired_reservation(
+        reservation_id: str,
+    ) -> ReservationExpiryDecision:
+        """Classify one expired reservation before any capacity release.
+
+        The decision tree is an explicit allow/deny: only authoritative
+        terminal evidence for this account, or POSITIVE proof that no
+        submission was ever persisted (pre-submit orphan — the write-ahead
+        submission row is saved before any venue POST), may release reserved
+        capacity. An unresolved no-ID submission (``submitted_unconfirmed``
+        without a venue identity) stays reserved under the ambiguous-recovery
+        machinery's ownership; TTL alone never releases it. A failed
+        persistence lookup is an outage, not absence — the reservation is
+        kept and the sweep retries later.
+        """
         try:
             from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
@@ -996,10 +1018,15 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
                 reservation_id,
                 exc,
             )
-            return False
+            return ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE
 
         if reservations_repo is None:
-            return False
+            logger.warning(
+                "reservation_expiry_reservations_repo_unavailable | user=%s reservation_id=%s",
+                context.user_id,
+                reservation_id,
+            )
+            return ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE
 
         try:
             active = await reservations_repo.get_by_id(reservation_id)
@@ -1010,38 +1037,58 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
                 reservation_id,
                 exc,
             )
-            return False
+            return ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE
 
         if active is None or str(getattr(active, "status", "")).lower() != "active":
-            return True
+            return ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE
 
         linked_order = getattr(active, "order_id", None) or getattr(active, "venue_order_id", None)
-        order_row = await _lookup_order_by_reservation(reservation_id)
-        candidate_order_id = str(linked_order or (order_row or {}).get("order_id") or "").strip()
+        submission_lookup = await _lookup_order_by_reservation(reservation_id)
+        candidate_order_id = str(
+            linked_order or (submission_lookup.order_row or {}).get("order_id") or ""
+        ).strip()
         if candidate_order_id:
+            order_row = submission_lookup.order_row
             if order_row is None:
-                order_row = await _lookup_order_by_order_id(candidate_order_id)
+                # Best-effort by-order-id fetch; the synthetic record falls
+                # back to the reservation's own attributes when unavailable.
+                by_id_lookup = await _lookup_order_by_order_id(candidate_order_id)
+                order_row = by_id_lookup.order_row
             await _reconcile_linked_reservation_order(
                 reservation=active,
                 order_id=candidate_order_id,
                 order_row=order_row,
             )
-            return await _reservation_is_released(reservation_id)
+            if await _reservation_is_released(reservation_id):
+                return ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE
+            return ReservationExpiryDecision.KEEP_PENDING_RECOVERY
 
-        try:
-            await reservation_service.release_terminal(
-                reservation_id,
-                reason="expired_orphan_no_order",
-            )
-        except Exception as exc:
-            logger.warning(
-                "reservation_expiry_orphan_release_failed | user=%s reservation_id=%s error=%r",
+        decision = classify_no_id_reservation_expiry(submission_lookup)
+        if decision is ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE:
+            logger.error(
+                "reservation_expiry_persistence_unavailable | user=%s reservation_id=%s "
+                "lookup_error=%r",
                 context.user_id,
                 reservation_id,
-                exc,
+                submission_lookup.error,
             )
-            return False
-        return True
+        elif decision is ReservationExpiryDecision.KEEP_PENDING_RECOVERY:
+            logger.info(
+                "reservation_expiry_keep_pending_recovery | user=%s reservation_id=%s "
+                "row_status=%s idempotency_key=%s",
+                context.user_id,
+                reservation_id,
+                (submission_lookup.order_row or {}).get("status"),
+                (submission_lookup.order_row or {}).get("idempotency_key"),
+            )
+        else:
+            logger.info(
+                "reservation_expiry_pre_submit_orphan | user=%s reservation_id=%s "
+                "— proven no persisted submission, releasing",
+                context.user_id,
+                reservation_id,
+            )
+        return decision
 
     reservation_service.reconciler_callback = _reconcile_expired_reservation
 

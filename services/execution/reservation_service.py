@@ -11,10 +11,34 @@ from typing import Protocol, Awaitable, Callable, Any
 import asyncpg
 
 from domain.order_lifecycle import OrderIntent, IntentSide, Reservation
+from services.execution.reservation_expiry import ReservationExpiryDecision
 from storage.postgres.reservations_repo import ReservationsRepo
 from storage.postgres.positions_repo import PositionsRepo
 
 logger = logging.getLogger(__name__)
+
+# Release reasons written by the expiry sweep, per outcome class. ``None``
+# means the decision denies release (the reservation stays active).
+_EXPIRY_RELEASE_REASONS: dict[ReservationExpiryDecision, str] = {
+    ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE: "expired_terminal",
+    ReservationExpiryDecision.RELEASE_PRE_SUBMIT_ORPHAN: "expired_pre_submit_orphan",
+}
+
+
+def _expiry_release_reason(callback_result: Any) -> str | None:
+    """Map a reconciler-callback result to a release reason (None = keep).
+
+    The callback returns a :class:`ReservationExpiryDecision` under the typed
+    contract. Legacy boolean callbacks stay valid: ``True`` releases with the
+    historical ``expired_terminal`` reason, ``False``/``None`` keep the
+    reservation active (``None`` marks asynchronous ownership).
+    """
+
+    if isinstance(callback_result, ReservationExpiryDecision):
+        return _EXPIRY_RELEASE_REASONS.get(callback_result)
+    if callback_result is True:
+        return "expired_terminal"
+    return None
 
 
 class ReservationConflict(Exception):
@@ -52,9 +76,18 @@ class DefaultClock(Clock):
 
 
 class ReconcilerCallback(Protocol):
-    """Define the ReconcilerCallback port used by application services."""
+    """Define the ReconcilerCallback port used by application services.
 
-    async def __call__(self, reservation_id: str) -> bool | None: ...
+    The callback classifies one expired reservation into a
+    :class:`~services.execution.reservation_expiry.ReservationExpiryDecision`.
+    Only ``RELEASE_TERMINAL_EVIDENCE`` and ``RELEASE_PRE_SUBMIT_ORPHAN``
+    authorize release; unresolved submissions (``KEEP_PENDING_RECOVERY``) and
+    persistence outages (``PERSISTENCE_UNAVAILABLE``) keep the reservation
+    active. Legacy boolean returns (``True`` releases, ``False`` keeps) and
+    ``None`` (asynchronous ownership, keep) remain accepted.
+    """
+
+    async def __call__(self, reservation_id: str) -> ReservationExpiryDecision | bool | None: ...
 
 
 @dataclass
@@ -504,11 +537,14 @@ class ReservationService:
         return str(reservation_id).startswith("disabled:")
 
     async def release_expired_active(self) -> list[str]:
-        """Enqueue reconciliation for expired active reservations.
+        """Reconcile expired active reservations per their typed decision.
 
-        Expiry alone is not a terminal venue outcome. Reservations stay active
-        until reconciliation confirms the linked order is terminal and calls
-        ``release_terminal``.
+        Expiry alone is not a terminal venue outcome. The reconciler callback
+        classifies each reservation; only the release-allowing outcomes
+        (terminal venue evidence, or positively proven pre-submit absence)
+        free the reserved capacity. Unresolved no-ID submissions stay active
+        under the ambiguous-recovery machinery's ownership, and persistence
+        outages keep the reservation for a later retry.
         """
         now = self.clock.utcnow_timestamp()
         expired = await self.reservations_repo.list_expired_active(now)
@@ -525,17 +561,34 @@ class ReservationService:
             if self.reconciler_callback is not None:
                 try:
                     result = await self.reconciler_callback(res.id)
-                    if result is True:
-                        await self.reservations_repo.mark_released(res.id, "expired_terminal", now)
+                    reason = _expiry_release_reason(result)
+                    if reason is not None:
+                        await self.reservations_repo.mark_released(res.id, reason, now)
                         enqueued_ids.append(res.id)
                         continue
-                    if result is False:
-                        logger.info(
-                            "reservation.expiry_callback_deferred id=%s — keeping active",
+                    if result is None:
+                        # Legacy asynchronous-ownership handshake: the
+                        # callback took charge of the reservation's fate.
+                        enqueued_ids.append(res.id)
+                        continue
+                    if result is ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE:
+                        logger.warning(
+                            "reservation.expiry_persistence_unavailable id=%s "
+                            "— keeping reservation active for retry",
                             res.id,
                         )
                         continue
-                    enqueued_ids.append(res.id)
+                    if result is ReservationExpiryDecision.KEEP_PENDING_RECOVERY:
+                        logger.info(
+                            "reservation.expiry_keep_pending_recovery id=%s "
+                            "— unresolved submission owned by recovery",
+                            res.id,
+                        )
+                        continue
+                    logger.info(
+                        "reservation.expiry_callback_deferred id=%s — keeping active",
+                        res.id,
+                    )
                     continue
                 except Exception as exc:
                     logger.warning(
@@ -557,9 +610,16 @@ class ReservationService:
         if self.reconciler_callback is not None:
             try:
                 result = await self.reconciler_callback(res.id)
-                if result is True:
-                    await self.reservations_repo.mark_released(res.id, "expired_terminal", now)
+                reason = _expiry_release_reason(result)
+                if reason is not None:
+                    await self.reservations_repo.mark_released(res.id, reason, now)
                     return True
+                if result is ReservationExpiryDecision.PERSISTENCE_UNAVAILABLE:
+                    logger.warning(
+                        "reservation.expiry_persistence_unavailable id=%s "
+                        "— keeping reservation active for retry",
+                        res.id,
+                    )
                 return False
             except Exception as exc:
                 logger.warning(
