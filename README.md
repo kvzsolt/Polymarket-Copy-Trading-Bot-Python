@@ -1,6 +1,6 @@
 # 🔮 Polymarket Copy Trading Bot
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)
 ![License MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Polymarket](https://img.shields.io/badge/exchange-Polymarket-blueviolet)
 
@@ -59,7 +59,7 @@ The bot operates through specialized engines, each handling a distinct domain of
 
 ## 🛠️ Stack & Architecture
 
-- **Language:** Python 3.11+ (3.13 unsupported).
+- **Language:** Python 3.14 only (`>=3.14,<3.15`; 3.11–3.13 unsupported).
 - **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
 - **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
 - **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` adds async / per-user wiring.
@@ -88,7 +88,7 @@ Read these in order:
 ## 🚀 Getting Started
 
 ### 1. Setup Environment
-Ensure you have Python 3.11 or higher installed (3.13 is currently unsupported).
+Ensure you have Python 3.14.x installed (the project targets only `>=3.14,<3.15`; 3.11–3.13 are unsupported).
 
 **Using `uv` (Recommended):**
 ```bash

@@ -48,8 +48,6 @@ charset-normalizer==3.4.7
     #   requests
 ckzg==2.1.8
     # via eth-account
-coincurve==21.0.0 ; implementation_name == 'cpython' and platform_machine != 'x86' and platform_machine in 'x86_64 AMD64 aarch64 arm64 ARM64 i686'
-    # via ccxt
 cryptography==50.0.2
     # via ccxt
 cytoolz==1.2.0 ; implementation_name == 'cpython'
@@ -189,8 +187,6 @@ types-requests==2.33.0.20261006
     # via web3
 typing-extensions==4.16.0
     # via
-    #   aiohttp
-    #   aiosignal
     #   anyio
     #   ccxt
     #   eth-typing

@@ -3,7 +3,7 @@ name = "polymarket-copy-trading-bot"
 version = "0.1.0"
 description = "Production-hardened Polymarket copy-trading bot with PostgreSQL persistence."
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
   "python-dotenv==1.2.4",
   "aiohttp==3.14.5",
@@ -75,10 +75,10 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.pyright]
-# LSP/type-check config: resolve imports against the project venv (Python 3.12).
+# LSP/type-check config: resolve imports against the project venv (Python 3.14).
 # "basic" during the stabilization phase — the codebase has never been
 # pyright-clean, and "standard" would flood LSP diagnostics with churn.
-pythonVersion = "3.12"
+pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
@@ -90,7 +90,7 @@ exclude = [".venv", "legacy", "tests", "build", "dist", "polymarket_copy_trading
 # Stabilization-phase config: formatting plus correctness-focused linting only.
 # Style-opinion rule families are intentionally not enabled to avoid mass churn.
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 extend-exclude = [".venv", "polymarket_copy_trading_bot.egg-info"]
 
 [tool.ruff.lint]
