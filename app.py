@@ -743,9 +743,13 @@ async def _refresh_contexts_for_new_leaders(
 ) -> list[str]:
     started_wallets: list[str] = []
     # A05 — follows whitelists: newly discovered wallets are only copied by
-    # accounts whose explicit follows configuration lists them (or by the
-    # single legacy account with no follows configuration at all). Existing
-    # positions keep their protective exits regardless (risk-only contexts).
+    # accounts whose explicit follows configuration lists them. The one
+    # exception is the legacy lone account with NO follows configuration
+    # (the config-less fallback): the legacy default keys on configuration
+    # absence, not on the in-memory follows map being empty, so that account
+    # keeps auto-following newly discovered leaders at every refresh —
+    # exactly like the pre-whitelist behavior. Existing positions keep their
+    # protective exits regardless (risk-only contexts).
     ensure_runtime_follows(runtime_users, new_wallets, config)
 
     for wallet in new_wallets:
@@ -1975,10 +1979,13 @@ async def _run_application(
     registry = application.registry
     refresh_interval = application.config.discovery.scheduler.rediscover_seconds
 
-    # Follows are explicit per-copier whitelists (A05). This call only
-    # applies the documented legacy default — the single account with no
-    # follows configuration auto-follows the active leaders; every other
-    # deployment copies exactly what its follows configuration lists.
+    # Follows are explicit per-copier whitelists (A05). This call applies
+    # the documented legacy default — the single account whose follows did
+    # NOT come from explicit configuration (the config-less fallback)
+    # auto-follows the active leaders. That default re-applies at every
+    # dynamic refresh too, so the lone config-less account keeps
+    # auto-following newly discovered leaders. Every other deployment
+    # copies exactly what its follows configuration lists.
     ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
     user_states: dict[str, UserRuntimeState] = {}

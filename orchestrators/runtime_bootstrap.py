@@ -267,25 +267,34 @@ def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollo
 def ensure_runtime_follows(
     runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig
 ) -> None:
-    """Return validated runtime follower bindings.
+    """Apply follow whitelist semantics with the legacy single-account default.
 
     Per-copier ``follows`` are explicit whitelists and the source of truth: a
     leader with no follow entry is NOT followed. There is no implicit union
     of the global leader set into every copier.
 
     LEGACY MIGRATION (documented in ``docs/02-configuration.md``): when
-    exactly ONE user account exists AND its follows configuration is
-    empty/absent, the historical default applies — that lone account
-    auto-follows every global leader. This preserves today's single-account
-    operator behavior (including the auto-trader startup path, which loads
-    its single runtime user with an empty follows map) without a follows
-    configuration. In every other case — multiple accounts, or any explicit
-    follows entry (enabled or disabled) — absence of a follow entry means
-    NOT following.
+    exactly ONE user account exists AND its follows did NOT come from
+    explicit operator configuration (``RuntimeUser.follows_explicit`` is
+    False — the config-less single-account fallback), the historical default
+    applies at EVERY call, not just startup: that lone account auto-follows
+    every leader it is shown, including newly discovered/promoted wallets at
+    refresh time, exactly like the pre-whitelist behavior. Entries are added
+    only when missing, so repeated refresh calls stay idempotent and never
+    overwrite an existing binding. In every other case — multiple accounts,
+    or any user loaded from a multi-user configuration (explicit follow
+    entries, even all disabled, or an explicitly empty follows list) —
+    absence of a follow entry means NOT following.
     """
-    if not (len(runtime_users) == 1 and not runtime_users[0].follows):
+    if len(runtime_users) != 1:
         return
     runtime_user = runtime_users[0]
+    # Duck-typed tolerance for foreign/test states that predate the flag:
+    # absence of the attribute carries no evidence of explicit follows
+    # configuration, so the legacy default stays available (same posture as
+    # the ``build_trading_context`` state fallback).
+    if getattr(runtime_user, "follows_explicit", False):
+        return
     for leader in leaders:
         if leader not in runtime_user.follows:
             runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)

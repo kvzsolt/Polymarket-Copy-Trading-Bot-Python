@@ -28,6 +28,15 @@ class RuntimeUser:
     user_id: str
     wallet: WalletConfig
     follows: dict[str, UserFollowConfig] = field(default_factory=dict)
+    # A05 — True iff ``follows`` came from explicit operator configuration
+    # (a MULTI_USER_CONFIG_FILE payload, even an explicitly empty follows
+    # list). The config-less single-account fallback synthesizes follows
+    # from the global leader list and leaves this False:
+    # ``ensure_runtime_follows`` keys the legacy single-account default on
+    # this flag — never on in-memory follows emptiness — so the config-less
+    # lone account keeps auto-following newly shown leaders at every
+    # refresh, exactly like the pre-whitelist behavior.
+    follows_explicit: bool = False
 
 
 def _parse_signature_type(value) -> SignatureType:
@@ -79,7 +88,14 @@ def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
         )
         follows[cfg.leader_id] = cfg
 
-    return RuntimeUser(user_id=str(payload["user_id"]), wallet=wallet, follows=follows)
+    return RuntimeUser(
+        user_id=str(payload["user_id"]),
+        wallet=wallet,
+        follows=follows,
+        # A follows list in the config payload is explicit operator policy —
+        # even when empty. Whitelist semantics apply; no legacy union.
+        follows_explicit=True,
+    )
 
 
 def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[RuntimeUser]:
@@ -118,7 +134,14 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             )
             for leader in leader_wallets
         }
-        return [RuntimeUser(user_id=user_id, wallet=base_wallet, follows=follows)]
+        # The fallback account has no explicit follows configuration: the
+        # follows above are synthesized defaults, so the documented legacy
+        # single-account default (dynamic auto-follow) stays available.
+        return [
+            RuntimeUser(
+                user_id=user_id, wallet=base_wallet, follows=follows, follows_explicit=False
+            )
+        ]
 
     # Confined-deputy guard: an operator-supplied path is read as JSON
     # into the process. ``Path(x).resolve()`` so symlinks are followed,

@@ -555,7 +555,8 @@ async def _compose_redriver(
         leaders = configured_leaders(config)
         runtime_users = load_runtime_users(leaders, config)
         # A05 — follows are explicit per-copier whitelists; the legacy
-        # single-account default may populate the lone account's follows.
+        # single-account default (a config-less account with no explicit
+        # follows configuration) may populate the lone account's follows.
         # Follows are irrelevant to the order→account match below.
         ensure_runtime_follows(runtime_users, leaders, config)
         matches = [user for user in runtime_users if str(user.user_id) == order_user_id]

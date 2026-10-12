@@ -36,14 +36,18 @@ there is no implicit union of the global/discovered leader set into every
 account. This applies at startup, to newly discovered leaders, and to the CLI.
 
 **Legacy single-account migration.** When exactly ONE user account exists AND
-its follows configuration is empty or absent, the historical default still
-applies: that lone account auto-follows every global leader (sized by the
-global `sizing`/`risk` configuration). This preserves the behavior of
-single-account operators — including `--auto-trader` startup, which loads its
-single runtime user with an empty follows map — without requiring a follows
-configuration. The moment a second account exists, or the single account lists
-any follow entry (enabled or disabled), the migration no longer applies and
-absence of an entry means not-following.
+its follows did not come from explicit configuration — i.e. no
+`MULTI_USER_CONFIG_FILE` is set and the account is the config-less fallback —
+the historical default still applies: that lone account auto-follows every
+global leader (sized by the global `sizing`/`risk` configuration). The
+default keys on the absence of explicit follows *configuration*, not on the
+in-memory follows map being empty, so it applies at startup AND at every
+leader refresh: the config-less lone account keeps auto-following newly
+discovered/promoted leaders, exactly like the pre-whitelist behavior
+(including `--auto-trader` startup). The moment the account is loaded from a
+multi-user configuration — any follow entry (enabled or disabled), or even an
+explicitly empty follows list — or a second account exists, the migration no
+longer applies and absence of an entry means not-following.
 
 An empty whitelist (or disabling all entries) stops **new** copy entries only.
 Existing open positions keep their protective exits, reconciliation, and risk
