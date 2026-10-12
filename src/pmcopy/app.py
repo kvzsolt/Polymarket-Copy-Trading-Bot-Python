@@ -73,6 +73,7 @@ from pmcopy.services.multiUserConfig import (
     UserFollowConfig,
     load_runtime_users,
 )
+from pmcopy.services.copierConfig import select_runtime_copiers
 from pmcopy.storage.postgres.leaders_repo import LeadersRepo
 from pmcopy.utils.getMyBalance import get_my_balance
 from pmcopy.utils.log_redaction import register_config_secrets
@@ -1468,6 +1469,7 @@ async def _run_application(
     *,
     startup_policy: TraderStartupPolicy | None = None,
     evidence_runtime: Any | None = None,
+    copier: str | None = None,
 ) -> int:
     """Run one fully composed application under a leader startup policy."""
     startup_policy = startup_policy or TraderStartupPolicy()
@@ -1645,7 +1647,16 @@ async def _run_application(
         from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
         from pmcopy.storage.postgres.connection import get_pool as get_auto_trader_pool
 
-        auto_runtime_users = load_runtime_users([], application.config)
+        # Task 22 — the --copier selector limits routing AND runtime
+        # ownership, so it is applied at BOTH roster load sites before any
+        # account runtime or lease exists.
+        try:
+            auto_runtime_users = select_runtime_copiers(
+                load_runtime_users([], application.config), copier
+            )
+        except ValueError as exc:
+            print_error(str(exc))
+            return 1
         auto_traders = AutoTraderRuntime.create(
             application=application, pool=await get_auto_trader_pool(), users=auto_runtime_users
         )
@@ -1734,11 +1745,20 @@ async def _run_application(
         )
         return 1
 
-    runtime_users = (
-        auto_runtime_users
-        if auto_runtime_users is not None
-        else load_runtime_users(active_leaders, application.config)
-    )
+    try:
+        runtime_users = select_runtime_copiers(
+            (
+                auto_runtime_users
+                if auto_runtime_users is not None
+                else load_runtime_users(active_leaders, application.config)
+            ),
+            copier,
+        )
+    except ValueError as exc:
+        # An unknown --copier id must fail closed here: never start an
+        # unexpected subset of accounts (addon §7 partial-startup policy).
+        print_error(str(exc))
+        return 1
     if not runtime_users:
         print_error("No runtime users configured.")
         return 1
@@ -2767,11 +2787,13 @@ async def _close_polymarket_clients(clients: list[Any]) -> None:
             )
 
 
-async def main(*, auto_trader: bool = False) -> int:
+async def main(*, auto_trader: bool = False, copier: str | None = None) -> int:
     """Run the application while owning every created Polymarket client.
 
     Args:
         auto_trader: Use durable automatic membership and degradation-driven rotation.
+        copier: Optional copier id selector (``--copier``); limits routing and
+            runtime ownership to that single configured copier.
 
     Returns:
         Process exit code.
@@ -2781,6 +2803,7 @@ async def main(*, auto_trader: bool = False) -> int:
         return await _run_application(
             clients,
             startup_policy=TraderStartupPolicy(auto_trader=auto_trader),
+            copier=copier,
         )
     finally:
         await _close_polymarket_clients(clients)

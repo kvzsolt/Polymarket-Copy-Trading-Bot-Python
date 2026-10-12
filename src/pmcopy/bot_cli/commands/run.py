@@ -21,27 +21,40 @@ def register_run_command(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Restore the automatic DB roster; discover initially or after degradation",
     )
+    parser.add_argument(
+        "--copier",
+        metavar="ID",
+        default=None,
+        help=(
+            "Start only the named configured copier (limits routing AND "
+            "runtime ownership); default runs every enabled copier"
+        ),
+    )
 
 
-async def _run_bot(*, auto_trader: bool = False) -> int:
+async def _run_bot(*, auto_trader: bool = False, copier: str | None = None) -> int:
     """Delegate to app.py without a CLI mode override.
 
     The previous ``--live`` flag could conflict with the environment master
     switch and create two sources of truth.  Missing/unknown configuration now
     always remains paper mode; live also requires the database control to be
-    explicitly resumed.
+    explicitly resumed.  ``copier`` is the Task 22 roster selector: it filters
+    the loaded copiers to one id before any account runtime is constructed.
     """
     # Propagate app.main()'s exit code so a non-zero (fail-closed) app exit
     # surfaces through ``run_run`` → CLI runner → ``sys.exit`` instead of
     # being swallowed and reported as success (P2-q).
     from pmcopy.app import main as app_main
 
-    code = await app_main(auto_trader=auto_trader)
+    code = await app_main(auto_trader=auto_trader, copier=copier)
     return int(code) if code is not None else 0
 
 
 async def _run_run_async(args: argparse.Namespace) -> int:
-    return await _run_bot(auto_trader=bool(args.auto_trader))
+    return await _run_bot(
+        auto_trader=bool(args.auto_trader),
+        copier=getattr(args, "copier", None),
+    )
 
 
 def run_run(args: argparse.Namespace) -> int:

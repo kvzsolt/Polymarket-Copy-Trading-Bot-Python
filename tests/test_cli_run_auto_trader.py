@@ -45,7 +45,7 @@ async def test_run_forwards_auto_trader_flag_to_application(
     result = await run_command._run_bot(auto_trader=True)
 
     assert result == 0
-    mocked_main.assert_awaited_once_with(auto_trader=True)
+    mocked_main.assert_awaited_once_with(auto_trader=True, copier=None)
 
 
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, asyncio.CancelledError])
@@ -59,9 +59,9 @@ def test_run_run_returns_zero_on_operator_interrupt(
     that to exit code 0 like ``python app.py`` already does.
     """
 
-    async def interrupted_main(*, auto_trader: bool) -> int:
+    async def interrupted_main(*, auto_trader: bool, copier: str | None = None) -> int:
         raise interrupt()
 
     monkeypatch.setattr("pmcopy.app.main", interrupted_main)
-    args = argparse.Namespace(auto_trader=False)
+    args = argparse.Namespace(auto_trader=False, copier=None)
     assert run_command.run_run(args) == 0
