@@ -192,7 +192,6 @@ async def test_reads_composition_maps_accounts_ledgers_and_market_stores() -> No
         configured_leaders=("0xLEADER1",),
         monitored_leaders=lambda: tuple(monitored),
         detection_counters=DetectionTelemetryEmitter(None),
-        pending_stats=lambda: None,
         portfolio_cache=None,
     )
 

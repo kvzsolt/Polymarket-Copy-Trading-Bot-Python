@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from integrations.polymarket.models import VenueCancelResult, VenueOrderState
-from services.control_plane.contracts import EntryControlState
-
-
-NOW = datetime(2026, 8, 12, 16, 0, tzinfo=UTC)
 
 
 class FakeGateway:
@@ -63,19 +57,6 @@ class RecordingTelemetry:
         return object()
 
 
-def state(*, entries_paused: bool, full_stop: bool) -> EntryControlState:
-    """Return deterministic durable runtime control state."""
-
-    return EntryControlState(
-        entries_paused=entries_paused,
-        full_stop=full_stop,
-        revision=2,
-        reason_code="runtime.full_stop" if full_stop else "operator_pause",
-        updated_at=NOW,
-        updated_by="operator-a",
-    )
-
-
 @pytest.mark.asyncio
 async def test_entry_pause_does_not_cancel_protective_order_capacity() -> None:
     """Only a full stop cancels resting orders; entry pause remains risk-reducing."""
@@ -86,7 +67,7 @@ async def test_entry_pause_does_not_cancel_protective_order_capacity() -> None:
     telemetry = RecordingTelemetry()
     signal = TradingControlRuntimeSignal(gateways=(gateway,), telemetry=telemetry)
 
-    await signal.apply(state(entries_paused=True, full_stop=False))
+    await signal.apply(entries_paused=True, full_stop=False)
 
     assert gateway.list_calls == 0
     assert gateway.cancel_calls == []
@@ -106,7 +87,7 @@ async def test_full_stop_cancels_every_resting_order_across_accounts() -> None:
         telemetry=RecordingTelemetry(),
     )
 
-    await signal.apply(state(entries_paused=True, full_stop=True))
+    await signal.apply(entries_paused=True, full_stop=True)
 
     assert first.cancel_calls == ["order-a", "order-b"]
     assert second.cancel_calls == ["order-c"]
@@ -127,7 +108,7 @@ async def test_full_stop_attempts_all_cancels_then_reports_failure() -> None:
     )
 
     with pytest.raises(RuntimeSafetyApplyError, match="resting order"):
-        await signal.apply(state(entries_paused=True, full_stop=True))
+        await signal.apply(entries_paused=True, full_stop=True)
 
     assert first.cancel_calls == ["order-a", "order-b"]
     assert second.cancel_calls == ["order-c"]
