@@ -204,8 +204,17 @@ Exit code: **0** — 4.3s, no output (quiet success), matches the CI step.
 
 Command: `pip-audit -r requirements.txt --no-deps` (advisory DB reachable —
 NOT recorded as unverified).
-Exit code: **1 — 1 known vulnerability found** (recorded as an OPEN finding,
-not clean, not unverified):
+
+**2026-10-13 re-run (after the ccxt 4.5.87 bump): exit 0 — "No known
+vulnerabilities found". RESOLVED.** Cross-checked with `uv audit`
+(experimental, preview): "Found no known vulnerabilities and no adverse
+project statuses in 73 packages". Provenance: ccxt 4.5.87's requires_dist
+re-pins `multidict==6.9.1`; the lock and both requirements exports carry
+`multidict==6.9.1` (> affected range 6.7.0–6.9.0).
+
+Original finding at the 2026-10-12 audit (now fixed): exit **1 — 1 known
+vulnerability found** (recorded as an OPEN finding, not clean, not
+unverified):
 
 | Package | Version | Advisory | Fix versions |
 |---|---|---|---|
@@ -215,13 +224,15 @@ not clean, not unverified):
   subtraction (`d.items() | x`, `d.items() - x`) — memory-exhaustion class,
   not RCE; requires those specific operations over attacker-influenced
   sequences.
-- Remediation **blocked upstream**: `ccxt==4.5.85` (the mandated, exact-pinned
-  trading transport) itself pins `multidict==6.7.1` exactly
-  (`uv lock --upgrade-package "multidict==6.9.1"` → `No solution found`);
-  4.5.85 is the newest 4.5.x release. Fix path: bump ccxt when a release
-  carries `multidict>=6.9.1`, then regenerate the requirements exports.
-- Exposure until then: low — the bot's aiohttp usage is market-data/account
-  reads; no code path performs items-view union/subtraction on remote data.
+- Remediation **was blocked upstream**: `ccxt==4.5.85` (the mandated,
+  exact-pinned trading transport) itself pinned `multidict==6.7.1` exactly
+  (`uv lock --upgrade-package "multidict==6.9.1"` → `No solution found`).
+  Resolved 2026-10-13 by the bump to `ccxt==4.5.87` (polymarket module
+  byte-identical to 4.5.85 — zero adapter-behavior change), which carries
+  `multidict==6.9.1`; lock delta verified to move ONLY ccxt and multidict.
+- Exposure in the interim was low — the bot's aiohttp usage is
+  market-data/account reads; no code path performs items-view
+  union/subtraction on remote data.
 
 ### Secret scan over tracked files
 
@@ -333,5 +344,8 @@ feature tasks (orders/leases/evidence), not the refactor.
 
 Toolchain now: Python 3.14.6, pytest 9.1.1, pytest-asyncio 1.4.0, rich 14.3.4,
 asyncpg 0.32.0, web3 7.16.0, aiohttp 3.14.5, httpx 0.28.1, pydantic 2.14.1,
-ccxt 4.5.85. (The root `CLAUDE.md` working copy was updated to 4.5.85 in the
-Task 26 docs pass; the actual pin in `pyproject.toml` is `ccxt==4.5.85`.)
+ccxt 4.5.87 (bumped from 4.5.85 on 2026-10-13 — multidict CVE remediation,
+adapter module byte-identical; only ccxt + multidict moved in `uv.lock`).
+(The root `CLAUDE.md` working copy was updated to 4.5.85 in the
+Task 26 docs pass and to 4.5.87 with the CVE bump; the actual pin in
+`pyproject.toml` is `ccxt==4.5.87`.)

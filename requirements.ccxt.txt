@@ -7,4 +7,4 @@
 # requirements.runtime.txt, so a normal install already provides it. This file
 # is kept only as the standalone pinned constraint for targeted installs (e.g.
 # manually targeted installs). Keep the specifier identical to pyproject.toml.
-ccxt==4.5.85
+ccxt==4.5.87

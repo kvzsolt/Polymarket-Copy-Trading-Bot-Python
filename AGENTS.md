@@ -96,7 +96,7 @@ pinned-release behavior against it when planning upgrades.
   — secret-free by design, wallet fields are env-var references). The
   v1 JSON roster (`app.multi_user_config_file`) still exists; combining the
   two is a configuration error.
-- Python 3.14 only (`>=3.14,<3.15`); ccxt is pinned `==4.5.85`.
+- Python 3.14 only (`>=3.14,<3.15`); ccxt is pinned `==4.5.87`.
 
 ## Polymarket execution work
 

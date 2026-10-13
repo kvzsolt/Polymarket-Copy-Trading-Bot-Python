@@ -17,7 +17,9 @@ dependencies = [
   "eth-account==0.13.7",
   # CCXT prediction namespace is the only Polymarket venue transport.
   # Keep the exact behavior-verified release synchronized with install exports.
-  "ccxt==4.5.85",
+  # 4.5.87: polymarket.py byte-identical to 4.5.85; re-pins multidict==6.9.1
+  # (remediates CVE-2026-104874, affected 6.7.0-6.9.0).
+  "ccxt==4.5.87",
   "rich==14.3.4",
   "websockets>=13.0",
   "asyncpg>=0.30.0",

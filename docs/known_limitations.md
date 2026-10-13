@@ -144,13 +144,10 @@ acceptance matrix; see `docs/refactor/handoff.md`).
 
 ## 7. Dependency and toolchain limitations (2026-10 standalone refactor)
 
-- **multidict CVE-2026-104874 is OPEN**: the lock resolves
-  `multidict==6.7.1`, and remediation (6.9.1) is blocked because
-  `ccxt==4.5.85` (the behavior-verified exact pin) itself pins
-  `multidict==6.7.1`. Exposure is low — the bot's aiohttp usage is
-  market-data/account reads and no code path performs items-view
-  union/subtraction on remote data. Fix path: bump ccxt when a release
-  carries `multidict>=6.9.1`, then regenerate the requirements exports.
+- **multidict CVE-2026-104874 RESOLVED (2026-10-13)**: the ccxt bump to
+  `==4.5.87` (polymarket module byte-identical to 4.5.85) re-pins
+  `multidict==6.9.1`, above the affected range (6.7.0–6.9.0); the lock and
+  both requirements exports carry 6.9.1.
 - **coincurve is absent on Python 3.14**: ccxt's own dependency marker
   excludes it (`python_version < "3.14"`), and coincurve 21.0.0 ships no
   cp314 wheels. Signing runs on `eth_keys`' pure-Python `NativeECCBackend`

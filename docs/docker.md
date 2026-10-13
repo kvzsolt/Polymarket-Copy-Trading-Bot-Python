@@ -4,7 +4,7 @@ The image is a multi-stage build on `python:3.14.6-slim-bookworm` — the exact
 interpreter patch the test suite runs on (the application targets Python 3.14
 only). The builder stage compiles the pure-Python wheel from the checkout; the
 runtime stage installs that wheel plus the pinned runtime requirements from
-`requirements.runtime.txt` (generated from `uv.lock`), including CCXT 4.5.85.
+`requirements.runtime.txt` (generated from `uv.lock`), including CCXT 4.5.87.
 The runtime stage never contains the source tree: `pmcopy`, its console entry
 point, and the packaged config YAML tree install into site-packages and are
 resolved through `importlib.resources` (no `PYTHONPATH` shadowing). Build

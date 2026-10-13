@@ -16,7 +16,7 @@ the SDD ledger + per-task reports under
 code:
 
 - CCXT-only venue transport (`ccxt.prediction.polymarket`, exact pin
-  `4.5.85`) behind `ClobGateway`; live adapter `CcxtPredictionGateway`,
+  `4.5.87`) behind `ClobGateway`; live adapter `CcxtPredictionGateway`,
   paper adapter `PaperExecutionGateway` (CCXT public reads + local
   simulated writes). Paper can never invoke a CCXT private write.
 - All confirmed audit defects A01–A14 fixed with failing-then-passing
@@ -89,7 +89,8 @@ applying cleanly).
     v2; strict since Task 14);
   - the instance-local arbitrary-tick precision patch in the CCXT adapter
     (removal condition: upstream stops hard-coding the tick table in
-    raw-amounts — 4.5.85 still does);
+    raw-amounts — 4.5.87 still does; polymarket module byte-identical
+    to 4.5.85);
   - `requirements.ccxt.txt` as the standalone pinned constraint for
     targeted installs;
   - kept control-plane-era infrastructure that is control-plane-free:
@@ -148,7 +149,7 @@ confirmed and fixed:
 | Component | Version |
 |---|---|
 | Python | **3.14.6** (CPython; `>=3.14,<3.15` enforced) |
-| ccxt | **4.5.85** (exact pin; minimum for the prediction namespace `>=4.5.73,<5`) |
+| ccxt | **4.5.87** (exact pin; minimum for the prediction namespace `>=4.5.73,<5`; bumped from 4.5.85 on 2026-10-13 for the multidict CVE — adapter module byte-identical) |
 | uv | 0.11.31 (pinned generator/CI version) |
 | pytest / pytest-asyncio | 9.1.1 / 1.4.0 |
 | rich / asyncpg / web3 / eth-account | 14.3.4 / 0.32.0 / 7.16.0 / 0.13.7 |
@@ -160,20 +161,24 @@ confirmed and fixed:
   reports byte-exact agreement (exit 0) and is CI-gated. `h2==4.4.1` +
   `hpack==4.2.0` are resolved coherently everywhere (the Dependabot
   half-bump is superseded). Runtime `pip check`: all 71 packages compatible.
-- **Open advisory (blocker, documented)**: `multidict 6.7.1` —
+- **Advisory RESOLVED (2026-10-13)**: `multidict 6.7.1` —
   CVE-2026-104874 (memory-exhaustion class in items-view union/subtraction).
-  Remediation is blocked because `ccxt==4.5.85` itself pins
-  `multidict==6.7.1` exactly. Exposure is low (no code path performs those
-  operations on remote data). Fix path: bump ccxt when a release carries
-  `multidict>=6.9.1`, then regenerate exports. Recorded OPEN in
-  `verification-matrix.md`, never as clean.
+  Resolved by the ccxt bump `4.5.85 -> 4.5.87` (adapter module
+  byte-identical, zero behavior change): ccxt 4.5.87's requires_dist
+  re-pins `multidict==6.9.1`, above the affected range 6.7.0–6.9.0. The
+  lock and both requirements exports now carry `multidict==6.9.1`;
+  re-audits (`uv audit` and `pip-audit -r requirements.txt --no-deps`,
+  advisory DBs reachable) report zero known vulnerabilities. Previously
+  recorded OPEN while `ccxt==4.5.85` pinned `multidict==6.7.1` exactly.
 - **Compatibility blocker (intentional)**: `coincurve` is absent on Python
   3.14 (ccxt's own `<3.14` marker; no cp314 wheels exist). Signing uses
   `eth_keys`' pure-Python `NativeECCBackend`: measured 3.08 ms/sign raw,
   5.32 ms/sign EIP-191 (20-iteration means) — correct, slower.
 - **Deferred upgrades (documented in Task 16 report)**: web3 8.x (requires
   eth-account>=0.14 + breaking API), rich 15.x, websockets 16/17 (need
-  web3 8), orjson >3.11.9 and uvloop >0.22.1 (ccxt exact pins).
+  web3 8), uvloop >0.22.1 (ccxt exact pin; still `==0.22.1` in 4.5.87) and
+  orjson >3.11.9 (ccxt 4.5.87 loosened this to `>=3.11.9,<4`, so an
+  orjson-only re-lock upgrade is now possible; not taken in the CVE bump).
 - **Docker base metadata (registry-verified 2026-10-11/12)**:
   `python:3.14.6-slim-bookworm` — linux/amd64
   `sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4`,

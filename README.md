@@ -40,7 +40,7 @@ exposes only a loopback health/metrics endpoint for supervision.
 ## Stack
 
 - **Python** 3.14 only (`>=3.14,<3.15`); 3.11–3.13 are unsupported.
-- **Venue transport** `ccxt==4.5.85` (`ccxt.prediction.polymarket`) behind a
+- **Venue transport** `ccxt==4.5.87` (`ccxt.prediction.polymarket`) behind a
   typed gateway; paper mode uses CCXT for public market reads and a local
   simulator for writes.
 - **Persistence** PostgreSQL (orders, fills, positions, reservations,
