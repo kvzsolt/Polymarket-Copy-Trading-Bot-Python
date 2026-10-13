@@ -97,7 +97,7 @@ FAKE_TOKEN_ID = "713210456792522125946263855327069127503327285719425322235357647
 @contextlib.asynccontextmanager
 async def _pg_pool():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import asyncpg
 import pytest
-from testcontainers.community.postgres import PostgresContainer
+from tests.integration_postgres import PostgresContainer
 
 from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader
 from pmcopy.storage.postgres.auto_trader_repository import PostgresAutoTraderRepository

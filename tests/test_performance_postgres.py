@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from tests.integration_postgres import PostgresContainer
 
 from pmcopy.services.leader_performance import FollowerLeaderKey
 from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo

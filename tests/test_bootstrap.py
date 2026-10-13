@@ -38,7 +38,7 @@ async def _pg_container():
     ``storage.postgres.connection`` singleton so ``build_app`` brings
     its own pool online cleanly."""
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         from pmcopy.storage.postgres import connection as conn_mod
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")

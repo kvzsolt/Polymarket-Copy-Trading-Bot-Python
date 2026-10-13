@@ -39,7 +39,7 @@ async def _pg_pool():
     """
     try:
         import asyncpg
-        from testcontainers.community.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
     except Exception as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"testcontainers/asyncpg unavailable: {exc!r}")
     try:
@@ -86,6 +86,11 @@ async def test_v1_migration_is_idempotent_across_two_runs() -> None:
                 row["migration_id"]
                 for row in await conn.fetch("SELECT migration_id FROM app_schema_migrations")
             }
+            # Exact pin of the applied catalog (base trader-discovery migration
+            # + the 13 packaged v1 migrations in filename order). Added entries:
+            # 20260917_11 (evidence outbox, Task 6), 20261011_12 (order
+            # submission identity, Task 9), 20261011_13 (account execution
+            # leases, Task 21). Update this pin together with the catalog.
             assert migration_ids == {
                 "20260808_01_copy_tasks_and_reentry_locks",
                 "20260811_02_copy_task_execution_lifecycle",
@@ -97,6 +102,9 @@ async def test_v1_migration_is_idempotent_across_two_runs() -> None:
                 "20260916_08_position_lifecycle",
                 "20260916_09_redemption_attempts",
                 "20260916_10_auto_trader",
+                "20260917_11_evidence_transaction_outbox",
+                "20261011_12_order_submission_identity",
+                "20261011_13_account_execution_leases",
                 "trader_discovery_single_generation_20260713",
             }
 

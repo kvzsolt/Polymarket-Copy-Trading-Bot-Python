@@ -91,7 +91,7 @@ def leader_buy_event(*, tx_hash: str, usdc: str = "100", price: str = "0.5") -> 
 @contextlib.asynccontextmanager
 async def _pg_pool():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
     except Exception as exc:  # pragma: no cover
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")

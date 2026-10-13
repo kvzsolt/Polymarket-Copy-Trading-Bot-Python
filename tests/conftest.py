@@ -86,12 +86,15 @@ def _run_unit_thread_work_inline(
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Keep Docker/Testcontainers tests out of the portable default tier.
+    """Keep Docker-backed tests out of the portable default tier.
 
     Several historical tests instantiated ``PostgresContainer`` but forgot an
     integration marker, making a plain ``pytest`` depend on a Docker socket.
-    Classify by source dependency so new Testcontainers tests cannot repeat the
-    same mistake.
+    Classify by source dependency so new Docker-backed tests cannot repeat the
+    same mistake. The shared-fixture module (``tests.integration_postgres``,
+    Task 25) replaced testcontainers as the Postgres provider, so imports of
+    it are classified the same way; the testcontainers checks remain so any
+    future reintroduction of per-test containers is also caught.
     """
     source_cache: dict[Path, bool] = {}
     for item in items:
@@ -101,7 +104,14 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 source = path.read_text(encoding="utf-8")
             except OSError:
                 source = ""
-            source_cache[path] = "testcontainers" in source or "PostgresContainer" in source
+            source_cache[path] = any(
+                marker in source
+                for marker in (
+                    "testcontainers",
+                    "PostgresContainer",
+                    "integration_postgres",
+                )
+            )
         if source_cache[path]:
             item.add_marker(pytest.mark.integration)
 

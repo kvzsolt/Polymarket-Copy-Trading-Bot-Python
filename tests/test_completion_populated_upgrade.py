@@ -5,7 +5,7 @@ from pathlib import Path
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from tests.integration_postgres import PostgresContainer
 
 from pmcopy.storage.postgres import migrations
 from pmcopy.storage.postgres.v1_migration_runner import PostgresV1MigrationRunner, V1MigrationCatalog

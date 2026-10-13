@@ -92,7 +92,7 @@ async def test_startup_apply_migrations_creates_v1_tables_from_empty_schema() ->
     """
     try:
         import asyncpg
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
     except Exception as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"testcontainers/asyncpg unavailable: {exc!r}")
     try:

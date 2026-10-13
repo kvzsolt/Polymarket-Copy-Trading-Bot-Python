@@ -90,7 +90,7 @@ async def _pg_pool():
 
     try:
         import asyncpg
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
 
         from pmcopy.storage.postgres.migrations import apply_migrations
     except Exception as exc:

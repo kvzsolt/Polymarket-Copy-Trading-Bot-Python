@@ -1,9 +1,10 @@
 """Release gate: Postgres schema migration produces the expected tables.
 
-Spins up an ephemeral ``postgres:16-alpine`` container via
-testcontainers, applies ``storage.postgres.migrations.apply_migrations``,
-and asserts every table from the previous SQLite schema exists with
-the right shape.
+Applies ``storage.postgres.migrations.apply_migrations`` against a fresh
+database inside the ONE shared integration Postgres container
+(``tests.integration_postgres`` — Task 25 anti-churn fixture; no
+disposable container per run) and asserts every table from the previous
+SQLite schema exists with the right shape.
 
 Pins the schema contract so a future refactor that drops a table or
 renames a column breaks the gate immediately.
@@ -17,11 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-# Skip the whole module if Docker is unreachable. ``testcontainers`` will
-# raise on first container startup, but we want a clean skip message
-# rather than a stacktrace in CI environments where Docker is genuinely
-# absent.
-pytest.importorskip("testcontainers.postgres")
+# Skip the whole module if the shared-fixture machinery (or Docker behind
+# it) is unreachable: a clean skip message beats a stacktrace where Docker
+# is genuinely absent.
+pytest.importorskip("tests.integration_postgres", reason="shared integration Postgres fixture unavailable")
 
 
 _EXPECTED_TABLES = {
@@ -76,7 +76,7 @@ _REMOVED_DISCOVERY_TABLES = {
 @pytest.fixture(scope="module")
 def _pg_container():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
 
         ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()

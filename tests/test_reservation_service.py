@@ -28,7 +28,7 @@ from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 @contextlib.asynccontextmanager
 async def _pg_pool():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:

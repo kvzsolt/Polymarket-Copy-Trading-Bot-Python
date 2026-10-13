@@ -122,7 +122,7 @@ async def _pg_dsn():
     """Spin a Postgres testcontainer and yield its asyncpg DSN. Auto-skips
     when Docker / the image is unavailable."""
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
     except Exception as exc:  # pragma: no cover - env without docker
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
     try:
@@ -203,7 +203,7 @@ async def test_server_side_timeouts_applied_on_live_connection():
 @contextlib.asynccontextmanager
 async def _pg_pool():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover

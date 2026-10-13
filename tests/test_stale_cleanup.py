@@ -15,7 +15,7 @@ async def _pg_pool():
     """Spin a Postgres testcontainer + return a pool with the full
     schema applied. Auto-skips when Docker is unavailable."""
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:

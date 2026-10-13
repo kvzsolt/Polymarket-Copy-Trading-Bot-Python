@@ -60,7 +60,7 @@ _IDEMPOTENCY_KEY = "copy:leader-1:event-1"
 async def _pg_pool():
     """Spin a Postgres testcontainer and apply the full schema."""
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:  # pragma: no cover - dependency guard

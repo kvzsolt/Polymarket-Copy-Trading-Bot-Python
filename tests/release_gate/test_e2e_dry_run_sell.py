@@ -27,7 +27,7 @@ from tests.conftest import make_clob_gateway
 @contextlib.asynccontextmanager
 async def _pg_pool():
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:

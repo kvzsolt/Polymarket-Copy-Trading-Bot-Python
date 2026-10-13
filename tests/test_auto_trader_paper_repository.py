@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal as D
 
 import asyncpg
-from testcontainers.community.postgres import PostgresContainer
+from tests.integration_postgres import PostgresContainer
 
 from pmcopy.domain.auto_trader import AutoTraderScope
 from pmcopy.domain.paper_evaluation import PaperFill, PaperLedger

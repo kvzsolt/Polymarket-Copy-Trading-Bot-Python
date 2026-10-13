@@ -30,7 +30,7 @@ async def _pg_pool():
     """Spin a Postgres testcontainer + return a pool with the full
     schema applied. Auto-skips when Docker is unavailable."""
     try:
-        from testcontainers.postgres import PostgresContainer
+        from tests.integration_postgres import PostgresContainer
         import asyncpg
         from pmcopy.storage.postgres.migrations import apply_migrations as pg_apply
 
@@ -195,7 +195,7 @@ async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:
     """End-to-end `run_stale_locks` against a live PG testcontainer."""
     from types import SimpleNamespace
 
-    from testcontainers.postgres import PostgresContainer
+    from tests.integration_postgres import PostgresContainer
     import asyncpg
 
     from pmcopy.storage.postgres.connection import shutdown_pool

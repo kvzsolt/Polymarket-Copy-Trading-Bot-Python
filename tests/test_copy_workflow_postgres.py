@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import json
 import logging
 import pytest
-from testcontainers.postgres import PostgresContainer
+from tests.integration_postgres import PostgresContainer
 
 from pmcopy.config.app_config import load_config
 from pmcopy.config.env import WalletConfig
