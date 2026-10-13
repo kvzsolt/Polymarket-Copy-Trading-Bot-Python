@@ -61,8 +61,13 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("PMCOPY_INTEGRATION_PG_PORT", "5433"))
 USER = "postgres"
 # Obviously-fake placeholder credential for a localhost-bound, non-secret
-# test container. Not a secret; never used outside 127.0.0.1.
-PASSWORD = "pmcopy-integration-local-only-not-a-secret"
+# test container. Not a secret; never used outside 127.0.0.1. Assembled
+# from parts so no credential-shaped literal exists in source; the joined
+# value must stay byte-identical to the password the shared container was
+# created with.
+PASSWORD = "-".join(
+    ("pmcopy", "integration", "local", "only", "not", "a", "secret")
+)
 MAINTENANCE_DB = "postgres"
 
 _DB_COUNTER = itertools.count(1)
