@@ -195,6 +195,7 @@ class ExecutionCoordinator:
         position_coordinator: Any | None = None,
         latency: PipelineLatency | None = None,
         copy_admission: CopyAdmission | None = None,
+        position_drift_service: Any | None = None,
     ) -> None:
         self.reservation_service = reservation_service
         self.positions_repo = positions_repo
@@ -216,8 +217,11 @@ class ExecutionCoordinator:
         self._latency = latency
         self._copy_admission = copy_admission
         self.leader_sell_target_service: object | None = None
-        # PR7 — wired per-context by ``build_trading_context``.
-        self.position_drift_service: Any | None = None
+        # PR7 — the account-owned drift gate (one PositionDriftService per
+        # user, built in ``build_user_state``). Injected at construction
+        # with the same wiring contract as ``position_coordinator``:
+        # per-binding rewiring of this attribute is forbidden.
+        self.position_drift_service = position_drift_service
         # Cache the underlying reservations repo for direct order-id lookups.
         self.reservations_repo = (
             None

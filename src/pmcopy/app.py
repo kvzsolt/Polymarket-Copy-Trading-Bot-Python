@@ -1778,13 +1778,12 @@ async def _run_application(
     await _connect_db()
 
     from pmcopy.storage.postgres.connection import get_pool
-    from pmcopy.storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    _max_age = float(application.config.app.retention_max_age_seconds)
     # Acquire the pool first so it's available to the per-user wiring below
-    # even when the (non-critical) purge step fails. Previously `_pool` was
-    # scoped inside the try/except, so a degraded purge would NameError on
-    # the subsequent `build_user_state(..., _pool, ...)` reference.
+    # even when the (non-critical, post-lease) purge step fails. Previously
+    # `_pool` was scoped inside the try/except, so a degraded purge would
+    # NameError on the subsequent `build_user_state(..., _pool, ...)`
+    # reference.
     _pool = await get_pool()
     from pmcopy.adapters.clock import SystemReceiptClock
     from pmcopy.orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
@@ -1816,15 +1815,6 @@ async def _run_application(
     leader_sell_scope_guard = LeaderSellScopeGuard(
         store=LeaderSellSafetyScopeRepo(_pool),
     )
-    try:
-        purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
-    except RuntimeError:
-        # Defensive: should not fire now that connect_db() runs above,
-        # but kept so a degraded PG init does not block startup on a
-        # non-critical purge.
-        purged = 0
-    if purged:
-        logger.info("Startup cleanup: purged %s stale records", purged)
 
     leaders_repo = auto_traders if auto_traders is not None else application.leaders_repo
     registry = application.registry
@@ -1876,6 +1866,25 @@ async def _run_application(
     # worker start deliberately does not).
     if evidence_drain is not None:
         await evidence_drain.start()
+
+    # Follow-up fix: the retention purge is a shared-database WRITE, so it
+    # runs only AFTER every account lease is acquired (mirroring the drain
+    # ordering above): a doomed second process (lease refused) must never
+    # delete rows from the shared database. Skipping the purge on the
+    # refused path needs no cleanup — stale rows simply survive until the
+    # next lease-holding start.
+    from pmcopy.storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
+
+    _max_age = float(application.config.app.retention_max_age_seconds)
+    try:
+        purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
+    except RuntimeError:
+        # Defensive: should not fire now that connect_db() runs above,
+        # but kept so a degraded PG init does not block startup on a
+        # non-critical purge.
+        purged = 0
+    if purged:
+        logger.info("Startup cleanup: purged %s stale records", purged)
 
     for runtime_user in runtime_users:
         venue_runtime = await build_polymarket_runtime(

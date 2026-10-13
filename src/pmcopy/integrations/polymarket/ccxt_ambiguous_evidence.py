@@ -412,7 +412,10 @@ class CcxtAmbiguousEvidenceSource:
         exactly; a SELL submission's ``amount`` is outcome shares, so the
         aggregate share ``sum(size)`` must account for it exactly.  The two
         aggregates are never interchangeable — a 1-share SELL must not
-        match a 2-share aggregate whose quote happens to equal 1.
+        match a 2-share aggregate whose quote happens to equal 1.  A unit
+        that is neither exactly QUOTE nor SHARES (legacy ``None``, corrupt
+        or synthetic value) selects no comparison basis at all and fails
+        closed instead of guessing the share aggregate.
         """
 
         amount = submission.amount
@@ -429,7 +432,9 @@ class CcxtAmbiguousEvidenceSource:
             total_quote += size * price
         if submission.amount_unit is SubmissionAmountUnit.QUOTE:
             return _close(total_quote, amount)
-        return _close(total_size, amount)
+        if submission.amount_unit is SubmissionAmountUnit.SHARES:
+            return _close(total_size, amount)
+        return False
 
     def _unit_identity_verified(self, submission: AmbiguousSubmission) -> bool:
         """Whether the submission's amount unit is present and side-coherent.

@@ -44,6 +44,7 @@ from typing import Any
 
 import asyncpg
 
+from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock
 from pmcopy.ports.repositories import AbstractOrderRepository
 from pmcopy.services.execution.ambiguous_recovery import (
     AmbiguousRecoveryProgress,
@@ -76,6 +77,10 @@ _FAILURE_STATES = {
 }
 _RETRYABLE_FAILED_STATUS = "retryable_failed"
 _LEGACY_RETRY_PREFIXES = ("retryable_failed_", "retry_pending_")
+
+# Observability-only TTL window for the legacy blank-user quarantine count
+# queries: at most one ``SELECT count(*)`` + WARNING per scope per window.
+_DEFAULT_QUARANTINE_COUNT_TTL_SECONDS = 60.0
 
 _PROCESSED_TRADE_TERMINAL_STATES = [
     "executed",
@@ -366,8 +371,40 @@ def _row_to_ambiguous_submission(row: Any) -> AmbiguousSubmission:
 class OrdersRepo(AbstractOrderRepository):
     """Persist order and idempotency state in PostgreSQL."""
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        quarantine_count_clock: MonotonicClock | None = None,
+        quarantine_count_ttl_seconds: float = _DEFAULT_QUARANTINE_COUNT_TTL_SECONDS,
+    ):
         self._pool = pool
+        # Pure-observability throttle: the legacy blank-user quarantine count
+        # (``SELECT count(*)`` + WARNING) used to run on EVERY scoped
+        # unconfirmed call — one extra count query per recovery cycle per
+        # account for a log line.  At most one count per (scope, TTL window)
+        # now; the scoped query RESULTS are never affected because the
+        # count feeds only the log, never the returned rows.
+        self._quarantine_clock = (
+            quarantine_count_clock if quarantine_count_clock is not None else SystemMonotonicClock()
+        )
+        self._quarantine_ttl_seconds = max(float(quarantine_count_ttl_seconds), 0.0)
+        self._quarantine_counted_at: dict[str, float] = {}
+
+    def _quarantine_count_due(self, scope: str) -> bool:
+        """Whether the legacy-quarantine count query is due for ``scope``.
+
+        Marks the scope as counted BEFORE issuing the query so a slow count
+        cannot re-arm its own window; scopes are keyed independently (the
+        ambiguous-orders count and each side's processed-trades count).
+        """
+
+        now = self._quarantine_clock.monotonic()
+        last = self._quarantine_counted_at.get(scope)
+        if last is not None and (now - last) < self._quarantine_ttl_seconds:
+            return False
+        self._quarantine_counted_at[scope] = now
+        return True
 
     async def try_acquire_submission_lock(
         self,
@@ -806,9 +843,11 @@ class OrdersRepo(AbstractOrderRepository):
         one account's recovery batch is structurally scoped to its own rows:
         with N follower accounts, N recovery loops can never race over the
         same batch.  Legacy rows with a blank/NULL ``user_id`` are excluded
-        by the same predicate and counted once per call into a logged
-        quarantine reason pending provenance mapping
-        (``map_legacy_unowned_rows_to_provenance_owners``).  No age predicate
+        by the same predicate and counted into a logged quarantine reason
+        pending provenance mapping
+        (``map_legacy_unowned_rows_to_provenance_owners``) — an
+        observability-only count throttled to at most once per TTL window,
+        never a predicate on the returned batch.  No age predicate
         is applied here: the constructor-injected recovery clock owns the
         grace-period decision, which keeps that behavior fully deterministic
         in tests.  ``LIMIT`` still bounds the database and in-memory work for
@@ -841,14 +880,16 @@ class OrdersRepo(AbstractOrderRepository):
                 owner,
                 bounded_limit,
             )
-            quarantined_legacy = await conn.fetchval(
-                """
-                SELECT count(*) FROM orders
-                WHERE status = 'submitted_unconfirmed'
-                  AND order_id IS NULL
-                  AND COALESCE(user_id, '') = ''
-                """
-            )
+            quarantined_legacy = 0
+            if self._quarantine_count_due("ambiguous_orders"):
+                quarantined_legacy = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM orders
+                    WHERE status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                      AND COALESCE(user_id, '') = ''
+                    """
+                )
         if quarantined_legacy:
             logger.warning(
                 "ambiguous_recovery_legacy_rows_quarantined | count=%d "
@@ -1178,8 +1219,8 @@ class OrdersRepo(AbstractOrderRepository):
         """Persist normalized submission evidence idempotently."""
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)
-        token_id, amount_unit, order_kind, price_limit, correlation_ids = (
-            _order_identity_values(record.request_payload)
+        token_id, amount_unit, order_kind, price_limit, correlation_ids = _order_identity_values(
+            record.request_payload
         )
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -1617,7 +1658,9 @@ class OrdersRepo(AbstractOrderRepository):
         ''-user rows are NOT unioned into every user's pending set; they are
         excluded and counted into a logged quarantine reason pending the
         one-shot provenance mapping helper
-        (``map_legacy_unowned_rows_to_provenance_owners``).
+        (``map_legacy_unowned_rows_to_provenance_owners``) — an
+        observability-only count throttled to at most once per (side, TTL
+        window), never a predicate on the returned rows.
 
         Final-review fix (owed since T24): a blank/None ``user_id`` fails
         closed with ``ValueError`` — mirroring the sister method
@@ -1650,18 +1693,20 @@ class OrdersRepo(AbstractOrderRepository):
         query += " ORDER BY processed_at ASC"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
-            quarantined_legacy = await conn.fetchval(
-                """
-                SELECT count(*) FROM processed_trades
-                WHERE status = ANY($1::text[])
-                  AND side = $2
-                  AND (order_id IS NOT NULL OR processed_at <= $3)
-                  AND COALESCE(user_id, '') = ''
-                """,
-                list(_UNCONFIRMED_SUBMISSION_STATES),
-                side,
-                cutoff,
-            )
+            quarantined_legacy = 0
+            if self._quarantine_count_due(f"processed_trades:{side}"):
+                quarantined_legacy = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM processed_trades
+                    WHERE status = ANY($1::text[])
+                      AND side = $2
+                      AND (order_id IS NOT NULL OR processed_at <= $3)
+                      AND COALESCE(user_id, '') = ''
+                    """,
+                    list(_UNCONFIRMED_SUBMISSION_STATES),
+                    side,
+                    cutoff,
+                )
             if quarantined_legacy:
                 logger.warning(
                     "unconfirmed_trades_legacy_rows_quarantined | side=%s count=%d "

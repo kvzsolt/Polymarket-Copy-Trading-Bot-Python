@@ -119,9 +119,7 @@ async def test_two_ambiguous_recovery_calls_issue_one_quarantine_count() -> None
 async def test_quarantine_count_rearms_after_the_ttl_window() -> None:
     conn = _CountingConn()
     clock = _FakeClock()
-    repo = OrdersRepo(
-        _Pool(conn), quarantine_count_clock=clock, quarantine_count_ttl_seconds=60.0
-    )
+    repo = OrdersRepo(_Pool(conn), quarantine_count_clock=clock, quarantine_count_ttl_seconds=60.0)
 
     await repo.list_no_id_ambiguous_submissions(user_id="user-1", limit=5)
     await repo.list_no_id_ambiguous_submissions(user_id="user-1", limit=5)

@@ -554,7 +554,7 @@ async def test_sell_partial_fills_accumulate_by_shares() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fill_consistency_requires_an_exactly_known_unit() -> None:
+async def test_fill_consistency_requires_an_exactly_known_unit() -> None:
     """An aggregate may only match in the submission's EXACT unit.
 
     The comparison basis is decided by the recorded ``amount_unit``: QUOTE
@@ -587,11 +587,11 @@ def test_fill_consistency_requires_an_exactly_known_unit() -> None:
         _submission(side=SubmissionSide.BUY, amount=Decimal("20"), amount_unit=None),
         legs,
     )
-    synthetic_unit = object()
-    assert not source._fills_consistent_with_submission(
-        _submission(side=SubmissionSide.BUY, amount=Decimal("20"), amount_unit=synthetic_unit),
-        legs,
-    )
+    # A synthetic third unit (a future/corrupt value that slipped past the
+    # dataclass validation) selects no comparison basis either.
+    synthetic = _submission(side=SubmissionSide.BUY, amount=Decimal("20"), amount_unit=None)
+    object.__setattr__(synthetic, "amount_unit", "synthetic_unknown")
+    assert not source._fills_consistent_with_submission(synthetic, legs)
 
 
 # ---------------------------------------------------------------------------

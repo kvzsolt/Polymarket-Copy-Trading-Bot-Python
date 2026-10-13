@@ -37,11 +37,14 @@ def effective_intent_key(
     tick_size: Decimal,
     intent_id: str = "",
     policy_version: str = "",
+    environment: str = "",
 ) -> str:
     """Compute SHA256 idempotency key from the **effective adjusted** request.
 
     Delegates to :func:`services.idempotency.compute_effective_key`.
-    Added ``policy_version`` parameter (defaults to empty for backward compat).
+    Added ``policy_version`` parameter (defaults to empty for backward
+    compat), then ``environment`` (same backward-compat default) so the
+    shim's signature and derivation stay aligned with the real key.
     """
     return _compute_effective_key(
         user=user,
@@ -53,6 +56,7 @@ def effective_intent_key(
         tick_size=tick_size,
         intent_id=intent_id,
         policy_version=policy_version,
+        environment=environment,
     )
 
 

@@ -536,6 +536,31 @@ def build_user_state(
 
         confirmed_exposure_reader = _confirmed_open_exposure
 
+    # The reservations repo is hoisted BEFORE both the drift service and the
+    # execution coordinator so (a) the drift service can be built first and
+    # (b) the coordinator's reservation service owns the SAME repo instance
+    # the drift service prunes against, exactly as before the reorder. The
+    # helper mirrors the coordinator's own None cases (no funder address,
+    # import failure), so a coordinator-less runtime keeps a repo-less drift
+    # service.
+    reservations_repo = _build_reservations_repo(
+        pool,
+        funder_address=runtime_user.wallet.funder_address,
+    )
+
+    # PR7 — proactive position drift sweep. Built BEFORE manual_sync so the
+    # handshake (manual_sync.was_recently_pruned → skip upsert) is wired
+    # from boot. Without this ordering manual_sync would resurrect rows
+    # drift authoritatively pruned, looping risk-monitor /price probes.
+    # The service is ACCOUNT-owned (one per user) and is injected into the
+    # execution coordinator at construction below, so it must exist first.
+    position_drift_service = _build_position_drift_service(
+        pool=pool,
+        positions_repo=positions_repo,
+        reservations_repo=reservations_repo,
+        config=config,
+    )
+
     execution_coordinator = _build_execution_coordinator(
         pool=pool,
         positions_repo=positions_repo,
@@ -548,21 +573,11 @@ def build_user_state(
         position_coordinator=position_coordinator,
         open_exposure_cap=open_exposure_cap,
         confirmed_exposure_reader=confirmed_exposure_reader,
+        reservations_repo=reservations_repo,
+        position_drift_service=position_drift_service,
     )
 
     reservation_service = getattr(execution_coordinator, "reservation_service", None)
-    reservations_repo = getattr(reservation_service, "reservations_repo", None)
-
-    # PR7 — proactive position drift sweep. Built BEFORE manual_sync so the
-    # handshake (manual_sync.was_recently_pruned → skip upsert) is wired
-    # from boot. Without this ordering manual_sync would resurrect rows
-    # drift authoritatively pruned, looping risk-monitor /price probes.
-    position_drift_service = _build_position_drift_service(
-        pool=pool,
-        positions_repo=positions_repo,
-        reservations_repo=reservations_repo,
-        config=config,
-    )
 
     # Manual sync service — detects off-bot trades on the funder wallet and
     # seeds positions table from venue on startup. Optional so paper-only
@@ -889,6 +904,26 @@ def _build_position_drift_service(
     )
 
 
+def _build_reservations_repo(pool, *, funder_address: str):
+    """Hoist the per-account reservations repo for drift + coordinator.
+
+    The account-owned drift service must exist BEFORE the execution
+    coordinator (the coordinator is BORN with it), yet its reservations repo
+    is the one the coordinator's reservation service will own. Building the
+    repo here keeps the historical None-repo cases: no funder address or an
+    import failure of the reservations storage layer yields None exactly as
+    the old coordinator-derived lookup did.
+    """
+    if not funder_address:
+        return None
+    try:
+        from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
+    except Exception as exc:
+        logger.warning("reservations_repo_unwired error=%r", exc)
+        return None
+    return ReservationsRepo(pool)
+
+
 def _build_execution_coordinator(
     *,
     pool,
@@ -902,16 +937,19 @@ def _build_execution_coordinator(
     position_coordinator: PositionCoordinator | None = None,
     open_exposure_cap: Decimal | None = None,
     confirmed_exposure_reader=None,
+    reservations_repo=None,
+    position_drift_service=None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
     Wraps ReservationService around ExecutionService so every production
     submit path applies reservation + collision semantics. The account-owned
-    ``position_coordinator`` (A04) is injected at construction so the
+    ``position_coordinator`` (A04) and the account-owned
+    ``position_drift_service`` (PR7) are injected at construction so the
     execution funnel serializes on the same lock map as every per-binding
-    TradingContext; there is no post-construction rewiring. Returns None when
-    the funder address is missing so test contexts that build a partial state
-    keep working.
+    TradingContext and honours the drift gate from birth; there is no
+    post-construction rewiring. Returns None when the funder address is
+    missing so test contexts that build a partial state keep working.
     """
     if not funder_address:
         return None
@@ -923,7 +961,8 @@ def _build_execution_coordinator(
     except Exception as exc:
         logger.warning("execution_coordinator_unwired error=%r", exc)
         return None
-    reservations_repo = ReservationsRepo(pool)
+    if reservations_repo is None:
+        reservations_repo = ReservationsRepo(pool)
     # Reservations are a typed-config gate (RESERVATIONS_ENABLED), not a
     # hard-coded mode. Configless contexts (partial test state) keep the
     # historical disabled behavior so existing fixtures stay green.
@@ -962,6 +1001,7 @@ def _build_execution_coordinator(
         position_coordinator=position_coordinator,
         latency=latency,
         copy_admission=copy_admission,
+        position_drift_service=position_drift_service,
     )
     from pmcopy.services.execution.leader_sell_target_service import (
         LeaderSellTargetService,
@@ -1390,16 +1430,13 @@ async def build_trading_context(
     inventory_refresh = getattr(user_state, "inventory_refresh", None)
     if inventory_refresh is not None:
         inventory_refresh.bind_readiness(context.readiness)
-    # PR7 — bind position drift service so the coordinator can check
-    # ``is_scope_paused`` before submission.
+    # PR7 — the per-binding context exposes the account-owned drift service
+    # for scope-pause checks. The shared ExecutionCoordinator was BORN with
+    # the same instance (see ``build_user_state``); per-binding rewiring of
+    # the coordinator attribute is forbidden.
     drift_svc = getattr(user_state, "position_drift_service", None)
     if drift_svc is not None:
         context.position_drift_service = drift_svc
-        if coord is not None:
-            try:
-                coord.position_drift_service = drift_svc
-            except Exception:
-                pass
     await rehydrate_position_manager(context)
     return context
 
