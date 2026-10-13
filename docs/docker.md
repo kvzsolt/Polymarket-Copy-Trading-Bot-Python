@@ -1,7 +1,7 @@
 # Docker on the CCXT-only main branch
 
-The image is a multi-stage build on `python:3.14.6-slim-bookworm` — the exact
-interpreter patch the test suite runs on (the application targets Python 3.14
+The image is a multi-stage build on `python:3.13.15-slim-bookworm` — the exact
+interpreter patch the test suite runs on (the application targets Python 3.13
 only). The builder stage compiles the pure-Python wheel from the checkout; the
 runtime stage installs that wheel plus the pinned runtime requirements from
 `requirements.runtime.txt` (generated from `uv.lock`), including CCXT 4.5.87.
@@ -13,11 +13,12 @@ checks verify the installed application, the PostgreSQL driver, and
 
 Base tag policy: the repo pins tags, not digests (same policy as
 `postgres:16-alpine` in compose), so Debian security updates keep flowing
-under the same Python patch. Registry digests recorded on 2026-10-11 via
-`docker manifest inspect python:3.14.6-slim-bookworm`:
+under the same Python patch. Registry digests recorded on 2026-10-13 via
+`docker manifest inspect python:3.13.15-slim-bookworm`:
 
-- linux/amd64 `sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4`
-- linux/arm64 `sha256:1609c3e634a6ad5b4759f67e34c246640d41858fffde69876245fd26afd632b7`
+- linux/amd64 `sha256:3e2de9c40ca4e3d73240059f9d48baff27908f10293e985a2f382a0378e6df4a`
+- linux/arm64 `sha256:ad4c34ff79289506e235b40dce75d629e25f226b597a2455804220f037e07531`
+- index / manifest-list digest `sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26`
 
 ## Prepare
 

@@ -48,6 +48,8 @@ charset-normalizer==3.4.7
     #   requests
 ckzg==2.1.8
     # via eth-account
+coincurve==21.0.0 ; implementation_name == 'cpython' and platform_machine != 'x86' and platform_machine in 'x86_64 AMD64 aarch64 arm64 ARM64 i686'
+    # via ccxt
 colorama==0.4.6 ; sys_platform == 'win32'
     # via pytest
 cryptography==50.0.2

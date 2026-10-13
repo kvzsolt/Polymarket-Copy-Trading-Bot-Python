@@ -1257,9 +1257,10 @@ sys = SimpleNamespace(version_info=_sys.version_info)
 def _runtime_python_supported() -> bool:
     """Return whether the current interpreter matches repository support."""
 
-    # Matches ``requires-python = ">=3.14,<3.15"`` in pyproject.toml: the
-    # project targets Python 3.14 only (3.11-3.13 are unsupported).
-    return sys.version_info.major == 3 and sys.version_info.minor == 14
+    # Matches ``requires-python = ">=3.13,<3.14"`` in pyproject.toml: the
+    # project targets Python 3.13 only (3.11-3.12 are unsupported, and 3.14 is
+    # deliberately rejected too — the target line is 3.13.x).
+    return sys.version_info.major == 3 and sys.version_info.minor == 13
 
 
 _MAX_ENTRY_PRICE_DRIFT_CEILING = 100.0
@@ -1296,7 +1297,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if not _runtime_python_supported():
         errors.append(
             f"Unsupported Python runtime {sys.version_info.major}.{sys.version_info.minor}. "
-            "Use Python 3.14.x."
+            "Use Python 3.13.x."
         )
 
     # PostgreSQL is mandatory for idempotency, reconciliation, and roster state.

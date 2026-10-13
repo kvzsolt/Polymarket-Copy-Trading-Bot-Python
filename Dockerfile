@@ -9,18 +9,20 @@
 # no PYTHONPATH shadowing anywhere in the image.
 #
 # Base tag policy: pinned to the exact interpreter patch the repository
-# test suite runs on (Python 3.14.6, matching requires-python >=3.14,<3.15).
+# test suite runs on (Python 3.13.15, matching requires-python >=3.13,<3.14).
 # The repo pins tags, not digests (same policy as postgres:16-alpine in
 # compose) so Debian security updates keep flowing under the same Python
-# patch. Registry digests verified 2026-10-11 via
-# `docker manifest inspect python:3.14.6-slim-bookworm`:
-#   linux/amd64 sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4
-#   linux/arm64 sha256:1609c3e634a6ad5b4759f67e34c246640d41858fffde69876245fd26afd632b7
+# patch. Registry digests verified 2026-10-13 via
+# `docker manifest inspect python:3.13.15-slim-bookworm`:
+#   linux/amd64 sha256:3e2de9c40ca4e3d73240059f9d48baff27908f10293e985a2f382a0378e6df4a
+#   linux/arm64 sha256:ad4c34ff79289506e235b40dce75d629e25f226b597a2455804220f037e07531
+# (index digest sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26,
+# built 2026-09-19 from docker-library/python revision 688a0b86bb44).
 
 # ---------------------------------------------------------------------------
 # Builder: compile the application wheel. Build tooling stays in this stage.
 # ---------------------------------------------------------------------------
-FROM python:3.14.6-slim-bookworm AS builder
+FROM python:3.13.15-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -40,7 +42,7 @@ RUN pip wheel --no-cache-dir --no-deps -w /wheels .
 # ---------------------------------------------------------------------------
 # Runtime: locked dependencies + the built wheel. Nothing else.
 # ---------------------------------------------------------------------------
-FROM python:3.14.6-slim-bookworm
+FROM python:3.13.15-slim-bookworm
 
 LABEL org.opencontainers.image.source="https://github.com/kvzsolt/Polymarket-Copy-Trading-Bot-Python"
 LABEL org.opencontainers.image.description="CCXT-only Polymarket copy trading bot — paper & live modes"
