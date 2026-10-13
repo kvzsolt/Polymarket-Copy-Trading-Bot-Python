@@ -14,8 +14,6 @@ import uuid
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-import pytest
-
 import pmcopy.config.app_config as app_config_mod
 from pmcopy.bot_cli.commands import config as config_command
 from tests.config_helpers import load_test_config

@@ -157,29 +157,25 @@ jobs:
         run: |
           pip install uv==0.11.31
           python scripts/check_requirements_drift.py
-      - name: ruff (lint — hard fail on pyflakes + core pycodestyle)
+      - name: ruff (full scan — hard fail, no ignore list)
         run: |
           pip install ruff
-          # Hard-fail on pyflakes (F-class) and core pycodestyle (E-class) errors,
-          # ignoring style-only categories that still have backlog: line-length (E501),
-          # unused-import (F401), unused-var (F841), import-order (E402), ambiguous-name
-          # (E741), and lambda-assignment (E731). Those land in the soft scan below
-          # until cleanup batch.
-          #
-          # F821 (undefined name) was temporarily ignored on first ci-gate
-          # landing; the 5 sites have all been fixed (riskMonitor legacy
-          # loop block removed in Batch 4, scripts/find_followable_traders.py
-          # imports added). Removed.
-          ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731 --exclude=legacy,test.py,bootstrap.py .
-      - name: ruff (full scan — soft fail until lint debt cleared)
-        continue-on-error: true
-        run: ruff check --exclude=legacy,test.py,bootstrap.py .
+          # Full scan with zero CLI ignores (rules + line limits come from
+          # pyproject [tool.ruff]). The 66-finding backlog (44 E501, 8 F541,
+          # 7 F401, 4 F811, 1 each B905/B023/B017) was cleared in Task 25;
+          # the split hard/soft pair used to conceal new findings behind
+          # continue-on-error — the single blocking scan keeps the tree at 0.
+          ruff check --exclude=legacy,test.py,bootstrap.py .
       - name: bandit (security — hard fail medium+ severity)
         run: |
           pip install bandit
           # Skips (each tracked to a fix batch — remove the skip when that batch lands):
           #   B101 — assert (acceptable in tests; prod asserts replaced in Batch 11)
-          #   B311 — random module (used only for retry jitter, never crypto)
+          #   B311 — random module: audited Task 25 — every site is retry/reconnect
+          #          timing jitter or test-RNG (executionService.py:1822,
+          #          onchain_ws.py:204, http_client.py:127,
+          #          reconciliation_service.py:840, tests/test_retry_backoff_jitter.py);
+          #          never used for tokens, keys, nonces, or identifiers
           #   B608 — hardcoded SQL strings (Batch 8 quotes identifiers + replaces
           #          f-string SET builders)
           #   B108 — hardcoded /tmp path in config/db.py disabled-DB fallback
@@ -205,12 +201,22 @@ jobs:
             src/pmcopy/integrations/polymarket/ccxt_prediction_gateway.py \
             src/pmcopy/integrations/polymarket/venue_runtime.py \
             src/pmcopy/clients/network/http_client.py
-      - name: mypy (type — soft fail until type debt cleared)
-        continue-on-error: true
+      - name: mypy (type-debt ratchet — blocking, baseline must never grow)
         run: |
           pip install mypy
-          mypy --install-types --non-interactive --ignore-missing-imports src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/domain || true
-
+          # The old full-tree step hid its findings behind BOTH
+          # continue-on-error and `|| true`. Replaced with a real ratchet:
+          # the error count for services/orchestrators/domain (+ followed
+          # imports) must stay at or below the recorded baseline (34 as of
+          # Task 25; full list in docs/refactor/verification-matrix.md).
+          # Drive it to 0, then swap this for a plain blocking mypy call.
+          # `grep -c ... || true` tolerates a zero-error grep (exit 1 on no
+          # matches) — absent-match tolerance, not result concealment.
+          BASELINE=34
+          ERRORS=$(mypy --install-types --non-interactive --ignore-missing-imports \
+            src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/domain 2>&1 | grep -c "error:" || true)
+          echo "mypy errors: $ERRORS (baseline $BASELINE)"
+          test "$ERRORS" -le "$BASELINE"
   docker-smoke:
     name: docker-smoke
     runs-on: ubuntu-latest
@@ -306,21 +312,21 @@ jobs:
           CERTIFI_PATH=$(docker run --rm --network none --entrypoint python \
             polymarket-copy-trader:ci -c "import certifi; print(certifi.where())")
           docker run -d --name pmct-smoke --network pmct-smoke-net \
-            --add-host polygon-mainnet.g.alchemy.com:$RPC_IP \
-            --add-host data-api.polymarket.com:$RPC_IP \
-            --add-host clob.polymarket.com:$RPC_IP \
-            --add-host gamma-api.polymarket.com:$RPC_IP \
-            -v /tmp/pmct-smoke-certs/bundle.pem:$CERTIFI_PATH:ro \
+            --add-host polygon-mainnet.g.alchemy.com:"$RPC_IP" \
+            --add-host data-api.polymarket.com:"$RPC_IP" \
+            --add-host clob.polymarket.com:"$RPC_IP" \
+            --add-host gamma-api.polymarket.com:"$RPC_IP" \
+            -v /tmp/pmct-smoke-certs/bundle.pem:"$CERTIFI_PATH":ro \
             -e SSL_CERT_FILE=/tmp/smoke-ca/bundle.pem \
             -v /tmp/pmct-smoke-certs/bundle.pem:/tmp/smoke-ca/bundle.pem:ro \
             -e PMCOPY__EXECUTION__TRADING_MODE=paper \
             -e PMCOPY__DATABASE__DSN=postgresql://bot:paper-smoke-only@pmct-postgres:5432/polymarket_copytrading_python \
             -e PMCOPY__WALLET__FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
-            -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
-            -e PMCOPY__NETWORK__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
+            -e "PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
+            -e "PMCOPY__NETWORK__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
             -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
             -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
-            -e PMCOPY__POLYMARKET__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN \
+            -e "PMCOPY__POLYMARKET__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
             -e PMCOPY__APP__ENABLE_METRICS_SERVER=true \
             -e PMCOPY__APP__METRICS_BIND_HOST=0.0.0.0 \
             -e PMCOPY__APP__METRICS_PORT=9102 \

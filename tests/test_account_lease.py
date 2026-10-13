@@ -478,8 +478,6 @@ def test_app_shutdown_releases_leases_before_pool_close() -> None:
 
 
 def test_account_lease_migration_is_in_the_catalog() -> None:
-    from pathlib import Path
-
     from pmcopy.storage.postgres.v1_migration_runner import V1MigrationCatalog
 
     ids = [m.migration_id for m in V1MigrationCatalog().migrations()]

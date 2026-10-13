@@ -266,8 +266,16 @@ def _uv_backed_problems(root: pathlib.Path) -> tuple[list[str], str | None]:
         if committed != expected:
             committed_lines = committed.splitlines()
             expected_lines = expected.splitlines()
+            # strict=False is deliberate: compare the common prefix, then
+            # report the shorter length as the first differing line.
             first_diff = next(
-                (i for i, (a, b) in enumerate(zip(committed_lines, expected_lines)) if a != b),
+                (
+                    i
+                    for i, (a, b) in enumerate(
+                        zip(committed_lines, expected_lines, strict=False)
+                    )
+                    if a != b
+                ),
                 min(len(committed_lines), len(expected_lines)),
             )
             problems.append(

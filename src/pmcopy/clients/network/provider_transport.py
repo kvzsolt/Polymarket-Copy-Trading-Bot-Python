@@ -138,7 +138,14 @@ class ProviderHttpTransport:
             raise ProviderUnavailable("native provider receipt unavailable")
         return ObservedRpcResult(payload, receipt)
 
-    async def _request(self, provider: str, method: str, params: list[object], *, observe: bool) -> tuple[object, TransportReceipt | None]:
+    async def _request(
+        self,
+        provider: str,
+        method: str,
+        params: list[object],
+        *,
+        observe: bool,
+    ) -> tuple[object, TransportReceipt | None]:
         if method not in self._READ_METHODS:
             raise ProviderConfigurationError("provider transport is read-only")
         endpoint = self._endpoints.http_url(provider)

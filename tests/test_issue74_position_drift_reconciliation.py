@@ -312,7 +312,6 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
 
         async def list_active_for_scope(self, user_id, condition_id, token_id):
             from pmcopy.domain.order_lifecycle import Reservation
-            from datetime import datetime, timezone
 
             return [
                 Reservation(
@@ -412,7 +411,6 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
 
         async def list_active_for_scope(self, user_id, condition_id, token_id):
             from pmcopy.domain.order_lifecycle import Reservation
-            from datetime import datetime, timezone
 
             return [
                 Reservation(

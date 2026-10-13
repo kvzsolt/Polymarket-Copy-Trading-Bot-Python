@@ -646,7 +646,15 @@ def load_runtime_users_from_copiers(copiers_file: str, config: "AppConfig") -> l
         # BaseLoader: every scalar arrives as text so this module performs
         # every conversion through the strict Task 14 parsers. No YAML
         # float/bool resolution can bypass decimal-text or strict-bool rules.
-        payload = yaml.load(resolved.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        # The loader is driven explicitly (get_single_data + dispose — exactly
+        # what yaml.load does internally) because bandit's B506 cannot tell
+        # a BaseLoader from an object-constructing FullLoader; BaseLoader
+        # resolves every scalar to str and constructs no arbitrary objects.
+        loader = yaml.BaseLoader(resolved.read_text(encoding="utf-8"))
+        try:
+            payload = loader.get_single_data()
+        finally:
+            loader.dispose()
     except yaml.YAMLError as exc:
         raise ValueError(
             f"app.copiers_config_file {resolved.name!r} is not valid YAML: {exc}"

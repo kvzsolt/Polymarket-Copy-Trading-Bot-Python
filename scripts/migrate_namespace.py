@@ -337,14 +337,21 @@ _COMPOSE_TEST_NEW = '''    mounts = artifacts.compose["services"]["bot"]["volume
         "The installed pmcopy command must import config from the mounted tree"
     )'''
 
-_DOCKERFILE_CHECK_OLD = '''# Run this outside /app so the check proves the installed console entry point
-# can import the top-level application modules from site-packages. Checking
-# from /app masks missing ``py-modules`` packaging because cwd is importable.
-RUN cd /tmp && python -c "import app, bootstrap; from config.app_config import load_config; import storage.postgres.connection; print('OK')"'''
-_DOCKERFILE_CHECK_NEW = '''# Run this outside /app so the check proves the installed console entry point
-# can import the namespaced application modules from site-packages. Checking
-# from /app masks missing ``pmcopy`` packaging because cwd is importable.
-RUN cd /tmp && python -c "import pmcopy.app, pmcopy.bootstrap; from pmcopy.config.app_config import load_config; import pmcopy.storage.postgres.connection; print('OK')"'''
+_DOCKERFILE_CHECK_OLD = (
+    '# Run this outside /app so the check proves the installed console entry point\n'
+    '# can import the top-level application modules from site-packages. Checking\n'
+    '# from /app masks missing ``py-modules`` packaging because cwd is importable.\n'
+    'RUN cd /tmp && python -c "import app, bootstrap; from config.app_config import load_config;'
+    " import storage.postgres.connection; print('OK')\""
+)
+_DOCKERFILE_CHECK_NEW = (
+    '# Run this outside /app so the check proves the installed console entry point\n'
+    '# can import the namespaced application modules from site-packages. Checking\n'
+    '# from /app masks missing ``pmcopy`` packaging because cwd is importable.\n'
+    'RUN cd /tmp && python -c "import pmcopy.app, pmcopy.bootstrap; from'
+    ' pmcopy.config.app_config import load_config; import pmcopy.storage.postgres.connection;'
+    " print('OK')\""
+)
 
 _DOCKERFILE_PYTHONPATH_OLD = '''# The console script otherwise imports the installed config package and
 # silently ignores service YAML mounted at /app/config. Set this only after
@@ -405,8 +412,15 @@ include = ["pmcopy*"]
 exclude = ["tests*", "legacy*"]
 namespaces = false'''
 
-_CI_BANDIT_OLD = "          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations bot_cli app.py bootstrap.py -ll --skip B101,B311,B608,B108,B310"
-_CI_BANDIT_NEW = "          bandit -r src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/clients src/pmcopy/config src/pmcopy/utils src/pmcopy/cache src/pmcopy/storage src/pmcopy/interfaces src/pmcopy/domain src/pmcopy/integrations src/pmcopy/bot_cli src/pmcopy/app.py src/pmcopy/bootstrap.py -ll --skip B101,B311,B608,B108,B310"
+_CI_BANDIT_OLD = (
+    "          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations b"
+    "ot_cli app.py bootstrap.py -ll --skip B101,B311,B608,B108,B310"
+)
+_CI_BANDIT_NEW = (
+    "          bandit -r src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/clients src/pmcopy/config src/pmco"
+    "py/utils src/pmcopy/cache src/pmcopy/storage src/pmcopy/interfaces src/pmcopy/domain src/pmcopy/integrations s"
+    "rc/pmcopy/bot_cli src/pmcopy/app.py src/pmcopy/bootstrap.py -ll --skip B101,B311,B608,B108,B310"
+)
 
 _CI_MYPY_OLD = '''          mypy --install-types --non-interactive --explicit-package-bases \\
             --ignore-missing-imports --follow-imports=silent \\
@@ -421,14 +435,34 @@ _CI_MYPY_NEW = '''          mypy --install-types --non-interactive --explicit-pa
             src/pmcopy/integrations/polymarket/venue_runtime.py \\
             src/pmcopy/clients/network/http_client.py'''
 
-_CI_MYPY_SOFT_OLD = "          mypy --install-types --non-interactive --ignore-missing-imports services orchestrators domain || true"
-_CI_MYPY_SOFT_NEW = "          mypy --install-types --non-interactive --ignore-missing-imports src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/domain || true"
+_CI_MYPY_SOFT_OLD = (
+    "          mypy --install-types --non-interactive --ignore-missing-imports services orchestrators domain || tru"
+    "e"
+)
+_CI_MYPY_SOFT_NEW = (
+    "          mypy --install-types --non-interactive --ignore-missing-imports src/pmcopy/services src/pmcopy/orche"
+    "strators src/pmcopy/domain || true"
+)
 
-_RC1_COMPILEALL_OLD = "python -m compileall -q app.py bot_cli clients orchestrators services cache domain integrations interfaces storage utils"
-_RC1_COMPILEALL_NEW = "python -m compileall -q src/pmcopy/app.py src/pmcopy/bot_cli src/pmcopy/clients src/pmcopy/orchestrators src/pmcopy/services src/pmcopy/cache src/pmcopy/domain src/pmcopy/integrations src/pmcopy/interfaces src/pmcopy/storage src/pmcopy/utils"
+_RC1_COMPILEALL_OLD = (
+    "python -m compileall -q app.py bot_cli clients orchestrators services cache domain integrations interfaces sto"
+    "rage utils"
+)
+_RC1_COMPILEALL_NEW = (
+    "python -m compileall -q src/pmcopy/app.py src/pmcopy/bot_cli src/pmcopy/clients src/pmcopy/orchestrators src/p"
+    "mcopy/services src/pmcopy/cache src/pmcopy/domain src/pmcopy/integrations src/pmcopy/interfaces src/pmcopy/sto"
+    "rage src/pmcopy/utils"
+)
 
-_RC1_FORBID_OLD = '_FORBID_ROOTS=("app.py" "bot_cli" "clients" "orchestrators" "services" "cache" "domain" "integrations" "interfaces" "storage" "utils" "config")'
-_RC1_FORBID_NEW = '_FORBID_ROOTS=("src/pmcopy/app.py" "src/pmcopy/bot_cli" "src/pmcopy/clients" "src/pmcopy/orchestrators" "src/pmcopy/services" "src/pmcopy/cache" "src/pmcopy/domain" "src/pmcopy/integrations" "src/pmcopy/interfaces" "src/pmcopy/storage" "src/pmcopy/utils" "src/pmcopy/config")'
+_RC1_FORBID_OLD = (
+    '_FORBID_ROOTS=("app.py" "bot_cli" "clients" "orchestrators" "services" "cache" "domain" "integrations" "interf'
+    'aces" "storage" "utils" "config")'
+)
+_RC1_FORBID_NEW = (
+    '_FORBID_ROOTS=("src/pmcopy/app.py" "src/pmcopy/bot_cli" "src/pmcopy/clients" "src/pmcopy/orchestrators" "src/p'
+    'mcopy/services" "src/pmcopy/cache" "src/pmcopy/domain" "src/pmcopy/integrations" "src/pmcopy/interfaces" "src/'
+    'pmcopy/storage" "src/pmcopy/utils" "src/pmcopy/config")'
+)
 
 _RC1_CD_OLD = '''cd "$(dirname "$0")/.."
 
@@ -510,8 +544,10 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         ed.append(
             (
                 rel,
-                "REPO_ROOT = Path(__file__).resolve().parents[2]\nif str(REPO_ROOT) not in sys.path:\n    sys.path.insert(0, str(REPO_ROOT))",
-                "REPO_ROOT = Path(__file__).resolve().parents[2]\nSRC_ROOT = REPO_ROOT / \"src\"\nif str(SRC_ROOT) not in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
+                "REPO_ROOT = Path(__file__).resolve().parents[2]\nif str(REPO_ROOT) not in sys.path:\n    sys.path.inse"
+                    "rt(0, str(REPO_ROOT))",
+                "REPO_ROOT = Path(__file__).resolve().parents[2]\nSRC_ROOT = REPO_ROOT / \"src\"\nif str(SRC_ROOT) not "
+                    "in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
                 1,
             )
         )
@@ -519,8 +555,10 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         ed.append(
             (
                 rel,
-                "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nif str(PROJECT_ROOT) not in sys.path:\n    sys.path.insert(0, str(PROJECT_ROOT))",
-                "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nSRC_ROOT = PROJECT_ROOT / \"src\"\nif str(SRC_ROOT) not in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
+                "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nif str(PROJECT_ROOT) not in sys.path:\n    sys.pat"
+                    "h.insert(0, str(PROJECT_ROOT))",
+                "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nSRC_ROOT = PROJECT_ROOT / \"src\"\nif str(SRC_ROOT"
+                    ") not in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
                 1,
             )
         )
@@ -548,7 +586,9 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         (
             "src/pmcopy/bot_cli/commands/doctor.py",
             '    roots: tuple[str, ...] = ("orchestrators", "services", "clients", "domain", "cache", "utils"),',
-            '    roots: tuple[str, ...] = (\n        "src/pmcopy/orchestrators",\n        "src/pmcopy/services",\n        "src/pmcopy/clients",\n        "src/pmcopy/domain",\n        "src/pmcopy/cache",\n        "src/pmcopy/utils",\n    ),',
+            '    roots: tuple[str, ...] = (\n        "src/pmcopy/orchestrators",\n        "src/pmcopy/services",\n     '
+                '   "src/pmcopy/clients",\n        "src/pmcopy/domain",\n        "src/pmcopy/cache",\n        "src/pmco'
+                'py/utils",\n    ),',
             1,
         )
     )
@@ -619,8 +659,11 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(
         (
             "tests/test_service_config_loader.py",
-            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrides())],\n        cwd=Path(__file__).resolve().parents[1],",
-            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrides())],\n        cwd=Path(__file__).resolve().parents[1],\n        env={**os.environ, \"PYTHONPATH\": str(Path(__file__).resolve().parents[1] / \"src\")},",
+            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrid"
+                "es())],\n        cwd=Path(__file__).resolve().parents[1],",
+            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrid"
+                "es())],\n        cwd=Path(__file__).resolve().parents[1],\n        env={**os.environ, \"PYTHONPATH\": "
+                "str(Path(__file__).resolve().parents[1] / \"src\")},",
             1,
         )
     )
@@ -632,18 +675,70 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(("tests/test_docker_ccxt_runtime.py", _COMPOSE_TEST_OLD, _COMPOSE_TEST_NEW, 1))
 
     # --- embedded subprocess scripts (control-plane-free composition roots) ---
-    ed.append(("tests/test_control_plane_free_primitives.py", "import subprocess\nimport sys\nfrom pathlib import Path", "import os\nimport subprocess\nimport sys\nfrom pathlib import Path", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "from adapters.clock import MonotonicClock, SystemMonotonicClock", "from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "from services.trading_control import (", "from pmcopy.services.trading_control import (", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "import bot_cli.commands.trading as trading_command", "import pmcopy.bot_cli.commands.trading as trading_command", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "import app  # noqa: F401  (composition root: must import with CP blocked)", "import pmcopy.app  # noqa: F401  (composition root: must import with CP blocked)", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "import bootstrap  # noqa: F401", "import pmcopy.bootstrap  # noqa: F401", 1))
-    ed.append(("tests/test_control_plane_free_primitives.py", "import bot_cli.main as cli_main  # noqa: F401", "import pmcopy.bot_cli.main as cli_main  # noqa: F401", 1))
     ed.append(
         (
             "tests/test_control_plane_free_primitives.py",
-            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n        text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n    )",
-            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n        text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n        env={**os.environ, \"PYTHONPATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
+            "import subprocess\nimport sys\nfrom pathlib import Path",
+            "import os\nimport subprocess\nimport sys\nfrom pathlib import Path",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "from adapters.clock import MonotonicClock, SystemMonotonicClock",
+            "from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "from services.trading_control import (",
+            "from pmcopy.services.trading_control import (",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "import bot_cli.commands.trading as trading_command",
+            "import pmcopy.bot_cli.commands.trading as trading_command",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "import app  # noqa: F401  (composition root: must import with CP blocked)",
+            "import pmcopy.app  # noqa: F401  (composition root: must import with CP blocked)",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "import bootstrap  # noqa: F401",
+            "import pmcopy.bootstrap  # noqa: F401",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "import bot_cli.main as cli_main  # noqa: F401",
+            "import pmcopy.bot_cli.main as cli_main  # noqa: F401",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_control_plane_free_primitives.py",
+            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n     "
+                "   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n    )",
+            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n     "
+                "   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n        env={**os.environ, \"PYTHON"
+                "PATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
             1,
         )
     )
@@ -670,39 +765,69 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(
         (
             "tests/test_packaging_entrypoint.py",
-            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    modules = set(project["tool"]["setuptools"]["py-modules"])\n    packages = set(project["tool"]["setuptools"]["packages"]["find"]["include"])\n\n    assert {"app", "bootstrap", "bot"} <= modules\n    assert "cache*" in packages',
-            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    find_cfg = project["tool"]["setuptools"]["packages"]["find"]\n    packages = set(find_cfg["include"])\n\n    assert find_cfg["where"] == ["src"]\n    assert packages == {"pmcopy*"}\n    assert "py-modules" not in project["tool"]["setuptools"]',
+            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]'
+                '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    modules = '
+                'set(project["tool"]["setuptools"]["py-modules"])\n    packages = set(project["tool"]["setuptools"]["pa'
+                'ckages"]["find"]["include"])\n\n    assert {"app", "bootstrap", "bot"} <= modules\n    assert "cache*"'
+                ' in packages',
+            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]'
+                '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    find_cfg ='
+                ' project["tool"]["setuptools"]["packages"]["find"]\n    packages = set(find_cfg["include"])\n\n    ass'
+                'ert find_cfg["where"] == ["src"]\n    assert packages == {"pmcopy*"}\n    assert "py-modules" not in p'
+                'roject["tool"]["setuptools"]',
             1,
         )
     )
     ed.append(
         (
             "tests/test_rc1_release_artifacts.py",
-            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", \"--help\"],\n        cwd=repo_root,\n        capture_output=True,\n        check=False,\n        text=True,\n    )",
-            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", \"--help\"],\n        cwd=repo_root,\n        env={**os.environ, \"PYTHONPATH\": str(repo_root / \"src\")},\n        capture_output=True,\n        check=False,\n        text=True,\n    )",
+            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", \"--help\"],\n        cwd"
+                "=repo_root,\n        capture_output=True,\n        check=False,\n        text=True,\n    )",
+            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", \"--help\"],\n    "
+                "    cwd=repo_root,\n        env={**os.environ, \"PYTHONPATH\": str(repo_root / \"src\")},\n        cap"
+                "ture_output=True,\n        check=False,\n        text=True,\n    )",
             1,
         )
     )
-    ed.append(("tests/test_rc1_release_artifacts.py", '    assert "python -m bot_cli.main doctor --live" in text', '    assert "python -m pmcopy.bot_cli.main doctor --live" in text', 1))
     ed.append(
         (
             "tests/test_rc1_release_artifacts.py",
-            "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if not (repo_root / rel).is_file()\n    }",
-            "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if not (repo_root / \"src\" / \"pmcopy\" / rel).is_file()\n    }",
+            '    assert "python -m bot_cli.main doctor --live" in text',
+            '    assert "python -m pmcopy.bot_cli.main doctor --live" in text',
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/test_rc1_release_artifacts.py",
+            "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if"
+                " not (repo_root / rel).is_file()\n    }",
+            "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if"
+                " not (repo_root / \"src\" / \"pmcopy\" / rel).is_file()\n    }",
             1,
         )
     )
     ed.append(
         (
             "tests/test_standalone_config_rejects_control_plane.py",
-            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", *command],\n        capture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n    )",
-            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", *command],\n        capture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n        env={**os.environ, \"PYTHONPATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
+            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", *command],\n        ca"
+                "pture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n    )",
+            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", *command],\n   "
+                "     capture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n   "
+                "     env={**os.environ, \"PYTHONPATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
             1,
         )
     )
 
     # --- one-off dynamic/string references ---
-    ed.append(("tests/test_app_onchain_wiring.py", 'assert not hasattr(__import__("app"), "_build_confirmed_onchain_runtime")', 'assert not hasattr(__import__("pmcopy.app"), "_build_confirmed_onchain_runtime")', 1))
+    ed.append(
+        (
+            "tests/test_app_onchain_wiring.py",
+            'assert not hasattr(__import__("app"), "_build_confirmed_onchain_runtime")',
+            'assert not hasattr(__import__("pmcopy.app"), "_build_confirmed_onchain_runtime")',
+            1,
+        )
+    )
     ed.append(
         (
             "tests/test_app_leader_config_attrs.py",
@@ -717,14 +842,22 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(("pyproject.toml", _PYPROJECT_SETUPTOOLS_OLD, _PYPROJECT_SETUPTOOLS_NEW, 1))
     ed.append(("pytest.ini", "testpaths = tests", "testpaths = tests\npythonpath = src", 1))
     ed.append(("Dockerfile", _DOCKERFILE_CHECK_OLD, _DOCKERFILE_CHECK_NEW, 1))
-    ed.append(("Dockerfile", "from integrations.polymarket.ccxt_compat.version_guard import", "from pmcopy.integrations.polymarket.ccxt_compat.version_guard import", 1))
+    ed.append(
+        (
+            "Dockerfile",
+            "from integrations.polymarket.ccxt_compat.version_guard import",
+            "from pmcopy.integrations.polymarket.ccxt_compat.version_guard import",
+            1,
+        )
+    )
     ed.append(("Dockerfile", _DOCKERFILE_PYTHONPATH_OLD, _DOCKERFILE_PYTHONPATH_NEW, 1))
     ed.append(("docker-compose.yml", _COMPOSE_MOUNT_OLD, _COMPOSE_MOUNT_NEW, 1))
     ed.append(
         (
             ".dockerignore",
             "config/bot.toml\n",
-            "config/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/runtime.local.*\nsrc/pmcopy/config/bot.toml\n",
+            "config/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/runtime.local.*\nsrc/pmcopy/config"
+                "/bot.toml\n",
             1,
         )
     )
@@ -732,7 +865,8 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         (
             ".gitignore",
             "config/runtime.local.yml\nconfig/bot.toml\n",
-            "config/runtime.local.yml\nconfig/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/bot.toml\nsrc/pmcopy/config/data/\nsrc/pmcopy/config/logs/\n",
+            "config/runtime.local.yml\nconfig/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/bot.toml"
+                "\nsrc/pmcopy/config/data/\nsrc/pmcopy/config/logs/\n",
             1,
         )
     )
@@ -748,19 +882,65 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(("scripts/rc1_check.sh", _RC1_ROOTS_OLD, _RC1_ROOTS_NEW, 1))
     ed.append(("scripts/rc1_check.sh", _RC1_DOCTOR_OLD, _RC1_DOCTOR_NEW, 1))
     ed.append(("greptile.json", _GREPTILE_OLD, _GREPTILE_NEW, 1))
-    ed.append(("scripts/data/followable_traders.json", '"rotation_command": "python bot.py rotate-traders"', '"rotation_command": "pmcopy rotate-traders"', 1))
+    ed.append(
+        (
+            "scripts/data/followable_traders.json",
+            '"rotation_command": "python bot.py rotate-traders"',
+            '"rotation_command": "pmcopy rotate-traders"',
+            1,
+        )
+    )
 
     # --- docs: load-bearing invocation/path references only (full pass = Task 26) ---
-    ed.append(("README.md", "- **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` adds async / per-user wiring.", "- **Composition root:** `src/pmcopy/bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `src/pmcopy/app.py::main` adds async / per-user wiring.", 1))
-    ed.append(("README.md", "- **Operator CLI:** `bot.py` → `bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.", "- **Operator CLI:** `pmcopy` (console script, or `python -m pmcopy`) → `pmcopy.bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.", 1))
+    ed.append(
+        (
+            "README.md",
+            "- **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` ad"
+            "ds async / per-user wiring.",
+            "- **Composition root:** `src/pmcopy/bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `src/p"
+            "mcopy/app.py::main` adds async / per-user wiring.",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "README.md",
+            "- **Operator CLI:** `bot.py` → `bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`"
+            ".",
+            "- **Operator CLI:** `pmcopy` (console script, or `python -m pmcopy`) → `pmcopy.bot_cli.main` → `doctor`, `"
+            "config`, `reservations`, `stale-locks`, `drift`.",
+            1,
+        )
+    )
     ed.append(("README.md", "python bot.py redeem", "pmcopy redeem", 2))
     ed.append(("docs/03-paper-trading.md", "python3 bot.py rotate-traders", "pmcopy rotate-traders", 1))
     ed.append(("docs/auto-follow.md", "python bot.py run", "pmcopy run", 2))
     ed.append(("docs/handoffs/logs_only_confirmed_source_prompt.md", "python bot.py run", "pmcopy run", 1))
-    ed.append(("docs/historical-evidence-import.md", "PYTHONPATH=. .venv/bin/python -m bot_cli.main", "PYTHONPATH=src .venv/bin/python -m pmcopy.bot_cli.main", 2))
+    ed.append(
+        (
+            "docs/historical-evidence-import.md",
+            "PYTHONPATH=. .venv/bin/python -m bot_cli.main",
+            "PYTHONPATH=src .venv/bin/python -m pmcopy.bot_cli.main",
+            2,
+        )
+    )
     ed.append(("docs/known_limitations.md", "python bot.py resolve", "pmcopy resolve", 1))
-    ed.append(("docs/rc1_validation.md", "python -m bot_cli.main doctor --live", "python -m pmcopy.bot_cli.main doctor --live", 1))
-    ed.append(("docs/recovery_playbook.md", "python -m bot_cli.main doctor --live", "python -m pmcopy.bot_cli.main doctor --live", 1))
+    ed.append(
+        (
+            "docs/rc1_validation.md",
+            "python -m bot_cli.main doctor --live",
+            "python -m pmcopy.bot_cli.main doctor --live",
+            1,
+        )
+    )
+    ed.append(
+        (
+            "docs/recovery_playbook.md",
+            "python -m bot_cli.main doctor --live",
+            "python -m pmcopy.bot_cli.main doctor --live",
+            1,
+        )
+    )
     ed.append(("docs/recovery_playbook.md", "python bot.py resolve", "pmcopy resolve", 2))
     ed.append(("docs/redemption.md", "python bot.py redeem", "pmcopy redeem", 5))
     ed.append(("docs/runbooks/00-index.md", "python3 bot.py ", "pmcopy ", 2))
@@ -854,7 +1034,9 @@ def _rewrite_module_source(data: bytes, rel: str) -> tuple[bytes, dict[str, int]
             module_b = node.module.encode()
             new_seg, n = re.subn(
                 b"(\\bfrom\\s+)" + re.escape(module_b) + b"(?=\\s+import\\b)",
-                lambda m: m.group(1) + prefix + module_b,
+                # Bind module_b as a default so the replacement cannot observe a
+                # later loop iteration's value (ruff B023).
+                lambda m, mod_b=module_b: m.group(1) + prefix + mod_b,
                 seg,
                 count=1,
             )

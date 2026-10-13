@@ -22,17 +22,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pmcopy.config.env import SignatureType
 
 import pmcopy.config.app_config as app_config_mod
-import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
 from pmcopy.orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
 )
 from pmcopy.services.execution import intent_recovery as _intent_recovery_module
-from pmcopy.services.intentRegistry import IntentSide, Reservation
+from pmcopy.services.intentRegistry import DuplicateIntentError, IntentSide, Reservation
 from pmcopy.services.multiUserConfig import UserFollowConfig
 from pmcopy.services.positionActionCoordinator import PositionScope
 from pmcopy.services.positionCoordinator import PositionCoordinator
@@ -196,7 +194,7 @@ async def test_intent_opened_through_one_binding_blocks_the_shared_registry():
     assert (
         state.execution_coordinator.position_coordinator.open_intent_for(scope) is not None
     )
-    with pytest.raises(Exception):
+    with pytest.raises(DuplicateIntentError):
         await ctx2.position_coordinator.begin_intent(
             scope, IntentSide.SELL, Reservation(token_shares=Decimal("1")), intent_id="intent-2"
         )

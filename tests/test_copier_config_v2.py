@@ -47,7 +47,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import pmcopy.config.app_config as app_config_mod
-from pmcopy.config.app_config import load_config
 from pmcopy.services.multiUserConfig import RuntimeUser, load_runtime_users
 from tests.config_helpers import load_test_config
 
@@ -265,7 +264,7 @@ def test_empty_copiers_list_is_valid_and_empty_follows_permits_no_entries(tmp_pa
     assert users == []
 
     empty_follows = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -289,7 +288,7 @@ def test_empty_copiers_list_is_valid_and_empty_follows_permits_no_entries(tmp_pa
 def test_paper_copier_without_private_key_env_loads(tmp_path, monkeypatch):
     monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -319,7 +318,7 @@ def test_paper_never_validates_key_material(tmp_path, monkeypatch):
     monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
     monkeypatch.setenv("PRIMARY_PRIVATE_KEY", "not-a-key-at-all")
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -336,7 +335,7 @@ def test_paper_never_validates_key_material(tmp_path, monkeypatch):
 
 def test_paper_requires_funder_reference(tmp_path, monkeypatch):
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       private_key_env: PRIMARY_PRIVATE_KEY
@@ -546,7 +545,7 @@ def test_limit_money_rejections(tmp_path, monkeypatch, bad):
 
 def test_missing_limits_block_or_field_rejected(tmp_path, monkeypatch):
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -557,7 +556,7 @@ def test_missing_limits_block_or_field_rejected(tmp_path, monkeypatch):
         _load(text, tmp_path, monkeypatch)
 
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -714,7 +713,7 @@ def test_sizing_block_required(tmp_path, monkeypatch):
 
 
 def test_duplicate_copier_ids_rejected(tmp_path, monkeypatch):
-    one = f"""  - id: primary
+    one = """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
@@ -824,7 +823,7 @@ def test_duplicate_resolved_funder_rejected_across_env_names(tmp_path, monkeypat
     monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", FUNDER_A)
     monkeypatch.setenv("ALIAS_FUNDER_ADDRESS", FUNDER_A)
     text = _paper_yaml(
-        f"""  - id: primary
+        """  - id: primary
     mode: paper
     wallet:
       funder_address_env: PRIMARY_FUNDER_ADDRESS
