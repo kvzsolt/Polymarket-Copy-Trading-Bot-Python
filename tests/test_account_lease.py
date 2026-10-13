@@ -482,6 +482,19 @@ def test_app_startup_starts_evidence_drain_only_after_leases_are_held() -> None:
     )
 
 
+def test_app_startup_runs_retention_purge_only_after_leases_are_held() -> None:
+    """Follow-up fix: ``purge_old_processed_trades`` is a shared-database
+    WRITE.  A doomed second process (lease refused below) must never delete
+    rows from the shared database, so the retention purge runs only after
+    every account lease is acquired."""
+    import pmcopy.app as app_module
+
+    source = inspect.getsource(app_module._run_application)
+    assert source.index("account_lease_manager.acquire(") < source.index(
+        "purge_old_processed_trades"
+    )
+
+
 def test_app_shutdown_releases_leases_before_pool_close() -> None:
     import pmcopy.app as app_module
 

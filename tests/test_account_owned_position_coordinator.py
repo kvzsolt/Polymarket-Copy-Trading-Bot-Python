@@ -116,6 +116,32 @@ def test_build_user_state_owns_one_account_coordinator_born_into_execution_coord
     assert state.execution_coordinator.position_coordinator is state.position_coordinator
 
 
+def test_build_user_state_owns_one_account_drift_service_born_into_execution_coordinator():
+    state = _build_account_state()
+
+    assert state.position_drift_service is not None
+    # The account-owned drift service (one per user, built in build_user_state)
+    # must be injected at coordinator construction — the shared per-user
+    # ExecutionCoordinator is BORN with it, exactly like position_coordinator.
+    assert state.execution_coordinator.position_drift_service is state.position_drift_service
+
+
+@pytest.mark.asyncio
+async def test_leader_bindings_never_rewire_the_coordinator_drift_service():
+    state = _build_account_state()
+    born_with = state.execution_coordinator.position_drift_service
+
+    ctx1 = await build_trading_context(state, _follow("user-1", LEADER_1), _config())
+    ctx2 = await build_trading_context(state, _follow("user-1", LEADER_2), _config())
+
+    # Bindings expose the drift service on their own TradingContext only;
+    # the shared coordinator keeps the instance it was born with.
+    assert born_with is state.position_drift_service
+    assert state.execution_coordinator.position_drift_service is state.position_drift_service
+    assert ctx1.position_drift_service is state.position_drift_service
+    assert ctx2.position_drift_service is state.position_drift_service
+
+
 @pytest.mark.asyncio
 async def test_every_leader_binding_shares_the_account_coordinator():
     state = _build_account_state()

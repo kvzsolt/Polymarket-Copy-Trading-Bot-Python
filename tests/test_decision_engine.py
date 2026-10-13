@@ -509,3 +509,34 @@ class TestEffectiveIntentKey:
             intent_id="intent-1",
         )
         assert key1 == key2
+
+    def test_environment_parameter_matches_the_real_derivation(self):
+        """The shim's signature must carry ``environment`` like the real key.
+
+        ``copyDecisionService.effective_intent_key`` is a backward-compat
+        re-export of ``services.idempotency.compute_effective_key``; the two
+        must stay signature- and byte-aligned for the same inputs, including
+        the multi-copier execution-environment discriminator.
+        """
+        from decimal import Decimal
+        from pmcopy.services.copyDecisionService import effective_intent_key
+        from pmcopy.services.idempotency import compute_effective_key
+
+        kwargs = dict(
+            user="user1",
+            condition_id="cond1",
+            token_id="token1",
+            side="BUY",
+            effective_size=Decimal("5.0"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="intent-1",
+            policy_version="pv-2",
+            environment="paper",
+        )
+
+        assert effective_intent_key(**kwargs) == compute_effective_key(**kwargs)
+        # The discriminator must actually flow through, not be ignored.
+        assert effective_intent_key(**kwargs) != effective_intent_key(
+            **{**kwargs, "environment": "live"}
+        )

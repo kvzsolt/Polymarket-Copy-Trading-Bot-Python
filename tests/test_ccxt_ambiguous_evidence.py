@@ -550,6 +550,51 @@ async def test_sell_partial_fills_accumulate_by_shares() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fill-aggregate consistency is unit-strict even for unknown units
+# ---------------------------------------------------------------------------
+
+
+def test_fill_consistency_requires_an_exactly_known_unit() -> None:
+    """An aggregate may only match in the submission's EXACT unit.
+
+    The comparison basis is decided by the recorded ``amount_unit``: QUOTE
+    aggregates quote spend, SHARES aggregates outcome shares.  A unit that
+    is neither — a legacy ``None`` or any synthetic/unknown value — must
+    fail closed instead of falling through to the share comparison.
+    """
+
+    source, _ = _source(gateway=_FakeGateway())
+    # One leg: 20 shares @ 0.5 → total_size = 20, total_quote = 10.
+    legs = [_fill(size="20", price="0.5")]
+
+    # Sanity of the two comparison bases themselves.
+    assert source._fills_consistent_with_submission(
+        _submission(
+            side=SubmissionSide.SELL,
+            amount=Decimal("20"),
+            price_limit=Decimal("0.5"),
+            amount_unit=SubmissionAmountUnit.SHARES,
+        ),
+        legs,
+    )
+    assert source._fills_consistent_with_submission(
+        _submission(amount=Decimal("10"), amount_unit=SubmissionAmountUnit.QUOTE),
+        legs,
+    )
+
+    # Unknown units never match — even when the SHARE aggregate would.
+    assert not source._fills_consistent_with_submission(
+        _submission(side=SubmissionSide.BUY, amount=Decimal("20"), amount_unit=None),
+        legs,
+    )
+    synthetic_unit = object()
+    assert not source._fills_consistent_with_submission(
+        _submission(side=SubmissionSide.BUY, amount=Decimal("20"), amount_unit=synthetic_unit),
+        legs,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Legacy rows without unit identity fail closed (A02)
 # ---------------------------------------------------------------------------
 
