@@ -184,7 +184,7 @@ def _observe_copy_latency(
 def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         value = default
     return max(1, value)
 
@@ -1096,7 +1096,7 @@ def _position_pct_cap_snapshot_is_fresh(
         if cached_at_raw is None:
             return False
         cached_at = float(cached_at_raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     cached_balance = _to_decimal(
         context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
@@ -1122,7 +1122,7 @@ def _max_non_terminal_failure_attempts(context: TradingContext) -> int:
     raw = _trade_config(context).execution.non_terminal_failure_max_attempts
     try:
         value = int(raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         value = 3
     return max(1, value)
 
@@ -1147,7 +1147,7 @@ def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = N
             suffix = text.replace(prefix, "", 1)
             try:
                 return int(suffix)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 return 0
     return 0
 
@@ -1511,7 +1511,7 @@ async def _buy_fee_bps_or_none(context: TradingContext, token_id: str) -> int | 
         return None
     try:
         return int(fee_bps)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -1830,7 +1830,7 @@ def _decision_live_price(signal: Any, bundle: Any) -> float:
     del bundle
     try:
         return float(getattr(signal, "price", 0) or 0)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0.0
 
 
@@ -2084,7 +2084,7 @@ async def _execute_trades_impl(
                     tick_size_by_token[str(token_id)] = tick_size
                     market_min_size_by_token[str(token_id)] = min_order_size
                     neg_risk_by_token[str(token_id)] = neg_risk
-                except AttributeError, TypeError, ValueError:
+                except (AttributeError, TypeError, ValueError):
                     market_data_stale_tokens.add(str(token_id))
         for token_id, bundle in bundles_by_token.items():
             try:
@@ -2094,7 +2094,7 @@ async def _execute_trades_impl(
                 if not isinstance(neg_risk, bool):
                     raise ValueError("invalid neg_risk metadata")
                 neg_risk_by_token[token_id] = neg_risk
-            except TypeError, ValueError, AttributeError:
+            except (TypeError, ValueError, AttributeError):
                 # Defensive: a malformed bundle should not crash the loop.
                 market_data_stale_tokens.add(token_id)
                 market_min_size_by_token.pop(token_id, None)

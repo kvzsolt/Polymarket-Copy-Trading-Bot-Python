@@ -126,7 +126,7 @@ class JsonFormatter(logging.Formatter):
             redacted = redact_object(value)
             try:
                 json.dumps(redacted)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if is_secret_key(key):
                 payload[key] = REDACTED_PLACEHOLDER
@@ -732,7 +732,7 @@ class RichConsoleHandler(logging.Handler):
         def _fmt_float(v: Any, fmt: str) -> str | None:
             try:
                 return format(float(v), fmt) if v is not None else None
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 return None
 
         size_str = _fmt_float(size_raw, ".4f")
@@ -788,7 +788,7 @@ class RichConsoleHandler(logging.Handler):
         def _fmt(v: Any) -> str | None:
             try:
                 return f"{float(v):.4f}"
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 return None
 
         lines = _build_panel_lines(
@@ -998,7 +998,7 @@ def format_usdc(value: float | int | None) -> str:
     """Format an exact USDC amount for operator output."""
     try:
         amount = float(value or 0.0)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         amount = 0.0
     return f"{amount:.2f} USDC"
 
@@ -1699,7 +1699,7 @@ def _parse_api_error(error_str: str) -> dict[str, str]:
         try:
             inner = json.loads(m2.group(1).replace("'", '"'))
             result["error_message"] = inner.get("error", str(inner))
-        except json.JSONDecodeError, AttributeError:
+        except (json.JSONDecodeError, AttributeError):
             result["error_message"] = m2.group(1)
     elif "'error':" in str(error_str):
         m3 = re.search(r"'error':\s*'([^']+)'", str(error_str))

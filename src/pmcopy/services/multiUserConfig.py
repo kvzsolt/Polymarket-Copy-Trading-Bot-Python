@@ -188,7 +188,7 @@ def _parse_money(
         )
     try:
         amount = Decimal(value.strip()) if isinstance(value, str) else value
-    except InvalidOperation, ValueError:
+    except (InvalidOperation, ValueError):
         raise ValueError(
             f"{where}: field {field_name!r} is not valid decimal text: {value!r}"
         ) from None

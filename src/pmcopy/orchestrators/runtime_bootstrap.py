@@ -767,7 +767,7 @@ def _build_ambiguous_recovery_service(
             return Decimal("0")
         try:
             return Decimal(str(getattr(record, "size_tokens", 0) or 0))
-        except InvalidOperation, TypeError, ValueError:
+        except (InvalidOperation, TypeError, ValueError):
             return None
 
     async def _reserved_quote(uid: str) -> Decimal | None:
@@ -783,7 +783,7 @@ def _build_ambiguous_recovery_service(
             return None
         try:
             return Decimal(str(total or 0))
-        except InvalidOperation, TypeError, ValueError:
+        except (InvalidOperation, TypeError, ValueError):
             return None
 
     async def _balance(address: str) -> Decimal | None:
