@@ -128,3 +128,67 @@ class TestPrintCommandEndToEnd:
         payload = config_command._config_to_dict(cfg, redacted=False)
         text = json.dumps(payload, default=str)
         assert "SecretStr" not in text  # pydantic masks values by default
+
+
+class TestListElementRedaction:
+    """Follow-up F3-4: list values must run string elements through redaction.
+
+    Scalar string fields already pass through ``redact_text``; a list of
+    strings (tags, endpoint allowlists, notes) currently skips value
+    redaction entirely, so a provider key embedded in a URL inside a list
+    element printed in cleartext.
+    """
+
+    def test_list_string_elements_pattern_redacted(self) -> None:
+        canary = _canary_hex(32)
+        value = [f"https://rpc.probe.invalid/v2/{canary}", "https://rpc.invalid"]
+        out = config_command._redact_value("tags", value)
+
+        assert isinstance(out, list)
+        rendered = json.dumps(out)
+        assert canary not in rendered
+        assert REDACTED_PLACEHOLDER in rendered
+        # Non-secret list elements stay readable.
+        assert "https://rpc.invalid" in rendered
+
+    def test_list_query_parameter_secret_redacted(self) -> None:
+        canary = _canary_hex()
+        out = config_command._redact_value("endpoints", [f"https://x.test/?token={canary}"])
+        assert canary not in json.dumps(out)
+
+    def test_list_non_string_elements_unchanged(self) -> None:
+        value = [1, 2.5, None, True]
+        assert config_command._redact_value("weights", value) == value
+
+    def test_nested_list_elements_redacted(self) -> None:
+        canary = _canary_hex(32)
+        value = [["https://rpc.probe.invalid/v2/" + canary]]
+        out = config_command._redact_value("groups", value)
+        assert canary not in json.dumps(out)
+
+    def test_dataclass_list_field_redacted_through_config_to_dict(self) -> None:
+        import dataclasses
+
+        canary = _canary_hex(32)
+
+        @dataclasses.dataclass
+        class _Probe:
+            tags: list[str]
+
+        rendered = json.dumps(
+            config_command._config_to_dict(_Probe([f"https://rpc.probe.invalid/v2/{canary}"]))
+        )
+        assert canary not in rendered
+        assert REDACTED_PLACEHOLDER in rendered
+
+    def test_unredacted_mode_leaves_list_elements_alone(self) -> None:
+        import dataclasses
+
+        canary = _canary_hex(32)
+
+        @dataclasses.dataclass
+        class _Probe:
+            tags: list[str]
+
+        url = f"https://rpc.probe.invalid/v2/{canary}"
+        assert config_command._config_to_dict(_Probe([url]), redacted=False) == {"tags": [url]}

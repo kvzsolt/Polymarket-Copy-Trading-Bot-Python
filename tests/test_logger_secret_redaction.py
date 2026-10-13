@@ -51,6 +51,7 @@ from pmcopy.utils.logger import (  # noqa: E402
 from pmcopy.utils.log_redaction import (  # noqa: E402
     REDACTED_PLACEHOLDER,
     is_secret_key,
+    redact_object,
     redact_text,
     register_secret_values,
     reset_secret_registry,
@@ -730,3 +731,301 @@ class TestConsoleExtraValueSafety:
             log.info("odd extra", extra={"widget": SimpleNamespace(note=canary)})
             _flush(log)
         assert canary not in buffer.getvalue()
+
+
+class TestPluralCredentialKeys:
+    """Follow-up F3-1: plural credential keys classify as secrets.
+
+    ``api_keys``, ``secrets``, ``passwords``, ``keys`` (exact) and sensible
+    plurals of the existing singular set must redact — while the market
+    identity exemptions (``*_id``/``*_ids``) and the outcome-share
+    vocabulary (``tokens``) stay readable. The bare plural ``keys`` is only
+    an exact full-key match: longer identifiers merely *containing* ``keys``
+    (``hot_keys``, ``keyboard_keys``) must not be caught.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "api_keys",
+            "apikeys",
+            "ApiKeys",
+            "API_KEYS",
+            "secrets",
+            "SECRETS",
+            "passwords",
+            "passphrases",
+            "keys",
+            "Keys",
+            "private_keys",
+            "priv_keys",
+            "client_keys",
+            "relayer_keys",
+            "api_tokens",
+            "access_tokens",
+            "refresh_tokens",
+            "session_tokens",
+            "auth_headers",
+            "falcon_api_keys",  # adjacent-segment compound via the pair rule
+            "wallet_private_keys",  # strong segment compound
+            "db_passwords",
+        ],
+    )
+    def test_plural_credential_keys_are_secret(self, key):
+        assert is_secret_key(key) is True
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # Market identity exemptions untouched.
+            "token_id",
+            "token_ids",
+            "pruned_token_ids",
+            "condition_ids",
+            "api_keys_id",
+            # Outcome-share vocabulary: "tokens" means shares, never creds.
+            "tokens",
+            "outcome_tokens",
+            "tokens_filled",
+            # Bare "keys" must NOT bleed into longer identifiers.
+            "hot_keys",
+            "keyboard_keys",
+            "arrow_keys",
+            "leader_keys",
+            "signing_keys",
+            "monitored_leader_keys",
+        ],
+    )
+    def test_plural_lookalikes_are_not_secret(self, key):
+        assert is_secret_key(key) is False
+
+    def test_plural_key_extra_redacted_in_jsonl(self, tmp_path):
+        """RED contract: extras={"api_keys": [canary]} must not pass through."""
+        canary = _canary("plur")
+        log = configure_logging(log_dir=tmp_path, level="DEBUG")
+        log.info(
+            "provider handshake",
+            extra={"api_keys": [canary], "secrets": {"vault": canary}},
+        )
+        _flush(log)
+        rows = _jsonl_rows(tmp_path)
+        assert rows
+        blob = json.dumps(rows)
+        assert canary not in blob
+        assert rows[-1]["api_keys"] == REDACTED_PLACEHOLDER
+        assert rows[-1]["secrets"] == REDACTED_PLACEHOLDER
+
+
+class TestRedactObjectRobustness:
+    """Follow-up F3-2: bounded depth + cycle guard close the fail-open path.
+
+    Before the fix a cyclic or over-deep extra raised RecursionError inside
+    the emit-time filter, which swallowed it and let the record continue
+    with the RAW (unredacted) structure attached — and dropped/crashed the
+    record at the sinks. Cyclic/over-deep containers must instead render a
+    safe placeholder.
+    """
+
+    DEPTH_PLACEHOLDER = "***REDACTED:depth***"
+    CYCLE_PLACEHOLDER = "***REDACTED:cycle***"
+
+    @staticmethod
+    def _nested(depth: int, leaf: object) -> dict:
+        root: dict = {}
+        cursor = root
+        for _ in range(depth):
+            cursor["n"] = {}
+            cursor = cursor["n"]
+        cursor["leaf"] = leaf
+        return root
+
+    def test_cyclic_dict_redacted_not_raising(self):
+        canary = _canary("cyc")
+        register_secret_values(canary)
+        payload = {"note": f"ctx {canary}", "inner": {}}
+        payload["inner"]["back"] = payload
+        out = redact_object(payload)  # must not raise RecursionError
+        rendered = json.dumps(out)  # result is JSON-serializable
+        assert canary not in rendered
+        assert self.CYCLE_PLACEHOLDER in rendered
+
+    def test_mutual_dict_list_cycle_redacted(self):
+        canary = _canary("mutual")
+        register_secret_values(canary)
+        holder: list = [f"plain-{canary}"]
+        payload = {"items": holder, "note": canary}
+        holder.append(payload)
+        out = redact_object(payload)
+        rendered = json.dumps(out)
+        assert canary not in rendered
+        assert self.CYCLE_PLACEHOLDER in rendered
+
+    def test_shared_noncyclic_reference_still_rendered(self):
+        """A DAG (same object twice, no cycle) keeps full rendering."""
+        shared = {"size": 5}
+        payload = {"a": shared, "b": shared}
+        out = redact_object(payload)
+        assert out == {"a": {"size": 5}, "b": {"size": 5}}
+
+    def test_depth_cap_replaces_overdeep_containers(self):
+        canary = _canary("deep")
+        register_secret_values(canary)
+        out = redact_object(self._nested(50, f"leaf-{canary}"))
+        rendered = json.dumps(out)
+        assert self.DEPTH_PLACEHOLDER in rendered
+        assert canary not in rendered
+
+    def test_within_depth_structure_renders_normally(self):
+        nested = self._nested(4, "0x" + "44" * 32)
+        out = redact_object(nested)
+        assert out == nested  # plain market identity untouched, no placeholder
+        assert self.DEPTH_PLACEHOLDER not in json.dumps(out)
+
+    def test_shallow_levels_still_redact_in_overdeep_structure(self):
+        canary = _canary("mix")
+        register_secret_values(canary)
+        payload = self._nested(50, "leaf")
+        payload["api_key"] = canary  # secret at the TOP level of the same extra
+        out = redact_object(payload)
+        assert out["api_key"] == REDACTED_PLACEHOLDER
+
+    def test_extreme_depth_does_not_raise(self):
+        payload = self._nested(3000, "leaf")
+        out = redact_object(payload)  # must not raise RecursionError
+        assert self.DEPTH_PLACEHOLDER in json.dumps(out)
+
+    def test_filter_leaves_safe_structure_on_record(self, tmp_path):
+        """Emit-time pass must not strand the raw cyclic extra on the record."""
+        canary = _canary("filter")
+        register_secret_values(canary)
+        log = configure_logging(log_dir=tmp_path, level="DEBUG")
+        cyclic = {"note": f"ctx {canary}"}
+        cyclic["self"] = cyclic
+        log.info("state snapshot", extra={"state": cyclic})
+        _flush(log)
+        rows = _jsonl_rows(tmp_path)
+        assert rows
+        state = rows[-1]["state"]
+        # Field survives (not silently dropped) and carries no canary.
+        blob = json.dumps(state)
+        assert canary not in blob
+        assert self.CYCLE_PLACEHOLDER in blob
+
+    def test_console_renders_cyclic_extra_without_dying(self, tmp_path):
+        canary = _canary("conscyc")
+        register_secret_values(canary)
+        log = configure_logging(log_dir=tmp_path, level="DEBUG")
+        cyclic = {"note": canary}
+        cyclic["self"] = cyclic
+        with _captured_console() as buffer:
+            log.info("state snapshot", extra={"state": cyclic})
+            _flush(log)
+        output = buffer.getvalue()
+        assert canary not in output
+        assert "state snapshot" in output
+
+    def test_json_formatter_defense_handles_cyclic_extra(self):
+        """JsonFormatter without the filter must not lose the whole record."""
+        canary = _canary("jsncyc")
+        register_secret_values(canary)
+        record = _make_record("snapshot")
+        cyclic = {"note": canary}
+        cyclic["self"] = cyclic
+        record.state = cyclic
+        rendered = JsonFormatter().format(record)  # must not raise
+        payload = json.loads(rendered)
+        assert payload["message"] == "snapshot"
+        assert canary not in rendered
+        assert self.CYCLE_PLACEHOLDER in json.dumps(payload.get("state"))
+
+
+class TestStackInfoRedaction:
+    """Follow-up F3-3: the emit-time pass must redact ``stack_info`` text.
+
+    Realism analysis (characterized on Python 3.14): the stdlib
+    ``Formatter.format`` unconditionally appends ``formatStack`` output to
+    the rendered message, and the captured stack contains frame SOURCE
+    LINES plus the (already redacted) message — not frame locals. A real
+    canary therefore only reaches the stack text if a credential literal
+    is committed to source (forbidden by repository policy) or a caller
+    crafts ``record.stack_info`` directly. The render path is still
+    defensive in depth today (the console default path wraps the whole
+    formatted output in ``redact_text``), BUT the single emit-time pass
+    leaves the RAW stack text on the record — any handler attached without
+    that wrapper renders it verbatim. The fix closes the asymmetry the
+    same way ``exc_text`` was meant to be handled (that branch was dead:
+    ``exc_text`` is a standard attribute skipped before the check).
+    """
+
+    @staticmethod
+    def _record_with_stack(stack_text: str, msg: str = "operation failed") -> logging.LogRecord:
+        record = logging.LogRecord(
+            name="stack.test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg=msg,
+            args=(),
+            exc_info=None,
+        )
+        record.stack_info = stack_text
+        return record
+
+    def test_redact_record_redacts_stack_info_in_place(self):
+        canary = _canary("stack")
+        register_secret_values(canary)
+        record = self._record_with_stack(
+            f"Stack (most recent call last):\n  File \"signer.py\", line 9\n"
+            f"    signed_with = {canary}\n"
+        )
+        logger_module._redact_record(record)
+        assert record.stack_info is not None
+        assert canary not in record.stack_info
+        assert REDACTED_PLACEHOLDER in record.stack_info
+
+    def test_filter_redacts_stack_info_in_place(self):
+        canary = _canary("stackf")
+        register_secret_values(canary)
+        record = self._record_with_stack(f"Stack (most recent call last):\n    ctx {canary}\n")
+        assert logger_module._SecretRedactionFilter().filter(record) is True
+        assert canary not in (record.stack_info or "")
+
+    def test_redact_record_redacts_cached_exc_text_in_place(self):
+        """The pre-existing ``exc_text`` branch was unreachable; repair it."""
+        canary = _canary("exctext")
+        register_secret_values(canary)
+        record = _make_record("failed", level=logging.ERROR)
+        record.exc_text = f"RuntimeError: signing exploded with {canary}\n"
+        logger_module._redact_record(record)
+        assert canary not in (record.exc_text or "")
+
+    def test_console_default_path_renders_redacted_stack(self, tmp_path):
+        """Regression guard: console render never shows raw stack text."""
+        canary = _canary("stackc")
+        register_secret_values(canary)
+        log = configure_logging(log_dir=tmp_path, level="DEBUG")
+        record = self._record_with_stack(f"Stack (most recent call last):\n    ctx {canary}\n")
+        with _captured_console() as buffer:
+            log.handle(record)
+            _flush(log)
+        assert canary not in buffer.getvalue()
+
+    def test_json_formatter_still_ignores_stack_info(self):
+        """JsonFormatter must keep ignoring stack_info entirely."""
+        canary = _canary("stackj")
+        register_secret_values(canary)
+        record = self._record_with_stack(f"Stack (most recent call last):\n    ctx {canary}\n")
+        payload = json.loads(JsonFormatter().format(record))
+        assert "stack_info" not in payload
+        assert canary not in payload["message"]
+
+    def test_real_stack_info_call_never_leaks_console(self, tmp_path):
+        """End-to-end: an ordinary ``stack_info=True`` error stays clean."""
+        canary = _canary("stackreal")
+        register_secret_values(canary)
+        log = configure_logging(log_dir=tmp_path, level="DEBUG")
+        with _captured_console() as buffer:
+            log.error("signing failed near %s", canary, stack_info=True)
+            _flush(log)
+        assert canary not in buffer.getvalue()
+        assert "Stack (most recent call last)" in buffer.getvalue()
