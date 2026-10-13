@@ -221,9 +221,16 @@ def _validate_eth_address(value: Any, *, where: str, field_name: str, required: 
             raise ValueError(f"{where}: field {field_name!r} is required")
         return ""
     if not _ETH_ADDRESS_RE.match(text):
+        # Final-review fix: rejections carry a length/shape hint ONLY. The
+        # supplied value can be a pasted secret (an operator who puts a
+        # private key into a funder-address env var reaches this guard with
+        # the full key), and the error text flows to startup output, doctor
+        # details, and ``pmcopy config validate`` stdout. Mirror
+        # ``copierConfig._validate_env_reference``'s never-echoed contract.
         raise ValueError(
             f"{where}: field {field_name!r} must be an Ethereum address "
-            f"(0x + 40 hex characters), got {text!r}"
+            f"(0x + 40 hex characters), got a {len(text)}-character value — "
+            "supplied content never echoed"
         )
     return text
 

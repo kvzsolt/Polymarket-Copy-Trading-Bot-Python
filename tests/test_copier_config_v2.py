@@ -433,6 +433,36 @@ def test_live_invalid_private_key_format_is_rejected_without_echo(tmp_path, monk
     assert canary not in str(excinfo.value)
 
 
+def test_invalid_funder_env_value_rejected_without_echo(tmp_path, monkeypatch):
+    # Final-review fix: the RESOLVED env value is validated as an address.
+    # An operator who pastes a private key into the funder-address env var
+    # must get a rejection whose text carries a length/shape hint ONLY —
+    # never the value (it flows to startup print_error, doctor detail, and
+    # ``config validate`` stdout). Mirrors the env-name guard's
+    # "supplied content: N characters — never echoed" contract.
+    import uuid
+
+    canary = "0x" + (uuid.uuid4().hex + uuid.uuid4().hex)[:64]
+    monkeypatch.setenv("PRIMARY_FUNDER_ADDRESS", canary)
+    text = _paper_yaml(
+        """  - id: primary
+    mode: paper
+    wallet:
+      funder_address_env: PRIMARY_FUNDER_ADDRESS
+    limits:
+      max_order_quote: "5.00"
+      max_open_exposure_quote: "50.00"
+    follows: []
+"""
+    )
+    with pytest.raises(ValueError, match="funder_address_env") as excinfo:
+        _load(text, tmp_path, monkeypatch, set_env=False)
+    message = str(excinfo.value)
+    assert canary not in message
+    assert canary.replace("0x", "") not in message
+    assert "66" in message  # a length hint is given instead of the value
+
+
 def test_live_funder_reference_is_optional_but_validated(tmp_path, monkeypatch):
     monkeypatch.setenv("PRIMARY_PRIVATE_KEY", KEY_A)
     # live may omit funder_address_env (derived from the key) …

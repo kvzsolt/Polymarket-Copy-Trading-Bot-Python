@@ -197,7 +197,7 @@ authoring). Summary:
 | Adapter contract group (10-file command) | 228 passed |
 | Release gate `-m release_gate` | 187 passed |
 | Integration `-m integration` | 539 passed ×2 runs, ONE shared container, zero churn (container-id set byte-identical before/during/after) |
-| Replay suite `pytest tests/replay` | **Skipped (recorded)**: directory contains conftest + 5 JSON scenarios but no `test_*.py`; nothing collected. Replay-equivalent scenarios live inline in the default tier. |
+| Replay suite `pytest tests/replay` | **Skipped (recorded)**: directory contains conftest + 6 JSON scenarios but no `test_*.py`; nothing collected. Replay-equivalent scenarios live inline in the default tier. |
 | `scripts/verify_package.py` | ALL PACKAGING PROOFS GREEN (wheel + sdist, fresh venvs, empty CWD) |
 | Docker build + offline CLI smokes + CI-faithful paper smoke | all exit 0; image 485MB; `container healthy` |
 | `uv pip check` / CI `pip check` | compatible |
@@ -314,9 +314,10 @@ moved with feature work, not the refactor (table in
   basis (TOCTOU window pre-lock) and partial-fill remainders can drift
   past a cap (pre-existing settlement semantics); follow-level
   `max_market_exposure_usdc` is inert in the pipeline;
-  `get_unconfirmed_buys/sells(user_id='')` blank-string degrades to the
-  global set (fail-closed fix still owed);
-  `_fills_consistent` treats any non-quote unit as shares (unreachable
+  `get_unconfirmed_buys/sells(user_id='')` blank-string used to degrade to
+  the global set (the fail-closed fix landed in the final whole-branch
+  review on 2026-10-13);
+  `_fills_consistent_with_submission` treats any non-quote unit as shares (unreachable
   today); plural credential keys (`api_keys`/`secrets`/`passwords`) bypass
   the key classifier; `redact_object` lacks a depth cap; lease pre-purge
   writes to the shared DB before the lease is held; stale prev-CTE

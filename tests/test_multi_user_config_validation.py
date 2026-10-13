@@ -424,6 +424,25 @@ def test_invalid_funder_address_rejected(tmp_path, monkeypatch):
         )
 
 
+def test_invalid_funder_address_rejected_without_echoing_value(tmp_path, monkeypatch):
+    # Final-review fix: an operator who pastes a private key (66 hex) into a
+    # funder-address field must get a rejection whose text carries a
+    # length/shape hint ONLY. The error flows to startup output, doctor
+    # details, and ``pmcopy config validate`` stdout — echoing the supplied
+    # value would print the key material.
+    canary = "0x" + "e" * 64  # runtime-built; private-key-shaped, not an address
+    with pytest.raises(ValueError, match="funder_address") as excinfo:
+        _load(
+            {"users": [_entry(funder_address=canary)]},
+            tmp_path,
+            monkeypatch,
+        )
+    message = str(excinfo.value)
+    assert canary not in message
+    assert canary.replace("0x", "") not in message
+    assert "66" in message  # a length hint is given instead of the value
+
+
 # ---------------------------------------------------------------------------
 # Strict schema: unknown keys, missing structure
 # ---------------------------------------------------------------------------

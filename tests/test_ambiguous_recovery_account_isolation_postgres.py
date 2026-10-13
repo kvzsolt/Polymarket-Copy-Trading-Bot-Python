@@ -452,6 +452,16 @@ async def test_unconfirmed_buys_stop_unioning_legacy_rows_in_real_sql():
         assert [row["trade_key"] for row in buys_for_a] == ["trade-a"]
         assert [row["trade_key"] for row in buys_for_b] == ["trade-b"]
 
+        # Final-review fix: a blank/None scope must fail closed (mirroring
+        # ``list_no_id_ambiguous_submissions``) instead of silently widening
+        # to EVERY account's pending set.
+        with pytest.raises(ValueError, match="user_id"):
+            await repo.get_unconfirmed_buys(max_age_seconds=3600.0, user_id="")
+        with pytest.raises(ValueError, match="user_id"):
+            await repo.get_unconfirmed_buys(max_age_seconds=3600.0, user_id=None)
+        with pytest.raises(ValueError, match="user_id"):
+            await repo.get_unconfirmed_sells(max_age_seconds=3600.0, user_id=None)
+
 
 async def test_provenance_mapping_helper_is_explicit_and_unambiguous():
     async with _pg_pool() as pool:

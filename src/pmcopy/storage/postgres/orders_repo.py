@@ -1580,7 +1580,11 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
-        """Return unconfirmed buys for one account's pending set."""
+        """Return unconfirmed buys for one account's pending set.
+
+        ``user_id`` is mandatory: a blank/None scope raises ``ValueError``
+        (fail-closed) instead of widening to every account's rows.
+        """
         return await self._unconfirmed_processed_trades(
             side="BUY", max_age_seconds=max_age_seconds, user_id=user_id
         )
@@ -1591,7 +1595,11 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
-        """Return unconfirmed sells for one account's pending set."""
+        """Return unconfirmed sells for one account's pending set.
+
+        ``user_id`` is mandatory: a blank/None scope raises ``ValueError``
+        (fail-closed) instead of widening to every account's rows.
+        """
         return await self._unconfirmed_processed_trades(
             side="SELL", max_age_seconds=max_age_seconds, user_id=user_id
         )
@@ -1605,13 +1613,28 @@ class OrdersRepo(AbstractOrderRepository):
     ) -> list[dict]:
         """List one account's unconfirmed processed trades.
 
-        Audit A01: when ``user_id`` is provided the scope is a strict
-        equality predicate.  Legacy NULL/''-user rows are NOT unioned into
-        every user's pending set; they are excluded and counted into a
-        logged quarantine reason pending the one-shot provenance mapping
-        helper (``map_legacy_unowned_rows_to_provenance_owners``).
+        Audit A01: the scope is a strict equality predicate.  Legacy NULL/
+        ''-user rows are NOT unioned into every user's pending set; they are
+        excluded and counted into a logged quarantine reason pending the
+        one-shot provenance mapping helper
+        (``map_legacy_unowned_rows_to_provenance_owners``).
+
+        Final-review fix (owed since T24): a blank/None ``user_id`` fails
+        closed with ``ValueError`` — mirroring the sister method
+        ``list_no_id_ambiguous_submissions`` — instead of silently widening
+        the pending set to EVERY account's trades.  Every caller owns one
+        account (``TradingContext.user_id`` is validated non-empty by both
+        roster loaders); an unscoped maintenance read, if one is ever
+        needed, gets its own explicitly-named method rather than a blank
+        scope here.
         """
 
+        scoped_owner = str(user_id or "").strip()
+        if not scoped_owner:
+            raise ValueError(
+                "user_id is required to scope unconfirmed processed trades "
+                "(a blank scope would return every account's pending rows)"
+            )
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
@@ -1622,34 +1645,30 @@ class OrdersRepo(AbstractOrderRepository):
                   AND (order_id IS NOT NULL OR processed_at <= $1)
         """
         params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES), side]
-        scoped_owner: str | None = None
-        if user_id:
-            scoped_owner = str(user_id).strip()
-            query += f" AND user_id = ${len(params) + 1}"
-            params.append(scoped_owner)
+        query += f" AND user_id = ${len(params) + 1}"
+        params.append(scoped_owner)
         query += " ORDER BY processed_at ASC"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
-            if scoped_owner:
-                quarantined_legacy = await conn.fetchval(
-                    """
-                    SELECT count(*) FROM processed_trades
-                    WHERE status = ANY($1::text[])
-                      AND side = $2
-                      AND (order_id IS NOT NULL OR processed_at <= $3)
-                      AND COALESCE(user_id, '') = ''
-                    """,
-                    list(_UNCONFIRMED_SUBMISSION_STATES),
+            quarantined_legacy = await conn.fetchval(
+                """
+                SELECT count(*) FROM processed_trades
+                WHERE status = ANY($1::text[])
+                  AND side = $2
+                  AND (order_id IS NOT NULL OR processed_at <= $3)
+                  AND COALESCE(user_id, '') = ''
+                """,
+                list(_UNCONFIRMED_SUBMISSION_STATES),
+                side,
+                cutoff,
+            )
+            if quarantined_legacy:
+                logger.warning(
+                    "unconfirmed_trades_legacy_rows_quarantined | side=%s count=%d "
+                    "reason=blank_user_id pending=provenance_mapping",
                     side,
-                    cutoff,
+                    int(quarantined_legacy),
                 )
-                if quarantined_legacy:
-                    logger.warning(
-                        "unconfirmed_trades_legacy_rows_quarantined | side=%s count=%d "
-                        "reason=blank_user_id pending=provenance_mapping",
-                        side,
-                        int(quarantined_legacy),
-                    )
         return [dict(r) for r in rows]
 
     async def map_legacy_unowned_rows_to_provenance_owners(

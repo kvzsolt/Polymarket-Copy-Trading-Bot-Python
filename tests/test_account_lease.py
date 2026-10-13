@@ -469,6 +469,19 @@ def test_app_startup_acquires_leases_before_building_user_states() -> None:
     assert '"account-lease-renewal"' in source
 
 
+def test_app_startup_starts_evidence_drain_only_after_leases_are_held() -> None:
+    """Final-review fix (reviewer minor): the database-to-spool evidence
+    drain reads the SHARED database outbox.  A doomed second process (lease
+    refused below) must never start that worker, so the drain starts only
+    after every account lease is acquired."""
+    import pmcopy.app as app_module
+
+    source = inspect.getsource(app_module._run_application)
+    assert source.index("account_lease_manager.acquire(") < source.index(
+        "await evidence_drain.start()"
+    )
+
+
 def test_app_shutdown_releases_leases_before_pool_close() -> None:
     import pmcopy.app as app_module
 

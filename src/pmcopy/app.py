@@ -1805,7 +1805,11 @@ async def _run_application(
             PostgresEvidenceDrain(_pool, evidence_runtime, batch_size=25)
         )
         client_registry.append(evidence_drain)
-        await evidence_drain.start()
+        # Final-review fix: the worker itself starts only AFTER every
+        # account lease is acquired below. The drain reads the shared
+        # database outbox; a doomed second process (lease refused) must
+        # never drain it. The registry entry stays here so shutdown closes
+        # the drain on every path (aclose is a no-op when never started).
     from pmcopy.services.onchain_detection.leader_sell_scope_guard import LeaderSellScopeGuard
     from pmcopy.storage.postgres.leader_sell_scope_repo import LeaderSellSafetyScopeRepo
 
@@ -1867,6 +1871,11 @@ async def _run_application(
         len(runtime_users),
         mode,
     )
+    # Leases held — now the shared-outbox drain worker may start (see the
+    # composition note above: composition precedes the lease loop, the
+    # worker start deliberately does not).
+    if evidence_drain is not None:
+        await evidence_drain.start()
 
     for runtime_user in runtime_users:
         venue_runtime = await build_polymarket_runtime(

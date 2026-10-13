@@ -119,13 +119,15 @@ async def test_unconfirmed_processed_trade_selectors_include_matched_rows():
     )
     repo = OrdersRepo(_FakePool(conn))
 
-    buy_rows = await repo.get_unconfirmed_buys()
-    sell_rows = await repo.get_unconfirmed_sells()
+    # Final-review fix: the scope is mandatory — blank/None fails closed.
+    buy_rows = await repo.get_unconfirmed_buys(user_id="u1")
+    sell_rows = await repo.get_unconfirmed_sells(user_id="u1")
 
     assert buy_rows[0]["order_id"] == "ord-matched"
     assert sell_rows[0]["order_id"] == "ord-matched"
+    # calls: [buy main, buy quarantine count, sell main, sell quarantine count]
     buy_query, buy_params = conn.calls[0]
-    sell_query, sell_params = conn.calls[1]
+    sell_query, sell_params = conn.calls[2]
     assert "side = $3" in buy_query
     assert "side = $3" in sell_query
     assert buy_params[2] == "BUY"
@@ -165,6 +167,22 @@ async def test_unconfirmed_processed_trade_selectors_can_scope_by_user():
     assert "OR user_id IS NULL" not in sell_query
     assert buy_params[3] == "u1"
     assert sell_params[3] == "u1"
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+async def test_unconfirmed_processed_trades_blank_user_id_fails_closed(blank):
+    # Final-review fix (queued in T6 for T24, then silently dropped): a
+    # blank/None user_id must NOT widen the pending set to EVERY account's
+    # unconfirmed trades.  Mirror the sister method
+    # ``list_no_id_ambiguous_submissions``: fail closed with ValueError.
+    conn = _RecordingConn([])
+    repo = OrdersRepo(_FakePool(conn))
+    with pytest.raises(ValueError, match="user_id"):
+        await repo.get_unconfirmed_buys(user_id=blank)
+    with pytest.raises(ValueError, match="user_id"):
+        await repo.get_unconfirmed_sells(user_id=blank)
+    # The rejection happens before any SQL is issued.
+    assert conn.calls == []
 
 
 async def test_order_repo_upsert_replaces_failed_submission():
