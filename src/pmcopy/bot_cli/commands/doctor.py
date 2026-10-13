@@ -159,37 +159,134 @@ async def _missing_db_tables(pool) -> list[str]:
     return [t for t in _REQUIRED_DB_TABLES if t not in present]
 
 
-def _code_gate_scan(
-    *,
-    repo_root: Path,
-    forbidden_substrings: tuple[str, ...],
-    roots: tuple[str, ...] = (
-        "src/pmcopy/orchestrators",
-        "src/pmcopy/services",
-        "src/pmcopy/clients",
-        "src/pmcopy/domain",
-        "src/pmcopy/cache",
-        "src/pmcopy/utils",
-    ),
-) -> list[tuple[str, str]]:
-    """Search *.py under given roots for forbidden substrings. Return [(path, substr)]."""
-    hits: list[tuple[str, str]] = []
+# Roots the code gates scan in a source checkout, and the matching
+# installed ``pmcopy`` subpackages for wheel deployments.
+_GATE_SOURCE_ROOTS = (
+    "src/pmcopy/orchestrators",
+    "src/pmcopy/services",
+    "src/pmcopy/clients",
+    "src/pmcopy/domain",
+    "src/pmcopy/cache",
+    "src/pmcopy/utils",
+)
+_GATE_INSTALLED_PACKAGES = tuple(
+    root[len("src/") :].replace("/", ".") for root in _GATE_SOURCE_ROOTS
+)
+# The coordinator-alias gate keeps its historical (narrower) scope.
+_ALIAS_ROOTS = ("src/pmcopy/orchestrators", "src/pmcopy/services")
+
+
+class _GateScanUnavailable(RuntimeError):
+    """Neither the source tree nor the installed package could be scanned."""
+
+
+def _gate_source_files(repo_root: Path, roots: tuple[str, ...]) -> list[tuple[str, Path]] | None:
+    """Return gated ``(display path, absolute path)`` pairs from the source tree.
+
+    ``None`` means none of the gated roots exist here — an installed wheel
+    has no source tree, which is exactly where the old scanner silently
+    scanned zero files and still reported a clean pass.
+    """
+    if not any((repo_root / root).exists() for root in roots):
+        return None
+    files: list[tuple[str, Path]] = []
     for root in roots:
         base = repo_root / root
         if not base.exists():
             continue
         for path in base.rglob("*.py"):
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            for sub in forbidden_substrings:
-                if sub in text:
-                    hits.append((str(path.relative_to(repo_root)), sub))
-    return hits
+            files.append((str(path.relative_to(repo_root)), path))
+    return files
 
 
-_ALIAS_ALLOWED = {"src/pmcopy/services/execution/coordinator.py"}
+def _gate_installed_files(roots: tuple[str, ...]) -> tuple[list[tuple[str, Path]], str]:
+    """Return gated ``(display path, absolute path)`` pairs from the install.
+
+    Display paths are relative to the package parent (site-packages or the
+    editable source root), so an installed ``services/execution/x.py``
+    reports as ``pmcopy/services/execution/x.py``.
+    """
+    import importlib.util
+
+    files: list[tuple[str, Path]] = []
+    provenance_root: Path | None = None
+    for root in roots:
+        module_name = root[len("src/") :].replace("/", ".")
+        spec = importlib.util.find_spec(module_name)
+        if spec is None or not spec.submodule_search_locations:
+            # Mirror the source scanner's tolerance for individually
+            # absent roots; the all-missing case fails closed below.
+            continue
+        base = Path(list(spec.submodule_search_locations)[0])
+        package_parent = base.parent.parent
+        if provenance_root is None:
+            provenance_root = package_parent
+        for path in sorted(base.rglob("*.py")):
+            files.append((str(path.relative_to(package_parent)), path))
+    if provenance_root is None or not files:
+        raise _GateScanUnavailable(
+            "the gated pmcopy subpackages are not importable from the running interpreter"
+        )
+    return files, str(provenance_root)
+
+
+def _gate_files(
+    repo_root: Path, roots: tuple[str, ...] = _GATE_SOURCE_ROOTS
+) -> tuple[list[tuple[str, Path]], str]:
+    """Locate the modules a code gate scans, with scan provenance.
+
+    A source checkout scans the repository roots. An installed wheel has
+    no source tree, so the same gate scans the installed ``pmcopy``
+    subpackages — the code that actually runs in that deployment — and the
+    ok detail carries the site-packages provenance plus the file count.
+    Fails closed (``_GateScanUnavailable``) when neither can be located: a
+    gate that scanned nothing must never report a clean result.
+    """
+    source_files = _gate_source_files(repo_root, roots)
+    if source_files is not None:
+        if not source_files:
+            raise _GateScanUnavailable(
+                f"gated source roots exist under {repo_root} but contain no Python files"
+            )
+        return source_files, f"source tree scan, {len(source_files)} files under {repo_root}"
+    installed_files, provenance_root = _gate_installed_files(roots)
+    return installed_files, (
+        f"installed package scan, {len(installed_files)} files under "
+        f"{provenance_root} (source tree absent)"
+    )
+
+
+def _code_gate_scan(
+    *,
+    repo_root: Path,
+    forbidden_substrings: tuple[str, ...],
+    roots: tuple[str, ...] = _GATE_SOURCE_ROOTS,
+) -> tuple[list[tuple[str, str]], str]:
+    """Search gated modules for forbidden substrings.
+
+    Returns ``(hits, provenance)`` — each hit is ``(display path,
+    substring)`` and provenance names what was actually scanned. Raises
+    ``_GateScanUnavailable`` when nothing could be scanned, so the gate can
+    never pass vacuously.
+    """
+    files, provenance = _gate_files(repo_root, roots)
+    hits: list[tuple[str, str]] = []
+    for display_path, path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for sub in forbidden_substrings:
+            if sub in text:
+                hits.append((display_path, sub))
+    return hits, provenance
+
+
+_ALIAS_ALLOWED = {
+    "src/pmcopy/services/execution/coordinator.py",
+    # The same guarded file under the installed-package path spelling.
+    "pmcopy/services/execution/coordinator.py",
+}
 _ALIAS_PATTERNS = (
     "execution_service.execute",
     'getattr(execution_service, "execute"',
@@ -197,26 +294,24 @@ _ALIAS_PATTERNS = (
 )
 
 
-def _code_gate_coordinator_alias(repo_root: Path) -> list[str]:
-    """Mirror PR6.1 stricter scan. Returns relative paths of unguarded aliases."""
+def _code_gate_coordinator_alias(
+    repo_root: Path, roots: tuple[str, ...] = _ALIAS_ROOTS
+) -> tuple[list[str], str]:
+    """Mirror PR6.1 stricter scan. Returns unguarded aliases plus provenance."""
+    files, provenance = _gate_files(repo_root, roots)
     violations: list[str] = []
-    for root in ("src/pmcopy/orchestrators", "src/pmcopy/services"):
-        base = repo_root / root
-        if not base.exists():
+    for display_path, path in files:
+        if display_path in _ALIAS_ALLOWED:
             continue
-        for path in base.rglob("*.py"):
-            rel = str(path.relative_to(repo_root))
-            if rel in _ALIAS_ALLOWED:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            for pat in _ALIAS_PATTERNS:
-                if pat in text and "execution_coordinator_missing" not in text:
-                    violations.append(f"{rel}: {pat}")
-                    break
-    return violations
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for pat in _ALIAS_PATTERNS:
+            if pat in text and "execution_coordinator_missing" not in text:
+                violations.append(f"{display_path}: {pat}")
+                break
+    return violations, provenance
 
 
 def _try_port_bind(host: str, port: int) -> tuple[bool, str]:
@@ -662,46 +757,76 @@ async def run_doctor_checks(
     # ----- code gates ---------------------------------------------------
     # Concatenate forbidden substrings at runtime so the doctor source
     # itself does not contain the literals it is scanning for. The PR3+
-    # forbidden tokens are split across two halves below.
+    # forbidden tokens are split across two halves below. Each gate either
+    # scans real files (source tree, or the installed package when the
+    # source tree is absent) and says so in its detail, or fails closed —
+    # never again a clean pass for zero files scanned.
     repo_root = _repo_root()
     _PRICE_CACHE = "services." + "price_cache"
     _POSITION_PRICE_CACHE = "PositionPrice" + "Cache"
     _MARKET_META_SERVICE = "MarketMeta" + "Service"
-    forbidden_legacy = _code_gate_scan(
-        repo_root=repo_root,
-        forbidden_substrings=(_PRICE_CACHE, _POSITION_PRICE_CACHE),
-    )
-    if forbidden_legacy:
+    try:
+        forbidden_legacy, gate_provenance = _code_gate_scan(
+            repo_root=repo_root,
+            forbidden_substrings=(_PRICE_CACHE, _POSITION_PRICE_CACHE),
+        )
+    except _GateScanUnavailable as exc:
         ctx.blocked(
             "code_gate_price_cache",
-            f"references found: {forbidden_legacy[:3]}",
-            "remove legacy price cache references",
+            f"scan unavailable: {exc}",
+            "reinstall the pmcopy package or run doctor from the source checkout",
         )
     else:
-        ctx.ok("code_gate_price_cache", "no legacy references")
+        if forbidden_legacy:
+            ctx.blocked(
+                "code_gate_price_cache",
+                f"references found: {forbidden_legacy[:3]}",
+                "remove legacy price cache references",
+            )
+        else:
+            ctx.ok("code_gate_price_cache", f"no legacy references ({gate_provenance})")
 
-    forbidden_meta = _code_gate_scan(
-        repo_root=repo_root,
-        forbidden_substrings=(_MARKET_META_SERVICE,),
-    )
-    if forbidden_meta:
+    try:
+        forbidden_meta, gate_provenance = _code_gate_scan(
+            repo_root=repo_root,
+            forbidden_substrings=(_MARKET_META_SERVICE,),
+        )
+    except _GateScanUnavailable as exc:
         ctx.blocked(
             "code_gate_market_meta_service",
-            f"references found: {forbidden_meta[:3]}",
-            "remove legacy meta-service references",
+            f"scan unavailable: {exc}",
+            "reinstall the pmcopy package or run doctor from the source checkout",
         )
     else:
-        ctx.ok("code_gate_market_meta_service", "no legacy meta-service references")
+        if forbidden_meta:
+            ctx.blocked(
+                "code_gate_market_meta_service",
+                f"references found: {forbidden_meta[:3]}",
+                "remove legacy meta-service references",
+            )
+        else:
+            ctx.ok(
+                "code_gate_market_meta_service",
+                f"no legacy meta-service references ({gate_provenance})",
+            )
 
-    alias_violations = _code_gate_coordinator_alias(repo_root)
-    if alias_violations:
+    try:
+        alias_violations, gate_provenance = _code_gate_coordinator_alias(repo_root)
+    except _GateScanUnavailable as exc:
         ctx.blocked(
             "code_gate_coordinator_alias",
-            f"unguarded aliases: {alias_violations[:3]}",
-            "ensure each fallback co-located with execution_coordinator_missing guard",
+            f"scan unavailable: {exc}",
+            "reinstall the pmcopy package or run doctor from the source checkout",
         )
     else:
-        ctx.ok("code_gate_coordinator_alias", "all aliases guarded")
+        if alias_violations:
+            ctx.blocked(
+                "code_gate_coordinator_alias",
+                f"unguarded aliases: {alias_violations[:3]}",
+                "ensure each fallback co-located with execution_coordinator_missing guard",
+            )
+        else:
+            ctx.ok("code_gate_coordinator_alias", f"all aliases guarded ({gate_provenance})")
 
     # ----- log paths ----------------------------------------------------
     try:

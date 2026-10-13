@@ -154,9 +154,7 @@ def test_coordinator_alias_allowlist_covers_installed_spelling(
     )
     orchestrators = site / "pmcopy" / "orchestrators"
     orchestrators.mkdir(parents=True)
-    (orchestrators / "rogue.py").write_text(
-        "execution_service.execute(order)\n", encoding="utf-8"
-    )
+    (orchestrators / "rogue.py").write_text("execution_service.execute(order)\n", encoding="utf-8")
     _fake_installed_packages(
         monkeypatch,
         {"pmcopy.services": site / "pmcopy" / "services", "pmcopy.orchestrators": orchestrators},

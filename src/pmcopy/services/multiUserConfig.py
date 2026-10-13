@@ -23,12 +23,14 @@ Input contracts enforced here:
   used, converted to ``Decimal`` at that internal boundary.
 * **Identity** — duplicate user ids, duplicate wallet identities
   (case-insensitive funder-address compare; private-key compare for live
-  entries whose funder is derived later), and duplicate leader ids inside
-  one user's follows are hard errors. Leader ids and funders are validated
-  as Ethereum addresses (``0x`` + 40 hex), stripped; identity comparisons
-  are case-insensitive while the stored spelling is preserved as written so
-  whitelist matching against configured/discovered leader ids stays
-  byte-identical.
+  entries whose funder is derived later — the key identity compare strips
+  surrounding whitespace so a padded copy-paste cannot pose as a second
+  wallet, while the stored ``SecretStr`` keeps the value verbatim), and
+  duplicate leader ids inside one user's follows are hard errors. Leader
+  ids and funders are validated as Ethereum addresses (``0x`` + 40 hex),
+  stripped; identity comparisons are case-insensitive while the stored
+  spelling is preserved as written so whitelist matching against
+  configured/discovered leader ids stays byte-identical.
 * **Schema** — unknown keys at the top level, in user objects, and in
   follow objects are rejected (catching ``max_trade_usd``-style typos); a
   payload without a ``users`` list is rejected instead of silently loading
@@ -366,8 +368,17 @@ def _runtime_user_from_payload(payload: Any, config: "AppConfig", *, index: int)
             "balance/live-position health probes; live mode derives it from "
             "the entry's private_key instead)"
         )
+    chain_id_raw = payload.get("chain_id", config.wallet.chain_id)
+    # bool is an int subclass: int(True) == 1 would silently select network 1
+    # from a templated JSON true. Reject booleans explicitly before the
+    # numeric coercion.
+    if isinstance(chain_id_raw, bool):
+        raise ValueError(
+            f"{label}: field 'chain_id' must be a JSON number or decimal text, "
+            "not a JSON boolean (true would coerce to chain id 1); got bool"
+        )
     try:
-        chain_id = int(payload.get("chain_id", config.wallet.chain_id))
+        chain_id = int(chain_id_raw)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label}: invalid chain_id: {exc}") from exc
     wallet = WalletConfig(
@@ -419,20 +430,24 @@ def _reject_duplicate_users(users: list[RuntimeUser]) -> None:
             seen_funders[funder_key] = user.user_id
         # Live entries may omit funder_address (derived later); the private
         # key is then the wallet identity. Compare it internally and name
-        # only the users in the error — never the key material. Empty keys
-        # carry no identity (schema v2 paper copiers may legitimately have
-        # no signing secret) and are skipped: two empty secrets are not a
-        # shared wallet.
+        # only the users in the error — never the key material. Only the
+        # COMPARISON strips surrounding whitespace: two keys differing by
+        # padding are the same wallet, while the stored SecretStr keeps the
+        # value verbatim so the wallet transport receives exactly what the
+        # operator wrote. Empty keys carry no identity (schema v2 paper
+        # copiers may legitimately have no signing secret) and are skipped:
+        # two empty secrets are not a shared wallet.
         private_key = user.wallet.private_key.get_secret_value()
-        if private_key:
-            previous_key_user = seen_private_keys.get(private_key)
+        if private_key.strip():
+            identity_key = private_key.strip()
+            previous_key_user = seen_private_keys.get(identity_key)
             if previous_key_user is not None:
                 raise ValueError(
                     f"multi-user config entries {previous_key_user!r} and "
                     f"{user.user_id!r} share the same wallet private_key; one "
                     "wallet may back exactly one copier entry"
                 )
-            seen_private_keys[private_key] = user.user_id
+            seen_private_keys[identity_key] = user.user_id
 
 
 def _is_descendant(child: Path, parent: Path) -> bool:

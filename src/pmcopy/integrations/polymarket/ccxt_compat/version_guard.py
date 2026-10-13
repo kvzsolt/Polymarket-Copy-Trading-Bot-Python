@@ -56,7 +56,9 @@ def _parse_version_state(value: Any) -> tuple[tuple[int, ...], bool] | None:
     a suffix (``73rc1``) contributes its prefix and marks a pre-release;
     a non-numeric component after the first (``dev1``) also marks a
     pre-release. Only a first component without any leading digits makes
-    the whole value unparseable.
+    the whole value unparseable — and that path returns ``None``
+    immediately, so the loop always leaves ``release`` non-empty (the
+    first component is either appended or has already returned).
     """
 
     text = str(value or "").strip()
@@ -81,8 +83,6 @@ def _parse_version_state(value: Any) -> tuple[tuple[int, ...], bool] | None:
         is_prerelease = True
         break
 
-    if not release:
-        return None
     return tuple(release), is_prerelease
 
 

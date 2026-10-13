@@ -2355,7 +2355,12 @@ def _read_secrets_contents(path: Path) -> str | None:
 
 
 def _read_secret_overrides(contents: str) -> dict[str, Any]:
-    """Parse nested application secrets while allowing Compose's PG key."""
+    """Parse nested application secrets, rejecting the legacy PG key.
+
+    ``PMCOPY_ENVIRONMENT`` is allowed through (it is consumed earlier by
+    ``_resolve_environment``); the pre-split ``POSTGRES_PASSWORD`` is
+    rejected with a migration hint pointing at db.env and docs/docker.md.
+    """
     seen: set[str] = set()
     lines = contents.splitlines()
     for line_number, raw_line in enumerate(lines, 1):
@@ -2376,12 +2381,20 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for raw_key, value in values.items():
         key = str(raw_key)
-        if key in ("POSTGRES_PASSWORD", "PMCOPY_ENVIRONMENT"):
-            # POSTGRES_PASSWORD is tolerated so a legacy secrets.env that still
-            # carries it keeps loading; compose reads it from db.env now
-            # (postgres-only file). PMCOPY_ENVIRONMENT is the documented
-            # environment selector, consumed before this layer by
-            # _resolve_environment.
+        if key == "POSTGRES_PASSWORD":
+            # T15 split: the database superuser password lives ONLY in
+            # db.env (read by the compose postgres service; see
+            # docs/docker.md). Toleration kept a stale copy here silently
+            # diverging from the real one, so reject with the migration
+            # path instead of skipping. Never echo the supplied value.
+            raise EnvValidationError(
+                "secrets.env no longer accepts POSTGRES_PASSWORD: the "
+                "database password moved to db.env (postgres-only file); "
+                "see docs/docker.md"
+            )
+        if key == "PMCOPY_ENVIRONMENT":
+            # The documented environment selector, consumed before this
+            # layer by _resolve_environment.
             continue
         if not key.startswith("PMCOPY__"):
             raise EnvValidationError(
