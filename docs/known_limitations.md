@@ -127,20 +127,37 @@ Limitations:
 
 ## 6. Market-exposure cap semantics (confirmed basis)
 
-The enforced market-exposure ceiling is checked inside the per-user
-advisory-lock reservation transaction, but on a **confirmed basis**:
-exposure is computed from confirmed positions, so concurrently racing
-intents each see pre-fill exposure and a burst can drift slightly past the
-cap until its fills land (the same pre-lock TOCTOU shape as the
-wallet-balance handling; the reservation domain still bounds the concurrent
-blast radius by wallet balance, so this is cap drift, not double-spend).
-Partial-fill remainders of an already-accepted order can likewise complete
-past the cap (pre-existing settlement semantics). Additionally, the
-follow-level `max_market_exposure_usdc` (schema-v2
-`limits.max_open_exposure_quote`) is carried onto the trading context but
-currently has no pipeline reader — the enforced cap is the account-level
-`risk.max_market_exposure_usdc` (characterized during the multi-copier
-acceptance matrix; see `docs/refactor/handoff.md`).
+Two exposure ceilings are enforced, both fail-closed: the account-level
+`risk.max_market_exposure_usdc` risk-policy cap, and the explicit copier
+cap — schema-v2 `limits.max_open_exposure_quote` (or the explicit v1
+follow field). The copier cap is enforced at TWO levels (admission gate
+`62458e9`, transaction authority `c497bf5`):
+
+- **BUY admission** (trade pipeline, copied entries only — protective
+  exits can never be blocked by an exposure cap): headroom is computed as
+  cap − confirmed open exposure − active reserved quote, failing closed
+  (`copier_open_exposure_unavailable`) when either basis cannot be
+  established.
+- **The reservation transaction is authoritative**: inside the per-user
+  advisory-lock checked BUY reservation, confirmed open exposure + the
+  account's already-reserved quote + the new reservation must be ≤ cap
+  (`CopierOpenExposureCapExceeded` → skip code `copier_open_exposure_cap`).
+  In-flight BUY intents therefore count toward the cap through their
+  reservations, and concurrent cross-scope BUY races on one account are
+  serialized by the transaction — exactly one commits (proven by the real
+  Postgres cross-scope race test in `tests/multicopier/`).
+
+Two residual limitations remain (documented, bounded):
+
+- **TOCTOU window**: the confirmed-exposure basis is snapshotted before
+  the lock (resolved through an injected reader ahead of the transaction),
+  so a fill landing between snapshot and lock can be missed by the check
+  and a burst can drift slightly past the cap until its fills land — the
+  same pre-lock TOCTOU shape as the wallet-balance handling; the
+  reservation domain still bounds the concurrent blast radius by wallet
+  balance, so this is cap drift, not double-spend.
+- **Partial-fill remainders** of an already-accepted order can likewise
+  complete past the cap (pre-existing settlement semantics).
 
 ## 7. Dependency and toolchain limitations (2026-10 standalone refactor)
 
@@ -155,8 +172,11 @@ acceptance matrix; see `docs/refactor/handoff.md`).
   `sign_message`) — correct but slower than the native library.
 - **mypy beyond the money-path spine is ratcheted, not clean**: CI blocks
   on the spine (adapter + venue runtime + HTTP client) being clean, and
-  ratchets the remaining services/orchestrators/domain error count at ≤ 34
-  pre-existing findings. New code must not add to the count.
+  ratchets the remaining services/orchestrators/domain debt with a
+  committed PER-FILE manifest (`scripts/mypy_baseline.json` — 12 erroring
+  files / 23 errors, exact per-file equality via
+  `scripts/check_mypy_ratchet.py`; deliberate moves only through
+  `--update`). New code must not add to any file's count.
 - **One process-wide trading mode**: every copier in a process must declare
   the same `mode`, matching `execution.trading_mode` — paper and live
   cannot be mixed in one process; run one deployment per mode.

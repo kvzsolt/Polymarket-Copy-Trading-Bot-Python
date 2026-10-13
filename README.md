@@ -208,6 +208,19 @@ Dependency changes go through the lock: edit `pyproject.toml`, run
 `requirements.txt` / `requirements.runtime.txt`; `python
 scripts/check_requirements_drift.py` guards byte-exact consistency.
 
+Installing a locally built wheel directly (what
+`scripts/verify_package.py` proves from fresh venvs — it prefers
+`python -m build` when the `build` package is available and falls back to
+`uv build`):
+
+```bash
+python -m build            # or: uv build
+pip install dist/polymarket_copy_trading_bot-0.1.0-py3-none-any.whl
+```
+
+An installed copy resolves packaged defaults and SQL migrations through
+`importlib.resources` — it never depends on this checkout.
+
 Further reading: [docs/00-read-this-first.md](docs/00-read-this-first.md),
 [docs/02-configuration.md](docs/02-configuration.md),
 [docs/03-paper-trading.md](docs/03-paper-trading.md) →

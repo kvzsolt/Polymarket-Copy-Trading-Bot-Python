@@ -38,9 +38,11 @@ code:
   acceptance matrix §9 all green at hermetic and real-Postgres levels
   (Tasks 21–24).
 - Quality gates made real: blocking ruff full scan (66-finding backlog
-  cleared, no noqa additions), blocking mypy money-spine + 34-error ratchet,
-  actionlint-clean workflows, no-xfail enforcement, shared-Postgres
-  integration tier with zero container churn (Task 25).
+  cleared, no noqa additions), blocking mypy money-spine + per-file
+  type-debt ratchet manifest (`scripts/mypy_baseline.json`, exact per-file
+  equality — replaced the earlier 34-error total-only ratchet on
+  2026-10-13), actionlint-clean workflows, no-xfail enforcement,
+  shared-Postgres integration tier with zero container churn (Task 25).
 
 **Intentionally removed product surfaces** (full evidence per row in
 `deletion-manifest.md`):
@@ -57,7 +59,8 @@ code:
 - The `AutomaticDiscoveryRunner` adapter (only consumer was the CP
   discovery queue).
 - The Dependabot `h2`-only branch is superseded by the full re-lock
-  (close without merging).
+  (closed without merging on 2026-10-13 — PR #137, with a supersession
+  comment pointing at the canonical `uv.lock` re-lock).
 
 The local `pmcopy` CLI is now the only control surface; the health/metrics
 server (loopback 9102) remains for supervision. Schema migrations,
@@ -132,11 +135,15 @@ confirmed and fixed:
   `CopyTradeIdentityBuilder`'s trade key keeps its legacy derivation —
   rekeying would orphan pre-upgrade in-flight claims, and its cross-mode
   blocking direction is fail-closed under-copy.
-- Task 24 characterized (documented, not fixed — money-path risk-policy
-  changes belong to the owning subsystem): follow-level
-  `max_market_exposure_usdc` inert in the pipeline (account-level cap is
-  the enforced one) and in-flight intents not counted toward exposure
-  until fills land (see `docs/known_limitations.md` §6).
+- Task 24's copier exposure cap: the follow-level
+  `max_market_exposure_usdc` (schema-v2 `limits.max_open_exposure_quote`)
+  was initially characterized as inert, then made real in two fix rounds —
+  the BUY-admission headroom gate (`62458e9`) and the authoritative
+  reservation-transaction check that counts in-flight reserved quote and
+  serializes cross-scope BUY races (`c497bf5`; addon row above). The
+  residual documented limitations are the pre-lock confirmed-basis TOCTOU
+  window and partial-fill remainder drift
+  (`docs/known_limitations.md` §6).
 - Mimosa's six insecure-randomness LOW findings were audited site-by-site:
   all are timing/test jitter, none security-sensitive (table in
   `verification-matrix.md`).
@@ -194,15 +201,17 @@ confirmed and fixed:
 
 The full evidence table with exact commands, exit codes, counts, and
 durations is `verification-matrix.md` (Task 25, re-verified at Task 26
-authoring). Summary:
+authoring, and re-run after the 2026-10-13 follow-up-fix slice — final
+section there). Summary (tier rows re-verified 2026-10-13 after the
+follow-up slice F1–F6; the remaining rows are the Task 25/26 records):
 
 | Check | Result |
 |---|---|
-| Default suite `pytest -q` | **5162 passed / 0 failed**, 681 deselected, 138s |
+| Default suite `pytest -q` | **5249 passed / 0 failed**, 710 deselected, 215s |
 | Adapter contract group (10-file command) | 228 passed |
-| Release gate `-m release_gate` | 187 passed |
-| Integration `-m integration` | 539 passed ×2 runs, ONE shared container, zero churn (container-id set byte-identical before/during/after) |
-| Replay suite `pytest tests/replay` | **Skipped (recorded)**: directory contains conftest + 6 JSON scenarios but no `test_*.py`; nothing collected. Replay-equivalent scenarios live inline in the default tier. |
+| Release gate `-m release_gate` | 202 passed |
+| Integration `-m integration` | 553 passed (2026-10-13 re-run; earlier ×2 runs at 539), ONE shared container, zero churn (container-id set byte-identical before/after) |
+| Replay suite `pytest tests/replay` | **Skipped (recorded)**: directory contains conftest + 6 JSON scenarios but no `test_*.py`; nothing collected (explained at the source by `tests/replay/README.md`, added 2026-10-13). Replay-equivalent scenarios live inline in the default tier. |
 | `scripts/verify_package.py` | ALL PACKAGING PROOFS GREEN (wheel + sdist, fresh venvs, empty CWD) |
 | Docker build + offline CLI smokes + CI-faithful paper smoke | all exit 0; image 485MB; `container healthy` |
 | `uv pip check` / CI `pip check` | compatible |
@@ -212,7 +221,7 @@ authoring). Summary:
 | bandit (CI scope) | No issues at medium+ (0 files skipped under 3.14) |
 | ruff full scan | exit 0 after real cleanup of 66 findings |
 | compileall | exit 0 |
-| pip-audit | **1 OPEN** (multidict, §4) — not clean, not unverified |
+| pip-audit | **RESOLVED 2026-10-13**: zero known vulnerabilities after the ccxt 4.5.87 / multidict 6.9.1 re-lock (§4; was 1 OPEN — multidict) |
 | Secret scan (gitleaks unavailable → documented grep patterns) | clean |
 | actionlint (both workflows) | clean |
 
@@ -273,6 +282,10 @@ money is exact decimal text, `pmcopy run --copier ID` selects one account.
     trailing words on a line containing a secret fragment (safe direction).
   - CP token registration and the `CONTROL_PLANE` telemetry producer were
     removed with the surface, so stale labels cannot appear.
+  - The 2026-10-13 redaction follow-up (plural credential keys classified,
+    `redact_object` depth/cycle guard, `stack_info` redaction, config-print
+    list redaction) widened coverage without changing any golden fixture
+    output — 25/25 still byte-exact (re-verified after the slice).
 
 ## 9. Before/after measurements
 
@@ -307,35 +320,48 @@ moved with feature work, not the refactor (table in
 - **arm64**: base-image digests recorded from the registry; no arm64 build
   or test executed. Platforms tested: linux/amd64 only.
 - **Dependabot alert inventory**: only the h2 PR was adjudicated
-  (superseded — close without merging); the repository's full Dependabot
-  alert list was not inventoried.
-- **multidict CVE-2026-104874 remains OPEN**, blocked by the ccxt exact pin
-  (§4). Not clean — tracked.
-- **mypy beyond the money-spine is a ratchet (≤ 34), not zero**: the debt
-  list is recorded in `verification-matrix.md`; composition changes could
-  hide inside the count.
+  (superseded — closed without merging on 2026-10-13, PR #137); the
+  repository's full Dependabot alert list was not inventoried.
+- **multidict CVE-2026-104874 RESOLVED (2026-10-13)**: the ccxt bump to
+  4.5.87 re-pins `multidict==6.9.1` (above the affected range); re-audits
+  report zero known vulnerabilities (§4).
+- **mypy beyond the money-spine is a ratchet, not zero**: since
+  2026-10-13 the ratchet is a committed PER-FILE manifest
+  (`scripts/mypy_baseline.json`, 12 erroring files / 23 errors, recorded
+  with mypy 2.4.0) enforced by `scripts/check_mypy_ratchet.py` — exact
+  per-file equality, so lateral error moves can no longer hide inside a
+  total. Version-coherence caveat: CI installs the latest mypy (no pin),
+  so a future mypy release can shift counts; the deliberate recovery is
+  `python scripts/check_mypy_ratchet.py --update` (never a silent
+  count-only pass). The spine itself stays blocking-clean.
 - **Deferred minors**: the SDD ledger records every task's deferred minor.
-  The recurring money-adjacent ones: exposure caps operate on a confirmed
-  basis (TOCTOU window pre-lock) and partial-fill remainders can drift
-  past a cap (pre-existing settlement semantics); follow-level
-  `max_market_exposure_usdc` is inert in the pipeline;
-  `get_unconfirmed_buys/sells(user_id='')` blank-string used to degrade to
-  the global set (the fail-closed fix landed in the final whole-branch
-  review on 2026-10-13);
-  `_fills_consistent_with_submission` treats any non-quote unit as shares (unreachable
-  today); plural credential keys (`api_keys`/`secrets`/`passwords`) bypass
-  the key classifier; `redact_object` lacks a depth cap; lease pre-purge
-  writes to the shared DB before the lease is held; stale prev-CTE
-  snapshot can mislog takeover-vs-handoff; the shared-fixture GC helper is
-  /proc-dependent (Linux-only); doctor's code-gate scan is vacuous in
-  installed mode. Full list: `.superpowers/sdd/2026-10-11-standalone-refactor/progress.md`.
+  The recurring money-adjacent ones still open: exposure caps operate on a
+  confirmed basis (TOCTOU window pre-lock) and partial-fill remainders can
+  drift past a cap (pre-existing settlement semantics — the copier-level
+  cap itself IS enforced at BUY admission and authoritatively in the
+  reservation transaction since the Task 24 fix rounds, §3); a stale
+  prev-CTE snapshot can mislog takeover-vs-handoff; the shared-fixture GC
+  helper is /proc-dependent (Linux-only). Fixed in the 2026-10-13
+  follow-up slice: `_fills_consistent_with_submission` unit fallthrough;
+  plural credential keys bypassing the key classifier; `redact_object`
+  depth/cycle guard; config-print list redaction; the retention purge
+  writing to the shared DB before leases are held (now post-lease);
+  `chain_id` JSON-boolean coercion; private-key duplicate-compare
+  whitespace normalization; legacy `POSTGRES_PASSWORD` in secrets.env
+  (now rejected with a migration hint); doctor's code-gate scan vacuous in
+  installed mode (now a real installed-package content scan); version_guard
+  dead branch removed with the prerelease reason pinned. Full list:
+  `.superpowers/sdd/2026-10-11-standalone-refactor/progress.md` and
+  `.superpowers/sdd/2026-10-13-followup-fixes/`.
 - **Instructions don't travel with clones**: root `CLAUDE.md` is
   git-ignored by operator choice; the worktree working copy was updated to
   the final system, but a fresh clone will not carry it. (`AGENTS.md` is
   tracked and updated on the branch.)
 - **Replay scaffolding**: `tests/replay/` contains fixtures without a test
-  module (nothing collected); its scenarios are covered inline elsewhere —
-  the directory itself is unexercised as a suite.
+  module (nothing collected — exit 5 is the recorded, expected result);
+  its scenarios are covered inline elsewhere, and `tests/replay/README.md`
+  (added 2026-10-13) documents the directory as deliberate scaffolding for
+  a future replay suite.
 - **Golden fixtures are environment-pinned**: byte-exact capture depends on
   the pinned rich version and width 100; a rich upgrade is a regeneration
   event, not a free pass.

@@ -8,6 +8,10 @@ x64, Python 3.14.6 (`.venv`, uv-managed), uv 0.11.31, Docker with a local
 brief). Every row quotes the exact command, its exit code, counts, and
 duration; nothing is estimated. Rows that could not be executed are marked
 UNVERIFIED with the reason — no check is recorded as clean without a run.
+Rows (a)–(n) and the audit sections reflect their stated capture dates; the
+2026-10-13 follow-up-fix slice (F1–F6: ccxt 4.5.87 CVE remediation,
+money-path/redaction/config/test-infra hardening batches, and this docs
+close-out) re-verified them — final section below records the slice's runs.
 
 ## (a) Default full suite
 
@@ -86,7 +90,7 @@ Exit code: **5** — `no tests ran in 0.08s` (collection exit code for an empty
 selection).
 
 Selection mechanics (recorded, not a failure): `tests/replay/` contains only a
-`conftest.py` (fixture loader helpers) and five JSON scenario fixtures
+`conftest.py` (fixture loader helpers) and six JSON scenario fixtures
 (`delayed_buy_then_fill`, `duplicate_sell_delayed`, `partial_fill_then_cancel`,
 `rejected_sell_after_reserved`, `restart_with_pending_orders`,
 `venue_timeout_then_reconciled_fill`); there is no `test_*.py` module there, so
@@ -94,8 +98,10 @@ nothing is collected. No production or test code imports
 `tests.replay.conftest.load_replay_fixture`; the replay-style scenario tests
 (e.g. `tests/test_execution_fak_repost_defer.py::test_partial_fill_then_cancel_with_order_id_is_not_reposted`,
 which embeds the partial-fill-then-cancel scenario inline) live in the default
-tier and are covered by row (a). Verdict: replay directory = scaffolding;
-replay-equivalent coverage green via row (a).
+tier and are covered by row (a). This is now explained at the source by
+`tests/replay/README.md` (added 2026-10-13): the fixtures are replay inputs
+for a future replay suite, deliberately without collected tests. Verdict:
+replay directory = scaffolding; replay-equivalent coverage green via row (a).
 
 ## (f) Package verification battery
 
@@ -277,11 +283,14 @@ Documented centrally in the ci.yml bandit B311 skip comment (updated in
 - ruff: the hard/soft pair (narrowed hard step + `continue-on-error` full
   scan) collapsed into ONE blocking full scan with zero CLI ignores.
 - mypy: money-spine step unchanged (BLOCKING, no `|| true`); the concealed
-  soft step (`continue-on-error: true` **and** `|| true`) replaced by a
-  **blocking ratchet**: the services/orchestrators/domain error count must
-  stay ≤ 34 (the recorded baseline below). The only `|| true` retained in the
-  new step tolerates `grep -c`'s exit-1-on-zero-matches (absent-match
-  tolerance, not result concealment).
+  soft step (`continue-on-error: true` **and** `|| true`) was first
+  replaced by a blocking count-only ratchet (Task 25), then upgraded on
+  2026-10-13 (follow-up slice, commit `5944e29`) to a **blocking per-file
+  manifest ratchet**: the same single CI step now runs
+  `python scripts/check_mypy_ratchet.py`, which requires EXACT per-file
+  equality with `scripts/mypy_baseline.json` — no `continue-on-error`, no
+  `|| true` anywhere in the step (pinned by
+  `tests/release_gate/test_mypy_ratchet_manifest.py`).
 - bandit B311 skip comment now cites the audited random-use sites.
 - Paper-smoke step: `"$RPC_IP"` / `"$CERTIFI_PATH"` / `"$FAKE_RPC_TOKEN"`
   quoted (actionlint/shellcheck SC2086, pre-existing). Both workflows are now
@@ -295,18 +304,22 @@ Documented centrally in the ci.yml bandit B311 skip comment (updated in
 `pytest -m release_gate --maxfail=1`; nothing to change.
 
 mypy expansion beyond the spine (optional per the task brief): **not
-expanded**; the 34-error debt is ratcheted instead. Baseline list (by file):
-`storage/postgres/v1_migration_runner.py` ×8 (+2 alias-validity +1 attr =
-11), `services/auto_trader.py` ×5, `services/reconciliation.py` ×3,
-`services/executionService.py` ×3, `services/risk/risk_monitor.py` ×2,
-`orchestrators/trade_pipeline.py` ×2, `orchestrators/native_detection_runtime.py`
-×2, and 1 each in `storage/postgres/risk_lot_repository.py`,
-`services/multiUserConfig.py` (`_is_descendant` redefinition — worth a real
-fix first), `services/market_data_quality.py`,
-`services/execution/reconciliation_service.py`, `services/copy_tasks/budget.py`,
-`orchestrators/startup_health.py` (invalid `type: ignore` comment),
-`orchestrators/auto_trader_paper_runtime.py`, `integrations/falcon/client.py`,
-`cache/market_state_store.py`.
+expanded**; the type debt is ratcheted per-file instead. The earlier
+count-only ratchet (total ≤ 34, retired 2026-10-13) could pass a lateral
+move — errors deleted from one file while equal errors appeared in
+another. It is now a committed PER-FILE manifest, `scripts/mypy_baseline.json`
+(`{"files": {path → exact error count}, "mypy_version": "2.4.0"}` — **12
+erroring files / 23 errors total (derived)**), enforced by
+`scripts/check_mypy_ratchet.py` with the historical CI flags verbatim over
+services/orchestrators/domain: growth, shrinkage, a new erroring file, and
+a file cleaned to zero ALL fail, so the manifest only moves through the
+deliberate `--update` path. Version-coherence caveat: the recorded
+`mypy_version` is informational — CI installs the latest mypy (no pin), so
+a future mypy release may shift counts; the recovery is an explicit
+`python scripts/check_mypy_ratchet.py --update`, never a silent pass. The
+manifest is the authoritative composition; the old inline 34-error list
+(which mixed in storage/cache/integration files outside the three ratchet
+targets) is superseded and retired.
 
 ## Metrics after (same method as `baseline-metrics.md`)
 
@@ -349,3 +362,44 @@ adapter module byte-identical; only ccxt + multidict moved in `uv.lock`).
 (The root `CLAUDE.md` working copy was updated to 4.5.85 in the
 Task 26 docs pass and to 4.5.87 with the CVE bump; the actual pin in
 `pyproject.toml` is `ccxt==4.5.87`.)
+
+## 2026-10-13 follow-up-fix slice (F1–F6) — final recorded runs
+
+Captured 2026-10-13 after the follow-up slice landed: F1 ccxt 4.5.87 +
+multidict 6.9.1 (CVE-2026-104874 RESOLVED — audit re-runs recorded in the
+Audits section above), F2 money-path hardening (fill-unit fallthrough,
+shim environment parity, quarantine-count throttle, drift-service born-with
+injection, retention purge below the lease), F3 redaction/logging (plural
+credential keys, `redact_object` depth/cycle guard, `stack_info` redaction,
+config-print list redaction), F4 config/loader strictness (chain_id bool
+guard, key-compare normalization, `POSTGRES_PASSWORD` reject-with-hint,
+version_guard cleanup + reason pinning, doctor installed-mode content
+scan), F5 test-infra (container identity validation, Dockerfile/compose
+guard extensions, per-file mypy ratchet manifest, PG temp-dir cleanup), and
+the F6 docs/truth pass (this section; stale cap-inert wording corrected in
+`docs/known_limitations.md` §6 + handoff §3; README wheel-install command;
+`docs/rc1_validation.md` skip-caveat aligned with the script;
+`tests/replay/README.md` added; Dependabot h2 PR #137 closed with a
+supersession comment). Same environment as the header. All commands
+executed from the worktree root with `.venv/bin/python` (Python 3.14).
+
+| Check | Command | Exit | Result | Duration |
+|---|---|---|---|---|
+| Default full suite | `.venv/bin/python -m pytest -q` | **0** | **5249 passed / 0 failed**, 710 deselected, 1 warning | 214.71s |
+| Release-gate tier | `.venv/bin/python -m pytest -m release_gate -q` | **0** | **202 passed**, 5757 deselected | 43.56s |
+| Integration tier | `.venv/bin/python -m pytest -m integration -q` | **0** | **553 passed**, 5406 deselected, 1 warning | 299.00s |
+| Golden log fixtures | `.venv/bin/python tests/fixtures/golden_logs/regenerate.py --check` | **0** | `All 25 golden log fixtures match.` | ~5s |
+| Requirements drift | `.venv/bin/python scripts/check_requirements_drift.py` | **0** | `OK: uv.lock, requirements.txt, requirements.runtime.txt, and pyproject.toml agree.` (uv 0.11.31) | <1s |
+
+Tier deltas versus the Task 25/26 rows above (all additions are the
+slice's new contract/regression tests; nothing was removed): default
+5162 → 5249 (+87), release-gate 187 → 202 (+15), integration 539 → 553
+(+14); deselected sets grew accordingly (681 → 710).
+
+Integration churn note (zero-churn contract re-proven): `docker ps -aq |
+sort | md5sum` was `6e3c3df9e9848837e75601345797d501` before AND after the
+run (2 containers total, unchanged); the only running container is the ONE
+shared `pmcopy-integration-pg` (`f8c51b7a105b`) — nothing was created,
+removed, or re-pulled. Zero new `/tmp/multicopier-copiers-*` leaks: the
+newest pre-existing leak's mtime (15:16:24) predates the run window, i.e.
+F5's temp-dir registry drained everything this run created.

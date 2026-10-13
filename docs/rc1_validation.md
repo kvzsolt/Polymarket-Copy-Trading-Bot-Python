@@ -24,8 +24,8 @@ The validation contract below is enforced by `scripts/rc1_check.sh`, which:
    `execution_service.execute` alias scan (the single permitted call site
    is `src/pmcopy/services/execution/coordinator.py`, which is deny-list-exempt
    because it carries the `execution_coordinator_missing` guard).
-4. Runs the doctor live readiness gate (`doctor --live`) when `PRIVATE_KEY`
-   and `FUNDER_ADDRESS` are exported.
+4. Runs the doctor live readiness gate (`doctor --live`)
+   unconditionally — the script contains no environment-based skip.
 
 ## 2. Manual checklist (operator runs these top to bottom)
 
@@ -125,10 +125,13 @@ explicit operator review because their absence breaks the RC1 release:
 
 ## 5. Caveats
 
-- If `PRIVATE_KEY` / `FUNDER_ADDRESS` are not exported, the rc1_check.sh
-  **skips** phase 4 (doctor live) and logs "skipped" — this is
-  intentional and the script still completes the other checks. Operators
-  must run phase 4 manually before `pmcopy trading resume --confirm LIVE`.
+- `rc1_check.sh` runs phase 4 (`doctor --live`) unconditionally — there is
+  no skip when wallet secrets are absent. With the live wallet credentials
+  unconfigured, the doctor itself returns blocked (its diagnostics name
+  the missing keys, e.g. `wallet_private_key` → "set
+  `PMCOPY__WALLET__PRIVATE_KEY` in `secrets.env`"), which fails the script
+  at phase 4. Configure the wallet (or run the earlier phases individually);
+  phase 4 must be green before `pmcopy trading resume --confirm LIVE`.
 - The forbid scans cover production Python only; test code may reference
   legacy tokens (intentionally — used in documenting them).
 - `pytest` here is the full default tier; CI additionally runs release-
