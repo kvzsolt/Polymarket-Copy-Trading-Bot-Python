@@ -13,8 +13,12 @@
   (``allocation_pct`` is a FRACTION of leader notional: ``0 < x <= 1``).
 * Duplicate user ids, duplicate wallet identities (case-insensitive
   funder-address compare, and private-key compare for live entries without a
-  funder), and duplicate leader ids inside one user's follows are hard
-  errors — never silent overwrites.
+  funder — the key compare strips surrounding whitespace so a padded
+  copy-paste cannot pose as a second wallet while the stored SecretStr keeps
+  the value verbatim), and duplicate leader ids inside one user's follows
+  are hard errors — never silent overwrites.
+* ``chain_id`` is a JSON number or decimal text; JSON ``true``/``false`` is
+  rejected (``int(True) == 1`` must never select a network).
 * Leader ids and funders are validated as Ethereum addresses (stripped;
   identity compared case-insensitively).
 * Unknown keys at the top level, in user objects, and in follow objects are
@@ -92,7 +96,12 @@ def _follow(leader_id: str = LEADER_1, **overrides) -> dict:
 
 
 def _load(payload, tmp_path, monkeypatch, **config_overrides):
-    cfg = _config(MULTI_USER_CONFIG_FILE=_config_file(tmp_path, monkeypatch, payload))
+    # config_overrides MUST be forwarded: the helper used to accept and
+    # silently drop them, so a test's TRADING_MODE="live" never reached the
+    # loader and live-path tests unknowingly ran in paper mode.
+    overrides = {"MULTI_USER_CONFIG_FILE": _config_file(tmp_path, monkeypatch, payload)}
+    overrides.update(config_overrides)
+    cfg = _config(**overrides)
     return load_runtime_users([], cfg)
 
 
@@ -316,19 +325,55 @@ def test_duplicate_private_key_rejected_without_echoing_secret(tmp_path, monkeyp
     # Live entries may omit funder_address; the private key is then the only
     # wallet identity. A shared key across two entries is a duplicate wallet
     # and must fail closed — naming the users, never the key material.
-    payload = {
-        "users": [
-            _entry("live-a", private_key=_OTHER_PRIVATE_KEY),
-            _entry("live-b", private_key=_OTHER_PRIVATE_KEY),
-        ]
-    }
+    # (funder_address is deleted so the PRIVATE-KEY compare is the one that
+    # fires; leaving the shared default funder in would exercise the
+    # funder-duplicate gate instead.)
+    entry_a = _entry("live-a", private_key=_OTHER_PRIVATE_KEY)
+    del entry_a["funder_address"]
+    entry_b = _entry("live-b", private_key=_OTHER_PRIVATE_KEY)
+    del entry_b["funder_address"]
+    payload = {"users": [entry_a, entry_b]}
     with pytest.raises(ValueError) as excinfo:
         _load(payload, tmp_path, monkeypatch, TRADING_MODE="live")
     message = str(excinfo.value)
     assert "live-a" in message
     assert "live-b" in message
+    assert "private_key" in message
     assert _OTHER_PRIVATE_KEY not in message
     assert _OTHER_PRIVATE_KEY.replace("0x", "") not in message
+
+
+def test_duplicate_private_key_whitespace_only_difference_rejected(tmp_path, monkeypatch):
+    # Keys differing only by surrounding whitespace are the SAME wallet:
+    # the duplicate compare normalizes (strip) before comparing so a
+    # copy-pasted "  <key>  " cannot defeat duplicate-wallet detection.
+    padded_key = "  " + _OTHER_PRIVATE_KEY + " \n"
+    entry_a = _entry("live-a", private_key=_OTHER_PRIVATE_KEY)
+    del entry_a["funder_address"]
+    entry_b = _entry("live-b", private_key=padded_key)
+    del entry_b["funder_address"]
+    payload = {"users": [entry_a, entry_b]}
+    with pytest.raises(ValueError) as excinfo:
+        _load(payload, tmp_path, monkeypatch, TRADING_MODE="live")
+    message = str(excinfo.value)
+    assert "live-a" in message
+    assert "live-b" in message
+    assert "private_key" in message
+    assert _OTHER_PRIVATE_KEY not in message
+    assert _OTHER_PRIVATE_KEY.replace("0x", "") not in message
+
+
+def test_private_key_stored_verbatim_only_compare_normalizes(tmp_path, monkeypatch):
+    # Only the COMPARISON normalizes. The stored SecretStr keeps the value
+    # exactly as written (byte-identical transport to the wallet layer), so
+    # whitespace-padded single entries still load unchanged.
+    padded_key = "  " + _OTHER_PRIVATE_KEY + "  "
+    users = _load(
+        {"users": [_entry(private_key=padded_key, follows=[_follow()])]},
+        tmp_path,
+        monkeypatch,
+    )
+    assert users[0].wallet.private_key.get_secret_value() == padded_key
 
 
 def test_duplicate_leader_id_in_one_users_follows_rejected(tmp_path, monkeypatch):
@@ -487,6 +532,39 @@ def test_missing_private_key_rejected_with_context(tmp_path, monkeypatch):
     del entry["private_key"]
     with pytest.raises(ValueError, match="private_key"):
         _load({"users": [entry]}, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_chain_id_json_bool_rejected(tmp_path, monkeypatch, value):
+    # int(True) == 1 and int(False) == 0, so a templated JSON boolean used
+    # to load as a chain id (true -> 1). A network selector must never
+    # accept a boolean; reject naming the field and the JSON type.
+    with pytest.raises(ValueError, match="chain_id") as excinfo:
+        _load(
+            {"users": [_entry(chain_id=value, follows=[_follow()])]},
+            tmp_path,
+            monkeypatch,
+        )
+    message = str(excinfo.value)
+    assert "chain_id" in message
+    assert "bool" in message
+
+
+def test_chain_id_numeric_loads_as_int(tmp_path, monkeypatch):
+    # Positive control for the bool guard: numeric chain ids keep loading
+    # (both JSON numbers and decimal text) with the exact int value.
+    users = _load(
+        {"users": [_entry(chain_id=80002, follows=[_follow()])]},
+        tmp_path,
+        monkeypatch,
+    )
+    assert users[0].wallet.chain_id == 80002
+    users_text = _load(
+        {"users": [_entry(chain_id="137", follows=[_follow()])]},
+        tmp_path,
+        monkeypatch,
+    )
+    assert users_text[0].wallet.chain_id == 137
 
 
 def test_empty_user_id_rejected(tmp_path, monkeypatch):

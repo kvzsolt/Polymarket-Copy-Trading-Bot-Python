@@ -76,14 +76,19 @@ def test_prerelease_of_older_release_fails_closed() -> None:
 
 
 def test_prerelease_of_minimum_release_fails_closed() -> None:
-    # A pre-release of 4.5.73 sorts below the stable 4.5.73 release.
-    with pytest.raises(RuntimeError):
+    # A pre-release of 4.5.73 sorts below the stable 4.5.73 release. The
+    # reason is pinned to the pre-release branch ("not a stable release"),
+    # not merely any RuntimeError — a numeric-floor regression would reword
+    # it and must be noticed.
+    with pytest.raises(RuntimeError, match="stable"):
         ensure_supported_ccxt_version("4.5.73rc1")
 
 
 def test_prerelease_of_newer_release_fails_closed() -> None:
     # Pre-releases never satisfy a stable minimum, even of a newer release.
-    with pytest.raises(RuntimeError):
+    # Reason pinned for the same reason as above: only the pre-release
+    # branch rejects 4.5.78rc1 (the release tuple itself is in-window).
+    with pytest.raises(RuntimeError, match="stable"):
         ensure_supported_ccxt_version("4.5.78rc1")
 
 

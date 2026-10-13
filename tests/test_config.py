@@ -424,6 +424,25 @@ def test_secrets_reject_duplicate_and_non_nested_application_keys(
         load_config(_overrides(), secrets_path=flat)
 
 
+def test_secrets_reject_legacy_postgres_password_with_migration_hint(
+    tmp_path: Path,
+) -> None:
+    # T15 moved the database superuser password to db.env (postgres-only
+    # file). A secrets.env that still carries the legacy key used to load
+    # silently; it must now fail closed naming the move and the operator
+    # doc, without echoing the supplied value.
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("POSTGRES_PASSWORD=legacy-db-secret\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    with pytest.raises(EnvValidationError) as excinfo:
+        load_config(_overrides(), secrets_path=secrets)
+    message = str(excinfo.value)
+    assert "POSTGRES_PASSWORD" in message
+    assert "db.env" in message
+    assert "docs/docker.md" in message
+    assert "legacy-db-secret" not in message
+
+
 def test_unknown_yaml_key_fails_closed(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
