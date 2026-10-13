@@ -141,11 +141,11 @@ def test_runtime_stage_contains_only_the_built_wheel(dockerfile_text: str) -> No
 
 
 _SYNTHETIC_RUNTIME_DOCKERFILE = """\
-FROM python:3.14.6-slim-bookworm AS builder
+FROM python:3.13.15-slim-bookworm AS builder
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip wheel --no-cache-dir --no-deps -w /wheels .
-FROM python:3.14.6-slim-bookworm
+FROM python:3.13.15-slim-bookworm
 COPY requirements.runtime.txt .
 COPY --from=builder /wheels/*.whl /tmp/wheels/
 """

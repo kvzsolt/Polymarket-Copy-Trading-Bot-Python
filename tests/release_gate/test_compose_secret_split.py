@@ -176,9 +176,9 @@ def test_dockerfile_never_copies_secret_env_files() -> None:
 
 
 _SYNTHETIC_DOCKERFILE = """\
-FROM python:3.14.6-slim-bookworm AS builder
+FROM python:3.13.15-slim-bookworm AS builder
 COPY src ./src
-FROM python:3.14.6-slim-bookworm
+FROM python:3.13.15-slim-bookworm
 COPY --from=builder /wheels/*.whl /tmp/wheels/
 COPY requirements.runtime.txt .
 """

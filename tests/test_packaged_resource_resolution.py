@@ -138,7 +138,7 @@ class TestExplicitOutputGuardInInstalledMode:
 
         # A pyproject-less `_REPO_ROOT` simulates the installed distribution
         # (the directory need not exist: detection only stats for the marker).
-        fake_install_root = tmp_path / "fake-venv" / "lib" / "python3.14"
+        fake_install_root = tmp_path / "fake-venv" / "lib" / "python3.13"
         monkeypatch.setattr(profile_leader, "_REPO_ROOT", fake_install_root)
         monkeypatch.setattr(
             profile_leader, "_ALLOWED_WRITE_ROOTS", profile_leader._build_write_roots()
