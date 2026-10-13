@@ -6,7 +6,7 @@ This document outlines the canonical architecture of the Polymarket Copy Trading
 - `bootstrap.py::build_app`: Pure, stateless dependency injection. Wires the configuration, PostgreSQL DB pool, and shared repositories without performing any I/O.
 - `app.py::main`: Handles the asynchronous setup, network connections (WSS/REST), and assembles the per-user `ClobClient` and `ExecutionService`.
 
-## 2. Auto Trader Discovery Engine (`services/discovery/`)
+## 2. Auto Trader Discovery Engine (`src/pmcopy/services/discovery/`)
 Responsible for finding, scoring, and rotating leaders.
 - **Ingestion**: Pulls raw wallet history via Falcon (`falcon_candidate_service`) and Polymarket (`polymarket_history_backfill`).
 - **Scoring**: `CandidateScoringService` evaluates Win Rate, PnL, and ROI.

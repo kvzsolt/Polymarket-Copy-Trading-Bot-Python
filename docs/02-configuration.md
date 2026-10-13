@@ -1,44 +1,76 @@
 # 02 - Configuration Reference
 
-The bot uses a strictly typed configuration system (`config.app_config.AppConfig`). It fails closed if required variables are missing.
+The bot uses a strictly typed configuration system
+(`src/pmcopy/config/app_config.py::AppConfig`). It fails closed if required
+variables are missing.
 
 ## File Structure
-- `secrets.env`: Holds sensitive keys (ignored by git).
-- `db.env`: Holds only `POSTGRES_PASSWORD` for the Compose PostgreSQL service (ignored by git).
-- `config/runtime.local.env`: Holds your operational overrides (leaders, sizing, limits).
+- `secrets.env`: Holds the bot's sensitive keys as `PMCOPY__SECTION__FIELD`
+  variables (ignored by git, mode 0600, read only by the bot service).
+- `db.env`: Holds only `POSTGRES_PASSWORD` for the Compose PostgreSQL
+  service (ignored by git; the bot never reads it).
+- `<config-dir>/traders/<name>.yml`: Followed leaders — one file per leader,
+  the canonical roster surface.
+- `<config-dir>/environments/<name>/`: Environment overlays selected by
+  `PMCOPY_ENVIRONMENT` (`paper` default, `live`, `example`).
+- Packaged defaults (`app.yml`, `execution.yml`, `risk.yml`, …) ship inside
+  the installed `pmcopy` package and are readonly inputs resolved through
+  `importlib.resources`.
 
-## Core Variables
+## Core Variables (`secrets.env`, canonical `PMCOPY__*` names)
 
-### Identity & Funding (`secrets.env` & `runtime.local.env`)
-- `PRIVATE_KEY`: Your Polygon wallet private key. (Required for live trading).
-- `FUNDER_ADDRESS`: The public address of the wallet funding the trades.
-- `USER_ADDRESS`: Fallback leader wallet to follow (if explicit list is empty).
-- `LEADER_WALLETS`: Comma-separated list of wallets to strictly follow.
-- `FALCON_API_TOKEN`: Used by the Discovery engine to fetch wallet history.
+### Identity & Funding
+- `PMCOPY__WALLET__PRIVATE_KEY`: Polygon wallet private key (required for
+  live; deliberately absent in paper).
+- `PMCOPY__WALLET__FUNDER_ADDRESS`: Public address of the Deposit Wallet
+  funding the trades (required in paper — it is the account identity for
+  health probes; optional cross-check in live).
+- `PMCOPY__DATABASE__DSN`: PostgreSQL connection string.
+- `PMCOPY__POLYMARKET__RPC_URL` (+ optional `__FALLBACK_RPC_URL`): Polygon
+  RPC endpoints.
+- `PMCOPY__DISCOVERY__API__TOKEN`: Falcon token used by the discovery engine.
 
-### Risk & Sizing (`runtime.local.env`)
-- `DAILY_DRAWDOWN_LIMIT_PCT`: Max percentage of portfolio you are willing to lose in 24h before the kill switch triggers.
-- `MAX_POSITION_SIZE_USDC`: Hard cap on how much USDC can be allocated to a single position, regardless of the leader's sizing.
-- `CIRCUIT_BREAKER_ENABLED`: Set to `true` to enable global trading halts on anomalous errors.
+### Mode control
+- `PMCOPY__EXECUTION__TRADING_MODE`: `paper` (default) or `live`. This is
+  the authoritative paper/live control; it is never inferred from which
+  credentials are present. Prefer `PMCOPY_ENVIRONMENT=live`, which loads the
+  `environments/live/` overlay (`trading_mode: live`).
+
+### Risk & Sizing (typed config sections, overridable via `PMCOPY__*`)
+- `risk.*`: daily drawdown limits, position caps, circuit breaker.
+- `sizing.*`: copy sizing strategy and minimum-order policy.
 
 ### Auto Discovery Engine
-- `FALCON_MIN_WIN_RATE_15D`: Minimum win rate (e.g., 0.55) to consider a candidate.
-- `FALCON_MIN_PNL_15D`: Minimum profit in the last 15 days.
-- `DISCOVERY_DYNAMIC_MONITORING_ENABLED`: Set `true` to let the bot auto-rotate leaders.
+- `discovery.*` (`config/discovery.yml`): candidate gates (win rate, PnL
+  windows), `scheduler.max_active_leaders`, rotation hysteresis.
 
-## Multi-User / Allocator Mode
-If running for multiple sub-accounts, you can specify `MULTI_USER_CONFIG_FILE`. Keep this blank for standard single-wallet operations.
+Obsolete keys are rejected fail-closed with a removal error: the removed
+control-plane section (`PMCOPY__CONTROL_PLANE__*`), and the historic venue
+selector keys (`venue_backend`, `allow_experimental_ccxt_live`,
+`shadow_ccxt`).
 
-The file is validated strictly (fail-closed): unknown keys are rejected at
-every level, `enabled` accepts only JSON booleans or the exact strings
-`"true"`/`"false"` (case-insensitive; absent means enabled), and money fields
-(`allocation_pct`, `max_trade_usdc`, `max_market_exposure_usdc`) must be
-decimal **text** (`"12.5"`, never a JSON number) with `allocation_pct` a
-fraction of leader notional (`0 < x <= 1`, so `"0.07"` = 7%) and the USDC
-caps strictly positive. Leader ids and `funder_address` must be valid
-Ethereum addresses, and duplicate copier ids, duplicate wallet identities
-(same funder or same private key), and duplicate leader ids inside one
-user's follows are hard errors.
+## Multi-copier / allocator mode
+
+Two roster mechanisms exist, mutually exclusive:
+
+- **Schema v2 (canonical)**: `PMCOPY__APP__COPIERS_CONFIG_FILE` pointing at
+  a copiers YAML (`schema_version: 2`, see
+  `src/pmcopy/config/copiers.example.yml`). Wallet fields are environment
+  variable *references* — the file itself is secret-free.
+- **Legacy v1 JSON**: `PMCOPY__APP__MULTI_USER_CONFIG_FILE`. Keep it unset
+  for standard single-wallet operation.
+
+The v1 file is validated strictly (fail-closed): unknown keys are rejected
+at every level, `enabled` accepts only JSON booleans or the exact strings
+`"true"`/`"false"` (case-insensitive; absent means enabled), and money
+fields (`allocation_pct`, `max_trade_usdc`, `max_market_exposure_usdc`)
+must be decimal **text** (`"12.5"`, never a JSON number) with
+`allocation_pct` a fraction of leader notional (`0 < x <= 1`, so `"0.07"` =
+7%) and the USDC caps strictly positive. Leader ids and `funder_address`
+must be valid Ethereum addresses, and duplicate copier ids, duplicate
+wallet identities (same funder or same private key), and duplicate leader
+ids inside one user's follows are hard errors. The schema v2 file applies
+the same strictness through the same parsers (see its header comment).
 
 ## Follow Whitelists (who gets copied)
 

@@ -31,6 +31,7 @@ stay in place so existing databases keep applying cleanly.
 | `services/execution/coordinator.py`: V2-exclusive models/adapters `VenueSubmitResult`, `ExecutionResult`, `OrderSubmitter` Protocol, `ClobGateway` alias, and constructor params `clob_gateway`, `orders_repo`, `fills_repo`, `reconciliation_service`, `live_position_fetcher` | Read only by the V2 body inside the coordinator; no external attribute access or import anywhere (the canonical `VenueSubmitResult` is `integrations/polymarket/models.py`, untouched); `position_coordinator` param kept — it is the A04 born-with wiring contract asserted by `tests/test_account_owned_position_coordinator.py` | V2-exclusive machinery | None; `_build_execution_coordinator` signature updated to match; shared machinery (`is_live_mode`, `Reconciler`, `AuditLogger`, `CopyAdmission`, reservation funnel) stays |
 | `tests/test_execution_coordinator.py`, `tests/test_coordinator_v2_fail_closed_no_coordinator.py` (whole files), 8 V2 tests in `tests/test_issue70_reservations.py`, 7 V2 tests in `tests/test_issue74_position_drift_reconciliation.py` | Every test drove `execute_intent` directly | Tests of the removed V2 surface | Invariants transferred to the production path: idempotency/reservation-linkage/ambiguous-POST already pinned in `tests/test_execution_coordinator_production.py`; audit emission ported there (`test_duplicate_idempotency_outcome_is_audited`); drift-trigger SELL/BUY/non-drift gating ported to `tests/test_trade_pipeline_safety.py`; serialization fail-closed already pinned in `tests/test_execution_coordinator_live_failclosed.py` + `tests/test_account_owned_position_coordinator.py` |
 | `docs/known_limitations.md` §2 / `docs/rc1_validation.md` "single `execute_intent` entry-point" wording | Pinned by `tests/test_rc1_release_artifacts.py` (token updated to `submit_copy_trade`) | Docs of the removed V2 entry point | Rewritten to name the real single-entry surface: the coordinator `submit_*` funnel whose one `execution_service.execute` call site remains `services/execution/coordinator.py` |
+| `orchestrators/auto_trader_runtime.py`: `AutomaticDiscoveryRunner` class (and its test slice in `tests/test_auto_trader_runtime.py`) | Only production caller was the removed `DiscoveryRunQueue` CP wiring (deleted with `orchestrators/control_plane_discovery.py`); the local `rotate-traders` CLI uses `registry.refresh`, not this adapter (verified by grep at deletion time) | Dead adapter for the removed CP discovery queue | Local `pmcopy rotate-traders` remains the operator-directed discovery cycle surface |
 
 Historical documents that reference the removed surface as part of a
 point-in-time record (`POLYMARKET_CODE_COMPLETION.md`, `docs/plans/*`,
@@ -47,3 +48,16 @@ requirements exports generated artifacts of `uv.lock`
 (`scripts/generate_requirements.py`), guarded byte-exact by
 `scripts/check_requirements_drift.py`. Close the Dependabot PR without
 merging.
+
+## Finalization (Task 26, 2026-10-13)
+
+The manifest above was re-verified against the final tree: every row's path
+is absent (or, for config sections, rejected fail-closed), the
+`AutomaticDiscoveryRunner` row was added for the one production deletion
+beyond the staged CP set, and the tracked-file grep for
+`control plane|control-plane|ControlPlane` still returns only (a) the kept
+`20260811_03_control_plane` migration + its two v1 catalog tests, (b) this
+manifest and other point-in-time refactor/plan/handoff documents, (c) the
+guard tests' own strings, (d) the config loader's rejection mechanism, and
+(e) the removal note in `docs/auto-follow.md`. No consumer of any removed
+surface exists in the final code.

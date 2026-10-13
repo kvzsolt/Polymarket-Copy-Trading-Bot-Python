@@ -2,11 +2,11 @@
 
 ## Start
 
-1. Keep `TRADING_MODE=paper` for the paper soak.
+1. Keep `execution.trading_mode=paper` (the default) for the paper soak.
 2. Run `pmcopy doctor --live`, the unit suite, and Docker-backed integration
    tests. The explicit flag applies live-only credential, wallet, RPC,
    database, and venue checks while the runtime remains in paper mode.
-3. Set `TRADING_MODE=live` and restart; startup configuration is immutable.
+3. Set `execution.trading_mode=live` (e.g. `PMCOPY__EXECUTION__TRADING_MODE=live`, or the `PMCOPY_ENVIRONMENT=live` overlay) and restart; startup configuration is immutable.
 4. Confirm reconciliation, wallet identity, database, RPC, market data, and
    user-stream readiness while the database control remains paused.
 5. Run:

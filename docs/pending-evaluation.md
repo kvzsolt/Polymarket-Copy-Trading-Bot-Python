@@ -1,6 +1,6 @@
 # Bounded read-only pending evaluation
 
-`services/pending_evaluation.py:BoundedPendingEvaluator` consumes the existing
+`src/pmcopy/services/pending_evaluation.py:BoundedPendingEvaluator` consumes the existing
 provider owner's grouped Alchemy hash notifications. It has no socket, trading
 callback, signing key, order submission, provider failover or mined-source control.
 The integration owner supplies one filtered `alchemy_pendingTransactions`
@@ -63,13 +63,13 @@ unchanged.
 
 ## Signed V2 orders
 
-`integrations/pmrecon/pending_decoder.py` accepts direct native `matchOrders` calls
+`src/pmcopy/integrations/pmrecon/pending_decoder.py` accepts direct native `matchOrders` calls
 to the two approved V2 exchanges. It decodes seven flat ABI arguments, checks
 bounded maker arrays before dynamic decoding, and verifies canonical round-trip
 encoding. It retains every native owner, role, index and original signature.
 Wrappers and unknown selectors require separate reviewed adapters.
 
-`integrations/pmrecon/order_verification.py:V2OrderVerifier` decodes orders from the
+`src/pmcopy/integrations/pmrecon/order_verification.py:V2OrderVerifier` decodes orders from the
 exact canonical source event. It uses installed `eth-account` 0.13.7 EIP-712 message
 encoding and recovery, with the explicit chain 137/name/version 2/exchange domain.
 There is no signing in production. Deterministic message signatures exist only in
@@ -122,7 +122,7 @@ These tests do not validate the whole legacy MILP/Nautilus pipeline.
 
 ## Finnish runtime ownership
 
-`orchestrators/pending_evaluation_runtime.py` owns the optional socket and is
+`src/pmcopy/orchestrators/pending_evaluation_runtime.py` owns the optional socket and is
 composed by `NativeDetectionRuntime` only when `detection.native.pending_enabled`
 is explicitly true and at least one enabled Alchemy trader requests pending.
 The default remains false. Provider admission and verified free-account limits

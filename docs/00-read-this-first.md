@@ -16,7 +16,7 @@ Welcome to the Polymarket Copy Trading Engine. Before you start funding wallets 
 ## The Operator's Duty
 You are an operator, not a passenger. Your job is to:
 1. Define strict risk limits in the configuration.
-2. Monitor the `bot.py doctor` and `bot.py drift` outputs.
+2. Monitor the `pmcopy doctor` and `pmcopy drift` outputs.
 3. Understand why the bot rejected a trade (read the structured logs!).
 
 Read the configuration guide next.

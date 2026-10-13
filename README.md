@@ -1,203 +1,235 @@
-# 🔮 Polymarket Copy Trading Bot
+# Polymarket Copy Trading Bot (`pmcopy`)
 
 ![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)
 ![License MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Polymarket](https://img.shields.io/badge/exchange-Polymarket-blueviolet)
 
-A production-grade Polymarket copy-trading ecosystem built for operators who want serious, hands-off automation. 
+A standalone, single-process Polymarket copy-trading bot: it follows selected
+leader wallets, sizes copies against your configured risk limits, executes
+through `ccxt.prediction.polymarket` (the only authenticated trading
+transport), and reconciles every submission against the venue with
+PostgreSQL-backed idempotency.
 
-This is not a naive script that blindly mirrors a wallet. It is a robust algorithmic trading system that actively discovers profitable leaders, sizes trades based on dynamic risk policies, manages complex position lifecycle events, and executes reliably against the Polymarket CLOB.
-
----
-
-## 💥 Why This Exists
-
-Most copy-trading bots on the market are spiritually identical to a raccoon with root access. They blindly mirror leader trades, ignore live price drift, size positions with zero context, and become portfolio arsonists the second the market gets volatile.
-
-This project was built to change that. I wanted a bot that I could trust to run while I sleep. The architecture reflects hard-earned production lessons:
-
-- **🧠 Don’t blindly copy. Score and reconstruct first.**
-- **⚖️ Don’t size from vibes. Size from balance, liquidity, and strict risk limits.**
-- **🛡️ Don’t assume exits are simple. Manage the full position lifecycle.**
-- **📊 Don’t run dark. Emit structured logs, health checks, and execute true reconciliation.**
+This is a **local system**. There is no control plane, no operator HTTP API,
+no dashboard, and no remote command surface — every operator action goes
+through the `pmcopy` CLI on the host (or `docker compose exec`). The process
+exposes only a loopback health/metrics endpoint for supervision.
 
 ---
 
-## ⚙️ The Engines (Under the Hood)
+## What it does
 
-The bot operates through specialized engines, each handling a distinct domain of the trading lifecycle. Here is what they do and why they matter:
+- **Copy decision engine** — reconstructs leader positions and computes
+  percentage sell-offs, so partial exits and scaling are mirrored, not just
+  "buy when the leader buys".
+- **Risk & sizing** — portfolio-aware sizing from balance, exposure, daily
+  drawdown limits, and per-position caps; the risk engine can shrink or
+  reject a copy that does not fit your limits.
+- **Execution & reconciliation** — asynchronous FAK/FOK submission through
+  the CCXT adapter with explicit price limits, durable idempotency keys,
+  atomic budget reservations, push-first fill evidence (user WSS) with REST
+  fallback, and startup reconciliation of ambiguous submissions. An
+  ambiguous POST is never blindly retried.
+- **Trader discovery (optional)** — Falcon-based analytics rank copyable
+  wallets against your bankroll; promotion/demotion runs locally with
+  paper-evidence gates (`--auto-trader`).
+- **Multi-copier (optional)** — one process can run several copier accounts,
+  each with its own wallet, limits, and explicit leader whitelist, guarded by
+  a database lease so two processes can never both write one account.
 
-### 🔍 Auto Trader Discovery Engine (NEW)
-**What it is:** A fully automated subsystem (`services/discovery/`) that continuously ingests wallet data from Falcon and Polymarket history. It scores candidates based on PnL, win rates, and trading frequency. 
-**Why it's good:** You no longer need to manually hunt for profitable wallets. The engine includes a **Copyability Replay Service** which simulates whether a trader's signals can actually be executed against your specific budget and risk parameters. The **Rotation Service** then automatically promotes hidden alphas to your active leader set and demotes failing wallets before they drain your portfolio.
+## Stack
 
-### 🧠 Copy Decision Engine
-**What it is:** The brains behind signal translation (`CopyDecisionService`). It doesn't just buy when a leader buys. It perfectly reconstructs leader portfolios in real-time, calculates exact percentage sell-offs, and mimics partial exits or complex position scaling.
-**Why it's good:** Leaders rarely enter and exit 100% of a position at once. A naive bot will buy the top and hold to zero. This engine ensures you scale out exactly when the leader trims their position, locking in profits flawlessly.
+- **Python** 3.14 only (`>=3.14,<3.15`); 3.11–3.13 are unsupported.
+- **Venue transport** `ccxt==4.5.85` (`ccxt.prediction.polymarket`) behind a
+  typed gateway; paper mode uses CCXT for public market reads and a local
+  simulator for writes.
+- **Persistence** PostgreSQL (orders, fills, positions, reservations,
+  leases) with additive, schema-versioned migrations applied at startup.
+- **Package layout** `src/pmcopy/` — install as a wheel; packaged defaults
+  (service YAML, environments, traders, SQL migrations) resolve through
+  `importlib.resources`, so an installed copy never depends on the checkout.
+- **Operator CLI** `pmcopy` (or `python -m pmcopy`).
 
-### 🛡️ Risk & Portfolio Engine
-**What it is:** The financial firewall (`RiskEngine` & `balance_regime.py`). It enforces portfolio-aware sizing, daily maximum drawdown limits, position caps, and global kill switches.
-**Why it's good:** It prevents you from getting wrecked. If a copied trader suddenly goes on tilt or makes a massive, illiquid bet, the Risk Engine overrides the signal, dynamically scales down your exposure, or rejects the trade entirely to protect your principal capital.
+## Quickstart (single copier, paper mode)
 
-### ⚡ Execution & Reconciliation Engine
-**What it is:** The execution layer connecting to the Polymarket CLOB V2 (`ExecutionService` & `ReconciliationService`). It handles asynchronous order submission, collateral readiness, and strict idempotency backed by PostgreSQL.
-**Why it's good:** Network failures happen. WebSockets drop. This engine ensures institutional-grade reliability—meaning the bot will *never* double-copy a signal or lose track of a fill, even if the node crashes mid-execution. It reconciles expected states with on-chain reality at every startup.
+Requires Python 3.14.x and either [uv](https://docs.astral.sh/uv/) or pip.
 
----
-
-## ⚡ Core Capabilities
-
-* 🔍 **Trader Discovery & Ranking:** Automatically discovers profitable leaders, ranks them, and simulates their copyability against your actual budget.
-* 🎯 **Copy Decision Engine:** Reconstructs leader positions, calculates exact percentage sell-offs, and mimics partial exits flawlessly.
-* 💰 **Portfolio-Aware Risk Sizing:** Adapts order sizes dynamically based on your available USDC, open exposure to the market/leader, daily drawdown limits, and max position caps.
-* 🚧 **Orderbook Quality Gates:** Refuses to execute in thin, manipulated, or spread-gapped orderbooks. 
-* 📈 **Profit Lock & Near-One Redemptions:** Dynamically protects unrealized gains and secures near-max resolution trims natively.
-* 💾 **Idempotency & Reconciliation:** PostgreSQL-backed persistence ensures we never double-copy a signal, even if the node restarts mid-tick.
-* 📝 **Structured Audit Logging:** Every decision, skip, fill, and rejection is cleanly logged in JSONL format for downstream analytics.
-
----
-
-## 🛠️ Stack & Architecture
-
-- **Language:** Python 3.14 only (`>=3.14,<3.15`; 3.11–3.13 unsupported).
-- **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
-- **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
-- **Composition root:** `src/pmcopy/bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `src/pmcopy/app.py::main` adds async / per-user wiring.
-- **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
-- **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime.
-- **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
-- **Market data:** `clients/market_ws.py` + `clients/user_ws.py` with 5s PING, REST snapshot on reconnect, `assets_ids` subscriptions; TTL-based price caches. Decisions fail closed on stale data.
-- **Config:** typed `config.app_config.AppConfig`; production paths fail closed without it.
-- **Observability:** `services.healthServer` exposes `/health`, `/ready`, `/metrics`; structured JSONL audit logs.
-- **Operator CLI:** `pmcopy` (console script, or `python -m pmcopy`) → `pmcopy.bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.
-
----
-
-## 📖 Operator Documentation
-
-Read these in order:
-
-1. [`docs/00-read-this-first.md`](docs/00-read-this-first.md) — what the bot is and is not.
-2. [`docs/02-configuration.md`](docs/02-configuration.md) — full typed-config reference.
-3. [`docs/03-paper-trading.md`](docs/03-paper-trading.md) → [`docs/04-live-trading.md`](docs/04-live-trading.md) — paper soak then live cutover.
-4. [`docs/runbooks/00-index.md`](docs/runbooks/00-index.md) — incident runbooks (CLOB outage, WSS outage, circuit breaker open, stale locks, reconciliation drift, manual / off-bot drift).
-5. [`docs/architecture.md`](docs/architecture.md) — canonical architecture overview.
-
----
-
-## 🚀 Getting Started
-
-### 1. Setup Environment
-Ensure you have Python 3.14.x installed (the project targets only `>=3.14,<3.15`; 3.11–3.13 are unsupported).
-
-**Using `uv` (Recommended):**
 ```bash
-uv venv
-source .venv/bin/activate
+# 1. Install (uv, recommended)
+uv venv && source .venv/bin/activate
 uv sync --frozen --extra dev
+#   -- or with plain pip --
+# python3.14 -m venv .venv && source .venv/bin/activate
+# pip install -r requirements.txt && pip install --no-deps -e .
+
+# 2. Configure (from the deployment root — the directory you run from)
+cp secrets.env.example secrets.env && chmod 600 secrets.env
+cp db.env.example db.env          && chmod 600 db.env   # only if using Docker Compose
 ```
 
-**Using standard `pip`:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+Edit `secrets.env` (only `PMCOPY__*` nested keys are accepted). For paper
+mode the minimum is the database DSN, a Polygon RPC URL, and the public
+funder address — the private key is **not** required in paper:
 
-### 2. Configure
-Copy the configuration templates to set up your environment:
-
-```bash
-cp config/runtime.local.example config/runtime.local.env
-cp secrets.env.example secrets.env
-chmod 600 secrets.env
-cp db.env.example db.env
-chmod 600 db.env
-```
-`secrets.env` holds the bot's credentials (wallet key, database DSN, discovery
-token); `db.env` holds only `POSTGRES_PASSWORD` for the Compose PostgreSQL
-service, which never receives `secrets.env`.
-Open `secrets.env` and add your sensitive credentials:
 ```env
-PRIVATE_KEY=0xYourHexPrivateKey
-RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
+PMCOPY__DATABASE__DSN=postgresql://bot:<password>@localhost:5432/polymarket_copytrading_python
+PMCOPY__POLYMARKET__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/<your-key>
+PMCOPY__WALLET__FUNDER_ADDRESS=0x<your-public-funder-address>
+# PMCOPY__WALLET__PRIVATE_KEY=   # live only
 ```
-Keep `TRADING_MODE=paper` through validation. Live startup requires
-`TRADING_MODE=live` **and** a separate database-backed resume command.
 
-### 3. Run
-Launch the bot using the Operator CLI.
+Leaders are configured in `<config-dir>/traders/<name>.yml` (one file per
+leader, the canonical roster surface) or discovered automatically. Create
+the database (any PostgreSQL 16 instance; a Compose file is included) and
+verify everything before starting:
 
-**Native Execution:**
 ```bash
-# Activate virtual environment if not already active
-source .venv/bin/activate
+# 3. Validate and diagnose
+pmcopy config validate
+pmcopy doctor
 
-# Run using the configured fail-closed mode
+# 4. Run in paper mode
 pmcopy run
 ```
 
-**Docker Execution:**
-```bash
-docker compose up -d
+`execution.trading_mode` (default `paper`) is the authoritative paper/live
+control — it is never inferred from which credentials are present. Live mode
+additionally requires the durable database trading control to permit
+submissions (see `pmcopy trading`).
+
+## Multi-copier usage
+
+Enable the schema-v2 roster by pointing `app.copiers_config_file` at a copy
+of `src/pmcopy/config/copiers.example.yml`, e.g. in `secrets.env`:
+
+```env
+PMCOPY__APP__COPIERS_CONFIG_FILE=/path/to/copiers.yml
+PRIMARY_FUNDER_ADDRESS=0x1111111111111111111111111111111111111111
+PRIMARY_PRIVATE_KEY=          # optional in paper
 ```
 
-### 4. CLI Tools & Testing
-The bot includes an Operator CLI for manual interventions and checks:
-```bash
-source .venv/bin/activate
-pmcopy doctor
-pmcopy drift
-pmcopy rotate-traders
-pmcopy trading status
+The roster is **secret-free by design**: wallet fields are environment
+variable *names*, never values. All addresses below are synthetic.
+
+```yaml
+schema_version: 2
+copiers:
+  - id: primary                      # stable persisted ledger identity
+    enabled: true
+    mode: paper                      # must match execution.trading_mode
+    wallet:
+      funder_address_env: PRIMARY_FUNDER_ADDRESS
+      private_key_env: PRIMARY_PRIVATE_KEY
+    limits:
+      max_order_quote: "5.00"        # exact decimal text, USDC
+      max_open_exposure_quote: "50.00"
+    follows:                         # explicit whitelist
+      - leader_address: "0x1111111111111111111111111111111111111111"
+        enabled: true
+        sizing:
+          mode: fixed                # mirror leader notional, capped per order
+          quote_amount: "2.00"
 ```
-Run the test suite to ensure everything is functioning perfectly:
+
+Rules enforced fail-closed: strict booleans, exact decimal money, valid
+addresses, no duplicate copier ids / wallets / leaders, one process-wide
+mode, `follows` as a strict whitelist (empty = no new copies, protection
+continues). Run one copier selectively with `pmcopy run --copier primary`;
+without the flag every enabled copier starts, each holding its own
+database lease.
+
+## Docker
+
 ```bash
-pytest -q
+docker compose config --quiet
+docker compose build --pull bot
+docker compose up -d postgres
+docker compose run --rm --no-deps bot doctor
+docker compose up -d --no-build bot
+docker compose logs -f bot
 ```
 
+Secrets are split per service: `db.env` holds only `POSTGRES_PASSWORD` and
+is read only by the postgres service; `secrets.env` holds the bot's
+credentials and is read only by the bot. The image is a multi-stage
+wheel-only build on `python:3.14.6-slim-bookworm` — the runtime stage never
+contains the source tree. See [docs/docker.md](docs/docker.md).
+
+## Operator CLI
+
+```text
+pmcopy run [--auto-trader|--auto-follow] [--copier ID]   main loop
+pmcopy doctor [--live]                                  connectivity/diagnostic checks
+pmcopy config print|validate|explain                    typed config inspection
+pmcopy orders / positions / status                      read-only state views
+pmcopy reconcile                                        trigger unconfirmed-order reconciliation
+pmcopy reservations / stale-locks / drift               budget + drift inspection
+pmcopy trading status|pause|resume|full-stop|clear-full-stop
+pmcopy redeem [--execute]                               gasless redemption of resolved positions
+pmcopy resolve                                          operator resolution of ambiguous orders
+pmcopy rotate-traders / profile-leader / history-import  discovery tooling
+```
+
+Trading control notes: `trading full-stop` blocks new live submissions
+durably and `trading resume` **refuses** to clear it — only the explicit
+`pmcopy trading clear-full-stop --confirm LIVE --reason ...` action does.
+See [docs/recovery_playbook.md](docs/recovery_playbook.md) and
+[docs/live_runbook.md](docs/live_runbook.md).
+
+## Operations pointers
+
+- **Single active writer per account** — a database-backed lease
+  (`account_execution_leases`) is acquired at startup before any runtime is
+  built; a second process for the same account fails closed. After a crash,
+  takeover happens when the 60s TTL lapses (logged as
+  `account_lease_takeover`).
+- **Logs** — structured JSONL + console under `<deployment root>/log/`;
+  secrets are redacted across all sinks. Golden fixtures in
+  `tests/fixtures/golden_logs/` pin the format.
+- **Health** — `/health` and `/health/ready` on the metrics server
+  (loopback 9102 by default); readiness reflects actual runtime state.
+- **Runbooks** — [docs/runbooks/00-index.md](docs/runbooks/00-index.md),
+  [docs/emergency_shutdown.md](docs/emergency_shutdown.md),
+  [docs/redemption.md](docs/redemption.md).
+
+## Development
+
+```bash
+uv sync --frozen --extra dev
+
+.venv/bin/python -m pytest -q                      # default tier
+.venv/bin/python -m pytest -m integration -q       # shared-Postgres tier (one container, no churn)
+.venv/bin/python -m pytest -m release_gate -q      # release gates
+```
+
+Dependency changes go through the lock: edit `pyproject.toml`, run
+`uv lock` (uv pinned to 0.11.31 in CI), then
+`python scripts/generate_requirements.py` to regenerate
+`requirements.txt` / `requirements.runtime.txt`; `python
+scripts/check_requirements_drift.py` guards byte-exact consistency.
+
+Further reading: [docs/00-read-this-first.md](docs/00-read-this-first.md),
+[docs/02-configuration.md](docs/02-configuration.md),
+[docs/03-paper-trading.md](docs/03-paper-trading.md) →
+[docs/04-live-trading.md](docs/04-live-trading.md),
+[docs/architecture.md](docs/architecture.md),
+[docs/refactor/handoff.md](docs/refactor/handoff.md).
+
+## Bug reports
+
+Open a [GitHub Issue](https://github.com/kvzsolt/Polymarket-Copy-Trading-Bot-Python/issues/new)
+with reproduction steps, expected vs actual behavior, redacted log snippets,
+and your Python version and OS.
+
+## Contributing
+
+1. Fork, create a feature branch, commit, push, open a PR.
+2. Every behavior change ships with a failing-then-passing regression test;
+   run the focused test, the adapter contract group (for CCXT-touching
+   changes), and the full default suite before submitting.
+
 ---
 
-## 🐛 Bug Reports
-
-If you encounter a bug, unexpected behavior, or a crash, please help improve the bot by opening a [GitHub Issue](https://github.com/kvzsolt/Polymarket-Copy-Trading-Bot-Python/issues/new). Include as much detail as possible:
-
-- Steps to reproduce the issue
-- Expected vs. actual behavior
-- Relevant log snippets (redact any sensitive data like private keys or wallet addresses)
-- Your Python version and OS
-
-Bug reports are the fastest way to help this project improve — every report matters.
-
----
-
-## 🤝 Contributing
-
-Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or documentation improvements, we'd love to have your input. Let's build the best copy-trading engine together.
-
-1. **Fork the repository** 
-2. **Create a feature branch** (`git checkout -b feature/amazing-new-feature`)
-3. **Commit your changes** (`git commit -m 'feat: add amazing new feature'`)
-4. **Push to the branch** (`git push origin feature/amazing-new-feature`)
-5. **Open a Pull Request**
-
----
-
-## 🗺️ Roadmap
-**Trade detection via blockchain transactions**
-**Improve execution flow**
-**Fix known bugs, like risk management timeout**
-**Trader discovery V3**
-**Simplify codebase, refactor**
-
-## Rust version
-*A new version rewritten in Rust is coming soon! By porting all functions, logic, and core mechanisms, we have significantly improved detection and execution speeds. This update will also enable you to seamlessly copy virtually any type of trader.*
----
-*Disclaimer: This software is for educational and experimental purposes only. Trading involves risk, and this system does not guarantee profit. You can and may lose money. Run at your own risk.*
-
-## Redeem resolved positions
-
-Use `pmcopy redeem` to preview resolved winning and losing holdings, and
-`pmcopy redeem --execute` to redeem them through the gasless Relayer.
-See [redemption setup and recovery](docs/redemption.md) for `secrets.env` settings
-and execution requirements.
+*Disclaimer: This software is for educational and experimental purposes only.
+Trading involves risk, and this system does not guarantee profit. You can and
+may lose money. Run at your own risk.*

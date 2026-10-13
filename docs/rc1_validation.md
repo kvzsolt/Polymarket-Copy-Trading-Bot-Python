@@ -86,7 +86,7 @@ python -m pmcopy.bot_cli.main doctor --live
 **Expected:** structured doctor result with `status=ok`. The doctor
 blocks on: zero pUSD balance, zero CTF exchange allowance, zero Neg
 Risk exchange allowance (since PR1, the Neg Risk exchange V2 is part
-of the readiness contract; see `services/collateral_readiness.py`),
+of the readiness contract; see `src/pmcopy/services/collateral_readiness.py`),
 RPC unavailability, WSS unreachable when the WSS mode is the active
 source, or an unresolved reconciliation wedge. The doctor's non-zero
 exit code is non-gradient — it returns blocked, period.
@@ -120,8 +120,8 @@ explicit operator review because their absence breaks the RC1 release:
   contract.
 - The Neg Risk exchange V2 readiness gate is fail-closed: operators must
   approve pUSD for BOTH the CTF and the Neg Risk exchanges before live
-  trading, even if the leader wallet only ever trades on one of them.
-  See `config/runtime.local.example` for the documented operator step.
+  trading, even if the leader wallet only ever trades on one of them. The
+  approval is an on-chain action taken from the funder wallet.
 
 ## 5. Caveats
 

@@ -37,12 +37,12 @@ Limitations:
 
 External code paths that want to suggest a trade MUST route through the
 execution coordinator's `submit_copy_trade` / `submit_risk_exit` /
-`submit_protective_exit` funnel (`services/execution/coordinator.py`). Any
+`submit_protective_exit` funnel (`src/pmcopy/services/execution/coordinator.py`). Any
 other call to `execution_service.execute` is forbidden by
 `scripts/rc1_check.sh`'s forbid scan (it Greps production
 code for `execution_service.execute`, the `getattr` aliases, and rejects
 any file that lacks the `execution_coordinator_missing` guard). The
-single permitted call site is `services/execution/coordinator.py` — the
+single permitted call site is `src/pmcopy/services/execution/coordinator.py` — the
 code-level single-entry-point invariant for live order submission. This
 is a deliberate architectural limitation, not a missing feature.
 
@@ -51,7 +51,7 @@ Limitations:
 - The single entry-point does not enforce policy (slippage, max sizing);
   that policy layer is upstream of the coordinator submit surface and must
   always be invoked before reaching this surface. The bot enforces this
-  ordering via the orchestrator pipeline (`orchestrators/trade_pipeline.py`).
+  ordering via the orchestrator pipeline (`src/pmcopy/orchestrators/trade_pipeline.py`).
 - The single entry-point also means recovery paths (rollback, canary,
   cancel-and-resubmit) MUST go through the coordinator submit surface —
   they cannot bypass it through a helper. The audit log surfaces this
@@ -93,13 +93,13 @@ intended behaviour.
 
 ## 4. Strategy profiler is dry-run by default
 
-The Phase-11 strategy profiler (`services/strategy_profile/`) and the env
-tuner (`services/strategy_profile/env_patch_writer.py`) are dry-run-by-
+The Phase-11 strategy profiler (`src/pmcopy/services/strategy_profile/`) and the env
+tuner (`src/pmcopy/services/strategy_profile/env_patch_writer.py`) are dry-run-by-
 default. The bot does not auto-apply env patches; the operator must
 invoke the env-patch writer with `apply=True` and review the proposed
 patch explanation. PATCHES TO SECRET KEYS ARE NEVER MUTATED — see
 `_PROTECTED_EXACT` and `_PROTECTED_SUBSTRINGS` in
-`services/strategy_profile/env_patch_writer.py`; the writer's
+`src/pmcopy/services/strategy_profile/env_patch_writer.py`; the writer's
 idempotency-key set + lock in the on-chain dispatcher (`PR2 follow-up`)
 do not interact with this surface.
 
@@ -109,7 +109,7 @@ A submission whose POST response was lost is persisted as
 `submitted_unconfirmed` with no venue order id, and the runtime resolves it
 through bounded, read-only evidence scans (see
 `docs/recovery_playbook.md` §4 and
-`integrations/polymarket/ccxt_ambiguous_evidence.py`).
+`src/pmcopy/integrations/polymarket/ccxt_ambiguous_evidence.py`).
 
 Limitations:
 
@@ -125,7 +125,50 @@ Limitations:
   cancels, or retries the ambiguous order. Pinned by
   `tests/test_ccxt_ambiguous_evidence.py`.
 
-## 6. KNOWN_LIMITATIONS scan contract
+## 6. Market-exposure cap semantics (confirmed basis)
+
+The enforced market-exposure ceiling is checked inside the per-user
+advisory-lock reservation transaction, but on a **confirmed basis**:
+exposure is computed from confirmed positions, so concurrently racing
+intents each see pre-fill exposure and a burst can drift slightly past the
+cap until its fills land (the same pre-lock TOCTOU shape as the
+wallet-balance handling; the reservation domain still bounds the concurrent
+blast radius by wallet balance, so this is cap drift, not double-spend).
+Partial-fill remainders of an already-accepted order can likewise complete
+past the cap (pre-existing settlement semantics). Additionally, the
+follow-level `max_market_exposure_usdc` (schema-v2
+`limits.max_open_exposure_quote`) is carried onto the trading context but
+currently has no pipeline reader — the enforced cap is the account-level
+`risk.max_market_exposure_usdc` (characterized during the multi-copier
+acceptance matrix; see `docs/refactor/handoff.md`).
+
+## 7. Dependency and toolchain limitations (2026-10 standalone refactor)
+
+- **multidict CVE-2026-104874 is OPEN**: the lock resolves
+  `multidict==6.7.1`, and remediation (6.9.1) is blocked because
+  `ccxt==4.5.85` (the behavior-verified exact pin) itself pins
+  `multidict==6.7.1`. Exposure is low — the bot's aiohttp usage is
+  market-data/account reads and no code path performs items-view
+  union/subtraction on remote data. Fix path: bump ccxt when a release
+  carries `multidict>=6.9.1`, then regenerate the requirements exports.
+- **coincurve is absent on Python 3.14**: ccxt's own dependency marker
+  excludes it (`python_version < "3.14"`), and coincurve 21.0.0 ships no
+  cp314 wheels. Signing runs on `eth_keys`' pure-Python `NativeECCBackend`
+  (measured on this branch: ~3.1 ms raw `sign_msg`, ~5.3 ms EIP-191
+  `sign_message`) — correct but slower than the native library.
+- **mypy beyond the money-path spine is ratcheted, not clean**: CI blocks
+  on the spine (adapter + venue runtime + HTTP client) being clean, and
+  ratchets the remaining services/orchestrators/domain error count at ≤ 34
+  pre-existing findings. New code must not add to the count.
+- **One process-wide trading mode**: every copier in a process must declare
+  the same `mode`, matching `execution.trading_mode` — paper and live
+  cannot be mixed in one process; run one deployment per mode.
+- **Integration tier is Linux/Docker-bound**: the shared
+  `pmcopy-integration-pg` fixture (one container for the whole tier) relies
+  on Docker and a `/proc`-dependent stale-database GC helper; it is
+  exercised on linux/amd64 only.
+
+## 8. KNOWN_LIMITATIONS scan contract
 
 The release contract (`scripts/rc1_check.sh`) does NOT scan for any of
 the literals in this document; the integrity of these limitations is
@@ -134,7 +177,7 @@ execution.py::test_rest_primary_executes_with_wss_down`,
 `tests/test_execution_coordinator_production.py::*`). If you add a new
 limitation here, add a corresponding regression test to the unit suite.
 
-## 7. Related docs
+## 9. Related docs
 
 - `docs/live_runbook.md` — daily operator workflow including the pre-
   flight gate that enforces these limitations.

@@ -73,6 +73,31 @@ before asserting what a method does. The local CCXT checkout at
 `/home/anon/Work/coding/ccxt` is the upstream truth-of-source mirror; verify
 pinned-release behavior against it when planning upgrades.
 
+## Working in this repository (standalone system)
+
+- Production code lives under `src/pmcopy/` (single import namespace,
+  wheel-installable). There is no control plane, operator API, or dashboard;
+  the `pmcopy` CLI (`src/pmcopy/bot_cli/`) is the only operator surface.
+- Test tiers: default `python -m pytest -q` (integration + release_gate
+  deselected); `python -m pytest -m integration -q` runs the Postgres tier
+  against ONE shared container (`pmcopy-integration-pg`, fixture in
+  `tests/integration_postgres.py`) — never reintroduce per-test
+  testcontainers churn (contract pinned by
+  `tests/test_integration_shared_postgres.py`); `python -m pytest -m
+  release_gate -q` runs release gates. Dispatches touching
+  integration-marked files must run them explicitly with `-m integration`.
+- Dependency/packaging workflow: edit `pyproject.toml` → `uv lock` (uv
+  0.11.31 pinned in CI) → `python scripts/generate_requirements.py` (the
+  requirements exports are generated from `uv.lock`, never hand-edited) →
+  `python scripts/check_requirements_drift.py` must pass. Wheel/sdist
+  battery: `python scripts/verify_package.py`.
+- Multi-copier configuration is the schema-v2 roster
+  (`app.copiers_config_file`, example `src/pmcopy/config/copiers.example.yml`
+  — secret-free by design, wallet fields are env-var references). The
+  v1 JSON roster (`app.multi_user_config_file`) still exists; combining the
+  two is a configuration error.
+- Python 3.14 only (`>=3.14,<3.15`); ccxt is pinned `==4.5.85`.
+
 ## Polymarket execution work
 
 Before touching Polymarket execution, discovery, reconciliation, authentication, or market data:

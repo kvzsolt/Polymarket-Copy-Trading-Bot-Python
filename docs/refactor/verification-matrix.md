@@ -333,6 +333,5 @@ feature tasks (orders/leases/evidence), not the refactor.
 
 Toolchain now: Python 3.14.6, pytest 9.1.1, pytest-asyncio 1.4.0, rich 14.3.4,
 asyncpg 0.32.0, web3 7.16.0, aiohttp 3.14.5, httpx 0.28.1, pydantic 2.14.1,
-ccxt 4.5.85. (Note: root `CLAUDE.md` still cites "pinned `4.5.78`" — the
-actual pin in `pyproject.toml` is `ccxt==4.5.85`; doc staleness flagged for
-the next docs pass.)
+ccxt 4.5.85. (The root `CLAUDE.md` working copy was updated to 4.5.85 in the
+Task 26 docs pass; the actual pin in `pyproject.toml` is `ccxt==4.5.85`.)

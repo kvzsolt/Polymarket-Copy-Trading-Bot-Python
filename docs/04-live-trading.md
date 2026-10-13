@@ -2,7 +2,9 @@
 
 Live execution has two independent, fail-closed gates:
 
-1. `TRADING_MODE=live` in `config/runtime.local.env`, read once at startup.
+1. `execution.trading_mode=live` (e.g. `PMCOPY__EXECUTION__TRADING_MODE=live`
+   in `secrets.env`, or the `PMCOPY_ENVIRONMENT=live` overlay), read once at
+   startup.
 2. The PostgreSQL `trading_control` row, checked immediately before every venue submission.
 
 There is no `--live` CLI override and environment files are not hot-reloaded.
@@ -14,10 +16,14 @@ cp secrets.env.example secrets.env
 chmod 600 secrets.env
 ```
 
-Populate the private key, RPC URL, database URL, and optional CLOB credentials.
-Set the public wallet address and leaders in `config/runtime.local.env`. The
-unified SDK detects EOA/proxy/Safe/deposit-wallet signing mode; do not configure
-a numeric signature type.
+Populate the private key, RPC URL, and database URL in `secrets.env`
+(`PMCOPY__WALLET__PRIVATE_KEY`, `PMCOPY__POLYMARKET__RPC_URL`,
+`PMCOPY__DATABASE__DSN`). No CLOB apiKey/secret/passphrase belong there —
+the CCXT adapter derives L2 credentials in memory from the private key, and
+live signing is fixed to the Deposit Wallet (signature type 3). Set the
+public funder address and leaders in `<config-dir>/traders/<name>.yml` (the
+funder address is an optional live cross-check; the verified Deposit Wallet
+funder is resolved at runtime).
 
 Install and validate:
 

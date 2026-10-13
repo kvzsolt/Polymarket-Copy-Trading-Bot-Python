@@ -11,6 +11,14 @@ force-flip a flag that the bot itself orchestrates.
 
 On every startup (live or paper), the bot:
 
+0. Acquires the **account execution lease** (`account_execution_leases`, one
+   row per copier account) BEFORE any venue runtime or user state is built.
+   A second process holding an unexpired lease for the same account fails
+   closed at this point — it never reaches reconciliation. After a crash,
+   the next process takes over when the 60s TTL lapses
+   (`account_lease_takeover` warning); an outage longer than the TTL also
+   fail-closes the holder via its monotonic local deadline. See
+   `docs/02-configuration.md` § Cross-Process Account Lease.
 1. Loads `AppConfig` via the typed env loader (fail-closed on schema
    violations; see `tests/test_config_smoke.py`).
 2. Runs `startup_reconcile_unconfirmed` — a coroutine that takes the list
@@ -77,7 +85,7 @@ contract:
      `doctor --live` to re-verify.
 3. Re-run doctor live (doctor-or-die):
    ```bash
-   python -m pmcopy.bot_cli.main doctor --live
+   pmcopy doctor --live
    ```
 4. Re-run smoke checks:
    ```bash
@@ -98,9 +106,9 @@ The runtime resolves such rows automatically on a bounded supervised
 schedule (`ambiguous-recovery`; cadence
 `reconciliation.ambiguous_recovery.interval_seconds`, default 300s; disable
 with `reconciliation.ambiguous_recovery.enabled=false`). The composition
-lives in `orchestrators/runtime_bootstrap.py`
+lives in `src/pmcopy/orchestrators/runtime_bootstrap.py`
 (`_build_ambiguous_recovery_service` / `ambiguous_recovery_loop`); the
-evidence adapter is `integrations/polymarket/ccxt_ambiguous_evidence.py`.
+evidence adapter is `src/pmcopy/integrations/polymarket/ccxt_ambiguous_evidence.py`.
 
 Each cycle takes at most `batch_size` (default 100) oldest-first candidates
 and, once a row is past `grace_seconds` (default 120s), runs one strictly
@@ -179,6 +187,10 @@ over direct DB edits.
 
 ## 5. Invariants the operator must not break
 
+- A durable **full stop** (`pmcopy trading full-stop`) is not cleared by
+  `trading resume` — resume refuses (exit 2, zero writes) while the stop is
+  active. Only the explicit `pmcopy trading clear-full-stop --confirm LIVE
+  --reason ...` action clears it. Do not work around it with direct DB edits.
 - `startup_reconcile_unconfirmed` runs before any monitor subscription
   opens. Do not skip it even in dry-run mode — the reservation rehydration
   cascade populates state that the dry-run executor depends on.
@@ -196,9 +208,9 @@ over direct DB edits.
 - `docs/runbooks/rollback.md` — code-level rollback procedure.
 - `docs/audit/reconcile_state_machine_notes.md` — the full reconciliation
   invariant proof set (post-PR1 audit notes).
-- `orchestrators/runtime_bootstrap.py` — the startup orchestrator that
+- `src/pmcopy/orchestrators/runtime_bootstrap.py` — the startup orchestrator that
   wires `startup_reconcile_unconfirmed`, `startup_drift_check`, and the
   bounded `ambiguous-recovery` loop.
-- `integrations/polymarket/ccxt_ambiguous_evidence.py` — the read-only
+- `src/pmcopy/integrations/polymarket/ccxt_ambiguous_evidence.py` — the read-only
   no-ID evidence adapter (§4).
 - `tests/release_gate/test_startup_recovery.py` — order-of-calls pinning.
