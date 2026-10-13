@@ -2,16 +2,21 @@
 
 Captured 2026-10-13 in the refactor worktree (`refactor/standalone-pmcopy`),
 recorded through commits `ccbff5f` (shared integration Postgres) and `4aab97e`
-(CI hardening + lint-debt clearance). Environment: Linux 6.12.111+deb13-amd64
-x64, Python 3.14.6 (`.venv`, uv-managed), uv 0.11.31, Docker with a local
-`postgres:16-alpine` image (digest `sha256:721873c34ceb…`, matches the Task 25
-brief). Every row quotes the exact command, its exit code, counts, and
-duration; nothing is estimated. Rows that could not be executed are marked
-UNVERIFIED with the reason — no check is recorded as clean without a run.
-Rows (a)–(n) and the audit sections reflect their stated capture dates; the
-2026-10-13 follow-up-fix slice (F1–F6: ccxt 4.5.87 CVE remediation,
-money-path/redaction/config/test-infra hardening batches, and this docs
-close-out) re-verified them — final section below records the slice's runs.
+(CI hardening + lint-debt clearance). Environment at that capture: Linux
+6.12.111+deb13-amd64 x64, Python 3.14.6 (`.venv`, uv-managed), uv 0.11.31,
+Docker with a local `postgres:16-alpine` image (digest
+`sha256:721873c34ceb…`, matches the Task 25 brief). The interpreter rows below
+are 3.14-era history: later on 2026-10-13 the project was retargeted to
+Python 3.13 ONLY (`>=3.13,<3.14`, venv and Docker base 3.13.15) — the final
+section records the re-runs on the current interpreter and is the authority
+for today's toolchain. Every row quotes the exact command, its exit code,
+counts, and duration; nothing is estimated. Rows that could not be executed
+are marked UNVERIFIED with the reason — no check is recorded as clean without
+a run. Rows (a)–(n) and the audit sections reflect their stated capture
+dates; the 2026-10-13 follow-up-fix slice (F1–F6: ccxt 4.5.87 CVE
+remediation, money-path/redaction/config/test-infra hardening batches, and
+the docs close-out) re-verified them, and the 2026-10-13 Python 3.13-only
+migration re-ran the gates on 3.13.15 — final section below records both.
 
 ## (a) Default full suite
 
@@ -157,10 +162,13 @@ src/pmcopy/integrations/polymarket/venue_runtime.py
 src/pmcopy/clients/network/http_client.py`
 Exit code: **0** — `Success: no issues found in 4 source files`.
 
-Host-binary caveat: the workstation `mypy` (1.x on Python 3.13.5) cannot parse
-the four PEP 758 (`except A, B:`) production files, so the spine command was
-also confirmed under Python 3.14 via `uvx --python 3.14 mypy …` — identical
-clean result. CI installs mypy on 3.14 and is unaffected.
+Host-binary caveat (historical, 3.14-era): the workstation `mypy` (1.x on
+Python 3.13.5) could not parse the four then-PEP-758 production files, so the
+spine command was also confirmed under Python 3.14 via `uvx --python 3.14
+mypy …` — identical clean result. **Superseded 2026-10-13**: the 3.13-only
+migration parenthesized all 16 PEP 758 sites, so the spine command now runs
+clean natively on the 3.13 host binary too, and CI installs mypy on 3.13
+(see the final section).
 
 ## (l) bandit (CI command)
 
@@ -171,12 +179,14 @@ src/pmcopy/integrations src/pmcopy/bot_cli src/pmcopy/app.py
 src/pmcopy/bootstrap.py -ll --skip B101,B311,B608,B108,B310`
 Exit code: **0** — `No issues identified.` at medium+ severity.
 
-Host-binary caveat (recorded honestly): the same binary on the local Python
-3.13.5 host silently **skipped 4 production files** with `syntax error while
-parsing AST` (PEP 758 syntax in `runtime_bootstrap.py`, `trade_pipeline.py`,
-`multiUserConfig.py`, `logger.py`). Re-run under Python 3.14 via
-`uvx --python 3.14 bandit …`: exit 0, `No issues identified.`, **0 files
-skipped**, ~88k LOC scanned. CI (py3.14) gets full coverage natively.
+Host-binary caveat (historical, 3.14-era; SUPERSEDED 2026-10-13): the same
+binary on the local Python 3.13.5 host silently **skipped 4 production files**
+with `syntax error while parsing AST` (PEP 758 syntax in
+`runtime_bootstrap.py`, `trade_pipeline.py`, `multiUserConfig.py`,
+`logger.py`); it was re-run under Python 3.14 via `uvx --python 3.14 bandit …`
+— exit 0, `No issues identified.`, **0 files skipped**, ~88k LOC scanned. The
+cause was removed by the 3.13-only migration (all 16 sites parenthesized), so
+the 3.13 run scans the whole tree: recorded in the final section.
 
 ## (m) ruff — FULL scan (now BLOCKING in CI, zero CLI ignores)
 
@@ -339,8 +349,8 @@ tail -1` last-batch artifact — the exact baseline test LOC (recomputed from
 | Prod : test LOC ratio | ≈1.02 : 1 | ≈0.90 : 1 | test coverage grew relative to production |
 | Distinct production dirs | 39 | 37 | −2 (consolidations) |
 | Direct `[project].dependencies` | 14 | 14 | unchanged |
-| `requirements.txt` pins | 74 | 73 | −1 (`coincurve` removed during the refactor; Task 25 changed none) |
-| `requirements.runtime.txt` pins | 65 | 64 | same `coincurve` removal |
+| `requirements.txt` pins | 74 | 73 | −1 at the Task 25 capture (`coincurve` absent in the 3.14 era); the 2026-10-13 3.13 migration restored coincurve 21.0.0 to the lock and both exports (final section) |
+| `requirements.runtime.txt` pins | 65 | 64 | same 3.14-era `coincurve` absence; restored on 3.13 (final section) |
 | Top-level importable packages | 16 (+4 root modules) | **1** (`pmcopy` under `src/`) + 0 root modules | the namespace migration itself |
 | Collected tests | 4906/5542 (636 deselected) | 5162/5843 (681 deselected) | +256 default-tier tests, +45 tier-marked |
 | Default suite | 2 failed / 4904 passed (exit 1) | 5162 passed (exit 0) | baseline failures fixed |
@@ -355,15 +365,18 @@ Largest modules (bytes, `wc -c`): `trade_pipeline.py` 174,078 (was 167,906),
 (was 62,377), `ccxt_prediction_gateway.py` 65,637 (was 62,227) — growth tracks
 feature tasks (orders/leases/evidence), not the refactor.
 
-Toolchain now: Python 3.14.6, pytest 9.1.1, pytest-asyncio 1.4.0, rich 14.3.4,
+Toolchain at the Task 25/26 capture: Python 3.14.6, pytest 9.1.1,
+pytest-asyncio 1.4.0, rich 14.3.4,
 asyncpg 0.32.0, web3 7.16.0, aiohttp 3.14.5, httpx 0.28.1, pydantic 2.14.1,
 ccxt 4.5.87 (bumped from 4.5.85 on 2026-10-13 — multidict CVE remediation,
 adapter module byte-identical; only ccxt + multidict moved in `uv.lock`).
 (The root `CLAUDE.md` working copy was updated to 4.5.85 in the
 Task 26 docs pass and to 4.5.87 with the CVE bump; the actual pin in
-`pyproject.toml` is `ccxt==4.5.87`.)
+`pyproject.toml` is `ccxt==4.5.87`.) Superseded interpreter (2026-10-13):
+the 3.13-only migration moved the venv and Docker base to Python 3.13.15
+and restored `coincurve 21.0.0` in `uv.lock` + both exports — final section.
 
-## 2026-10-13 follow-up-fix slice (F1–F6) — final recorded runs
+## 2026-10-13 follow-up-fix slice (F1–F6) — recorded runs (3.14-era interpreter)
 
 Captured 2026-10-13 after the follow-up slice landed: F1 ccxt 4.5.87 +
 multidict 6.9.1 (CVE-2026-104874 RESOLVED — audit re-runs recorded in the
@@ -380,8 +393,11 @@ the F6 docs/truth pass (this section; stale cap-inert wording corrected in
 `docs/known_limitations.md` §6 + handoff §3; README wheel-install command;
 `docs/rc1_validation.md` skip-caveat aligned with the script;
 `tests/replay/README.md` added; Dependabot h2 PR #137 closed with a
-supersession comment). Same environment as the header. All commands
-executed from the worktree root with `.venv/bin/python` (Python 3.14).
+supersession comment). Same environment as the header (3.14-era interpreter,
+`Python 3.14.6`, superseded later the same day by the 3.13-only migration).
+All commands executed from the worktree root with `.venv/bin/python`
+(the then-current 3.14 venv; the 3.13.15 re-runs follow in the final section
+below).
 
 | Check | Command | Exit | Result | Duration |
 |---|---|---|---|---|
@@ -403,3 +419,83 @@ shared `pmcopy-integration-pg` (`f8c51b7a105b`) — nothing was created,
 removed, or re-pulled. Zero new `/tmp/multicopier-copiers-*` leaks: the
 newest pre-existing leak's mtime (15:16:24) predates the run window, i.e.
 F5's temp-dir registry drained everything this run created.
+
+## 2026-10-13 Python 3.13-only migration (P1–P3) — final recorded runs
+
+Captured 2026-10-13 after the 3.13-only migration landed on branch
+`chore/python-313-only` (T1 `da9033a` PEP 758 parenthesization + parse guard;
+T2 `86df07c` interpreter/lock/CI/Docker retarget to `>=3.13,<3.14`; T3 this
+docs truth pass). Environment: same host (Linux 6.12.111+deb13-amd64 x64),
+interpreter **CPython 3.13.15** (worktree `.venv`, pyenv-provisioned; the
+lock itself resolved under a uv-managed 3.13.14 — patch-independent, see
+handoff §10), uv 0.11.31, mypy 2.4.0 in-venv, Docker with the shared
+`pmcopy-integration-pg` container. Lock delta: `coincurve 21.0.0` re-entered
+(`uv.lock` 74 → 75 packages; each requirements export gained exactly the
+coincurve line + `# via ccxt`); cp313 wheels, no resolver conflicts, no force
+flags. Every command executed from the worktree root with `.venv/bin/python`.
+All rows below are current (green) — the 3.14-era rows above remain as
+dated captures.
+
+| Check | Command | Exit | Result | Duration |
+|---|---|---|---|---|
+| Default full suite | `.venv/bin/python -m pytest -q` | **0** | **5249 passed / 0 failed**, 711 deselected, 1 warning | 151.72s (2m33s wall) |
+| Adapter contract group (CLAUDE.md 10-file command) | see row (b) | **0** | **228 passed** | 2.89s |
+| Release-gate tier | `.venv/bin/python -m pytest -m release_gate -q` | **0** | **203 passed**, 5757 deselected | 41.66s |
+| Integration tier (shared container) | `.venv/bin/python -m pytest -m integration -q` | **0** | **553 passed**, 5407 deselected, 1 warning | 265.44s |
+| Golden log fixtures | `.venv/bin/python tests/fixtures/golden_logs/regenerate.py --check` | **0** | `All 25 golden log fixtures match.` (rich 14.3.4 unchanged → byte-stable) | ~5s |
+| Requirements drift | `.venv/bin/python scripts/check_requirements_drift.py` | **0** | `OK: uv.lock, requirements.txt, requirements.runtime.txt, and pyproject.toml agree.` (uv 0.11.31) | <1s |
+| mypy ratchet (per-file manifest) | `.venv/bin/python scripts/check_mypy_ratchet.py` | **0** | `OK (exact per-file match)` — 12 files / 23 errors, mypy 2.4.0; zero drift, no `--update` | <1s |
+| mypy money-spine (CI command) | see row (k) | **0** | `Success: no issues found in 4 source files` — clean natively on the 3.13 host binary (the 3.14-era host-parse caveat is gone) | <1s |
+| bandit (CI scope) | see row (l) | **0** | 0 medium / 0 high (46 low below the `-ll` threshold); **`Files skipped (0)`** — full-tree coverage on the 3.13 host (the 3.14-era capture skipped 4 PEP 758 files) | — |
+| ruff full scan | `ruff check --exclude=legacy,test.py,bootstrap.py .` | **0** | `All checks passed!` | ~2s |
+| compileall | `.venv/bin/python -m compileall -q .` | **0** | quiet success (no output) | ~4s |
+
+Integration churn note (zero-churn contract re-proven on 3.13): `docker ps -aq
+| sort | md5sum` was `6e3c3df9e9848837e75601345797d501` before AND after the
+run (2 containers total, unchanged); the only running container is the ONE
+shared `pmcopy-integration-pg` (`f8c51b7a105b`, `Up 15 hours`, same creation
+timestamp) — nothing created, removed, or re-pulled. Leaked test databases
+after the run: `SELECT count(*) FROM pg_database WHERE datname LIKE
+'pmcopy_it_%'` → **0**. `/tmp/multicopier-copiers-*` count identical before
+and after (255; all pre-existing).
+
+Native signing (re-confirmed on this run): `eth_keys` default backend =
+**`CoinCurveECCBackend`** (native), `coincurve` importable, and a sign →
+recover roundtrip returns the account address. Warm measurement (private key
+constructed once, 50-iteration mean): raw `sign_msg` **0.12 ms/sign**, EIP-191
+`sign_message` **0.24–0.26 ms/sign** — reproducing the migration's recorded
+0.12 / 0.24 (20-iteration means). The raw figure is method-sensitive
+(constructing the key inside the timed loop inflates it), so the recorded
+numbers are the reference; no speed claims.
+
+Docker build/image verification (the migration's build, re-verified in-place
+today): image `polymarket-copy-trader:py313-task2`
+(`sha256:d3b6a4014566…`, 479 MB) built from the flipped Dockerfile at
+`86df07c` — `docker run --rm --network none --entrypoint python <image> -V`
+→ **Python 3.13.15**; in-image `coincurve 21.0.0` and `ccxt 4.5.87`; offline
+CLI smokes `--help` / `doctor --help` exit 0/0. Registry digests re-verified
+against the live registry today (`docker manifest inspect` + `docker buildx
+imagetools inspect python:3.13.15-slim-bookworm`): index
+`sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26`,
+linux/amd64 `sha256:3e2de9c40ca4e3d73240059f9d48baff27908f10293e985a2f382a0378e6df4a`,
+linux/arm64/v8 `sha256:ad4c34ff79289506e235b40dce75d629e25f226b597a2455804220f037e07531`
+— all matching `docs/docker.md` and handoff §4. (The base tag itself is no
+longer retained locally, so the digests were re-read from the registry; the
+built image under test still carries the base layers.)
+
+Docs/truth pass (T3): README/AGENTS.md/handoff/verification-matrix/
+`known_limitations.md` retargeted to 3.13-only — the coincurve limitation is
+removed as resolved-with-provenance, and the PEP 758 syntax policy plus the
+corrected site count (16, not 4) are documented; the three non-pinning
+synthetic `3.14` literals were re-tagged to the 3.13 form
+(`tests/release_gate/test_compose_secret_split.py`,
+`tests/release_gate/test_dockerfile_safety_defaults.py`,
+`tests/test_packaged_resource_resolution.py`). Focused re-runs: the three
+fixture files + the parse guard → **26 passed**; the docs-pinning contract
+tests (`test_rc1_release_artifacts.py`, `test_docker_ccxt_runtime.py`,
+`test_packaged_resource_resolution.py`) → **39 passed**.
+
+Tier deltas versus the F1–F6 capture above: default 5249 → 5249 (same count,
+now measured on 3.13.15), release-gate 202 → **203** (+1: the PEP 758 parse
+guard added in T1), integration 553 → 553; the default run's deselected set
+grew 710 → 711 (the guard is release-gate-marked).

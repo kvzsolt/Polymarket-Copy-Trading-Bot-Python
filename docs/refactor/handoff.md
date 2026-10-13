@@ -28,11 +28,14 @@ code:
   migrations via `importlib.resources`, explicit deployment root (no parent
   walk), `scripts/verify_package.py` battery green from fresh venvs with no
   source tree (Task 19).
-- Python 3.14-only (`>=3.14,<3.15`), canonical `uv.lock` with generated,
-  drift-gated requirements exports (Tasks 16–17).
-- Docker: multi-stage wheel-only image on `python:3.14.6-slim-bookworm`, no
+- Python 3.13-only (`>=3.13,<3.14`), canonical `uv.lock` with generated,
+  drift-gated requirements exports (Tasks 16–17; retargeted from the earlier
+  3.14-only era on 2026-10-13 — see §10 and the verification-matrix final
+  section).
+- Docker: multi-stage wheel-only image on `python:3.13.15-slim-bookworm`, no
   source tree, no `PYTHONPATH`; `db.env`/`secrets.env` split per service
-  (Tasks 15, 20).
+  (Tasks 15, 20; base re-pinned from `python:3.14.6-slim-bookworm` on
+  2026-10-13).
 - Multi-copier addon against the canonical account runtime: schema-v2
   secret-free roster, per-account state + DB lease, routing isolation,
   acceptance matrix §9 all green at hermetic and real-Postgres levels
@@ -155,7 +158,7 @@ confirmed and fixed:
 
 | Component | Version |
 |---|---|
-| Python | **3.14.6** (CPython; `>=3.14,<3.15` enforced) |
+| Python | **3.13.15** (CPython; `>=3.13,<3.14` enforced — 3.11–3.12 and 3.14 rejected fail-closed; retargeted 2026-10-13) |
 | ccxt | **4.5.87** (exact pin; minimum for the prediction namespace `>=4.5.73,<5`; bumped from 4.5.85 on 2026-10-13 for the multidict CVE — adapter module byte-identical) |
 | uv | 0.11.31 (pinned generator/CI version) |
 | pytest / pytest-asyncio | 9.1.1 / 1.4.0 |
@@ -177,33 +180,51 @@ confirmed and fixed:
   re-audits (`uv audit` and `pip-audit -r requirements.txt --no-deps`,
   advisory DBs reachable) report zero known vulnerabilities. Previously
   recorded OPEN while `ccxt==4.5.85` pinned `multidict==6.7.1` exactly.
-- **Compatibility blocker (intentional)**: `coincurve` is absent on Python
-  3.14 (ccxt's own `<3.14` marker; no cp314 wheels exist). Signing uses
-  `eth_keys`' pure-Python `NativeECCBackend`: measured 3.08 ms/sign raw,
-  5.32 ms/sign EIP-191 (20-iteration means) — correct, slower.
+- **Native signing (2026-10-13, RESOLVED)**: on the 3.13 target ccxt's own
+  pin `coincurve==21.0.0` (`python_version < "3.14"` marker) is in the lock
+  with cp313 wheels, so `eth_keys` signs through the native
+  `CoinCurveECCBackend`: measured 0.12 ms/sign raw `sign_msg` and
+  0.24 ms/sign EIP-191 `sign_message` (20-iteration means). History with
+  provenance: in the 3.13-unsupported 3.14 era (before 2026-10-13) coincurve
+  was absent (no cp314 wheels) and signing ran on `eth_keys`' pure-Python
+  `NativeECCBackend` — measured 3.08 ms/sign raw, 5.32 ms/sign EIP-191.
+  Those slower numbers are superseded, not an open limitation; the
+  round-trip signature contract tests pass on both paths (same recovered
+  address).
 - **Deferred upgrades (documented in Task 16 report)**: web3 8.x (requires
   eth-account>=0.14 + breaking API), rich 15.x, websockets 16/17 (need
   web3 8), uvloop >0.22.1 (ccxt exact pin; still `==0.22.1` in 4.5.87) and
   orjson >3.11.9 (ccxt 4.5.87 loosened this to `>=3.11.9,<4`, so an
   orjson-only re-lock upgrade is now possible; not taken in the CVE bump).
-- **Docker base metadata (registry-verified 2026-10-11/12)**:
-  `python:3.14.6-slim-bookworm` — linux/amd64
+- **Docker base metadata (registry-verified 2026-10-13 for the 3.13 target)**:
+  `python:3.13.15-slim-bookworm` — linux/amd64
+  `sha256:3e2de9c40ca4e3d73240059f9d48baff27908f10293e985a2f382a0378e6df4a`,
+  linux/arm64v8
+  `sha256:ad4c34ff79289506e235b40dce75d629e25f226b597a2455804220f037e07531`,
+  index / manifest-list digest
+  `sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26`.
+  The same policy applies as in the earlier capture: tag pin (not digest) —
+  keeps Debian security updates flowing; the only repo precedent
+  (`postgres:16-alpine`) pins tags too. 3.13.15 was chosen as the newest
+  3.13 patch that exists both locally (pyenv) and in the official registry,
+  for exact interpreter parity with the `.venv` the suite runs on. History
+  (superseded, same day): the pre-migration image was
+  `python:3.14.6-slim-bookworm`, linux/amd64
   `sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4`,
   linux/arm64v8
   `sha256:1609c3e634a6ad5b4759f67e34c24640d41858fffde69876245fd26afd632b7`,
-  manifest-list digest on pull
-  `sha256:4c92ffcde4dd6f1ff72a24518f49fd4990b27134987dfa31a733badde66df9f8`.
-  Policy: tag pin (not digest) — keeps Debian security updates flowing;
-  the only repo precedent (`postgres:16-alpine`) pins tags too. 3.14.6 was
-  chosen deliberately over the newer 3.14.7 for exact suite parity.
+  index `sha256:4c92ffcde4dd6f1ff72a24518f49fd4990b27134987dfa31a733badde66df9f8`.
 
 ## 5. Commands executed, results, skips, platforms
 
 The full evidence table with exact commands, exit codes, counts, and
 durations is `verification-matrix.md` (Task 25, re-verified at Task 26
-authoring, and re-run after the 2026-10-13 follow-up-fix slice — final
-section there). Summary (tier rows re-verified 2026-10-13 after the
-follow-up slice F1–F6; the remaining rows are the Task 25/26 records):
+authoring, re-run after the 2026-10-13 follow-up-fix slice, and re-run again
+after the 2026-10-13 Python 3.13-only migration — final section there; the
+rows below are the F1–F6 capture and are historical, the migration re-runs
+are recorded in that final section). Summary (tier rows re-verified
+2026-10-13 after the follow-up slice F1–F6; the remaining rows are the
+Task 25/26 records):
 
 | Check | Result |
 |---|---|
@@ -217,8 +238,8 @@ follow-up slice F1–F6; the remaining rows are the Task 25/26 records):
 | `uv pip check` / CI `pip check` | compatible |
 | `scripts/check_requirements_drift.py` | OK |
 | Golden log fixtures `regenerate.py --check` | All 25 match |
-| mypy money-spine | clean (also re-confirmed under Python 3.14 via uvx) |
-| bandit (CI scope) | No issues at medium+ (0 files skipped under 3.14) |
+| mypy money-spine | clean (Task 25/26 capture; host-binary caveat was the 3.14-era PEP 758 parse failure — the migration parenthesized all 16 sites, so the same command is clean on the 3.13 host binary too: matrix final section) |
+| bandit (CI scope) | No issues at medium+ (3.14-era host skipped 4 PEP 758 files; after the migration's parenthesization the 3.13 host run scans the whole tree with **0 files skipped** — matrix final section) |
 | ruff full scan | exit 0 after real cleanup of 66 findings |
 | compileall | exit 0 |
 | pip-audit | **RESOLVED 2026-10-13**: zero known vulnerabilities after the ccxt 4.5.87 / multidict 6.9.1 re-lock (§4; was 1 OPEN — multidict) |
@@ -302,9 +323,11 @@ measurement method both times:
 | Release-gate / integration tiers | 171 / not run (per-test containers) | 187 / 539 (one shared container) |
 | Collected tests | 4906 (636 deselected) | 5162 default-tier of 5843 (681 deselected) |
 
-Performance: no invented improvements. Measured signing cost on 3.14
-without coincurve is recorded in §4; integration-tier runtime with the
-shared fixture is ~266–275s for 539 tests (versus per-test container
+Performance: no invented improvements. Measured signing cost is recorded in
+§4 — the current 3.13 target signs natively (coincurve, 0.12 / 0.24 ms per
+sign); the 3.14-era pure-Python numbers (3.08 / 5.32 ms) are superseded
+history, not an open limitation. Integration-tier runtime with the
+shared fixture is ~266–300s for 539–553 tests (versus per-test container
 startup churn before, which the fixture eliminates). Largest-module sizes
 moved with feature work, not the refactor (table in
 `verification-matrix.md`).
@@ -316,7 +339,14 @@ moved with feature work, not the refactor (table in
   hermetic, disposable-Postgres, or paper-mode.
 - **GitHub-hosted CI runners**: `ci.yml`/`release-gate.yml` were hardened
   and pass actionlint locally, but were not run on GitHub during the
-  refactor; first push may still surface runner-specific issues.
+  refactor; first push may still surface runner-specific issues. The 3.13
+  migration keeps the same caveat: the matrices are now `["3.13"]`
+  (single-entry, kept as a matrix), still locally verified only.
+- **3.13 patch-level provenance**: the suite and Docker base run on CPython
+  **3.13.15** (pyenv local + registry tag), while `uv lock` resolved under a
+  uv-managed 3.13.14. The lock is interpreter-patch-independent and no
+  committed artifact is 3.13.14-specific; the difference is recorded here
+  rather than silently unified.
 - **arm64**: base-image digests recorded from the registry; no arm64 build
   or test executed. Platforms tested: linux/amd64 only.
 - **Dependabot alert inventory**: only the h2 PR was adjudicated

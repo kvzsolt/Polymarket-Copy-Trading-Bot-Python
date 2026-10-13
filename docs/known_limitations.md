@@ -165,11 +165,30 @@ Two residual limitations remain (documented, bounded):
   `==4.5.87` (polymarket module byte-identical to 4.5.85) re-pins
   `multidict==6.9.1`, above the affected range (6.7.0–6.9.0); the lock and
   both requirements exports carry 6.9.1.
-- **coincurve is absent on Python 3.14**: ccxt's own dependency marker
-  excludes it (`python_version < "3.14"`), and coincurve 21.0.0 ships no
-  cp314 wheels. Signing runs on `eth_keys`' pure-Python `NativeECCBackend`
-  (measured on this branch: ~3.1 ms raw `sign_msg`, ~5.3 ms EIP-191
-  `sign_message`) — correct but slower than the native library.
+- **Python 3.13-only toolchain (3.14 is deliberately unsupported)**: the
+  project targets `>=3.13,<3.14` — enforced by the fail-closed runtime gate
+  (`pyproject.toml`, `src/pmcopy/config/app_config.py`), the CI matrix
+  (`['3.13']`), and the Docker base (`python:3.13.15-slim-bookworm`). This
+  is what keeps **coincurve 21.0.0** in the lock (ccxt's own
+  `python_version < "3.14"` marker): signing runs on the native
+  `CoinCurveECCBackend`. Measured on the 3.13.15 venv: 0.12 ms/sign raw
+  `sign_msg`, 0.24 ms/sign EIP-191 `sign_message` (20-iteration means).
+  Provenance, not an open item: in the 3.13-unsupported 3.14 era (ended
+  2026-10-13) coincurve was absent (no cp314 wheels) and signing used
+  `eth_keys`' pure-Python `NativeECCBackend` — 3.08 / 5.32 ms/sign on the
+  same method; those figures are superseded history.
+- **PEP 758 syntax policy (3.13-only)**: multi-type `except` clauses MUST
+  be parenthesized (`except (A, B):`). The parenthesis-free PEP 758 form is
+  legal on 3.14 but a `SyntaxError` on 3.13, so it must never re-enter. The
+  migration parenthesized **16 sites across 4 modules** — an `ast.parse`
+  sweep only reports the first error per file, which is why the initial
+  count of 4 understated the real work — and
+  `tests/release_gate/test_source_parse_clean.py` now `ast.parse`s every
+  file under `src/` and `scripts/` with the running interpreter, failing
+  with `file:line` if one comes back (`ruff` is pinned to
+  `target-version = "py313"`, and `ruff format --check` on the four
+  affected modules reports them already formatted — it no longer rewrites
+  the parenthesized form back).
 - **mypy beyond the money-path spine is ratcheted, not clean**: CI blocks
   on the spine (adapter + venue runtime + HTTP client) being clean, and
   ratchets the remaining services/orchestrators/domain debt with a

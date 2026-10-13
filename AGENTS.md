@@ -96,7 +96,20 @@ pinned-release behavior against it when planning upgrades.
   — secret-free by design, wallet fields are env-var references). The
   v1 JSON roster (`app.multi_user_config_file`) still exists; combining the
   two is a configuration error.
-- Python 3.14 only (`>=3.14,<3.15`); ccxt is pinned `==4.5.87`.
+- Python 3.13 only (`>=3.13,<3.14`); ccxt is pinned `==4.5.87`. 3.14 is
+  deliberately unsupported (the runtime gate rejects it fail-closed), which
+  also keeps ccxt's `coincurve==21.0.0` in the lock — signing is the native
+  `CoinCurveECCBackend`, not the pure-Python fallback.
+- **Python 3.13 syntax policy**: multi-type `except` clauses MUST be
+  parenthesized (`except (A, B):`). The parenthesis-free PEP 758 form is
+  legal on 3.14 but a `SyntaxError` on 3.13 and must never re-enter. The
+  migration parenthesized 16 sites across 4 modules — an `ast.parse` sweep
+  reports only the first error per file, so the naive count of 4 understated
+  it; `[tool.ruff] target-version = "py313"` keeps `ruff format` from
+  re-adding parens-free clauses. The release-gate guard
+  `tests/release_gate/test_source_parse_clean.py` `ast.parse`s every file
+  under `src/` + `scripts/` with the running interpreter and fails with
+  `file:line` if a PEP 758 construct reappears.
 
 ## Polymarket execution work
 

@@ -1,6 +1,6 @@
 # Polymarket Copy Trading Bot (`pmcopy`)
 
-![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)
+![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)
 ![License MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Polymarket](https://img.shields.io/badge/exchange-Polymarket-blueviolet)
 
@@ -39,7 +39,9 @@ exposes only a loopback health/metrics endpoint for supervision.
 
 ## Stack
 
-- **Python** 3.14 only (`>=3.14,<3.15`); 3.11–3.13 are unsupported.
+- **Python** 3.13 only (`>=3.13,<3.14`); 3.11–3.12 and 3.14 are unsupported
+  (3.14 is deliberately rejected by the fail-closed runtime gate, and by the
+  `>=3.13,<3.14` bound in `pyproject.toml`).
 - **Venue transport** `ccxt==4.5.87` (`ccxt.prediction.polymarket`) behind a
   typed gateway; paper mode uses CCXT for public market reads and a local
   simulator for writes.
@@ -52,14 +54,14 @@ exposes only a loopback health/metrics endpoint for supervision.
 
 ## Quickstart (single copier, paper mode)
 
-Requires Python 3.14.x and either [uv](https://docs.astral.sh/uv/) or pip.
+Requires Python 3.13.x and either [uv](https://docs.astral.sh/uv/) or pip.
 
 ```bash
 # 1. Install (uv, recommended)
 uv venv && source .venv/bin/activate
 uv sync --frozen --extra dev
 #   -- or with plain pip --
-# python3.14 -m venv .venv && source .venv/bin/activate
+# python3.13 -m venv .venv && source .venv/bin/activate
 # pip install -r requirements.txt && pip install --no-deps -e .
 
 # 2. Configure (from the deployment root — the directory you run from)
@@ -152,7 +154,7 @@ docker compose logs -f bot
 Secrets are split per service: `db.env` holds only `POSTGRES_PASSWORD` and
 is read only by the postgres service; `secrets.env` holds the bot's
 credentials and is read only by the bot. The image is a multi-stage
-wheel-only build on `python:3.14.6-slim-bookworm` — the runtime stage never
+wheel-only build on `python:3.13.15-slim-bookworm` — the runtime stage never
 contains the source tree. See [docs/docker.md](docs/docker.md).
 
 ## Operator CLI

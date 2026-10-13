@@ -10,10 +10,12 @@ interpreter and fails with ``file:line: message`` for each offender.
 
 Value by interpreter:
 
-* on 3.14 (today's venv) the scan is the shape check only — the tree is
-  already PEP-758-free, so this test is green;
-* once the matrix and the venv run 3.13 (the migration target) it is the real
-  guard, and it fails loudly if a PEP 758 construct re-enters.
+* on the 3.13 target (today's venv) this is the real guard: the migration
+  parenthesized all 16 PEP 758 sites (an ``ast.parse`` sweep reports only the
+  first error per file, which is why an earlier count said 4), so any failure
+  here means a parens-free clause has re-entered;
+* on any interpreter that accepts both forms it is the shape check only — the
+  tree is already PEP-758-free, so the scan stays green.
 
 ``tests/`` is intentionally out of scope here: this gate protects shipped
 source (``src/``) and operator scripts (``scripts/``). Test modules are parsed
