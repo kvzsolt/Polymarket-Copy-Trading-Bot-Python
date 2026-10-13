@@ -204,19 +204,15 @@ jobs:
       - name: mypy (type-debt ratchet — blocking, baseline must never grow)
         run: |
           pip install mypy
-          # The old full-tree step hid its findings behind BOTH
-          # continue-on-error and `|| true`. Replaced with a real ratchet:
-          # the error count for services/orchestrators/domain (+ followed
-          # imports) must stay at or below the recorded baseline (34 as of
-          # Task 25; full list in docs/refactor/verification-matrix.md).
-          # Drive it to 0, then swap this for a plain blocking mypy call.
-          # `grep -c ... || true` tolerates a zero-error grep (exit 1 on no
-          # matches) — absent-match tolerance, not result concealment.
-          BASELINE=34
-          ERRORS=$(mypy --install-types --non-interactive --ignore-missing-imports \
-            src/pmcopy/services src/pmcopy/orchestrators src/pmcopy/domain 2>&1 | grep -c "error:" || true)
-          echo "mypy errors: $ERRORS (baseline $BASELINE)"
-          test "$ERRORS" -le "$BASELINE"
+          # Per-file composition ratchet: the old inline step pinned only the
+          # TOTAL error count, so a lateral move — errors deleted from one
+          # file and introduced in another — kept the total flat and passed.
+          # scripts/mypy_baseline.json pins EVERY file's count exactly; the
+          # total is derived (the sum of the manifest), never separately
+          # pinned. Still ONE blocking step. Ratchet the manifest down
+          # deliberately after real fixes:
+          #   python scripts/check_mypy_ratchet.py --update
+          python scripts/check_mypy_ratchet.py
   docker-smoke:
     name: docker-smoke
     runs-on: ubuntu-latest

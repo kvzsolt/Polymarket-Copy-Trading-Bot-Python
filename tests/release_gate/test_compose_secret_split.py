@@ -38,11 +38,15 @@ FORBIDDEN_SECRET_BASENAMES = ("secrets.env", "db.env", "secrets.toml", "runtime.
 
 
 def dockerfile_copy_add_lines(dockerfile_text: str) -> list[str]:
-    """Every COPY/ADD instruction line in the whole Dockerfile (stripped)."""
+    """Every COPY/ADD instruction line in the whole Dockerfile (stripped).
+
+    Dockerfile instruction keywords are case-insensitive (``copy`` and
+    ``add`` are valid), so the match must be too.
+    """
     return [
         line.strip()
         for line in dockerfile_text.splitlines()
-        if line.strip().startswith("COPY ")
+        if line.strip().upper().startswith(("COPY ", "ADD "))
     ]
 
 

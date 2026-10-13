@@ -41,11 +41,15 @@ def runtime_stage_text(dockerfile_text: str) -> str:
 
 
 def copy_add_lines(stage_text: str) -> list[str]:
-    """Every COPY/ADD instruction line in the stage (stripped)."""
+    """Every COPY/ADD instruction line in the stage (stripped).
+
+    Dockerfile instruction keywords are case-insensitive (``copy`` and
+    ``add`` are valid), so the match must be too.
+    """
     return [
         line.strip()
         for line in stage_text.splitlines()
-        if line.strip().startswith(("COPY ", "ADD "))
+        if line.strip().upper().startswith(("COPY ", "ADD "))
     ]
 
 
@@ -59,7 +63,6 @@ def runtime_secret_copy_violations(dockerfile_text: str) -> list[str]:
     return [
         line
         for line in copy_add_lines(runtime_stage_text(dockerfile_text))
-        if line.startswith("COPY --from=builder")
         for forbidden in FORBIDDEN_SECRET_BASENAMES
         if forbidden in line
     ]
@@ -126,7 +129,7 @@ def test_runtime_stage_contains_only_the_built_wheel(dockerfile_text: str) -> No
         assert args and args[0] != "." and "src/pmcopy" not in line and "src" not in args, (
             f"runtime stage must not contain the source tree: {line!r}"
         )
-    stage_crossings = [line for line in copies if line.startswith("COPY --from=builder")]
+    stage_crossings = [line for line in copies if line.lower().startswith("copy --from=builder")]
     assert stage_crossings, "the built wheel must cross the stage boundary"
     for line in stage_crossings:
         assert line.startswith("COPY --from=builder /wheels/"), (

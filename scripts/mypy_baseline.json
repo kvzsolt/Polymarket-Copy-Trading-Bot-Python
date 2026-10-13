@@ -1,0 +1,17 @@
+{
+  "files": {
+    "src/pmcopy/orchestrators/auto_trader_paper_runtime.py": 1,
+    "src/pmcopy/orchestrators/native_detection_runtime.py": 2,
+    "src/pmcopy/orchestrators/startup_health.py": 1,
+    "src/pmcopy/orchestrators/trade_pipeline.py": 2,
+    "src/pmcopy/services/auto_trader.py": 5,
+    "src/pmcopy/services/copy_tasks/budget.py": 1,
+    "src/pmcopy/services/execution/reconciliation_service.py": 1,
+    "src/pmcopy/services/executionService.py": 3,
+    "src/pmcopy/services/market_data_quality.py": 1,
+    "src/pmcopy/services/multiUserConfig.py": 1,
+    "src/pmcopy/services/reconciliation.py": 3,
+    "src/pmcopy/services/risk/risk_monitor.py": 2
+  },
+  "mypy_version": "2.4.0"
+}

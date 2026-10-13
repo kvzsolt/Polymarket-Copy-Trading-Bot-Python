@@ -4,7 +4,8 @@ A14 final gate. The unit contracts in
 ``tests/test_reservation_expiry_no_id_release.py`` pin the typed decision
 tree against fakes; these tests run the REAL repositories, the REAL
 ``ReservationService`` expiry sweep, and the REAL bootstrap expiry callback
-against a throwaway Postgres (testcontainers):
+against a fresh database inside the ONE shared ``pmcopy-integration-pg``
+container (``tests.integration_postgres``):
 
 * a lost-POST ``submitted_unconfirmed`` row without a venue identity keeps
   its reservation active across repeated expiry sweeps (no double-spend

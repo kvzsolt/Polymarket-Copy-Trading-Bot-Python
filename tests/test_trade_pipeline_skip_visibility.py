@@ -6,9 +6,11 @@ Every decision path that declines to copy a detected trade must surface one
 ``print_skip_reason``; post-execution failures use the richer
 ``print_trade_result`` panel exactly once.
 
-The pipeline requires a Postgres-backed repo set, so each test uses the same
-testcontainers harness as ``test_trade_pipeline_market_data_authority`` and
-skips when Docker is unavailable.
+The pipeline requires a Postgres-backed repo set, so each test gets a fresh
+DATABASE inside the ONE shared ``pmcopy-integration-pg`` container (via
+``tests.integration_postgres``, same harness as
+``test_trade_pipeline_market_data_authority``) and skips when Docker is
+unavailable.
 """
 
 from __future__ import annotations

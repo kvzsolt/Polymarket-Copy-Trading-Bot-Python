@@ -136,6 +136,29 @@ _COPIERS_FILE_BODY = """schema_version: 2
 copiers: []
 """
 
+# F5-4: roster tempdirs created by _config() register here; the autouse
+# fixture below drains the registry (removing the directories) after every
+# test, so repeated integration runs stop leaking multicopier-copiers-*.
+_TMP_CONFIG_DIRS: list[tempfile.TemporaryDirectory] = []
+
+
+def _tmp_config_dirs() -> list[tempfile.TemporaryDirectory]:
+    """Registry of roster directories awaiting teardown (test seam)."""
+    return _TMP_CONFIG_DIRS
+
+
+def _drain_tmp_config_dirs() -> None:
+    """Remove every registered roster directory (the teardown operation)."""
+    while _TMP_CONFIG_DIRS:
+        _TMP_CONFIG_DIRS.pop().cleanup()
+
+
+@pytest.fixture(autouse=True)
+def _clean_copiers_config_dirs():
+    """Drain the roster-tempdir registry around every test in this module."""
+    yield
+    _drain_tmp_config_dirs()
+
 
 def _config():
     """The production schema-v2 deployment shape.
@@ -145,9 +168,13 @@ def _config():
     per-account ``_funder_wallet_address`` resolution falls through to the
     binding's own ``context.wallet_address`` — exactly the multi-copier
     composition the addon specifies. A real (empty) roster file backs the
-    reference so AppConfig's paper-mode validation passes.
+    reference so AppConfig's paper-mode validation passes. The roster
+    directory is a ``TemporaryDirectory`` registered for fixture teardown —
+    never a bare ``mkdtemp`` leak.
     """
-    target = Path(tempfile.mkdtemp(prefix="multicopier-copiers-")) / "copiers.yml"
+    roster_dir = tempfile.TemporaryDirectory(prefix="multicopier-copiers-")
+    _TMP_CONFIG_DIRS.append(roster_dir)
+    target = Path(roster_dir.name) / "copiers.yml"
     target.write_text(_COPIERS_FILE_BODY, encoding="utf-8")
     return make_config(
         **{

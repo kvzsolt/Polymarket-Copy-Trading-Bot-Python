@@ -15,6 +15,11 @@ once and NEVER removed and NEVER re-pulled:
   absent locally the fixture refuses to pull (exception: ephemeral CI
   runners, detected via the standard ``CI=true`` environment variable,
   where a single pull per job is expected);
+* an EXISTING name-matched container is reused only after its identity is
+  verified: its image id must equal the pinned local image id and its
+  ``HOST:PORT -> 5432`` binding must match. Any mismatch (or failed
+  inspect) is a fail-closed fixture error telling the operator to
+  ``docker rm -f pmcopy-integration-pg`` — never silent reuse;
 * an existing stopped container is ``docker start``-ed; an absent one is
   created exactly once with ``docker run -d`` (no ``--rm``);
 * per-TEST isolation does not recreate containers: every
@@ -97,7 +102,7 @@ class _SharedServer:
     def ensure(self) -> str:
         if self.container_id is not None:
             return self.container_id
-        self._verify_image()
+        pinned_image_id = self._pinned_image_id()
         existing = _docker(
             ["container", "inspect", "--format", "{{.Id}} {{.State.Running}}", CONTAINER_NAME]
         )
@@ -109,6 +114,7 @@ class _SharedServer:
                     raise IntegrationPostgresUnavailable(
                         f"docker start {CONTAINER_NAME} failed: {started.stderr.strip()}"
                     )
+            self._verify_existing_container(pinned_image_id)
             self.container_id = container_id
         else:
             # Absent: create exactly once. No --rm: the container persists.
@@ -135,23 +141,68 @@ class _SharedServer:
         self._gc_stale_databases()
         return self.container_id
 
-    def _verify_image(self) -> None:
-        inspect = _docker(["image", "inspect", IMAGE])
-        if inspect.returncode == 0:
-            return
-        if os.environ.get("CI") == "true":
-            # Ephemeral CI runner: a single pull per job is the documented
-            # exception (the image is not part of the runner image).
-            pulled = _docker(["pull", IMAGE], timeout=600.0)
-            if pulled.returncode != 0:
+    def _pinned_image_id(self) -> str:
+        """Id of the pinned local image; NEVER pulls outside CI.
+
+        A failed/empty ``docker image inspect`` is fail-closed: the fixture
+        refuses to guess at the image identity.
+        """
+        inspect = _docker(["image", "inspect", "--format", "{{.Id}}", IMAGE])
+        if inspect.returncode != 0 or not inspect.stdout.strip():
+            if os.environ.get("CI") == "true":
+                # Ephemeral CI runner: a single pull per job is the documented
+                # exception (the image is not part of the runner image).
+                pulled = _docker(["pull", IMAGE], timeout=600.0)
+                if pulled.returncode != 0:
+                    raise IntegrationPostgresUnavailable(
+                        f"{IMAGE} absent and CI pull failed: {pulled.stderr.strip()}"
+                    )
+                inspect = _docker(["image", "inspect", "--format", "{{.Id}}", IMAGE])
+                if inspect.returncode != 0 or not inspect.stdout.strip():
+                    raise IntegrationPostgresUnavailable(
+                        f"{IMAGE} still not inspectable after the CI pull"
+                    )
+            else:
                 raise IntegrationPostgresUnavailable(
-                    f"{IMAGE} absent and CI pull failed: {pulled.stderr.strip()}"
+                    f"{IMAGE} is not present locally and this fixture never pulls "
+                    "(run `docker pull postgres:16-alpine` once, then re-run)"
                 )
-            return
-        raise IntegrationPostgresUnavailable(
-            f"{IMAGE} is not present locally and this fixture never pulls "
-            "(run `docker pull postgres:16-alpine` once, then re-run)"
-        )
+        return inspect.stdout.strip()
+
+    def _verify_existing_container(self, pinned_image_id: str) -> None:
+        """An EXISTING name-matched container must actually BE ours.
+
+        Reuse keyed on the container NAME alone would be silent
+        substitution: a leftover container running a different image, or
+        bound to a different host port, would be happily reused and every
+        test would run against the wrong server. Compare the container's
+        image id against the pinned local image id and require the expected
+        ``HOST:PORT -> 5432`` binding; any mismatch — or any failed
+        inspect — is a fail-closed fixture error whose message names the
+        recovery. Read-only probes only (``inspect`` / ``port``): no
+        container is ever started, removed, or re-pulled here.
+        """
+        removal_hint = f"remove the stale container and re-run: docker rm -f {CONTAINER_NAME}"
+        image = _docker(["container", "inspect", "--format", "{{.Image}}", CONTAINER_NAME])
+        if image.returncode != 0 or not image.stdout.strip():
+            raise IntegrationPostgresUnavailable(
+                f"docker inspect {CONTAINER_NAME} image failed "
+                f"({image.stderr.strip() or 'no output'}); {removal_hint}"
+            )
+        actual_image = image.stdout.strip()
+        if actual_image != pinned_image_id:
+            raise IntegrationPostgresUnavailable(
+                f"container {CONTAINER_NAME} runs image {actual_image}, expected "
+                f"{pinned_image_id} ({IMAGE}); {removal_hint}"
+            )
+        binding = _docker(["port", CONTAINER_NAME, "5432"])
+        expected_binding = f"{HOST}:{PORT}"
+        if binding.returncode != 0 or expected_binding not in binding.stdout.split():
+            raise IntegrationPostgresUnavailable(
+                f"container {CONTAINER_NAME} does not bind {expected_binding}->5432 "
+                f"(got {binding.stdout.strip() or '<none>'!r}, rc={binding.returncode}); "
+                f"{removal_hint}"
+            )
 
     def _wait_ready(self) -> None:
         deadline = time.monotonic() + 40.0
@@ -206,7 +257,7 @@ class _SharedServer:
                 embedded_pid = name.rsplit("_", 2)[-2]
                 if embedded_pid.isdigit() and not os.path.exists(f"/proc/{embedded_pid}"):
                     self.psql(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-        except Exception:  # noqa: BLE001 - GC is strictly best-effort
+        except Exception:  # GC is strictly best-effort
             pass
 
 
