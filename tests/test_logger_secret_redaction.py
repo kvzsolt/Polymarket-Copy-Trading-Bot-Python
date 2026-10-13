@@ -769,6 +769,10 @@ class TestPluralCredentialKeys:
             "falcon_api_keys",  # adjacent-segment compound via the pair rule
             "wallet_private_keys",  # strong segment compound
             "db_passwords",
+            # Singular locks (guard against pluralization regressions).
+            "api_pass",
+            "api_password",
+            "api_passphrases",
         ],
     )
     def test_plural_credential_keys_are_secret(self, key):
@@ -856,6 +860,16 @@ class TestRedactObjectRobustness:
         payload = {"items": holder, "note": canary}
         holder.append(payload)
         out = redact_object(payload)
+        rendered = json.dumps(out)
+        assert canary not in rendered
+        assert self.CYCLE_PLACEHOLDER in rendered
+
+    def test_pure_list_cycle_renders_cycle_placeholder(self):
+        canary = _canary("listcyc")
+        register_secret_values(canary)
+        holder: list = [f"leaf-{canary}"]
+        holder.append(holder)
+        out = redact_object(holder)
         rendered = json.dumps(out)
         assert canary not in rendered
         assert self.CYCLE_PLACEHOLDER in rendered

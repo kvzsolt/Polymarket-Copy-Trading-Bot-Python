@@ -13,10 +13,12 @@ Design (A07, standalone-refactor task 5):
 - **Field-name-based redaction** — dict keys / log-record extra names that
   are credential-shaped (``private_key``, ``api_key``, ``client_secret``,
   ``password``, ``authorization``, exact ``token``, ``*_token``
-  compounds, …) are replaced with ``***REDACTED***`` regardless of the
-  value. Public market identity is explicitly exempt: keys ending in
-  ``_id``/``_ids`` (``token_id``, ``condition_id``, ``pruned_token_ids``,
-  …) are identifiers, not credentials, and stay readable.
+  compounds, …, plus their plurals: ``api_keys``, ``secrets``,
+  ``passwords``, exact ``keys``, …) are replaced with ``***REDACTED***``
+  regardless of the value. Public market identity is explicitly exempt:
+  keys ending in ``_id``/``_ids`` (``token_id``, ``condition_id``,
+  ``pruned_token_ids``, …) are identifiers, not credentials, and stay
+  readable — as does the outcome-share vocabulary ``tokens``.
 - **Pattern redaction of free text** — ``Authorization: <credentials>``
   headers (quoted or bare, to end-of-value), ``Bearer <token>``,
   ``apikey=``/``api_key=``/``token=``/… URL query parameters, URL
@@ -43,6 +45,8 @@ from typing import Any
 
 __all__ = [
     "REDACTED_PLACEHOLDER",
+    "REDACTED_CYCLE_PLACEHOLDER",
+    "REDACTED_DEPTH_PLACEHOLDER",
     "is_secret_key",
     "redact_object",
     "redact_text",
@@ -176,32 +180,45 @@ def _normalize_key(key: object) -> str:
 
 
 # Full-key credential patterns (matched against the whole normalized key).
+# Plural forms are included for every credential-bearing singular
+# (``api_keys``, ``secrets``, ``passwords``, ``private_keys``, …) EXCEPT
+# ``tokens``: in this codebase the bare plural ``tokens`` is outcome-share
+# vocabulary (trade sizes / holdings), never a credential. The bare plural
+# ``keys`` matches ONLY as an exact full key — it is deliberately absent
+# from ``_STRONG_SECRET_SEGMENTS`` so longer identifiers merely containing
+# ``keys`` (``hot_keys``, ``keyboard_keys``) are not caught.
 _CREDENTIAL_KEY_RE = re.compile(
     r"^(?:"
-    r"private_?key|priv_?key"
-    r"|api_?key|api_?secret|api_?token|api_?pass(?:word|phrase)?"
-    r"|secret|password|passwd|passphrase"
+    r"private_?keys?|priv_?keys?"
+    r"|api_?keys?|api_?secrets?|api_?tokens?|api_?pass(?:words?|phrases?)?"
+    r"|secrets?|passwords?|passwd|passphrases?"
     r"|credential|credentials|creds"
     r"|token"
-    r"|(?:access|session|refresh|auth|bearer|viewer|operator|id)_?token"
-    r"|authorization"
-    r"|auth_?header"
+    r"|(?:access|session|refresh|auth|bearer|viewer|operator|id)_?tokens?"
+    r"|authorizations?"
+    r"|auth_?headers?"
     r"|bearer_?cred(?:ential)?s?"
-    r"|relayer_?key"
-    r"|client_?key"
+    r"|relayer_?keys?"
+    r"|client_?keys?"
+    r"|keys"
     r")$"
 )
 
 # Single segments that mark a key as credential-bearing even when embedded
 # in a longer name (e.g. ``postgres_password``, ``wallet_private_key``).
 # ``token`` is deliberately NOT here: ``token_delay_overrides`` and friends
-# are market plumbing, and the exact key ``token`` is handled above.
+# are market plumbing, and the exact key ``token`` is handled above. The
+# plural ``tokens`` is likewise absent (outcome shares). The bare plural
+# ``keys`` is NOT a strong segment — see the note on ``_CREDENTIAL_KEY_RE``.
 _STRONG_SECRET_SEGMENTS = frozenset(
     {
         "secret",
+        "secrets",
         "password",
+        "passwords",
         "passwd",
         "passphrase",
+        "passphrases",
         "credential",
         "credentials",
         "creds",
@@ -307,7 +324,18 @@ def redact_text(text: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Structured-value redaction
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Containers nested deeper than this render as a placeholder instead of
+# being walked: without a cap an over-deep (or cyclic) extra raises
+# RecursionError inside the emit-time redaction filter, which swallows it
+# and lets the record continue with the RAW structure attached (fail-open).
+_MAX_OBJECT_DEPTH = 8
+
+# Placeholder style mirrors REDACTED_PLACEHOLDER; the suffix distinguishes
+# "bounded because too deep" from "bounded because cyclic" in operator output.
+REDACTED_DEPTH_PLACEHOLDER = "***REDACTED:depth***"
+REDACTED_CYCLE_PLACEHOLDER = "***REDACTED:cycle***"
 
 
 def redact_object(value: Any) -> Any:
@@ -316,21 +344,60 @@ def redact_object(value: Any) -> Any:
     Returns a new structure for containers (the input is never mutated).
     Non-string scalars pass through unchanged; unknown objects are returned
     as-is so callers keep control of serializability/repr policy.
+
+    Robustness contract (follow-up F3-2): recursion is bounded to
+    ``_MAX_OBJECT_DEPTH`` container levels, and cycles among dict/list/
+    tuple/set containers render ``***REDACTED:cycle***`` at the back-edge.
+    Both guards exist so a pathological extra can never raise RecursionError
+    through the emit-time filter (whose swallow would strand the raw,
+    unredacted structure on the record). Shared-but-acyclic (DAG)
+    references keep full rendering.
     """
+    return _redact_container(value, 0, ())
+
+
+def _redact_container(value: Any, depth: int, seen: tuple[int, ...]) -> Any:
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
+        if depth >= _MAX_OBJECT_DEPTH:
+            return REDACTED_DEPTH_PLACEHOLDER
+        marker = id(value)
+        if marker in seen:
+            return REDACTED_CYCLE_PLACEHOLDER
+        seen = seen + (marker,)
         return {
-            key: (REDACTED_PLACEHOLDER if is_secret_key(key) else redact_object(item))
+            key: (
+                REDACTED_PLACEHOLDER
+                if is_secret_key(key)
+                else _redact_container(item, depth + 1, seen)
+            )
             for key, item in value.items()
         }
     if isinstance(value, tuple):
-        return tuple(redact_object(item) for item in value)
+        if depth >= _MAX_OBJECT_DEPTH:
+            return REDACTED_DEPTH_PLACEHOLDER
+        marker = id(value)
+        if marker in seen:
+            return REDACTED_CYCLE_PLACEHOLDER
+        seen = seen + (marker,)
+        return tuple(_redact_container(item, depth + 1, seen) for item in value)
     if isinstance(value, list):
-        return [redact_object(item) for item in value]
+        if depth >= _MAX_OBJECT_DEPTH:
+            return REDACTED_DEPTH_PLACEHOLDER
+        marker = id(value)
+        if marker in seen:
+            return REDACTED_CYCLE_PLACEHOLDER
+        seen = seen + (marker,)
+        return [_redact_container(item, depth + 1, seen) for item in value]
     if isinstance(value, (set, frozenset)):
+        if depth >= _MAX_OBJECT_DEPTH:
+            return REDACTED_DEPTH_PLACEHOLDER
+        marker = id(value)
+        if marker in seen:
+            return REDACTED_CYCLE_PLACEHOLDER
         try:
-            return type(value)(redact_object(item) for item in value)
+            return type(value)(_redact_container(item, depth + 1, seen) for item in value)
         except TypeError:
             return value
     return value

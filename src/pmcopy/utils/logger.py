@@ -118,14 +118,20 @@ class JsonFormatter(logging.Formatter):
         for key, value in vars(record).items():
             if key in _STANDARD_RECORD_ATTRS or key in payload:
                 continue
+            # Redact BEFORE the serializability probe: ``redact_object`` is
+            # total (never raises; bounded depth; cycle-safe), so a cyclic or
+            # over-deep extra becomes a safe placeholder here instead of
+            # failing the probe on the raw structure and being silently
+            # dropped (follow-up F3-2).
+            redacted = redact_object(value)
             try:
-                json.dumps(value)
+                json.dumps(redacted)
             except TypeError, ValueError:
                 continue
             if is_secret_key(key):
                 payload[key] = REDACTED_PLACEHOLDER
             else:
-                payload[key] = redact_object(value)
+                payload[key] = redacted
         if record.exc_info:
             exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
             payload["exc_type"] = exc_type
@@ -858,7 +864,7 @@ class _SecretRedactionFilter(logging.Filter):
 
 
 def _redact_record(record: LogRecord) -> None:
-    """Redact message text, args, extras, and cached exception text in place."""
+    """Redact message text, args, extras, cached exception text, and stack text in place."""
     try:
         merged = record.getMessage()
     except Exception:
@@ -874,13 +880,21 @@ def _redact_record(record: LogRecord) -> None:
                 redact_text(arg) if isinstance(arg, str) else arg for arg in record.args
             )
     for key, value in list(vars(record).items()):
+        # Rendered-text standard attributes come FIRST: they are skipped by
+        # the standard-attribute exclusion below (both ``exc_text`` and
+        # ``stack_info`` are LogRecord defaults), yet they carry the exact
+        # free text the stdlib ``Formatter.format`` appends verbatim to the
+        # rendered message — the cached exception traceback and the caller
+        # stack. Without this branch the raw text survives the emit-time
+        # pass on the record object itself, so any handler attached without
+        # this module's redacting formatters would print it unredacted.
+        if key in ("exc_text", "stack_info"):
+            if isinstance(value, str):
+                setattr(record, key, redact_text(value))
+            continue
         if key in _STANDARD_RECORD_ATTRS or key in ("message", "exc_info"):
             continue
         if key.startswith("_"):
-            continue
-        if key == "exc_text":
-            if isinstance(value, str):
-                setattr(record, key, redact_text(value))
             continue
         if is_secret_key(key):
             setattr(record, key, REDACTED_PLACEHOLDER)

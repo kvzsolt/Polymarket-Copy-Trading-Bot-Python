@@ -33,6 +33,23 @@ _SECRET_KEYS = frozenset(
 _REDACTED = REDACTED_PLACEHOLDER
 
 
+def _redact_list_elements(value: list | tuple) -> list:
+    """Redact string elements (recursively through nested lists) of a value.
+
+    No key context is needed: this is pure value-pattern redaction, so a
+    provider key embedded in a URL (``/v2/<key>``, query parameters,
+    userinfo passwords) never prints in cleartext even when the config
+    field is a list (tags, endpoint allowlists, …). Non-string elements
+    pass through untouched.
+    """
+    return [
+        _redact_list_elements(item)
+        if isinstance(item, (list, tuple))
+        else (redact_text(item) if isinstance(item, str) else item)
+        for item in value
+    ]
+
+
 def _redact_value(key: str, value: object) -> object:
     """Redact secret values for safe display.
 
@@ -43,7 +60,8 @@ def _redact_value(key: str, value: object) -> object:
     plural/identifier fields are not mistaken for credentials. String values
     additionally pass through ``redact_text`` so provider keys embedded in
     URLs (``/v2/<key>``, query parameters, userinfo passwords) are masked
-    even under innocuous field names.
+    even under innocuous field names — and LIST values run their string
+    elements through the same pattern redaction (follow-up F3-4).
     """
     if is_secret_key(key):
         return _REDACTED
@@ -61,6 +79,8 @@ def _redact_value(key: str, value: object) -> object:
             return _REDACTED
     if isinstance(value, str):
         return redact_text(value)
+    if isinstance(value, (list, tuple)):
+        return _redact_list_elements(value)
     return value
 
 
