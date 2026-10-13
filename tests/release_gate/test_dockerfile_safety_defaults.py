@@ -24,6 +24,46 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+FORBIDDEN_SECRET_BASENAMES = ("secrets.env", "db.env", "secrets.toml", "runtime.local")
+
+
+def runtime_stage_text(dockerfile_text: str) -> str:
+    """Text of the final (runtime) stage: everything after the LAST FROM.
+
+    ``rsplit`` is deliberate: the builder FROM line (``... AS builder``)
+    contains the runtime FROM string as a prefix, so the LAST occurrence is
+    the runtime stage boundary.
+    """
+    from_lines = [line for line in dockerfile_text.splitlines() if line.startswith("FROM ")]
+    assert len(from_lines) == 2, "image must be exactly builder + runtime stages"
+    _, runtime = dockerfile_text.rsplit(from_lines[-1], maxsplit=1)
+    return runtime
+
+
+def copy_add_lines(stage_text: str) -> list[str]:
+    """Every COPY/ADD instruction line in the stage (stripped)."""
+    return [
+        line.strip()
+        for line in stage_text.splitlines()
+        if line.strip().startswith(("COPY ", "ADD "))
+    ]
+
+
+def runtime_secret_copy_violations(dockerfile_text: str) -> list[str]:
+    """Runtime-stage COPY/ADD lines that name a forbidden secret basename.
+
+    Dockerfile instruction keywords are case-insensitive, and the runtime
+    stage is the final image layer set: ANY ``COPY``/``ADD`` there bakes
+    into image layers, not only the ``--from=builder`` crossings.
+    """
+    return [
+        line
+        for line in copy_add_lines(runtime_stage_text(dockerfile_text))
+        if line.startswith("COPY --from=builder")
+        for forbidden in FORBIDDEN_SECRET_BASENAMES
+        if forbidden in line
+    ]
+
 
 @pytest.fixture(scope="module")
 def dockerfile_text() -> str:
@@ -78,14 +118,8 @@ def test_runtime_stage_contains_only_the_built_wheel(dockerfile_text: str) -> No
     there — directly or across the ``--from=builder`` boundary — bakes into
     image layers.
     """
-    from_lines = [line for line in dockerfile_text.splitlines() if line.startswith("FROM ")]
-    assert len(from_lines) == 2, "image must be exactly builder + runtime stages"
-    # rsplit: the builder FROM line ("... AS builder") contains the runtime
-    # FROM string as a prefix, so the LAST occurrence is the runtime stage.
-    _, runtime = dockerfile_text.rsplit(from_lines[-1], maxsplit=1)
-    copies = [
-        line.strip() for line in runtime.splitlines() if line.strip().startswith(("COPY ", "ADD "))
-    ]
+    runtime = runtime_stage_text(dockerfile_text)
+    copies = copy_add_lines(runtime)
     assert copies, "runtime stage must COPY the requirements export"
     for line in copies:
         args = [token for token in line.split()[1:] if not token.startswith("--")]
@@ -98,10 +132,52 @@ def test_runtime_stage_contains_only_the_built_wheel(dockerfile_text: str) -> No
         assert line.startswith("COPY --from=builder /wheels/"), (
             f"only built wheels may cross the stage boundary: {line!r}"
         )
-        for forbidden in ("secrets.env", "db.env", "secrets.toml", "runtime.local"):
-            assert forbidden not in line, (
-                f"secret-shaped files must not cross the stage boundary: {line!r}"
-            )
+    assert runtime_secret_copy_violations(dockerfile_text) == [], (
+        "secret-shaped files must not enter the runtime stage via any COPY/ADD instruction"
+    )
+
+
+_SYNTHETIC_RUNTIME_DOCKERFILE = """\
+FROM python:3.14.6-slim-bookworm AS builder
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip wheel --no-cache-dir --no-deps -w /wheels .
+FROM python:3.14.6-slim-bookworm
+COPY requirements.runtime.txt .
+COPY --from=builder /wheels/*.whl /tmp/wheels/
+"""
+
+
+def test_runtime_secret_scan_catches_plain_runtime_stage_copy() -> None:
+    """A secret COPY that is NOT a stage crossing must still be caught.
+
+    The historical loop only inspected ``COPY --from=builder`` lines, so a
+    plain runtime-stage ``COPY secrets.env /x`` baked the secret into the
+    final image with the gate green.
+    """
+    dockerfile = _SYNTHETIC_RUNTIME_DOCKERFILE + "COPY secrets.env /secrets.env\n"
+    assert runtime_secret_copy_violations(dockerfile) == ["COPY secrets.env /secrets.env"]
+
+
+def test_runtime_secret_scan_matches_instructions_case_insensitively() -> None:
+    """Dockerfile keywords are case-insensitive; so must the guard be.
+
+    ``add``/``copy`` in lowercase currently bypass the line collector
+    entirely — on plain runtime copies AND on ``--from=builder`` crossings.
+    """
+    dockerfile = (
+        _SYNTHETIC_RUNTIME_DOCKERFILE
+        + "add secrets.env /secrets.env\n"
+        + "copy --from=builder /db.env /db.env\n"
+    )
+    assert runtime_secret_copy_violations(dockerfile) == [
+        "add secrets.env /secrets.env",
+        "copy --from=builder /db.env /db.env",
+    ]
+
+
+def test_runtime_secret_scan_clean_dockerfile_stays_clean() -> None:
+    assert runtime_secret_copy_violations(_SYNTHETIC_RUNTIME_DOCKERFILE) == []
 
 
 def test_non_root_user_directive(dockerfile_text: str) -> None:

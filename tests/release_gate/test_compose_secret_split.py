@@ -34,6 +34,32 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SECRET_FILE_BASENAMES = ("secrets.env", "db.env")
 
+FORBIDDEN_SECRET_BASENAMES = ("secrets.env", "db.env", "secrets.toml", "runtime.local")
+
+
+def dockerfile_copy_add_lines(dockerfile_text: str) -> list[str]:
+    """Every COPY/ADD instruction line in the whole Dockerfile (stripped)."""
+    return [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if line.strip().startswith("COPY ")
+    ]
+
+
+def dockerfile_secret_copy_violations(dockerfile_text: str) -> list[str]:
+    """COPY/ADD lines (any stage) that name a forbidden secret basename.
+
+    No explicit COPY/ADD of a secret file may bypass ``.dockerignore``;
+    Dockerfile instruction keywords are case-insensitive, so the match is
+    too.
+    """
+    return [
+        line
+        for line in dockerfile_copy_add_lines(dockerfile_text)
+        for forbidden in FORBIDDEN_SECRET_BASENAMES
+        if forbidden in line
+    ]
+
 
 @pytest.fixture(scope="module")
 def compose_services() -> dict:
@@ -139,17 +165,42 @@ def test_gitignore_covers_both_secret_files(filename: str) -> None:
 def test_dockerfile_never_copies_secret_env_files() -> None:
     """No explicit COPY of a secret file may bypass .dockerignore."""
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    copy_lines = [
-        line.strip()
-        for line in dockerfile.splitlines()
-        if line.strip().startswith("COPY ")
+    assert dockerfile_copy_add_lines(dockerfile), "Dockerfile must exist and COPY its sources"
+    assert dockerfile_secret_copy_violations(dockerfile) == [], (
+        "Dockerfile must not COPY/ADD secret-shaped files"
+    )
+
+
+_SYNTHETIC_DOCKERFILE = """\
+FROM python:3.14.6-slim-bookworm AS builder
+COPY src ./src
+FROM python:3.14.6-slim-bookworm
+COPY --from=builder /wheels/*.whl /tmp/wheels/
+COPY requirements.runtime.txt .
+"""
+
+
+def test_dockerfile_secret_copy_guard_matches_copy_add_case_insensitively() -> None:
+    """Lowercase ``copy``/``add`` instructions must not bypass the guard.
+
+    Dockerfile instruction keywords are case-insensitive; the historical
+    collector only matched uppercase ``COPY `` prefixes.
+    """
+    dockerfile = (
+        _SYNTHETIC_DOCKERFILE
+        + "COPY secrets.env /secrets.env\n"
+        + "add db.env /db.env\n"
+        + "copy secrets.toml /secrets.toml\n"
+    )
+    assert dockerfile_secret_copy_violations(dockerfile) == [
+        "COPY secrets.env /secrets.env",
+        "add db.env /db.env",
+        "copy secrets.toml /secrets.toml",
     ]
-    assert copy_lines, "Dockerfile must exist and COPY its sources"
-    for line in copy_lines:
-        for forbidden in ("secrets.env", "db.env", "secrets.toml", "runtime.local"):
-            assert forbidden not in line, (
-                f"Dockerfile must not COPY secret-shaped files: {line!r}"
-            )
+
+
+def test_dockerfile_secret_copy_guard_clean_dockerfile_stays_clean() -> None:
+    assert dockerfile_secret_copy_violations(_SYNTHETIC_DOCKERFILE) == []
 
 
 def test_ci_smoke_seeds_both_secret_files_before_compose_config() -> None:

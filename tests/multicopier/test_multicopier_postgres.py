@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import tempfile
 import time
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -145,9 +147,6 @@ def _config():
     composition the addon specifies. A real (empty) roster file backs the
     reference so AppConfig's paper-mode validation passes.
     """
-    import tempfile
-    from pathlib import Path
-
     target = Path(tempfile.mkdtemp(prefix="multicopier-copiers-")) / "copiers.yml"
     target.write_text(_COPIERS_FILE_BODY, encoding="utf-8")
     return make_config(
@@ -167,6 +166,37 @@ def _config():
             "reconciliation": {"ambiguous_recovery": {"grace_seconds": 0}},
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# F5-4 — the copiers roster tempdir must not leak (cleaned fixture contracts)
+# ---------------------------------------------------------------------------
+
+
+def test_config_registers_its_copiers_tmpdir_for_cleanup(_hermetic_balances):
+    """Every ``_config()`` tempdir is registered so teardown removes it.
+
+    ``_config()`` historically called ``tempfile.mkdtemp`` with no cleanup:
+    every test leaked a ``multicopier-copiers-*`` directory on the host.
+    The registry below is drained by this module's autouse fixture after
+    each test.
+    """
+    config = _config()
+    copiers_path = Path(config.app.copiers_config_file)
+    assert copiers_path.is_file()
+    assert any(Path(entry.name) == copiers_path.parent for entry in _tmp_config_dirs()), (
+        "every _config() tempdir must be registered for fixture teardown"
+    )
+
+
+def test_registered_copiers_tmpdirs_are_removed_on_drain(_hermetic_balances):
+    config = _config()
+    copiers_dir = Path(config.app.copiers_config_file).parent
+    assert copiers_dir.is_dir()
+    # The exact operation the autouse fixture performs at teardown:
+    _drain_tmp_config_dirs()
+    assert not copiers_dir.exists(), "draining the registry must remove the tempdir"
+    assert _tmp_config_dirs() == []
 
 
 def _gateway(order_prefix: str):
