@@ -80,7 +80,7 @@ def _valid_env(dsn: str) -> dict:
 def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "pmcopy.config.app_config.sys.version_info",
-        SimpleNamespace(major=3, minor=14),
+        SimpleNamespace(major=3, minor=13),
     )
 
 

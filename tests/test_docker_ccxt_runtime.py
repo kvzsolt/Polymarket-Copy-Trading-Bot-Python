@@ -20,9 +20,9 @@ from pmcopy.config.app_config import load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 #: The production image base, pinned to the exact interpreter patch the test
-#: suite runs on (Python 3.14.6). Verified against the registry on
-#: 2026-10-11; see docs/docker.md for the recorded digests.
-PINNED_BASE = "python:3.14.6-slim-bookworm"
+#: suite runs on (Python 3.13.15). Verified against the registry on
+#: 2026-10-13; see docs/docker.md for the recorded digests.
+PINNED_BASE = "python:3.13.15-slim-bookworm"
 
 
 class ContainerArtifacts:
@@ -71,17 +71,17 @@ class ContainerArtifacts:
 def test_image_matches_the_repository_python_minor() -> None:
     """The runtime image base equals the repository's supported Python.
 
-    The repository targets Python 3.14 only (``requires-python >=3.14,<3.15``)
-    and the suite is green on 3.14.6, so the image is pinned to the same
-    interpreter patch (``python:3.14.6-slim-bookworm``, registry-verified —
+    The repository targets Python 3.13 only (``requires-python >=3.13,<3.14``)
+    and the suite is green on 3.13.15, so the image is pinned to the same
+    interpreter patch (``python:3.13.15-slim-bookworm``, registry-verified —
     see docs/docker.md). Task 20 restored the strict equality that Task 17
     had temporarily relaxed while the image stayed on 3.12.
     """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     minor = project["tool"]["pyright"]["pythonVersion"]
-    assert minor == "3.14", "Repository must target Python 3.14 only"
+    assert minor == "3.13", "Repository must target Python 3.13 only"
     assert ContainerArtifacts().instruction("FROM") == PINNED_BASE, (
-        "Runtime image base must be the pinned Python 3.14.6 slim image"
+        "Runtime image base must be the pinned Python 3.13.15 slim image"
     )
 
 

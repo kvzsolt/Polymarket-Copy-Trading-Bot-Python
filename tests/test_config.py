@@ -1026,8 +1026,8 @@ def test_packaged_market_data_yaml_pins_the_relaxed_rest_snapshot_budgets() -> N
     assert payload["rest_bootstrap_max_spread_bps"] == 300
 
 
-def test_runtime_python_gate_accepts_only_3_14(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The fail-closed runtime gate matches requires-python (>=3.14,<3.15)."""
+def test_runtime_python_gate_accepts_only_3_13(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fail-closed runtime gate matches requires-python (>=3.13,<3.14)."""
     from types import SimpleNamespace
 
     import pmcopy.config.app_config as app_config
@@ -1038,20 +1038,21 @@ def test_runtime_python_gate_accepts_only_3_14(monkeypatch: pytest.MonkeyPatch) 
         )
         return app_config._runtime_python_supported()
 
-    assert _supported(14) is True
-    # 3.11-3.13 were dropped by the Python 3.14-only bump; 3.15 is untested.
+    assert _supported(13) is True
+    # 3.11-3.12 are below the 3.13-only target; 3.14 is deliberately rejected
+    # too (the project pins 3.13.x only), and 3.15 is untested.
     assert _supported(11) is False
     assert _supported(12) is False
-    assert _supported(13) is False
+    assert _supported(14) is False
     assert _supported(15) is False
 
 
-def test_runtime_python_gate_message_names_3_14_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An unsupported runtime fails closed with the 3.14-only requirement."""
+def test_runtime_python_gate_message_names_3_13_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unsupported runtime fails closed with the 3.13-only requirement."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "pmcopy.config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12)
+        "pmcopy.config.app_config.sys.version_info", SimpleNamespace(major=3, minor=14)
     )
-    with pytest.raises(EnvValidationError, match="Use Python 3.14"):
+    with pytest.raises(EnvValidationError, match="Use Python 3.13"):
         load_config(_overrides())
