@@ -1,148 +1,243 @@
-<!-- PMCOPY-CCXT-ONLY-GUIDANCE -->
-# CCXT-only Polymarket venue instructions
+# Polymarket-Copy-Trading-Bot-Python engineering contract
 
-**Before planning, editing, reviewing, or running tests, read the repository-root `CLAUDE.md` in full.** Every delegated agent or subagent must do the same. If a nested `AGENTS.md` exists, read it after the root files and obey the narrower rules for that subtree.
+## 1. System Topology & Repo Routing Table
 
-## Non-negotiable architecture
+Ship the standalone Python 3.13 pmcopy wheel, its paper or live venue runtime and account-isolated multi-copier
+execution.
 
-- `ccxt.prediction.polymarket` is the only authenticated trading and order-execution transport. The official `polymarket-client` / `py-clob-client` SDK has been removed; do not reintroduce it.
-- Official Polymarket APIs, WebSockets, Polygon RPC/WSS, and contracts remain in use for market data, account data, and leader detection, but must not become a second private order execution implementation. No direct private order creation or cancellation using `httpx`, `aiohttp`, `requests`, or custom signing code.
-- Do not let CCXT models, dictionaries, exceptions, symbols, or credentials leak into domain, risk, execution, reconciliation, or persistence code.
-- Raw Polymarket outcome token IDs are the adapter boundary identity. Do not invent crypto-style symbols.
-- Live mode must never be inferred from the presence of a private key. The explicit live control (`execution.trading_mode`) remains authoritative.
-- There is no venue backend selector, no hybrid gateway, no shadow mode, and no experimental CCXT live gate. Obsolete `venue_backend` / `allow_experimental_ccxt_live` / `shadow_ccxt` config keys are rejected fail-closed.
+| Owner or entry point | Follow this boundary |
+| --- | --- |
+| src/pmcopy/bot_cli/ | Parse standalone pmcopy commands and route configuration or operator actions. |
+| src/pmcopy/services/copierConfig.py | Resolve schema-v2 copier identities, secret references and explicit exposure limits. |
+| src/pmcopy/services/multiUserConfig.py | Load legacy v1 runtime users and preserve single-account compatibility. |
+| src/pmcopy/orchestrators/runtime_bootstrap.py | Build trading contexts and attach account-scoped gateways, repositories and cap settings. |
+| src/pmcopy/orchestrators/runtime_monitor.py | Route leader notifications and coalesce saturation independently by leader. |
+| src/pmcopy/interfaces/clob_gateway.py | Preserve typed asynchronous requests, cancellation semantics and venue read contracts. |
+| src/pmcopy/integrations/polymarket/venue_runtime.py | Compose public-only paper reads or the authenticated CCXT runtime. |
+| src/pmcopy/integrations/polymarket/ccxt_compat/tick_size.py | Apply removable per-instance precision handling for the pinned CCXT release. |
+| src/pmcopy/services/execution/reservation_service.py | Enforce funds, ownership and an explicitly configured copier exposure cap within reservation. |
+| src/pmcopy/services/execution/ambiguous_recovery.py | Recover a specific copier's ambiguous order using its own authoritative evidence. |
+| src/pmcopy/storage/postgres/ | Persist money-path state and package migration resources with the wheel. |
+| src/pmcopy/utils/log_redaction.py | Redact registered secret values across operator and diagnostic output. |
+| tests/multicopier/ | Exercise independent queues, account isolation, ambiguous recovery, shutdown and the database path. |
 
-## Execution boundary
+Read the guide for the checkout you are changing. For a coordinated release, look up the component revision in the
+infrastructure manifest before debugging a branch-specific capability.
 
-```text
-Application
-    ↓
-ClobGateway
-    ↓
-CcxtPredictionGateway (live) / PaperExecutionGateway (paper)
-    ↓
-CcxtPredictionClient
-    ↓
-ccxt.prediction.polymarket
+## 2. Fast-Feedback Execution Commands
+
+Run from the repository root unless the command changes directory. Use a disposable environment. Select the narrow check
+first, then the CI group that covers the changed boundary.
+
+**Environment (CI Python 3.13)**
+
+```sh
+python3.13 -m venv .venv && . .venv/bin/activate
 ```
 
-Paper mode uses CCXT for live public market reads and the local simulator for order writes. Paper mode must never call CCXT private write methods.
+**Locked editable install**
 
-## Required workflow
+```sh
+python -m pip install --no-cache-dir -r requirements.txt && python -m pip install --no-cache-dir --no-deps -e . && python -m pip check
+```
 
-For every behavior slice, use this order and preserve the evidence:
+**Lint/type tools used by CI**
 
-1. Characterize the current CCXT behavior and relevant failure mode.
-2. Add a new focused test file or focused new test that fails for the intended reason.
-3. Run the smallest test command and record the red result.
-4. Implement only enough code to make that slice green.
-5. Run the focused test again.
-6. Run the adapter contract group.
-7. Run the complete repository suite before considering the slice complete.
-8. Review for key leakage, duplicate submission risk, stale metadata, precision loss, and non-idempotent retries.
+```sh
+python -m pip install ruff mypy
+```
 
-Never write production code before the corresponding failing test. Do not edit generated CCXT files or vendor code. Keep the arbitrary-tick compatibility patch instance-local and removable.
+**Single paper transport test**
 
-## Correctness gates
+```sh
+python -m pytest -q tests/test_paper_execution_gateway.py::test_paper_marketable_buy_never_reaches_the_transport
+```
 
-A change is incomplete until tests cover, where applicable:
+**Single saturation test**
 
-- arbitrary tick sizes including `0.005` and `0.0025`;
-- explicit market-order price limits;
-- BUY cost semantics versus SELL share semantics;
-- signature type 3 and verified Deposit Wallet funder handling;
-- missing `tick_size`, `min_order_size`, or `neg_risk` failing closed;
-- maker and taker fill attribution;
-- pagination duplicate elimination;
-- ambiguous POST failures not being retried blindly;
-- cancel-after-fill and cancel-404 idempotency;
-- paper mode never invoking a CCXT private write method;
-- CCXT being mandatory in paper and live configuration;
-- no `0.01` tick-size fallback existing anywhere.
+```sh
+python -m pytest -q tests/multicopier/test_queue_saturation.py::test_saturating_leader_a_queue_coalesces_without_stalling_leader_b
+```
 
-## Scope discipline
+**Unit tier**
 
-Do not rewrite the copy-decision, trader-discovery, risk, reconciliation, persistence, WSS detection, or execution-coordination subsystems. Preserve all existing behavior unless a failing regression test demonstrates a bug.
+```sh
+python -m pytest -m "not integration and not release_gate" --maxfail=5 -q
+```
 
-## Verifying library behavior
+**Venue regression group**
 
-Do not rely on memory for CCXT semantics. The installed source is the
-authority: read `.venv/lib/python3.*/site-packages/ccxt/prediction/polymarket.py`
-(and `ccxt/abstract/prediction/polymarket.py` for generated raw endpoints)
-before asserting what a method does. The local CCXT checkout at
-`/home/anon/Work/coding/ccxt` is the upstream truth-of-source mirror; verify
-pinned-release behavior against it when planning upgrades.
+```sh
+python -m pytest -q tests/test_ccxt_precision.py tests/test_ccxt_prediction_gateway_contract.py tests/test_paper_execution_gateway.py
+```
 
-## Working in this repository (standalone system)
+**Release-gate tier**
 
-- Production code lives under `src/pmcopy/` (single import namespace,
-  wheel-installable). There is no control plane, operator API, or dashboard;
-  the `pmcopy` CLI (`src/pmcopy/bot_cli/`) is the only operator surface.
-- Test tiers: default `python -m pytest -q` (integration + release_gate
-  deselected); `python -m pytest -m integration -q` runs the Postgres tier
-  against ONE shared container (`pmcopy-integration-pg`, fixture in
-  `tests/integration_postgres.py`) — never reintroduce per-test
-  testcontainers churn (contract pinned by
-  `tests/test_integration_shared_postgres.py`); `python -m pytest -m
-  release_gate -q` runs release gates. Dispatches touching
-  integration-marked files must run them explicitly with `-m integration`.
-- Dependency/packaging workflow: edit `pyproject.toml` → `uv lock` (uv
-  0.11.31 pinned in CI) → `python scripts/generate_requirements.py` (the
-  requirements exports are generated from `uv.lock`, never hand-edited) →
-  `python scripts/check_requirements_drift.py` must pass. Wheel/sdist
-  battery: `python scripts/verify_package.py`.
-- Multi-copier configuration is the schema-v2 roster
-  (`app.copiers_config_file`, example `src/pmcopy/config/copiers.example.yml`
-  — secret-free by design, wallet fields are env-var references). The
-  v1 JSON roster (`app.multi_user_config_file`) still exists; combining the
-  two is a configuration error.
-- Python 3.13 only (`>=3.13,<3.14`); ccxt is pinned `==4.5.87`. 3.14 is
-  deliberately unsupported (the runtime gate rejects it fail-closed), which
-  also keeps ccxt's `coincurve==21.0.0` in the lock — signing is the native
-  `CoinCurveECCBackend`, not the pure-Python fallback.
-- **Python 3.13 syntax policy**: multi-type `except` clauses MUST be
-  parenthesized (`except (A, B):`). The parenthesis-free PEP 758 form is
-  legal on 3.14 but a `SyntaxError` on 3.13 and must never re-enter. The
-  migration parenthesized 16 sites across 4 modules — an `ast.parse` sweep
-  reports only the first error per file, so the naive count of 4 understated
-  it; `[tool.ruff] target-version = "py313"` keeps `ruff format` from
-  re-adding parens-free clauses. The release-gate guard
-  `tests/release_gate/test_source_parse_clean.py` `ast.parse`s every file
-  under `src/` + `scripts/` with the running interpreter and fails with
-  `file:line` if a PEP 758 construct reappears.
+```sh
+python -m pytest -m release_gate --maxfail=1 -q
+```
 
-## Polymarket execution work
+**Integration tier (disposable services)**
 
-Before touching Polymarket execution, discovery, reconciliation, authentication, or market data:
+```sh
+python -m pytest -m integration -q
+```
 
-1. Read the repository-root `CLAUDE.md` completely.
-2. Read every applicable `AGENTS.md` from root to the target directory.
-3. Keep CCXT as the only trading transport behind `ClobGateway`.
-4. Keep custom CLOB/WebSocket detection in the latency-sensitive path.
-5. Never retry an ambiguous order submission without reconciliation.
-6. Never infer live mode from available credentials.
-7. Use exact decimal arithmetic for money, shares, prices, tick sizes, and limits.
-8. Write failing tests before changing behavior.
+**Blocking CI Ruff**
 
-## Falcon discovery
+```sh
+ruff check --exclude=legacy,test.py,bootstrap.py .
+```
 
-Treat Falcon Api as an external analytics provider, not an execution authority.
+**Blocking CI mypy scope**
 
-- Rank wallets by bankroll-compatible copyability, not raw PnL or H-Score alone.
-- Validate multi-window Wallet360 evidence, sample size, liquidity, capacity, drawdown, concentration, recency, and anomalies.
-- Provider authentication/schema/config errors fail closed.
-- Transient outage fallback is allowed only when explicitly configured.
-- A successful provider response yielding zero safe wallets must remain zero; do not silently substitute weaker candidates.
-- Never log API keys, bearer headers, private keys, CLOB credentials, or unredacted provider errors.
+```sh
+mypy --install-types --non-interactive --explicit-package-bases --ignore-missing-imports --follow-imports=silent src/pmcopy/integrations/polymarket/ccxt_prediction_client.py src/pmcopy/integrations/polymarket/ccxt_prediction_gateway.py src/pmcopy/integrations/polymarket/venue_runtime.py src/pmcopy/clients/network/http_client.py
+```
 
-## TDD and commits
+**Per-file mypy debt ratchet**
 
-For each behavior slice:
+```sh
+python scripts/check_mypy_ratchet.py
+```
 
-1. add/update focused tests;
-2. demonstrate RED for the intended reason;
-3. commit tests separately when practical;
-4. implement the smallest safe change;
-5. run focused GREEN;
-6. run relevant regressions;
-7. do a money-path and secret-leak review before commit.
+**Dependency drift**
+
+```sh
+python -m pip install uv==0.11.31 && python scripts/check_requirements_drift.py
+```
+
+**Distribution verification**
+
+```sh
+python scripts/verify_package.py
+```
+
+- **N/A · Rust** — This Python distribution has no in-repository Cargo workspace or maturin build target.
+
+## 3. Architecture & OOP/SOLID Rules
+
+- Trace the request from the public contract to its owner and its observable result before changing a shared method.
+- Keep domain decisions independent of transport, storage, provider configuration and presentation. Pass immutable
+  inputs into the decision and return an explicit outcome.
+- Inject external clients, stores, clocks and executors at composition time through small interfaces. A test must be
+  able to substitute the dependency without starting the application.
+- Use a Python Protocol for structural substitution or an ABC with abstract methods for a genuine lifecycle contract.
+  Use the local language equivalent on other surfaces.
+- An implementation must preserve input units, output types, exception semantics, ordering, cancellation and ownership.
+  Exercise the same contract against each implementation.
+- Add a strategy behind the existing seam for a new provider. Introduce an interface with a single implementation only
+  when it protects an immediate I/O, platform or testing boundary.
+- Prefer composition. Keep application inheritance within three levels including the concrete type. A new subclass must
+  contribute a distinct contract or shared, tested behavior.
+- Reuse the owner’s tested retry, rate-limit, normalization, arithmetic and connection lifecycle logic. Before
+  extracting a helper, compare the deadline, units, idempotency and failure semantics of every caller.
+- Across independent repositories share versioned schemas and conformance fixtures. Keep operational policy in its
+  owner. Do not copy implementations between services.
+- Keep the hot path direct. A wrapper or abstraction that adds measurable latency or needless per-event allocations
+  needs a simpler implementation before merge.
+
+## 4. High-Performance & Bot Reliability Invariants
+
+- Use the src/pmcopy package layout and pmcopy.bot_cli.main:main entry point. Preserve the >=3.13,<3.14 interpreter
+  range.
+- Keep CCXT 4.5.87 as the sole authenticated Polymarket transport. Check behavior against the installed ccxt prediction
+  module when changing the pin.
+- Use execution.trading_mode to choose paper or live; authenticated credentials alone cannot select live operation.
+- Apply tick workarounds to the exchange instance only. A second independently constructed exchange must retain its own
+  precision behavior.
+- Separate quote-sized BUY requests from share-sized SELL requests at signing, accounting and recovery boundaries.
+- Store config references to secrets and resolve the environment only in the configuration layer. Reject ambiguous
+  simultaneous v1 and v2 config files.
+- Carry the explicit exposure-cap flag into runtime construction. A configured cap requires readable confirmed exposure
+  and transaction-safe headroom.
+- Restrict private history scans, absence counters and ambiguous recovery decisions to the copier that issued the
+  submission.
+- Coalesce saturation for the affected leader while continuing to service other leaders. Observe dropped or coalesced
+  work without leaking raw payloads.
+- Close every account's client once and release its leases before shutting down the shared pool. Preserve unresolved
+  reservations after cancellation.
+- Preserve Falcon's bankroll-specific discovery criteria, empty qualifying results, fail-closed auth/schema errors and
+  explicit transient fallback policy.
+- Preserve package data for migrations and YAML configuration. Test installed artifacts outside the source tree when
+  resource lookup changes.
+- Keep raw outcome token IDs at the gateway. Reject missing tick/minimum/negative-risk fields; never fall back to 0.01.
+  Test 0.005/0.0025 ticks and preserve the authorized price bound after rounding.
+- Attribute maker and taker fills, check pagination overlap, cancel-404 and cancel-after-fill, verify type-3 Deposit
+  Wallet funding, and prove paper mode cannot call a private CCXT write.
+- Preserve 3.13-compatible exception syntax, parenthesized multi-type except clauses and the non-mixing rule for v1/v2
+  copiers. Keep keys as environment references in shared rosters.
+- The standalone checkout uses src/pmcopy and CCXT 4.5.87. The deployed predictrecon-bot uses a separate flat layout and
+  pin.
+- The short venue regression group is a local loop. The ccxt-runtime CI job enumerates the complete twelve-file matrix.
+- The default pytest tier excludes integration and release_gate. Inspect tests/integration_postgres.py for
+  shared-container isolation and any unavailable prerequisites.
+- Keep no-xfail enforcement intact; a new xfail on a money-path case breaks the unit job even when other cases pass.
+
+**Under burst, disconnect and shutdown**
+
+- Keep synchronous HTTP, filesystem calls, blocking DB clients, time.sleep and CPU-heavy loops off async event loops.
+  Use native async I/O or a bounded offload executor with an explicit lifecycle.
+- Set deadlines for connect, acquire, read/write and total network or IPC work. Propagate the remaining deadline through
+  retries. Pool clients and connections, then close them at the owning lifecycle boundary.
+- Bound every queue, buffer, cache and in-flight collection fed by external traffic. Specify item and byte limits where
+  payload sizes vary. Describe what the producer and consumer do when a limit is reached.
+- Expose queue age, saturation, drops, timeouts and recovery on the existing telemetry surface. Avoid high-cardinality
+  user IDs or event IDs as metric dimensions.
+- Prefer durable handoff or explicit rejection for commands. Coalesce replaceable display snapshots only when the
+  consumer can recover a fresh state.
+- On shutdown stop admission, bound drain time, cancel and await owned work, then close transports. Persist accepted
+  work and reconcile outcomes that cannot be determined.
+- Minimize copies and repeated decoding on measured high-rate paths. Reuse compiled schemas and regexes. Consider
+  slotted records and the existing fast JSON adapter when a representative benchmark shows improvement.
+- For production Rust return typed Result errors instead of unwrap() or expect(). Document the invariant behind each
+  unsafe block and exercise the error branch.
+- If a real Python/Rust binding is introduced, validate and own input before detaching from the GIL. Use the pinned PyO3
+  API for allow_threads or detach, and map Result failures at the boundary. For a subprocess, test IPC timeouts, exit
+  status and truncation instead.
+
+## 5. Code Style & Documentation Standards
+
+- Follow PEP 8 for Python naming, imports and layout. Use small functions with one observable responsibility. Remove
+  dead branches and commented-out implementations introduced by the change.
+- Type every Python function and method signature and every class attribute, including constructors and callbacks.
+  Preserve generics and unit-bearing types. Decode untyped provider data at the edge.
+- Name thresholds, capacities, retry budgets and wire literals where they are owned. Record the unit and the rationale.
+  Keep stable protocol constants distinct from deployment configuration.
+- Give every public class, abstract interface and reusable method a concise Google-style docstring. Document side
+  effects, guarantees and cost or concurrency caveats. Use Args, Returns and Raises sections when applicable.
+- For Rust and TypeScript apply the same contract to public types and functions using native documentation and type
+  syntax. Preserve an existing JavaScript module boundary in a focused change.
+- Raise a specific exception or return the existing typed failure. Never discard an exception with except Exception:
+  pass. Preserve cancellation and redact sensitive values from messages and logs.
+
+Use this contract shape for a Python API. Replace the example text with the method’s actual guarantees.
+
+```text
+Reserve a quantity for one owner until settlement or release.
+
+Args:
+    quantity: Exact units requested by the caller.
+Returns:
+    The reservation identity after the write commits.
+Raises:
+    InsufficientCapacity: The requested quantity exceeds available units.
+```
+
+Start behavior fixes with a failing deterministic regression. Record the red result, make the smallest safe change,
+rerun the same test and then the affected contract and full required tiers.
+
+## 6. Do-Not-Touch Zones
+
+| Protected surface | Approved change route |
+| --- | --- |
+| src/pmcopy/storage/postgres/migrations/ | Append migrations and ensure package data and installed-artifact checks include them. |
+| uv.lock | Change dependencies in pyproject.toml first and regenerate with the pinned uv workflow. |
+| requirements.txt | Regenerate the full development export with scripts/generate_requirements.py; compare it to uv.lock. |
+| requirements.runtime.txt | Regenerate alongside the development export; keep runtime and test-only dependency selections distinct. |
+| scripts/mypy_baseline.json | Ratchet down after proven fixes; do not raise per-file counts to mask a new type error. |
+| src/pmcopy/config/copiers.example.yml | Keep synthetic identities and environment references in the shipped example. |
+| tests/fixtures/market_wss/ | Preserve scrubbed provider payload shapes and capture intentional schema changes with new cases. |
+
+Open secrets.env only if an authorized operation requires a specific key. Keep credentials out of prompts, diffs,
+exception bodies, snapshots and command output. Use fake providers and disposable stores for routine verification.
