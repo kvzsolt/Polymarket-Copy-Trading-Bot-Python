@@ -79,8 +79,9 @@ class FakeJsonRpcSocket:
     async def wait_for_send_count(self, count: int) -> None:
         """Wait deterministically until ``count`` requests were sent."""
 
-        async with self._send_condition:
-            await self._send_condition.wait_for(lambda: len(self.sent) >= count)
+        async with asyncio.timeout(2.0):
+            async with self._send_condition:
+                await self._send_condition.wait_for(lambda: len(self.sent) >= count)
 
 
 class FakeEventSink:
@@ -104,15 +105,15 @@ class FakeEventSink:
 
         self.pending.append(transaction)
         self.pending_ready.set()
+        if self.session is not None:
+            self.receipt = await self.session.get_transaction_receipt(_CHAIN_ID, _TX_HASH)
+            self.receipt_ready.set()
 
     async def on_new_head(self, head: EvmHead) -> None:
         """Record one parsed head."""
 
         self.heads.append(head)
         self.head_ready.set()
-        if self.session is not None:
-            self.receipt = await self.session.get_transaction_receipt(_CHAIN_ID, _TX_HASH)
-            self.receipt_ready.set()
 
     async def on_log(self, log: dict[str, object]) -> None:
         """Record one raw EVM log."""
@@ -140,6 +141,7 @@ async def _started_session() -> tuple[
             chain_id=_CHAIN_ID,
             pending_targets=(_EXCHANGE, _SAFE),
             log_addresses=(_EXCHANGE,),
+            watched_wallets=(_SAFE,),
         ),
         sink=sink,
         clock=FakeClock(),
@@ -148,18 +150,21 @@ async def _started_session() -> tuple[
     await socket.wait_for_send_count(1)
     await socket.feed({"jsonrpc": "2.0", "id": 1, "result": "pending-sub"})
     await socket.wait_for_send_count(2)
-    await socket.feed({"jsonrpc": "2.0", "id": 2, "result": "heads-sub"})
+    await socket.feed({"jsonrpc": "2.0", "id": 2, "result": "logs-maker-sub"})
     await socket.wait_for_send_count(3)
-    await socket.feed({"jsonrpc": "2.0", "id": 3, "result": "logs-sub"})
+    await socket.feed({"jsonrpc": "2.0", "id": 3, "result": "logs-taker-sub"})
     await start_task
     return session, socket, sink
 
 
 @pytest.mark.asyncio
 async def test_session_subscribes_pending_heads_and_logs_on_one_socket() -> None:
-    """One warm connection carries all required Alchemy subscriptions."""
+    """One warm connection carries pending and per-user maker/taker logs (no newHeads)."""
+    from pmcopy.services.onchain_detection.order_filled_detector import ORDER_FILLED_V2_TOPIC0
 
     session, socket, _ = await _started_session()
+    padded_safe = "0x" + _SAFE[2:].rjust(64, "0")
+    topic0 = ["0x" + ORDER_FILLED_V2_TOPIC0.hex()]
     try:
         assert [request["method"] for request in socket.sent] == [
             "eth_subscribe",
@@ -170,10 +175,13 @@ async def test_session_subscribes_pending_heads_and_logs_on_one_socket() -> None
             "alchemy_pendingTransactions",
             {"toAddress": [_EXCHANGE, _SAFE], "hashesOnly": False},
         ]
-        assert socket.sent[1]["params"] == ["newHeads"]
+        assert socket.sent[1]["params"] == [
+            "logs",
+            {"address": [_EXCHANGE], "topics": [topic0, None, [padded_safe]]},
+        ]
         assert socket.sent[2]["params"] == [
             "logs",
-            {"address": [_EXCHANGE]},
+            {"address": [_EXCHANGE], "topics": [topic0, None, None, [padded_safe]]},
         ]
     finally:
         await session.stop()
@@ -185,11 +193,6 @@ async def test_session_routes_full_pending_head_and_log_notifications() -> None:
 
     session, socket, sink = await _started_session()
     pending = {"hash": _TX_HASH, "from": _SAFE, "to": _EXCHANGE, "input": "0x"}
-    raw_head = {
-        "number": "0x65",
-        "hash": _BLOCK_HASH,
-        "parentHash": _PARENT_HASH,
-    }
     raw_log = {"transactionHash": _TX_HASH, "logIndex": "0x3"}
     try:
         await socket.feed(
@@ -203,18 +206,10 @@ async def test_session_routes_full_pending_head_and_log_notifications() -> None:
             {
                 "jsonrpc": "2.0",
                 "method": "eth_subscription",
-                "params": {"subscription": "heads-sub", "result": raw_head},
-            }
-        )
-        await socket.feed(
-            {
-                "jsonrpc": "2.0",
-                "method": "eth_subscription",
-                "params": {"subscription": "logs-sub", "result": raw_log},
+                "params": {"subscription": "logs-maker-sub", "result": raw_log},
             }
         )
         await sink.pending_ready.wait()
-        await sink.head_ready.wait()
         await sink.log_ready.wait()
 
         assert len(sink.pending) == len(sink.logs) == 1
@@ -224,15 +219,6 @@ async def test_session_routes_full_pending_head_and_log_notifications() -> None:
         assert {
             key: value for key, value in sink.logs[0].items() if key != "_source_receipt"
         } == raw_log
-        assert sink.heads == [
-            EvmHead(
-                chain_id=_CHAIN_ID,
-                number=101,
-                block_hash=_BLOCK_HASH,
-                parent_hash=_PARENT_HASH,
-                observed_at=_NOW,
-            )
-        ]
     finally:
         await session.stop()
 
@@ -295,8 +281,6 @@ async def test_head_callback_receipt_lookup_cannot_block_socket_reader() -> None
     start_task = asyncio.create_task(session.start())
     await socket.wait_for_send_count(1)
     await socket.feed({"jsonrpc": "2.0", "id": 1, "result": "pending-sub"})
-    await socket.wait_for_send_count(2)
-    await socket.feed({"jsonrpc": "2.0", "id": 2, "result": "heads-sub"})
     await start_task
     try:
         await socket.feed(
@@ -304,23 +288,24 @@ async def test_head_callback_receipt_lookup_cannot_block_socket_reader() -> None
                 "jsonrpc": "2.0",
                 "method": "eth_subscription",
                 "params": {
-                    "subscription": "heads-sub",
+                    "subscription": "pending-sub",
                     "result": {
-                        "number": "0x65",
-                        "hash": _BLOCK_HASH,
-                        "parentHash": _PARENT_HASH,
+                        "hash": _TX_HASH,
+                        "from": _SAFE,
+                        "to": _EXCHANGE,
+                        "input": "0x",
                     },
                 },
             }
         )
-        await socket.wait_for_send_count(3)
+        await socket.wait_for_send_count(2)
 
-        assert socket.recv_calls >= 4
+        assert socket.recv_calls >= 2
 
         await socket.feed(
             {
                 "jsonrpc": "2.0",
-                "id": 3,
+                "id": 2,
                 "result": {
                     "transactionHash": _TX_HASH,
                     "status": "0x1",

@@ -96,7 +96,7 @@ class DetectionSourceRequest:
     ws_url: str
     chain_id: int
     signal_sink: SignalSink
-    confirmed_source: str = CONFIRMED_SOURCE_MEMPOOL_RESERVED
+    confirmed_source: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, DetectionMode):
@@ -105,7 +105,14 @@ class DetectionSourceRequest:
             raise ValueError("ws_url is required")
         if int(self.chain_id) <= 0:
             raise ValueError("chain_id must be positive")
-        source = str(self.confirmed_source or "").strip().lower()
+        raw_source = str(self.confirmed_source or "").strip()
+        if not raw_source:
+            raw_source = (
+                CONFIRMED_SOURCE_LOGS_ONLY
+                if self.mode is DetectionMode.ON_CHAIN_LOGS_ONLY
+                else CONFIRMED_SOURCE_MEMPOOL_RESERVED
+            )
+        source = raw_source.lower()
         if source not in _CONFIRMED_SOURCE_VALUES:
             allowed = ", ".join(_CONFIRMED_SOURCE_VALUES)
             raise ValueError(f"confirmed_source must be one of: {allowed}.")
@@ -250,9 +257,9 @@ class ConfirmedSourceBuilder:
 
     @property
     def mode(self) -> DetectionMode:
-        """Return ``DetectionMode.ON_CHAIN_CONFIRMED``."""
+        """Return ``DetectionMode.CONFIRMED_MEMPOOL_RESERVED``."""
 
-        return DetectionMode.ON_CHAIN_CONFIRMED
+        return DetectionMode.CONFIRMED_MEMPOOL_RESERVED
 
     @property
     def confirmed_source(self) -> str:
@@ -349,9 +356,9 @@ class LogsOnlyConfirmedSourceBuilder:
 
     @property
     def mode(self) -> DetectionMode:
-        """Return ``DetectionMode.ON_CHAIN_CONFIRMED``."""
+        """Return ``DetectionMode.ON_CHAIN_LOGS_ONLY``."""
 
-        return DetectionMode.ON_CHAIN_CONFIRMED
+        return DetectionMode.ON_CHAIN_LOGS_ONLY
 
     @property
     def confirmed_source(self) -> str:
@@ -420,8 +427,6 @@ class DetectionSourceFactory:
         indexed: dict[tuple[DetectionMode, str], DetectionSourceBuilder] = {}
         for builder in builders:
             mode = builder.mode
-            if mode is DetectionMode.POLLING:
-                raise ValueError("polling mode does not take a detection-source builder")
             key = (mode, builder.confirmed_source)
             if key in indexed:
                 raise ValueError(
@@ -438,21 +443,8 @@ class DetectionSourceFactory:
         return frozenset(mode for mode, _source in self._builders)
 
     async def build(self, request: DetectionSourceRequest) -> DetectionSourceRuntime | None:
-        """Build the runtime for ``request``'s detection key.
+        """Build the runtime for ``request``'s detection key."""
 
-        Args:
-            request: Shared detection-source inputs.
-
-        Returns:
-            ``None`` for ``POLLING``; otherwise the not-yet-started runtime.
-
-        Raises:
-            UnsupportedDetectionModeError: If no builder serves the
-                ``(mode, confirmed_source)`` combination.
-        """
-
-        if request.mode is DetectionMode.POLLING:
-            return None
         builder = self._builders.get((request.mode, request.confirmed_source))
         if builder is None:
             raise UnsupportedDetectionModeError(

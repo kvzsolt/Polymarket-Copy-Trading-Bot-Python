@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
-from collections.abc import Mapping, Sized
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Mapping, Sized
+from typing import TYPE_CHECKING, Any, cast
 
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.account_identity import CopierAccountId
@@ -58,7 +58,6 @@ from pmcopy.storage.postgres.trading_control_repo import TradingControlRepo
 from pmcopy.utils.fetchData import _get_http_client, fetch_data
 from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
 from pmcopy.orchestrators.account_inventory_startup import InventoryRuntimeRefresh
-from collections.abc import Awaitable, Callable
 from pmcopy.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -835,7 +834,8 @@ async def ambiguous_recovery_loop(
             if not callable(recover_once):
                 continue
             try:
-                results = await recover_once()
+                async with asyncio.timeout(60.0):
+                    results = await cast(Callable[[], Awaitable[Any]], recover_once)()
             except Exception as exc:
                 logger.warning(
                     "ambiguous_recovery_scan_failed | user=%s error_type=%s",
@@ -1156,17 +1156,56 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         side, record = synthetic
         try:
             from pmcopy.orchestrators.trade_pipeline import get_reconciliation_service
+            from pmcopy.services.positionActionCoordinator import PositionKey
+
+            scope = PositionKey(
+                user_id=str(record["user_id"]),
+                condition_id=str(record["condition_id"]),
+                token_id=str(record["asset"]),
+            )
+            pos_coord = getattr(context, "position_coordinator", None)
+            if pos_coord is not None and pos_coord.is_locked(scope):
+                return False
 
             reconciler = get_reconciliation_service(context)
-            applied = await reconciler.reconcile_trade_record(
-                record,
-                side,
-                confirm_fill=reconciler.confirm_fill,
-                pnl_tracker=context.pnl_tracker,
-                get_position=context.positions_repo.get_position,
-                logger=logger,
-                balance_regime=getattr(context, "balance_regime", None),
+            req_payload = record.get("request")
+            signal_id = (
+                str(req_payload.get("signal_id") or "") if isinstance(req_payload, dict) else ""
             )
+            is_risk_exit = side == "SELL" and (
+                signal_id.startswith("risk:")
+                or str(record.get("trade_key") or "").startswith("risk:")
+            )
+
+            async def _run_reconcile() -> bool:
+                if is_risk_exit:
+                    return await reconciler.reconcile_risk_record(
+                        record,
+                        user_id=str(record["user_id"]),
+                        condition_id=str(record["condition_id"]),
+                        token_id=str(record["asset"]),
+                        confirm_fill=reconciler.confirm_fill,
+                        pnl_tracker=context.pnl_tracker,
+                        get_position=context.positions_repo.get_position,
+                        logger=logger,
+                    )
+                return await reconciler.reconcile_trade_record(
+                    record,
+                    side,
+                    confirm_fill=reconciler.confirm_fill,
+                    pnl_tracker=context.pnl_tracker,
+                    get_position=context.positions_repo.get_position,
+                    logger=logger,
+                    balance_regime=getattr(context, "balance_regime", None),
+                )
+
+            if pos_coord is not None:
+                if pos_coord.is_locked(scope):
+                    return False
+                async with pos_coord.acquire(scope):
+                    applied = await _run_reconcile()
+            else:
+                applied = await _run_reconcile()
             if applied:
                 await rehydrate_position_manager(context)
             return applied
@@ -1199,8 +1238,15 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         try:
             from pmcopy.orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
-            trade_n = await reconcile_submitted_unconfirmed(context, max_age_seconds=0)
-            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            trade_n = await reconcile_submitted_unconfirmed(
+                context,
+                max_age_seconds=0,
+                skip_locked_scopes=True,
+            )
+            risk_n = await reconcile_unconfirmed_risk_orders(
+                context,
+                skip_locked_scopes=True,
+            )
             if trade_n or risk_n:
                 await rehydrate_position_manager(context)
         except Exception as exc:

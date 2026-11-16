@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -183,19 +184,21 @@ class PolymarketTickSizeResolver:
         self._market_metadata_client = market_metadata_client
         self._ttl_seconds = ttl_seconds
         self._clock = clock
-        self._cache: dict[str, _CachedTick] = {}
+        self._max_entries = 4096
+        self._cache: OrderedDict[str, _CachedTick] = OrderedDict()
 
     async def resolve(self, token_id: str) -> Decimal:
         token = str(token_id)
         cached = self._cache.get(token)
         if cached is not None and (self._clock() - cached.cached_at) < self._ttl_seconds:
+            self._cache.move_to_end(token)
             return cached.value
 
         tick = await self._source_tick(token)
         if tick is None:
             raise TickSizeUnavailable(f"tick size unavailable for token {token}")
         value = _validated_tick(tick, token)
-        self._cache[token] = _CachedTick(value=value, cached_at=self._clock())
+        self._store_cached(token, _CachedTick(value=value, cached_at=self._clock()))
         return value
 
     async def note_observed_tick(self, token_id: str, tick_size: object) -> None:
@@ -203,7 +206,13 @@ class PolymarketTickSizeResolver:
 
         token = str(token_id)
         value = _validated_tick(tick_size, token)
-        self._cache[token] = _CachedTick(value=value, cached_at=self._clock())
+        self._store_cached(token, _CachedTick(value=value, cached_at=self._clock()))
+
+    def _store_cached(self, token: str, entry: _CachedTick) -> None:
+        self._cache[token] = entry
+        self._cache.move_to_end(token)
+        while len(self._cache) > self._max_entries:
+            self._cache.popitem(last=False)
 
     def invalidate(self, token_id: str) -> None:
         """Drop the cached tick so the next resolution goes to the sources."""

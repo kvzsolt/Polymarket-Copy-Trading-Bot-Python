@@ -77,6 +77,7 @@ class OnchainTradeSignal:
     sell_fraction_resolution: str = ""
     source_receipt: TransportReceipt | None = None
     source_action_id: str | None = None
+    token_holder_wallet: str = ""
 
     def as_raw_signal_dict(self) -> dict[str, object]:
         """Render as a raw signal dict shaped for the copy pipeline.
@@ -122,6 +123,7 @@ class OnchainTradeSignal:
             "order_hash": self.order_hash,
             "block_number": self.block_number,
             "block_hash": self.block_hash,
+            "token_holder_wallet": self.token_holder_wallet or self.leader_wallet,
         }
         if self.leader_sell_fraction is not None:
             raw["_leader_sell_fraction"] = str(self.leader_sell_fraction)

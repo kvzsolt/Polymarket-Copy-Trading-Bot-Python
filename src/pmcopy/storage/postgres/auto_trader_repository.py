@@ -7,7 +7,13 @@ from decimal import Decimal
 
 import asyncpg
 
-from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, CopyPerformance, Trader, TraderStatus
+from pmcopy.domain.auto_trader import (
+    AutoRoster,
+    AutoTraderScope,
+    CopyPerformance,
+    Trader,
+    TraderStatus,
+)
 
 
 class AutoTraderCodec:

@@ -126,14 +126,14 @@ async def test_native_action_survives_both_normalizers_and_order_metadata(tmp_pa
     _, metadata = _copy_entry_price_plan(SimpleNamespace(), signal, "BUY", leader_id=OWNER)
     assert metadata["source_action_id"] == action
     normalized = LeaderEventNormalizer().normalize_raw(
-        OWNER, raw, mode=DetectionMode.ON_CHAIN_CONFIRMED
+        OWNER, raw, mode=DetectionMode.ON_CHAIN_LOGS_ONLY
     )
     assert normalized.trade.source_action_id == action
     raw.pop("source_action_id")
     assert normalize_signals([raw], OWNER)[0][0].source_action_id is None
     assert (
         LeaderEventNormalizer()
-        .normalize_raw(OWNER, raw, mode=DetectionMode.ON_CHAIN_CONFIRMED)
+        .normalize_raw(OWNER, raw, mode=DetectionMode.ON_CHAIN_LOGS_ONLY)
         .trade.source_action_id
         is None
     )

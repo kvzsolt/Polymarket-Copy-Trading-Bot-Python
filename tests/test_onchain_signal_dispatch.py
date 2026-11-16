@@ -302,12 +302,12 @@ async def test_logs_provenance_and_increments_metric(caplog: pytest.LogCaptureFi
     assert "token=123456" in lines[0]
     assert "confidence=pending_probable" in lines[0]
     assert "provisional=True" in lines[0]
-    assert lines[1].startswith("detection_signal | source=on_chain_confirmed ")
+    assert lines[1].startswith("detection_signal | source=on_chain_logs_only ")
     assert "confidence=mined_authoritative" in lines[1]
     assert "provisional=False" in lines[1]
 
     assert metrics.counters[f'{METRIC_DETECTION_SIGNALS}{{source="on_chain_pending"}}'] == 1
-    assert metrics.counters[f'{METRIC_DETECTION_SIGNALS}{{source="on_chain_confirmed"}}'] == 1
+    assert metrics.counters[f'{METRIC_DETECTION_SIGNALS}{{source="on_chain_logs_only"}}'] == 1
 
 
 @pytest.mark.asyncio
@@ -333,7 +333,7 @@ def test_detection_signals_metric_schema_is_bounded() -> None:
     schema = {s.name: s for s in TELEMETRY_METRIC_SCHEMAS}[METRIC_DETECTION_SIGNALS]
     assert schema.kind is MetricKind.COUNTER
     assert schema.allowed_label_values == (
-        ("source", ("polling", "on_chain_pending", "on_chain_confirmed")),
+        ("source", ("on_chain_logs_only", "on_chain_pending", "confirmed+mempool_reserved")),
     )
     # The label domain is derived from the enum, so a new mode cannot drift.
     assert DETECTION_SOURCE_LABEL_VALUES == tuple(mode.value for mode in DetectionMode)
@@ -397,11 +397,11 @@ async def test_onchain_signal_skipped_when_polling_claimed_tx(
     ]
     assert len(deduped) == 1
     assert deduped[0].startswith(
-        "detection_signal_deduped | source=on_chain_confirmed winner=polling "
+        "detection_signal_deduped | source=on_chain_logs_only winner=polling "
     )
     assert f"tx={_TX}" in deduped[0]
     assert (
-        metrics.counters[f'{METRIC_DETECTION_SIGNALS_DEDUPED}{{source="on_chain_confirmed"}}'] == 1
+        metrics.counters[f'{METRIC_DETECTION_SIGNALS_DEDUPED}{{source="on_chain_logs_only"}}'] == 1
     )
 
 
@@ -490,8 +490,8 @@ async def test_logs_only_mined_signal_claims_tx_level_identity(
     assert [call[0] for call in pipeline.calls] == ["u1"]
     provenance = [r.getMessage() for r in caplog.records if "detection_signal |" in r.getMessage()]
     assert len(provenance) == 1
-    assert "source=on_chain_confirmed" in provenance[0]
-    assert metrics.counters.get('detection_signals_total{source="on_chain_confirmed"}', 0) >= 1
+    assert "source=on_chain_logs_only" in provenance[0]
+    assert metrics.counters.get('detection_signals_total{source="on_chain_logs_only"}', 0) >= 1
     # The fill key carries the mined discriminator, so the tx-level claim was
     # taken and polling's aggregate for the same fill is refused.
     fill_key = build_trade_key("u1", _LEADER, pipeline.calls[0][2][0])
@@ -869,7 +869,7 @@ async def test_decision_carries_the_per_fill_key() -> None:
     raw = _signal(provisional=False).as_raw_signal_dict()
 
     decision = await CrossSourceTradeClaimPolicy().try_claim(
-        ctx, _LEADER, raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+        ctx, _LEADER, raw, source=DetectionMode.ON_CHAIN_LOGS_ONLY
     )
 
     assert decision.claimed is True
@@ -1274,7 +1274,7 @@ async def test_dispatch_emits_signal_received_on_the_v1_path_too() -> None:
     assert pipeline.calls == []
     [event] = service.payloads(LeaderEvent)
     assert event.outcome is LeaderOutcome.RECEIVED
-    assert event.source == "on_chain_confirmed"
+    assert event.source == "on_chain_logs_only"
 
 
 @pytest.mark.asyncio
@@ -1308,7 +1308,7 @@ async def test_cross_source_dedup_emits_signal_deduplicated() -> None:
     received, deduped = service.payloads(LeaderEvent)
     assert received.outcome is LeaderOutcome.RECEIVED
     assert deduped.outcome is LeaderOutcome.DEDUP
-    assert deduped.source == "on_chain_confirmed"
+    assert deduped.source == "on_chain_logs_only"
     assert deduped.leader_ref == safe_ref(_LEADER.lower())
 
 

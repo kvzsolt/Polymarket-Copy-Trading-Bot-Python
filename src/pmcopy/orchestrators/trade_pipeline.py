@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import traceback as _tb
 import uuid
@@ -1777,6 +1778,12 @@ async def reconcile_submitted_unconfirmed(
                 )
                 return False
             async with sem:
+                if skip_locked_scopes and context.position_coordinator.is_locked(_scope):
+                    metrics.inc(
+                        "pre_reconcile_skipped_locked_total",
+                        labels={"side": side},
+                    )
+                    return False
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(
                         context, record, side, startup_recovery=startup_recovery
@@ -2444,6 +2451,16 @@ async def _execute_trades_impl(
                         "trades_skipped_total",
                         labels={**labels, "reason": "tier_watchlist"},
                     )
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status="skipped_tier_watchlist",
+                    )
                     results.append(
                         TradePipelineResult(trade_key, "skipped", "tier_watchlist", None)
                     )
@@ -2726,6 +2743,7 @@ async def _execute_trades_impl(
                         )
                         results.append(TradePipelineResult(trade_key, "skipped", reason, None))
                         continue
+                    assert headroom is not None
                     max_notional_for_decision = min(max_notional_for_decision, headroom)
 
                 policy_enabled = _account_cap_policy_enabled(context)
@@ -2853,11 +2871,11 @@ async def _execute_trades_impl(
                     results.append(TradePipelineResult(trade_key, "skipped", decision.reason, None))
                     continue
 
-                # Use decision-gated notional (may be adjusted by scoring)
+                # Use decision-gated notional (may be adjusted by scoring), clamped in Decimal
                 gated_notional = (
-                    Decimal(str(decision.target_notional_usdc))
+                    min(Decimal(str(decision.target_notional_usdc)), max_notional_for_decision)
                     if decision.target_notional_usdc > 0
-                    else target_notional
+                    else min(target_notional, max_notional_for_decision)
                 )
 
                 # --- P2-e: fee-aware affordability gate ---
@@ -3395,9 +3413,48 @@ async def _execute_trades_impl(
                 )
 
             print_executing_strategy(signal.side)
-            exec_result = await _submit_copy_through_coordinator(
-                context, exec_req, signal, leader_id=leader_id
-            )
+            try:
+                exec_result = await _submit_copy_through_coordinator(
+                    context, exec_req, signal, leader_id=leader_id
+                )
+            except BaseException as exc:
+                is_reconcile_required = isinstance(
+                    exc, RuntimeError
+                ) and "Submission outcome requires reconciliation" in str(exc)
+                if is_reconcile_required:
+                    if signal.side == "BUY":
+                        _regime = getattr(context, "balance_regime", None)
+                        if _regime is not None:
+                            with contextlib.suppress(Exception):
+                                await asyncio.shield(_regime.commit(order_id=trade_key))
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(
+                            context.orders_repo.mark_processed_trade(
+                                trade_key=trade_key,
+                                user_id=context.user_id,
+                                leader_id=leader_id,
+                                tx_hash=signal.tx_hash,
+                                side=signal.side,
+                                asset=signal.token_id,
+                                condition_id=signal.condition_id,
+                                status="submitted_unconfirmed",
+                            )
+                        )
+                    results.append(
+                        TradePipelineResult(
+                            trade_key=trade_key,
+                            status="submitted_unconfirmed",
+                            reason="coordinator_reconciliation_required",
+                            order_id=None,
+                        )
+                    )
+                    continue
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        with contextlib.suppress(Exception):
+                            await asyncio.shield(_regime.release(order_id=trade_key))
+                raise
 
             if exec_result.status == "duplicate_ignored":
                 print_skip_reason(
@@ -3448,17 +3505,19 @@ async def _execute_trades_impl(
                 if regime is not None:
                     try:
                         _filled_amt = Decimal(str(exec_result.filled_amount or 0))
-                        if _filled_amt > 0:
-                            _fill_px = Decimal(str(exec_result.avg_price or signal.price or 0))
+                        _avg_px = (
+                            Decimal(str(exec_result.avg_price))
+                            if exec_result.avg_price is not None
+                            else Decimal("0")
+                        )
+                        if _filled_amt > 0 and _avg_px > 0:
                             await regime.commit(
                                 order_id=trade_key,
-                                actual_filled_usdc=_filled_amt * _fill_px,
+                                actual_filled_usdc=_filled_amt * _avg_px,
                             )
                         else:
-                            # Accepted but no immediate fill — keep the full
-                            # reservation in place (commit with None preserves
-                            # the held notional until a later reconciliation
-                            # path resolves the order).
+                            # Accepted with unknown fill price or deferred fill — keep the
+                            # held reservation intact until reconciliation resolves actual spend.
                             await regime.commit(order_id=trade_key)
                     except Exception:  # pragma: no cover — defensive
                         pass

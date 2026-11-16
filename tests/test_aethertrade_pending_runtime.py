@@ -22,18 +22,18 @@ class TestPendingRuntime:
     """Subscription admission, ownership validation and isolation are observable seams."""
 
     @pytest.mark.parametrize(
-        "provider,enabled,expected",
+        "mode,enabled,expected",
         [
-            ("alchemy", True, True),
-            ("alchemy", False, False),
-            ("infura", True, False),
+            ("pending", True, True),
+            ("pending", False, False),
+            ("mined", True, False),
         ],
     )
     async def test_production_composition_only_creates_enabled_supported_sampler(
         self,
         tmp_path,
         monkeypatch,
-        provider,
+        mode,
         enabled,
         expected,
     ):
@@ -46,7 +46,7 @@ class TestPendingRuntime:
             primary="alchemy",
             gateway=Mock(),
             budget=Mock(),
-            endpoints=SimpleNamespace(http_url=lambda _: "https://synthetic.invalid", infura=""),
+            endpoints=SimpleNamespace(http_url=lambda _: "https://synthetic.invalid"),
         )
         monkeypatch.setattr("pmcopy.orchestrators.native_detection_runtime.SystemReceiptClock", Clock)
         runtime = NativeDetectionRuntime.compose(
@@ -56,8 +56,8 @@ class TestPendingRuntime:
                 traders=(
                     TraderDetectionPolicy(
                         wallet,
-                        mode="pending" if provider == "alchemy" else "mined",
-                        provider=provider,
+                        mode=mode,
+                        provider="alchemy",
                     ),
                 ),
             ),

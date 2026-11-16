@@ -21,7 +21,11 @@ def _overrides() -> dict:
     return {
         "database": {"dsn": "postgresql://test:test@localhost/test"},
         "wallet": {"funder_address": "0x" + "1" * 40},
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "detection": {
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
+        },
     }
 
 

@@ -23,14 +23,17 @@ degenerates to a single-provider pass-through.
 
 from __future__ import annotations
 
-import logging
+import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from web3 import Web3
 from web3.providers.base import JSONBaseProvider
 from web3.types import RPCResponse
 
-logger = logging.getLogger("rpc_fallback")
+from pmcopy.utils.logger import get_logger, redact_error_detail
+
+logger = get_logger("rpc_fallback")
 
 # Web3.py accepts request timeout through HTTPProvider request_kwargs. Keep RPC
 # read calls bounded so startup balance probes cannot look like a hung boot.
@@ -98,14 +101,14 @@ class _FailoverHTTPProvider(JSONBaseProvider):
             logger.warning(
                 "Primary RPC returned failover-worthy error for %s: %s",
                 method,
-                raw.get("error"),
+                redact_error_detail(raw.get("error")),
             )
         except Exception as exc:
             if _is_failover_exception(exc):
                 logger.warning(
                     "Primary RPC failed for %s: %s",
                     method,
-                    exc,
+                    redact_error_detail(exc),
                 )
                 primary_exc = exc
             else:
@@ -127,15 +130,29 @@ class _FailoverHTTPProvider(JSONBaseProvider):
         return self._fallback.make_request(method, params)
 
 
+_VERSIONED_KEY_RE = re.compile(r"(/v\d+)/[^/?#]+")
+
+
 def _mask_url(url: str) -> str:
     """Strip API key / credential from URL for safe logging."""
     if not url:
         return ""
-    # Heuristic: anything after the last path segment that looks like a key.
-    if "/v3/" in url:
-        return url.rsplit("/", 1)[0] + "/***"
     if "?" in url:
-        return url.split("?", 1)[0] + "?***"
+        base = url.split("?", 1)[0]
+        return _mask_url(base) + "?***"
+    masked = _VERSIONED_KEY_RE.sub(r"\1/***", url)
+    if masked != url:
+        return masked
+    parsed = urlsplit(url)
+    if parsed.username or parsed.password:
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://***@{host}{port}/***"
+    path = parsed.path.rstrip("/")
+    if path and len(path.rsplit("/", 1)[-1]) >= 16:
+        prefix = path.rsplit("/", 1)[0]
+        host = parsed.netloc
+        return f"{parsed.scheme}://{host}{prefix}/***"
     return url
 
 

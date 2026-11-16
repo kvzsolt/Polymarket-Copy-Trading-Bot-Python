@@ -260,9 +260,7 @@ def is_secret_key(key: object) -> bool:
 
 # "Authorization: <creds>" — consume to a closing quote or end of line so a
 # quoted header value ("Authorization': 'Basic abc'") is fully covered.
-_AUTHORIZATION_HEADER_RE = re.compile(
-    r"(?i)\b(authorization)\b['\"]?\s*[:=]\s*['\"]?([^\r\n'\"]*)"
-)
+_AUTHORIZATION_HEADER_RE = re.compile(r"(?i)\b(authorization)\b['\"]?\s*[:=]\s*['\"]?([^\r\n'\"]*)")
 _BEARER_RE = re.compile(r"(?i)\b(bearer)\s+[^\s,;'\"]+")
 _URL_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.\-]*://[^/?#\s:]+):([^/?#\s]+)@")
 _URL_QUERY_SECRET_RE = re.compile(
@@ -313,9 +311,7 @@ def redact_text(text: str) -> str:
         text,
     )
     text = _BEARER_RE.sub(lambda m: f"{m.group(1)} {REDACTED_PLACEHOLDER}", text)
-    text = _URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}:{REDACTED_PLACEHOLDER}@", text
-    )
+    text = _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}:{REDACTED_PLACEHOLDER}@", text)
     text = _URL_QUERY_SECRET_RE.sub(lambda m: f"{m.group(1)}{REDACTED_PLACEHOLDER}", text)
     text = _PROVIDER_PATH_KEY_RE.sub(lambda m: f"{m.group(1)}{REDACTED_PLACEHOLDER}", text)
     text = _SECRET_ASSIGNMENT_RE.sub(_redact_assignment, text)

@@ -59,6 +59,7 @@ class AlchemySubscriptionOptions:
     chain_id: int
     pending_targets: tuple[str, ...]
     log_addresses: tuple[str, ...]
+    watched_wallets: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate and normalize chain and address filters."""
@@ -71,10 +72,18 @@ class AlchemySubscriptionOptions:
         log_addresses = tuple(
             dict.fromkeys(_AddressNormalizer.normalize(value) for value in self.log_addresses)
         )
-        if not pending_targets:
-            raise ValueError("pending_targets must contain at least one address")
+        watched_wallets = tuple(
+            dict.fromkeys(_AddressNormalizer.normalize(value) for value in self.watched_wallets)
+        )
+        if not pending_targets or len(pending_targets) > 4:
+            raise ValueError("pending_targets must contain 1..4 Exchange addresses")
+        if log_addresses and not watched_wallets:
+            raise ValueError(
+                "unfiltered logs subscriptions are forbidden; watched_wallets must be non-empty"
+            )
         object.__setattr__(self, "pending_targets", pending_targets)
         object.__setattr__(self, "log_addresses", log_addresses)
+        object.__setattr__(self, "watched_wallets", watched_wallets)
 
 
 class AlchemyJsonRpcSession:
@@ -111,6 +120,8 @@ class AlchemyJsonRpcSession:
         self._receipt_clock = receipt_clock if receipt_clock is not None else SystemReceiptClock()
         self._next_request_id = 1
         self._pending_requests: dict[int, asyncio.Future[object]] = {}
+        self._send_lock = asyncio.Lock()
+        self._request_timeout_seconds = 10.0
         self._subscriptions: dict[str, _SubscriptionKind] = {}
         self._event_queue: asyncio.Queue[tuple[_SubscriptionKind, object]] = asyncio.Queue(
             maxsize=max_pending_events
@@ -157,11 +168,32 @@ class AlchemyJsonRpcSession:
                     },
                 ],
             )
-            await self._subscribe(_SubscriptionKind.HEADS, ["newHeads"])
-            if self._options.log_addresses:
+            if self._options.log_addresses and self._options.watched_wallets:
+                from pmcopy.services.onchain_detection.order_filled_detector import (
+                    ORDER_FILLED_V2_TOPIC0,
+                )
+
+                topic0 = ["0x" + ORDER_FILLED_V2_TOPIC0.hex()]
+                padded = sorted("0x" + w[2:].rjust(64, "0") for w in self._options.watched_wallets)
                 await self._subscribe(
                     _SubscriptionKind.LOGS,
-                    ["logs", {"address": list(self._options.log_addresses)}],
+                    [
+                        "logs",
+                        {
+                            "address": list(self._options.log_addresses),
+                            "topics": [topic0, None, padded],
+                        },
+                    ],
+                )
+                await self._subscribe(
+                    _SubscriptionKind.LOGS,
+                    [
+                        "logs",
+                        {
+                            "address": list(self._options.log_addresses),
+                            "topics": [list(topic0), None, None, list(padded)],
+                        },
+                    ],
                 )
         except BaseException:
             await self.stop()
@@ -280,8 +312,10 @@ class AlchemyJsonRpcSession:
             "params": params,
         }
         try:
-            await self._socket.send(orjson.dumps(request).decode("utf-8"))
-            return await future
+            async with self._send_lock:
+                await self._socket.send(orjson.dumps(request).decode("utf-8"))
+            async with asyncio.timeout(self._request_timeout_seconds):
+                return await future
         except BaseException:
             self._pending_requests.pop(request_id, None)
             if not future.done():

@@ -179,7 +179,8 @@ class BalanceRegime:
         # Held headroom by order id — populated by reserve(), consumed by
         # commit() / release().
         self._reservations: dict[str, Decimal] = {}
-        self._cancelled_ids: set[str] = set()
+        self._cancelled_ids: dict[str, None] = {}
+        self._max_cancelled_ids = 8192
         self._reservations_guard = threading.Lock()
         # Async coordination for the reserve→commit/release lifecycle so
         # concurrent BUY signals cannot race past the cap.
@@ -238,8 +239,10 @@ class BalanceRegime:
                 if order_id in self._cancelled_ids:
                     return  # already cancelled — idempotent
                 recorded = self._reservations.pop(order_id, None)
-                if recorded is not None:
-                    self._cancelled_ids.add(order_id)
+                self._cancelled_ids[order_id] = None
+                while len(self._cancelled_ids) > self._max_cancelled_ids:
+                    oldest_key = next(iter(self._cancelled_ids))
+                    self._cancelled_ids.pop(oldest_key, None)
         amt = recorded if recorded is not None else _to_decimal(notional_usdc)
         if amt <= 0:
             return

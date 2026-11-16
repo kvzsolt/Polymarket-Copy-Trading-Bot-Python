@@ -55,31 +55,21 @@ class ProviderRuntime:
         http_transport: httpx.AsyncBaseTransport | None = None,
     ) -> ProviderRuntime:
         """Validate the configured account before any startup RPC or detector starts."""
-        urls = tuple(
-            dict.fromkeys(
-                url
-                for url in (
-                    config.polymarket.rpc_url,
-                    config.polymarket.fallback_rpc_url,
-                )
-                if url
-            )
-        )
-        endpoints: dict[str, str] = {}
-        primary = ""
-        for url in urls:
-            host = urlsplit(url).hostname
-            alias = {
-                "polygon-mainnet.g.alchemy.com": "alchemy",
-                "polygon-mainnet.infura.io": "infura",
-            }.get(host or "")
-            if alias is None or alias in endpoints:
-                raise ProviderConfigurationError(
-                    "exactly one endpoint per approved provider is supported"
-                )
-            endpoints[alias] = url
-            primary = primary or alias
-        fixed = ProviderEndpoints(**endpoints)
+        rpc_url = str(getattr(config.polymarket, "rpc_url", "") or "").strip()
+        if rpc_url in {"", "https://polygon-rpc.com"}:
+            onchain = getattr(getattr(config, "detection", None), "onchain", None)
+            wss_url = str(getattr(onchain, "alchemy_wss_url", "") or "").strip()
+            if wss_url.startswith("wss://"):
+                rpc_url = "https://" + wss_url.removeprefix("wss://")
+        fallback_url = str(getattr(config.polymarket, "fallback_rpc_url", "") or "").strip()
+        urls = tuple(dict.fromkeys(url for url in (rpc_url, fallback_url) if url))
+        if len(urls) != 1:
+            raise ProviderConfigurationError("exactly one Alchemy Polygon endpoint is supported")
+        only_url = urls[0]
+        if urlsplit(only_url).hostname != "polygon-mainnet.g.alchemy.com":
+            raise ProviderConfigurationError("only the Alchemy Polygon provider is supported")
+        fixed = ProviderEndpoints(alchemy=only_url)
+        primary = "alchemy"
         settings = config.provider_budget
         budget = SqliteProviderBudget(
             Path(settings.ledger_path), settings.limits, clock or SystemProviderClock()

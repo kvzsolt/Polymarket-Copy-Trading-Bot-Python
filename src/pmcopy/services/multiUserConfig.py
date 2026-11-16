@@ -409,14 +409,15 @@ def _reject_duplicate_users(users: list[RuntimeUser]) -> None:
     seen_funders: dict[str, str] = {}
     seen_private_keys: dict[str, str] = {}
     for index, user in enumerate(users):
-        previous_index = seen_user_ids.get(user.user_id)
+        folded_user_id = user.user_id.casefold()
+        previous_index = seen_user_ids.get(folded_user_id)
         if previous_index is not None:
             raise ValueError(
                 f"duplicate multi-user config user_id {user.user_id!r} "
                 f"(entries {previous_index} and {index}); copier ids must "
                 "be unique"
             )
-        seen_user_ids[user.user_id] = index
+        seen_user_ids[folded_user_id] = index
         funder = user.wallet.funder_address
         if funder:
             funder_key = funder.lower()
@@ -633,15 +634,3 @@ def bind_resolved_deposit_wallet(
             leader_id: replace(follow, user_id=resolved)
             for leader_id, follow in runtime_user.follows.items()
         }
-
-
-def _is_descendant(child: Path, parent: Path) -> bool:
-    """Path.is_relative_to back-port for 3.8 + readability."""
-    try:
-        return child.is_relative_to(parent)
-    except AttributeError:  # pragma: no cover — Python < 3.9
-        try:
-            child.relative_to(parent)
-            return True
-        except ValueError:
-            return False

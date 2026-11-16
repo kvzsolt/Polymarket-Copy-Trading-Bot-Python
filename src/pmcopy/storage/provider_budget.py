@@ -40,24 +40,6 @@ class SqliteProviderBudget:
             "eth_estimateGas": 20,
             "eth_getStorageAt": 20,
         },
-        "infura": {
-            "eth_chainId": 5,
-            "eth_blockNumber": 80,
-            "eth_call": 80,
-            "eth_getCode": 80,
-            "eth_getBalance": 80,
-            "eth_getBlockByNumber": 80,
-            "eth_getBlockByHash": 80,
-            "eth_getTransactionByHash": 80,
-            "eth_getTransactionReceipt": 80,
-            "eth_getTransactionCount": 80,
-            "eth_getLogs": 255,
-            "eth_subscribe": 5,
-            "eth_unsubscribe": 10,
-            "eth_gasPrice": 80,
-            "eth_estimateGas": 300,
-            "eth_getStorageAt": 80,
-        },
     }
     _CATEGORIES = frozenset({"essential", "pending", "backfill", "research"})
 
@@ -69,16 +51,24 @@ class SqliteProviderBudget:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, isolation_level=None, timeout=2, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
-        self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS provider_usage (
-                provider TEXT NOT NULL, period TEXT NOT NULL, category TEXT NOT NULL,
-                amount INTEGER NOT NULL, PRIMARY KEY(provider, period, category)
-            );
-            CREATE TABLE IF NOT EXISTS provider_budget_meta (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            );
-        """)
+        self._db.execute("PRAGMA synchronous=NORMAL")
+        existing_tables = {
+            row[0]
+            for row in self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('provider_usage', 'provider_budget_meta')"
+            )
+        }
+        if len(existing_tables) < 2:
+            self._db.executescript("""
+                CREATE TABLE IF NOT EXISTS provider_usage (
+                    provider TEXT NOT NULL, period TEXT NOT NULL, category TEXT NOT NULL,
+                    amount INTEGER NOT NULL, PRIMARY KEY(provider, period, category)
+                );
+                CREATE TABLE IF NOT EXISTS provider_budget_meta (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
+            """)
         try:
             self._initialize()
         except BaseException:
@@ -86,6 +76,15 @@ class SqliteProviderBudget:
             raise
 
     def _initialize(self) -> None:
+        row = self._db.execute(
+            "SELECT value FROM provider_budget_meta WHERE key='billing_day'"
+        ).fetchone()
+        if row is not None:
+            if row[0] != str(self._settings.alchemy_billing_day):
+                raise ProviderConfigurationError(
+                    "billing day requires an explicit history migration"
+                )
+            return
         self._db.execute("BEGIN IMMEDIATE")
         try:
             row = self._db.execute(
@@ -100,14 +99,16 @@ class SqliteProviderBudget:
                     "INSERT INTO provider_budget_meta VALUES ('billing_day', ?)",
                     (str(self._settings.alchemy_billing_day),),
                 )
-                for provider, used in (
-                    ("alchemy", self._settings.initial_alchemy_used),
-                    ("infura", self._settings.initial_infura_used),
-                ):
-                    self._increment(provider, self._period(provider), "external_baseline", used)
+                self._increment(
+                    "alchemy",
+                    self._period("alchemy"),
+                    "external_baseline",
+                    self._settings.initial_alchemy_used,
+                )
             self._db.execute("COMMIT")
         except BaseException:
-            self._db.execute("ROLLBACK")
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
             raise
 
     def _period(self, provider: str) -> str:
@@ -115,7 +116,7 @@ class SqliteProviderBudget:
         if instant.tzinfo is None or instant.utcoffset() is None:
             raise ProviderConfigurationError("billing clock requires an aware instant")
         instant = instant.astimezone(UTC)
-        if provider in {"infura", "pending"}:
+        if provider == "pending":
             return instant.date().isoformat()
         year, month = instant.year, instant.month
         if instant.day < self._settings.alchemy_billing_day:
@@ -168,13 +169,9 @@ class SqliteProviderBudget:
         self._charge(provider, amount, category=category)
 
     def charge_stream(self, provider: str, byte_count: int, *, category: str = "essential") -> None:
-        """Record delivered Alchemy bytes; never infer Infura billing from bytes.
-
-        Infura remains available for admitted bounded RPC recovery. Its standing
-        log subscriptions require independently verified per-block metering.
-        """
+        """Record delivered Alchemy WebSocket bytes."""
         if provider != "alchemy":
-            raise ProviderConfigurationError("Infura standing subscription billing is unverified")
+            raise ProviderConfigurationError("only Alchemy stream billing is supported")
         self.charge(
             provider, self.stream_cost(byte_count), category=category, already_delivered=True
         )
@@ -205,7 +202,8 @@ class SqliteProviderBudget:
                     self._increment("pending", day, category, amount)
                 self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
 
     def snapshot(self) -> ProviderUsageSnapshot:
@@ -218,7 +216,6 @@ class SqliteProviderBudget:
                 "other_app_usage_included": "configured initial estimate only",
                 "pending_daily_used": self._used("pending", self._period("pending")),
                 "alchemy": self._provider_snapshot("alchemy", "CU"),
-                "infura": self._provider_snapshot("infura", "credits"),
             }
 
     def _provider_snapshot(self, provider: str, unit: str) -> ProviderUsage:
@@ -233,7 +230,8 @@ class SqliteProviderBudget:
 
     def close(self) -> None:
         """Close this connection without deleting history or resetting usage."""
-        self._db.close()
+        with self._lock:
+            self._db.close()
 
     def __enter__(self) -> SqliteProviderBudget:
         """Return the ledger for bounded ownership in tests and command tools."""

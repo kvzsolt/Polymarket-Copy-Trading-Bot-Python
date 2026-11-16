@@ -16,11 +16,22 @@ from pmcopy.domain.source_time import TransportReceipt
 
 
 class DetectionMode(str, Enum):
-    """Exclusive runtime source used to detect leader trades."""
+    """Exclusive Alchemy-only runtime source used to detect leader trades."""
 
-    POLLING = "polling"
+    ON_CHAIN_LOGS_ONLY = "on_chain_logs_only"
     ON_CHAIN_PENDING = "on_chain_pending"
-    ON_CHAIN_CONFIRMED = "on_chain_confirmed"
+    CONFIRMED_MEMPOOL_RESERVED = "confirmed+mempool_reserved"
+
+    @classmethod
+    def parse_config_mode(cls, raw: object) -> "DetectionMode":
+        """Parse ``detection.mode``, normalizing ``on_chain_confirmed+mempool_reserved``."""
+
+        if isinstance(raw, cls):
+            return raw
+        normalized = str(raw or "").strip().lower()
+        if normalized == "on_chain_confirmed+mempool_reserved":
+            normalized = cls.CONFIRMED_MEMPOOL_RESERVED.value
+        return cls(normalized)
 
 
 class DetectionFinality(str, Enum):

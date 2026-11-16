@@ -45,7 +45,10 @@ async def test_equal_sized_fills_of_one_order_in_one_transaction_both_allocate(o
     second = replace(first, trade=replace(first.trade, log_index=8))
     assert (await processor.process(_LEADER, first))[0].allowed
     assert (await processor.process(_LEADER, second))[0].allowed
-    replay = replace(second, trade=replace(second.trade, mode=DetectionMode.POLLING))
+    replay = replace(
+        second,
+        trade=replace(second.trade, mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED),
+    )
     assert not (await processor.process(_LEADER, replay))[0].allowed
     assert len(execution.commands) == 2
     assert execution.commands[0].signal_id != execution.commands[1].signal_id

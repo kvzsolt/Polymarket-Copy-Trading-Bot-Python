@@ -2108,7 +2108,7 @@ async def test_cross_source_claim_row_is_invisible_to_manual_sync_probe(tmp_path
             "order_hash": None,
         }
         decision = await CrossSourceTradeClaimPolicy().try_claim(
-            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_LOGS_ONLY
         )
         assert decision.dispatch is True and decision.claimed is True
 
@@ -2167,7 +2167,7 @@ async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
         }
         policy = CrossSourceTradeClaimPolicy()
         decision = await policy.try_claim(
-            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_LOGS_ONLY
         )
         assert decision.dispatch is True
         assert decision.claimed is True
@@ -2177,14 +2177,14 @@ async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
         # A second on-chain fill of the same tx/side/asset is our own sibling:
         # dispatched (claimed=False), both via in-process memory ...
         second = await policy.try_claim(
-            ctx, "leader1", {**onchain_raw, "log_index": 8}, source=DetectionMode.ON_CHAIN_CONFIRMED
+            ctx, "leader1", {**onchain_raw, "log_index": 8}, source=DetectionMode.ON_CHAIN_LOGS_ONLY
         )
         assert second.dispatch is True
         assert second.claimed is False
         assert second.winner == "on_chain"
         # ... and via the row status after a restart (fresh policy instance).
         third = await CrossSourceTradeClaimPolicy().try_claim(
-            ctx, "leader1", {**onchain_raw, "log_index": 9}, source=DetectionMode.ON_CHAIN_CONFIRMED
+            ctx, "leader1", {**onchain_raw, "log_index": 9}, source=DetectionMode.ON_CHAIN_LOGS_ONLY
         )
         assert third.dispatch is True
         assert third.claimed is False

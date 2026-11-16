@@ -141,6 +141,8 @@ _TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
         "book_spread_wide",
         "stale_market_data",
         "market_not_ready",
+        "market_metadata_unavailable",
+        "geoblocked",
         "circuit_open",
         "price_limit_unexecutable",
         "task_deleted",
@@ -150,6 +152,8 @@ _TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
         "task_version_conflict",
         "task_state_unavailable",
         "task_state_invalid",
+        "task_protection_unavailable",
+        "task_counter_outcome_unavailable",
         "outside_schedule",
         "trading_paused",
         "kill_switch",
@@ -316,14 +320,14 @@ class ExecutionCoordinator:
                     "token_id": intent.token_id,
                     "side": intent.side,
                     "source": source_override,
-                    "error": str(exc),
+                    "error": redact_error_detail(exc),
                 },
             )
             return ExecutionCoordinatorResult(
                 accepted=False,
                 status="duplicate_ignored",
                 skip_code="reservation_conflict",
-                reason=str(exc),
+                reason=redact_error_detail(exc),
                 lifecycle_status="duplicate_ignored",
             )
         except CopierOpenExposureCapExceeded as exc:
@@ -333,7 +337,7 @@ class ExecutionCoordinator:
                     "user_id": intent.user_id,
                     "side": intent.side,
                     "source": source_override,
-                    "error": str(exc),
+                    "error": redact_error_detail(exc),
                 },
             )
             return ExecutionCoordinatorResult(
@@ -350,7 +354,7 @@ class ExecutionCoordinator:
                     "user_id": intent.user_id,
                     "side": intent.side,
                     "source": source_override,
-                    "error": str(exc),
+                    "error": redact_error_detail(exc),
                 },
             )
             return ExecutionCoordinatorResult(

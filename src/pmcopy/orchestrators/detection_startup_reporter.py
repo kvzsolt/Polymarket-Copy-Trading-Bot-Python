@@ -23,10 +23,7 @@ from pmcopy.services.metrics import (
 
 class _OnchainDetectionSettings(Protocol):
     @property
-    def onchain_ws_url(self) -> str: ...
-
-    @property
-    def pending_tx_ws_url(self) -> str: ...
+    def alchemy_wss_url(self) -> str: ...
 
     @property
     def pending_tx_provider(self) -> str: ...
@@ -74,23 +71,14 @@ class DetectionStartupReporter:
         detection = config.detection
         mode = detection.detection_mode
         onchain = detection.onchain
-        ws_configured = bool(
-            str(onchain.onchain_ws_url or "").strip()
-            or str(onchain.pending_tx_ws_url or "").strip()
-        )
-        provider = str(onchain.pending_tx_provider or "").strip().lower() or "unset"
+        ws_configured = bool(str(getattr(onchain, "alchemy_wss_url", "") or "").strip())
+        provider = str(getattr(onchain, "pending_tx_provider", "") or "alchemy").strip().lower()
         self._logger.info(
-            "detection_mode_selected | mode=%s onchain_ws=%s polling_fallback=true provider=%s",
+            "detection_mode_selected | mode=%s alchemy_ws=%s provider=%s",
             mode.value,
             "set" if ws_configured else "unset",
-            provider,
+            provider or "alchemy",
         )
-        if mode is DetectionMode.POLLING and ws_configured:
-            self._logger.warning(
-                "detection_ws_url_unused | mode=polling — an on-chain WebSocket URL is "
-                "configured but detection.mode selects REST polling only; set "
-                "detection.mode=on_chain_confirmed or on_chain_pending to use it"
-            )
         for label in DETECTION_SOURCE_LABEL_VALUES:
             self._metrics.set_gauge(
                 GAUGE_DETECTION_MODE_SELECTED,

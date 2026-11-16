@@ -206,6 +206,21 @@ class CrossSourceTradeClaimPolicy:
         self._own_claim_memory = max(1, int(own_claim_memory))
         # tx-level key -> number of sibling fills admitted on that claim.
         self._own_claims: OrderedDict[str, int] = OrderedDict()
+        self._tx_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+
+    def _lock_for_tx_key(self, tx_key: str) -> asyncio.Lock:
+        lock = self._tx_locks.get(tx_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tx_locks[tx_key] = lock
+            while len(self._tx_locks) > max(256, self._own_claim_memory):
+                oldest_key, oldest_lock = next(iter(self._tx_locks.items()))
+                if oldest_lock.locked():
+                    break
+                self._tx_locks.pop(oldest_key, None)
+        else:
+            self._tx_locks.move_to_end(tx_key)
+        return lock
 
     async def try_claim(
         self,
@@ -241,75 +256,76 @@ class CrossSourceTradeClaimPolicy:
                 dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN, fill_key=fill_key
             )
         tx_hash = str(raw.get("tx_hash") or raw.get("transactionHash") or "")
-        try:
-            repo: ProcessedTradeClaimRepository = context.orders_repo
-            claimed = await repo.try_claim_processed_trade(
-                trade_key=tx_key,
-                user_id=user_id,
-                leader_id=leader_id,
-                tx_hash=tx_hash,
-                side=str(raw.get("side") or "").strip().upper(),
-                asset=str(raw.get("token_id") or raw.get("asset") or ""),
-                condition_id=str(raw.get("condition_id") or raw.get("conditionId") or ""),
-                status=self.STATUS,
+        async with self._lock_for_tx_key(tx_key):
+            try:
+                repo: ProcessedTradeClaimRepository = context.orders_repo
+                claimed = await repo.try_claim_processed_trade(
+                    trade_key=tx_key,
+                    user_id=user_id,
+                    leader_id=leader_id,
+                    tx_hash=tx_hash,
+                    side=str(raw.get("side") or "").strip().upper(),
+                    asset=str(raw.get("token_id") or raw.get("asset") or ""),
+                    condition_id=str(raw.get("condition_id") or raw.get("conditionId") or ""),
+                    status=self.STATUS,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "cross_source_claim_failed | source=%s user=%s tx=%s error=%s — signal not "
+                    "dispatched to this follower (fail closed)",
+                    source.value,
+                    user_id,
+                    tx_hash,
+                    redact_error_detail(exc),
+                )
+                return CrossSourceClaimDecision(
+                    dispatch=False, trade_key=tx_key, winner=_WINNER_ERROR, fill_key=fill_key
+                )
+            if claimed:
+                self._remember_own_claim(tx_key)
+                return CrossSourceClaimDecision(
+                    dispatch=True,
+                    trade_key=tx_key,
+                    winner=_WINNER_ON_CHAIN,
+                    claimed=True,
+                    fill_key=fill_key,
+                )
+            holder = (
+                _WINNER_ON_CHAIN
+                if tx_key in self._own_claims
+                else await self._holder_of(
+                    repo, tx_key, source=source, user_id=user_id, tx_hash=tx_hash
+                )
             )
-        except Exception as exc:
-            self._logger.warning(
-                "cross_source_claim_failed | source=%s user=%s tx=%s error=%s — signal not "
-                "dispatched to this follower (fail closed)",
-                source.value,
-                user_id,
-                tx_hash,
-                redact_error_detail(exc),
-            )
-            return CrossSourceClaimDecision(
-                dispatch=False, trade_key=tx_key, winner=_WINNER_ERROR, fill_key=fill_key
-            )
-        if claimed:
-            self._remember_own_claim(tx_key)
-            return CrossSourceClaimDecision(
-                dispatch=True,
-                trade_key=tx_key,
-                winner=_WINNER_ON_CHAIN,
-                claimed=True,
-                fill_key=fill_key,
-            )
-        holder = (
-            _WINNER_ON_CHAIN
-            if tx_key in self._own_claims
-            else await self._holder_of(
-                repo, tx_key, source=source, user_id=user_id, tx_hash=tx_hash
-            )
-        )
-        if holder == _WINNER_ON_CHAIN:
-            self._record_sibling(tx_key)
+            if holder == _WINNER_ON_CHAIN:
+                self._record_sibling(tx_key)
+                self._logger.info(
+                    "cross_source_sibling_fill | source=%s tx=%s user=%s — same-tx sibling fill "
+                    "dispatched; per-fill claim in the pipeline keeps idempotency",
+                    source.value,
+                    tx_hash,
+                    user_id,
+                )
+                return CrossSourceClaimDecision(
+                    dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN, fill_key=fill_key
+                )
+            if holder == _WINNER_UNKNOWN:
+                return CrossSourceClaimDecision(
+                    dispatch=False, trade_key=tx_key, winner=_WINNER_UNKNOWN, fill_key=fill_key
+                )
             self._logger.info(
-                "cross_source_sibling_fill | source=%s tx=%s user=%s — same-tx sibling fill "
-                "dispatched; per-fill claim in the pipeline keeps idempotency",
+                "detection_signal_deduped | source=%s winner=%s tx=%s user=%s",
                 source.value,
+                holder,
                 tx_hash,
                 user_id,
             )
+            self._metrics.inc(METRIC_DETECTION_SIGNALS_DEDUPED, labels={"source": source.value})
+            if self._telemetry is not None:
+                self._telemetry.signal_deduplicated(source.value, leader_id)
             return CrossSourceClaimDecision(
-                dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN, fill_key=fill_key
+                dispatch=False, trade_key=tx_key, winner=holder, fill_key=fill_key
             )
-        if holder == _WINNER_UNKNOWN:
-            return CrossSourceClaimDecision(
-                dispatch=False, trade_key=tx_key, winner=_WINNER_UNKNOWN, fill_key=fill_key
-            )
-        self._logger.info(
-            "detection_signal_deduped | source=%s winner=%s tx=%s user=%s",
-            source.value,
-            holder,
-            tx_hash,
-            user_id,
-        )
-        self._metrics.inc(METRIC_DETECTION_SIGNALS_DEDUPED, labels={"source": source.value})
-        if self._telemetry is not None:
-            self._telemetry.signal_deduplicated(source.value, leader_id)
-        return CrossSourceClaimDecision(
-            dispatch=False, trade_key=tx_key, winner=holder, fill_key=fill_key
-        )
 
     async def release(
         self,
@@ -656,20 +672,12 @@ class OnchainSignalDispatchAdapter:
 
     @staticmethod
     def source_for(signal: OnchainTradeSignal) -> DetectionMode:
-        """Return the provenance label for ``signal``.
-
-        Args:
-            signal: Canonical on-chain trade signal.
-
-        Returns:
-            ``ON_CHAIN_PENDING`` for provisional signals, else
-            ``ON_CHAIN_CONFIRMED``.
-        """
+        """Return the provenance label for ``signal``."""
 
         return (
             DetectionMode.ON_CHAIN_PENDING
             if signal.provisional
-            else DetectionMode.ON_CHAIN_CONFIRMED
+            else DetectionMode.ON_CHAIN_LOGS_ONLY
         )
 
     def contexts_for(self, leader_wallet: str) -> Sequence[Any]:
@@ -722,8 +730,11 @@ class OnchainSignalDispatchAdapter:
             return_exceptions=True,
         )
         copied_user_ids: list[str] = []
+        cancelled_exc: asyncio.CancelledError | None = None
         for (ctx, decision), result in zip(admitted, results, strict=True):
             if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError) and cancelled_exc is None:
+                    cancelled_exc = result
                 self._logger.warning(
                     "onchain_signal_pipeline_error | leader=%s user=%s tx=%s error=%s",
                     leader_lower,
@@ -731,8 +742,10 @@ class OnchainSignalDispatchAdapter:
                     signal.tx_hash,
                     redact_error_detail(result),
                 )
-                await self._claim_policy.release_after_pipeline_error(
-                    ctx, decision, reason="pipeline_error"
+                await asyncio.shield(
+                    self._claim_policy.release_after_pipeline_error(
+                        ctx, decision, reason="pipeline_error"
+                    )
                 )
                 continue
             if self._is_pre_submission_only(result):
@@ -740,6 +753,8 @@ class OnchainSignalDispatchAdapter:
             if self._reached_venue(result):
                 copied_user_ids.append(str(getattr(ctx, "user_id", "") or ""))
         self._track_pending_copy(signal, copied_user_ids)
+        if cancelled_exc is not None:
+            raise cancelled_exc
 
     @staticmethod
     def _reached_venue(result: Any) -> bool:

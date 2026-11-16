@@ -115,6 +115,12 @@ class UserWebSocket:
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
+        pending_tasks = list(self._tasks)
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        self._tasks.clear()
 
         logger.info("UserWS: stopped")
 
@@ -129,7 +135,7 @@ class UserWebSocket:
                     self._ws_url,
                     ping_interval=None,
                     close_timeout=5,
-                    max_queue=None,
+                    max_queue=1024,
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = _MIN_RECONNECT_DELAY
@@ -150,11 +156,13 @@ class UserWebSocket:
                             await heartbeat_task
 
             except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK) as exc:
-                logger.warning("UserWS: connection closed: %s", exc)
+                logger.warning("UserWS: connection closed: %s", type(exc).__name__)
             except OSError as exc:
-                logger.warning("UserWS: network error: %s", exc)
+                logger.warning("UserWS: network error: %s", type(exc).__name__)
             except Exception as exc:
-                logger.exception("UserWS: unexpected error: %s", exc)
+                from pmcopy.utils.logger import redact_error_detail
+
+                logger.error("UserWS: unexpected error: %s", redact_error_detail(exc))
             finally:
                 self._ws = None
                 self._authenticated = False
@@ -291,7 +299,10 @@ class UserWebSocket:
                 self._fire_lifecycle_callback(self._on_authenticated)
             return
 
-        logger.warning("UserWS: auth response: %s", event)
+        self._authenticated = False
+        logger.warning("UserWS: auth response rejected (status=%s)", status or "unknown")
+        if self._ws is not None:
+            self._spawn(self._ws.close())
 
     def _handle_fill(self, event: dict[str, Any]) -> None:
         token_id = _token_id_from_event(event)
@@ -348,6 +359,10 @@ class UserWebSocket:
 
     def _spawn(self, coro: Any) -> None:
         # Hold a strong reference so background tasks aren't GC'd mid-flight.
+        if len(self._tasks) >= 512:
+            coro.close()
+            logger.warning("UserWS: callback backlog full (512); dropping callback")
+            return
         try:
             task = asyncio.get_running_loop().create_task(coro)
         except RuntimeError:
@@ -364,14 +379,16 @@ class UserWebSocket:
             except Exception as callback_exc:
                 logger.warning(
                     "UserWS: callback task inspection failed: %s",
-                    callback_exc,
+                    type(callback_exc).__name__,
                 )
                 return
             if exc is not None:
+                from pmcopy.utils.log_redaction import redact_text
+
                 logger.warning(
                     "UserWS: callback task failed: %s: %s",
                     type(exc).__name__,
-                    exc,
+                    redact_text(str(exc)),
                 )
 
         task.add_done_callback(_on_done)
@@ -449,20 +466,23 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
         or event.get("transactionHash")
     )
 
-    def _coerce_float(v: Any) -> float | None:
+    def _coerce_decimal(v: Any) -> Any:
+        if v is None:
+            return None
+        from decimal import Decimal, InvalidOperation
+
         try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
+            d = Decimal(str(v))
+            return d if d.is_finite() else None
+        except (InvalidOperation, TypeError, ValueError):
             return None
 
     try:
         from pmcopy.utils.logger import log_order_lifecycle as _log_lc
 
-        size = _coerce_float(size_raw)
-        price = _coerce_float(price_raw)
-        usdc = None
-        if size is not None and price is not None:
-            usdc = size * price
+        size_dec = _coerce_decimal(size_raw)
+        price_dec = _coerce_decimal(price_raw)
+        usdc_dec = size_dec * price_dec if size_dec is not None and price_dec is not None else None
         _log_lc(
             logger,
             status=canonical,
@@ -470,9 +490,9 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
             condition_id=str(condition_id) if condition_id else None,
             asset=token_id,
             order_id=str(order_id) if order_id else None,
-            size=size,
-            price=price,
-            usdc_value=usdc,
+            size=float(size_dec) if size_dec is not None else None,
+            price=float(price_dec) if price_dec is not None else None,
+            usdc_value=float(usdc_dec) if usdc_dec is not None else None,
             venue_status=str(raw).upper(),
             tx_hash=str(tx_hash) if tx_hash else None,
             meta={"trade_id": str(trade_id)} if trade_id else None,

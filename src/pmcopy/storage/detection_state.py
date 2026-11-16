@@ -17,7 +17,11 @@ from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 
-from pmcopy.domain.grouped_detection import NativeOwnerFill, TraderDetectionPolicy, TraderDetectionState
+from pmcopy.domain.grouped_detection import (
+    NativeOwnerFill,
+    TraderDetectionPolicy,
+    TraderDetectionState,
+)
 from pmcopy.interfaces.grouped_detection import ObservationDisposition
 
 

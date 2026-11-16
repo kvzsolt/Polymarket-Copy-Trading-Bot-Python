@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import orjson
 import random
 from typing import Any, Callable, Coroutine, Protocol, runtime_checkable
@@ -147,25 +148,19 @@ class OnchainWebSocket:
         self._sub_id = None
 
     async def _run(self) -> None:
+        ws_logger = logging.Logger("pmcopy.private_onchain_ws")
+        ws_logger.disabled = True
         while self._running:
+            notified_connected = False
             try:
                 async with websockets.connect(
                     self._ws_url,
+                    proxy=None,
                     ping_interval=20,
                     ping_timeout=20,
                     close_timeout=5,
-                    # Backpressure cap: when the on_message callback (which
-                    # may block on _resolve_condition_id HTTP/RPC lookups)
-                    # falls behind the producer during a burst (e.g. a
-                    # high-volume Polygon block with 100s of OrderFilled
-                    # events), the WS library's incoming buffer fills. With
-                    # max_queue=None (unbounded) this can grow without limit
-                    # and OOM the host. With a bounded cap the library
-                    # closes the connection with code 1011 on overflow,
-                    # triggering the reconnect+exponential-backoff below —
-                    # exactly the desired fail-safe (the runtime already
-                    # tolerates WSS drops per its own docstring).
                     max_queue=_MAX_QUEUE,
+                    logger=ws_logger,
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = self._reconnect_min_delay
@@ -174,6 +169,7 @@ class OnchainWebSocket:
                     )
 
                     await self._send_subscribe(ws)
+                    notified_connected = True
 
                     async for raw in ws:
                         if not self._running:
@@ -196,7 +192,8 @@ class OnchainWebSocket:
             finally:
                 self._ws = None
                 self._sub_id = None
-                self._notify_state("on_disconnected")
+                if notified_connected:
+                    self._notify_state("on_disconnected")
 
             if not self._running:
                 break
@@ -229,7 +226,11 @@ class OnchainWebSocket:
             logger.warning("OnchainWS[%s]: non-JSON acknowledgement rejected", self._name)
             raise ConnectionClosed(None, None) from exc
         if not isinstance(ack, dict) or "result" not in ack:
-            logger.warning("OnchainWS[%s]: subscribe failed: %s", self._name, ack)
+            logger.warning(
+                "OnchainWS[%s]: subscribe failed: %s",
+                self._name,
+                redact_error_detail(ack),
+            )
             raise ConnectionClosed(None, None)
         self._sub_id = str(ack["result"])
         logger.info("OnchainWS[%s]: subscribed (sub_id=%s)", self._name, self._sub_id)

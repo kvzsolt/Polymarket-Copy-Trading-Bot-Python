@@ -21,18 +21,24 @@ from pmcopy.config.app_config import load_config
 ADDRESS = "0x" + "3" * 40
 
 
+OVERRIDE_RPC = "https://polygon-mainnet.g.alchemy.com/v2/override-key-123"
+SECRETS_RPC = "https://polygon-mainnet.g.alchemy.com/v2/from-secrets-key-456"
+ALCHEMY_WSS = "wss://polygon-mainnet.g.alchemy.com/v2/override-key-123"
+
+
 def _overrides() -> dict:
     return {
         "database": {"dsn": "postgresql://probe:probe@localhost/probe"},
         "wallet": {"funder_address": ADDRESS},
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "polymarket": {"rpc_url": OVERRIDE_RPC},
+        "detection": {"onchain": {"alchemy_wss_url": ALCHEMY_WSS}},
     }
 
 
 def _write_secrets(path: Path, *, mode: int = 0o600) -> None:
     path.write_text(
         "PMCOPY__DATABASE__DSN=postgresql://p:p@l/p\n"
-        "PMCOPY__POLYMARKET__RPC_URL=https://from-secrets.invalid\n",
+        f"PMCOPY__POLYMARKET__RPC_URL={SECRETS_RPC}\n",
         encoding="utf-8",
     )
     path.chmod(mode)
@@ -69,7 +75,7 @@ def test_parent_secrets_env_is_not_loaded_from_a_nested_cwd(
     config = load_config(_overrides())
 
     # The ancestor secrets were not merged: the override rpc_url survives.
-    assert config.polymarket.rpc_url == "https://rpc.invalid"
+    assert config.polymarket.rpc_url == OVERRIDE_RPC
 
 
 def test_parent_runtime_local_shim_is_not_loaded_from_a_nested_cwd(
@@ -105,7 +111,7 @@ def test_cwd_secrets_env_is_loaded_without_the_env_var(
 
     config = load_config(_overrides())
 
-    assert config.polymarket.rpc_url == "https://from-secrets.invalid"
+    assert config.polymarket.rpc_url == SECRETS_RPC
 
 
 def test_env_var_root_wins_over_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,7 +127,7 @@ def test_env_var_root_wins_over_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     config = load_config(_overrides())
 
-    assert config.polymarket.rpc_url == "https://from-secrets.invalid"
+    assert config.polymarket.rpc_url == SECRETS_RPC
 
 
 def test_missing_env_var_root_falls_back_to_cwd(

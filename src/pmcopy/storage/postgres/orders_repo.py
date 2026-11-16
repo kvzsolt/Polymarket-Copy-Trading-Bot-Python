@@ -34,6 +34,7 @@ Translation notes:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -1151,7 +1152,7 @@ class OrdersRepo(AbstractOrderRepository):
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
-                    SELECT response_json
+                    SELECT request_json, response_json
                     FROM orders
                     WHERE idempotency_key = $1
                       AND user_id = $2
@@ -1164,6 +1165,7 @@ class OrdersRepo(AbstractOrderRepository):
                 )
                 if row is None:
                     return False
+                request_doc = _parse_jsonb(row["request_json"])
                 response = _parse_jsonb(row["response_json"])
                 existing_recovery = response.get("ambiguous_recovery")
                 if not isinstance(existing_recovery, dict):
@@ -1182,11 +1184,12 @@ class OrdersRepo(AbstractOrderRepository):
                 ):
                     return False
 
+                confirmed_utc = confirmed_at.astimezone(timezone.utc)
                 recovery.update(
                     {
                         "version": 1,
                         "resolution": "confirmed_absent",
-                        "confirmed_at": confirmed_at.astimezone(timezone.utc).isoformat(),
+                        "confirmed_at": confirmed_utc.isoformat(),
                         "required_scan_count": required,
                     }
                 )
@@ -1213,6 +1216,28 @@ class OrdersRepo(AbstractOrderRepository):
                     owner,
                     _json_str(response) or "{}",
                 )
+                if returned is not None:
+                    req_meta = request_doc.get("recovery_metadata")
+                    task_res_id = (
+                        str(req_meta.get("task_budget_reservation_id") or "").strip()
+                        if isinstance(req_meta, dict)
+                        else ""
+                    )
+                    if task_res_id:
+                        with contextlib.suppress(Exception):
+                            async with conn.transaction():
+                                await conn.execute(
+                                    """
+                                    UPDATE copy_task_budget_reservations
+                                    SET status = 'released',
+                                        updated_at = $2
+                                    WHERE reservation_id = $1
+                                      AND status = 'reserved'
+                                      AND COALESCE(settled_notional, 0) = 0
+                                    """,
+                                    task_res_id,
+                                    confirmed_utc,
+                                )
         return returned is not None
 
     async def save_submission(self, record: OrderSubmissionRecord) -> None:
@@ -1574,6 +1599,50 @@ class OrdersRepo(AbstractOrderRepository):
                         default=str,
                     ),
                     order_id,
+                )
+
+    async def update_submission_status_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+        status: str,
+        response_patch: dict[str, Any] | None = None,
+    ) -> None:
+        """Update submission status by idempotency key (used for no-order-ID rows)."""
+        if not idempotency_key:
+            return
+        response_patch = response_patch or {}
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return
+                existing_response = _parse_jsonb(row["response_json"])
+                merged_response = {**existing_response, **response_patch, "status": status}
+                await conn.execute(
+                    """
+                    UPDATE orders
+                    SET status = $1,
+                        response_json = $2::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $3
+                    """,
+                    status,
+                    json.dumps(
+                        merged_response,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                    idempotency_key,
                 )
 
     async def get_unconfirmed_order_submissions(

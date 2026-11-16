@@ -8,8 +8,6 @@ import random
 from datetime import timedelta
 from typing import Protocol, cast
 
-import websockets
-
 from pmcopy.adapters.polygon.alchemy_json_rpc import (
     AlchemyJsonRpcSession,
     AlchemyRpcDisconnectedError,
@@ -134,12 +132,19 @@ class WebsocketsJsonRpcConnector:
             Connected WebSocket implementing the narrow JSON-RPC transport.
         """
 
-        socket = await websockets.connect(
+        from pmcopy.clients.alchemy_multiplex_ws import (
+            _NoRedirectConnect,
+            _SILENT_WS_LOGGER,
+        )
+
+        socket = await _NoRedirectConnect(
             url,
+            proxy=None,
             ping_interval=10,
             ping_timeout=10,
             close_timeout=5,
             max_queue=1000,
+            logger=_SILENT_WS_LOGGER,
         )
         return cast(JsonRpcSocket, socket)
 
@@ -211,6 +216,7 @@ class AlchemyConnectionManager:
         """Stop reconnect attempts and close the active warm session."""
 
         self._running = False
+        self._ready.set()
         task = self._task
         self._task = None
         if task is not None:

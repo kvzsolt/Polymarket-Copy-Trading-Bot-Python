@@ -124,9 +124,17 @@ async def test_activated_task_executes_accounts_partial_fills_and_recovers(monke
                     "database": {"dsn": dsn},
                     "wallet": {
                         "funder_address": FOLLOWER,
-                        "polygon_rpc_url": "https://rpc.invalid",
+                        "polygon_rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123",
                     },
-                    "polymarket": {"rpc_url": "https://rpc.invalid", "enforce_geoblock": False},
+                    "polymarket": {
+                        "rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123",
+                        "enforce_geoblock": False,
+                    },
+                    "detection": {
+                        "onchain": {
+                            "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                        }
+                    },
                     "execution": {"trading_mode": "paper", "reservations_enabled": True},
                     "copy_trading": {"copy_tasks": {"enabled": True}},
                     "risk": {"enable_risk_mgmt": True},

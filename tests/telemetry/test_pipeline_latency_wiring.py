@@ -41,7 +41,7 @@ def test_normalizer_measures_receipt_to_normalization_and_carries_queue_start() 
             "timestamp": "1800000000",
             "_source_receipt": receipt,
         },
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
     assert event.normalized_receipt == clock.capture()
     assert histogram(registry, LatencyPhase.SOURCE_DETECTION_TO_NORMALIZED).total == 0.02

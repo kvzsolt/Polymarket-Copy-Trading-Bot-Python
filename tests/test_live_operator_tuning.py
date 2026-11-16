@@ -27,14 +27,11 @@ def _overrides() -> dict:
         "wallet": {
             "funder_address": "0x" + "1" * 40,
             "private_key": "0x" + "a" * 64,
-            "polygon_rpc_url": "https://rpc.invalid",
         },
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
-        "network": {"rpc_url": "https://rpc.invalid"},
-        # live/detection.yml selects an on-chain mode, which fails closed
-        # without the wss:// endpoint the operator keeps in secrets.env.
         "detection": {
-            "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
         },
     }
 

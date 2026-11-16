@@ -32,13 +32,9 @@ class BudgetSettings:
     alchemy_monthly_limit: int = 0
     essential_reserve: int = 0
     alchemy_billing_day: int = 1
-    infura_daily_limit: int = 0
-    infura_essential_reserve: int = 0
     pending_daily_limit: int = 0
     initial_alchemy_used: int = 0
-    initial_infura_used: int = 0
     alchemy_per_second: int = 0
-    infura_per_second: int = 0
     stream_margin: Decimal = Decimal("1.15")
 
     def __post_init__(self) -> None:
@@ -50,13 +46,9 @@ class BudgetSettings:
             "alchemy_monthly_limit",
             "essential_reserve",
             "alchemy_billing_day",
-            "infura_daily_limit",
-            "infura_essential_reserve",
             "pending_daily_limit",
             "initial_alchemy_used",
-            "initial_infura_used",
             "alchemy_per_second",
-            "infura_per_second",
         ):
             value = getattr(self, name)
             if type(value) is not int or value < 0:
@@ -90,4 +82,3 @@ class ProviderUsageSnapshot(TypedDict):
     other_app_usage_included: str
     pending_daily_used: int
     alchemy: ProviderUsage
-    infura: ProviderUsage

@@ -76,16 +76,16 @@ class PolygonSourceRuntimeConfig:
             raise ValueError("confirmation_timeout must be positive")
         exchanges = _AddressSet.normalize(self.exchange_addresses)
         watched = frozenset(_AddressSet.normalize(self.watched_wallets))
-        if not exchanges:
-            raise ValueError("exchange_addresses must not be empty")
+        if not exchanges or len(exchanges) > 4:
+            raise ValueError("exchange_addresses must contain 1..4 Exchange addresses")
         object.__setattr__(self, "exchange_addresses", exchanges)
         object.__setattr__(self, "watched_wallets", watched)
 
     @property
     def pending_targets(self) -> tuple[str, ...]:
-        """Return direct exchange plus watched Safe destination filters."""
+        """Return strictly the verified Exchange contract destination filters."""
 
-        return tuple(dict.fromkeys((*self.exchange_addresses, *sorted(self.watched_wallets))))
+        return self.exchange_addresses
 
 
 class _BoundEvmRpcPort:
@@ -190,7 +190,8 @@ class PolygonSourceRuntimeBootstrap:
             options=AlchemySubscriptionOptions(
                 chain_id=config.chain_id,
                 pending_targets=config.pending_targets,
-                log_addresses=config.exchange_addresses,
+                log_addresses=(config.exchange_addresses if config.watched_wallets else ()),
+                watched_wallets=tuple(sorted(config.watched_wallets)),
             ),
             sink=pipeline,
             clock=clock,

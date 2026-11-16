@@ -111,6 +111,7 @@ class MarketWebSocket:
         self._on_quote_invalidated = on_quote_invalidated
         self._tasks: set[asyncio.Task[None]] = set()
         self._max_pending_callbacks = max_pending_callbacks
+        self._send_lock = asyncio.Lock()
         self._closed = False
         self._evidence = evidence
 
@@ -142,18 +143,21 @@ class MarketWebSocket:
         if not new_ids:
             return
         self._asset_ids.extend(new_ids)
-        if self._ws is not None:
-            await self._ws.send(
-                orjson.dumps(
-                    {
-                        "assets_ids": new_ids,
-                        "operation": "subscribe",
-                        "level": 2,
-                        "custom_feature_enabled": True,
-                    }
-                ).decode()
-            )
-            logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
+        ws = self._ws
+        if ws is not None:
+            with contextlib.suppress(ConnectionClosed, OSError):
+                async with self._send_lock:
+                    await ws.send(
+                        orjson.dumps(
+                            {
+                                "assets_ids": new_ids,
+                                "operation": "subscribe",
+                                "level": 2,
+                                "custom_feature_enabled": True,
+                            }
+                        ).decode()
+                    )
+                logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
 
     async def unsubscribe(self, asset_ids: list[str]) -> None:
         """Remove the supplied market-token subscriptions."""
@@ -162,16 +166,19 @@ class MarketWebSocket:
             return
         remove_set = set(remove_ids)
         self._asset_ids = [a for a in self._asset_ids if a not in remove_set]
-        if self._ws is not None:
-            await self._ws.send(
-                orjson.dumps(
-                    {
-                        "assets_ids": remove_ids,
-                        "operation": "unsubscribe",
-                    }
-                ).decode()
-            )
-            logger.info("MarketWS: dynamically unsubscribed from %d asset(s)", len(remove_ids))
+        ws = self._ws
+        if ws is not None:
+            with contextlib.suppress(ConnectionClosed, OSError):
+                async with self._send_lock:
+                    await ws.send(
+                        orjson.dumps(
+                            {
+                                "assets_ids": remove_ids,
+                                "operation": "unsubscribe",
+                            }
+                        ).decode()
+                    )
+                logger.info("MarketWS: dynamically unsubscribed from %d asset(s)", len(remove_ids))
         for asset_id in remove_ids:
             self._mark_asset_stale(asset_id, "unsubscribed")
 
@@ -255,13 +262,14 @@ class MarketWebSocket:
             return
         self._bootstrap_in_flight = True
         try:
-            logger.info("MarketWS: REST bootstrap for %d asset(s)", len(self._asset_ids))
+            snapshot_ids = list(self._asset_ids)
+            logger.info("MarketWS: REST bootstrap for %d asset(s)", len(snapshot_ids))
             self._call_cache_optional("invalidate_all")
             rest_bootstrap = self._rest_bootstrap
             if rest_bootstrap is None:
                 self._mark_all_dirty("rest_bootstrap_unavailable")
                 return
-            await rest_bootstrap(self._asset_ids)
+            await rest_bootstrap(snapshot_ids)
         except Exception as exc:
             logger.warning("MarketWS: REST bootstrap failed: %s", exc)
             self._mark_all_dirty("rest_bootstrap_failed")
@@ -269,15 +277,17 @@ class MarketWebSocket:
             self._bootstrap_in_flight = False
 
     async def _subscribe(self, ws: Any) -> None:
+        snapshot_ids = list(self._asset_ids)
         payload = {
             "type": "market",
-            "assets_ids": self._asset_ids,
+            "assets_ids": snapshot_ids,
             "initial_dump": True,
             "level": 2,
             "custom_feature_enabled": True,
         }
-        await ws.send(orjson.dumps(payload).decode())
-        logger.info("MarketWS: subscribed to %d asset(s)", len(self._asset_ids))
+        async with self._send_lock:
+            await ws.send(orjson.dumps(payload).decode())
+        logger.info("MarketWS: subscribed to %d asset(s)", len(snapshot_ids))
 
     async def _heartbeat(self, ws: Any) -> None:
         # First PING is sent immediately on connect, not after the interval.
@@ -291,7 +301,8 @@ class MarketWebSocket:
         # (seeded at connect time) lets the gap grow each iteration.
         while self._running:
             try:
-                await ws.send("PING")
+                async with self._send_lock:
+                    await ws.send("PING")
                 now = time.monotonic()
                 self._last_ping_monotonic = now
                 self._call_cache_optional("on_market_ws_heartbeat", now)
@@ -358,7 +369,8 @@ class MarketWebSocket:
             self._call_cache_optional("on_market_ws_pong", now)
             if msg in ("PING", "ping"):
                 with contextlib.suppress(Exception):
-                    await ws.send("PONG")
+                    async with self._send_lock:
+                        await ws.send("PONG")
                 continue
             try:
                 self._handle_message(msg)

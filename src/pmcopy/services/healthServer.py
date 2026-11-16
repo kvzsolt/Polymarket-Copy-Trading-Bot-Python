@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import re
 import threading
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -360,11 +361,24 @@ async def start_health_server(
     *,
     tracker: ReadinessTracker | None = None,
     host: str = "127.0.0.1",
+    telemetry_query: Any | None = None,
+    telemetry_hub: Any | None = None,
+    detection_telemetry: Callable[[], dict[str, Any] | None] | None = None,
 ) -> web.AppRunner:
-    """Start the injected health server without joining the trading path."""
+    """Start the injected health and read-only telemetry server."""
     if tracker is not None:
         tracker.update(started_ts=int(time.time()))
     app = web.Application()
+
+    from pmcopy.telemetry_ui.presenter import TelemetryWebPresenter
+
+    presenter = TelemetryWebPresenter(
+        tracker=tracker,
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        detection_telemetry=detection_telemetry,
+    )
+    presenter.register_routes(app)
 
     async def health_handler(_request: web.Request) -> web.Response:
         # Legacy /health: db_ok AND api_ok must be true.

@@ -666,11 +666,11 @@ class ReconciliationService:
         if not isinstance(payload, dict):
             return None
         evidence = UserOrderEvidence.from_payload(payload)
-        if evidence is None or not evidence.is_terminal:
+        if evidence is None or not evidence.is_terminal or evidence.size_matched != Decimal("0"):
             return None
         return {
             "status": "cancelled",
-            "size_matched": str(evidence.size_matched),
+            "size_matched": "0",
             "confirmation_source": "user_wss_order",
         }
 
@@ -945,12 +945,19 @@ class ReconciliationService:
         if market_probe != "ok":
             return None
 
+        expected_token_id = str(
+            record.get("asset") or request.get("token_id") or request.get("asset") or ""
+        ).strip()
         claimed_cache: dict[str, bool] = {}
         candidates: dict[str, list[Any]] = {}
         for fill in market_fills or []:
             leg_order_id = str(self._fill_value(fill, "order_id", "") or "")
             if not leg_order_id or leg_order_id == order_id:
                 continue
+            if expected_token_id:
+                leg_token = str(self._fill_value(fill, "token_id", "") or "").strip()
+                if leg_token and leg_token != expected_token_id:
+                    continue
             leg_side = str(self._fill_value(fill, "side", "") or "").upper()
             if leg_side != side:
                 continue
@@ -978,7 +985,9 @@ class ReconciliationService:
                 getter = getattr(self.orders_repo, "get_by_order_id", None)
                 if callable(getter):
                     try:
-                        claimed = (await getter(leg_order_id)) is not None
+                        claimed = (
+                            await cast(Callable[[str], Awaitable[Any]], getter)(leg_order_id)
+                        ) is not None
                     except Exception:
                         claimed = True
                 claimed_cache[leg_order_id] = claimed
@@ -2002,6 +2011,12 @@ class ReconciliationService:
                             window_start = created_ts - _MARKET_ATTRIBUTION_PRE_WINDOW_SECONDS
                             getter = getattr(self.orders_repo, "get_by_order_id", None)
                             for fill in market_fills or []:
+                                if token_id:
+                                    leg_token = str(
+                                        self._fill_value(fill, "token_id", "") or ""
+                                    ).strip()
+                                    if leg_token and leg_token != token_id:
+                                        continue
                                 leg_side = str(self._fill_value(fill, "side", "") or "").upper()
                                 if leg_side != side.upper():
                                     continue
@@ -2025,7 +2040,11 @@ class ReconciliationService:
                                 claimed_by_other = False
                                 if callable(getter):
                                     try:
-                                        claimed_by_other = (await getter(leg_order_id)) is not None
+                                        claimed_by_other = (
+                                            await cast(Callable[[str], Awaitable[Any]], getter)(
+                                                leg_order_id
+                                            )
+                                        ) is not None
                                     except Exception:
                                         claimed_by_other = False
                                 if claimed_by_other:
@@ -2157,9 +2176,12 @@ class ReconciliationService:
 
         request = record.get("request") or {}
         venue_order_id = str(record.get("venue_order_id") or order_id)
-        market_id = str(request.get("market") or request.get("market_id") or "") or None
         user_id = str(record.get("user_id") or request.get("user_id") or "")
         condition_id = str(record.get("condition_id") or request.get("condition_id") or "")
+        market_id = (
+            str(request.get("market") or request.get("market_id") or condition_id or "").strip()
+            or None
+        )
         token_id = str(record.get("asset") or request.get("token_id") or "")
         try:
             expected_size = Decimal(str(request.get("amount") or request.get("size") or "0"))
@@ -2864,6 +2886,22 @@ class ReconciliationService:
                         )
                     return False
             await self.orders_repo.delete_processed_trade(record["trade_key"])
+            mapped = _VENUE_TO_LIFECYCLE.get(order_status, ("failed", "failed"))
+            update_status = getattr(self.orders_repo, "update_submission_status", None)
+            if callable(update_status):
+                try:
+                    await cast(Callable[..., Awaitable[Any]], update_status)(
+                        order_id=order_id,
+                        status=mapped[0],
+                        response_patch=fill_info,
+                    )
+                except Exception as exc:
+                    if logger is not None:
+                        logger.warning(
+                            "reconcile_no_fill_status_write_failed | order_id=%s error=%s",
+                            order_id,
+                            repr(exc),
+                        )
             self._audit(
                 "reconciliation_no_fill_unlock",
                 {"order_id": order_id, "side": side, "venue_status": order_status},
@@ -2871,7 +2909,6 @@ class ReconciliationService:
             # Release reservation if the record carries one (coordinator path).
             await self._release_reservation_if_present(record, reason=order_status)
             # Lifecycle log — render the canonical terminal-failure panel.
-            mapped = _VENUE_TO_LIFECYCLE.get(order_status, ("failed", "failed"))
             self._emit_lifecycle(
                 status=mapped[1],
                 side=side,
@@ -3096,25 +3133,54 @@ class ReconciliationService:
                         exc,
                     )
                 return False
-        if fill_id != 0 and side == "SELL" and pnl_tracker is not None:
-            realized_source = "entry_price" if entry_price is not None else "unknown_cost_basis"
-            realized_d = (
-                (avg_price - entry_price) * delta_matched if entry_price is not None else None
-            )
-            pnl_tracker.record_sell(
-                condition_id=record["condition_id"],
-                price=avg_price,
-                size_tokens=delta_matched,
-                usdc_value=delta_matched * avg_price,
-                entry_price=entry_price,
-                realized_pnl=realized_d,
-                exit_reason="reconciled_sell",
-                leader_wallet=record.get("leader_id", ""),
-                event_slug="",
-                title=f"realized_source={realized_source}",
-            )
+        if fill_id != 0 and pnl_tracker is not None:
+            if side == "SELL":
+                realized_source = "entry_price" if entry_price is not None else "unknown_cost_basis"
+                realized_d = (
+                    (avg_price - entry_price) * delta_matched if entry_price is not None else None
+                )
+                pnl_tracker.record_sell(
+                    condition_id=record["condition_id"],
+                    price=avg_price,
+                    size_tokens=delta_matched,
+                    usdc_value=delta_matched * avg_price,
+                    entry_price=entry_price,
+                    realized_pnl=realized_d,
+                    exit_reason="reconciled_sell",
+                    leader_wallet=record.get("leader_id", ""),
+                    event_slug="",
+                    title=f"realized_source={realized_source}",
+                )
+            elif side == "BUY" and avg_price > 0 and hasattr(pnl_tracker, "record_buy"):
+                pnl_tracker.record_buy(
+                    condition_id=record["condition_id"],
+                    price=avg_price,
+                    size_tokens=delta_matched,
+                    usdc_value=delta_matched * avg_price,
+                    leader_wallet=record.get("leader_id", ""),
+                    event_slug="",
+                    title="reconciled_buy",
+                )
 
         if is_final_fill:
+            if (
+                balance_regime is not None
+                and str(side).upper() == "BUY"
+                and order_status in _TERMINAL_NO_FILL_STATUSES
+                and avg_price > 0
+                and hasattr(balance_regime, "record_partial_fill")
+            ):
+                requested_amt = await self._resolve_buy_requested_amount(order_id)
+                actual_usdc = current_matched * avg_price
+                if requested_amt > actual_usdc:
+                    try:
+                        balance_regime.record_partial_fill(
+                            recorded_usdc=requested_amt,
+                            actual_usdc=actual_usdc,
+                            order_id=order_id,
+                        )
+                    except Exception:
+                        pass
             await self.orders_repo.mark_processed_trade(
                 trade_key=record["trade_key"],
                 user_id=record["user_id"],

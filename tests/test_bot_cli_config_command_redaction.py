@@ -32,7 +32,12 @@ def _config(overrides: dict | None = None) -> object:
     merged: dict = {
         "database": {"dsn": "postgresql://probe:probe@localhost/probe"},
         "wallet": {"funder_address": ADDRESS},
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "polymarket": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"},
+        "detection": {
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
+        },
     }
     if overrides:
         for section, payload in overrides.items():
@@ -66,7 +71,9 @@ class TestKeyRedactionEngine:
 class TestPatternRedactionOfValues:
     def test_rpc_url_provider_path_key_is_masked(self) -> None:
         canary = _canary_hex(32)
-        cfg = _config({"polymarket": {"rpc_url": f"https://rpc.probe.invalid/v2/{canary}"}})
+        cfg = _config(
+            {"polymarket": {"rpc_url": f"https://polygon-mainnet.g.alchemy.com/v2/{canary}"}}
+        )
         rendered = json.dumps(config_command._config_to_dict(cfg, redacted=True))
 
         assert canary not in rendered
@@ -74,7 +81,7 @@ class TestPatternRedactionOfValues:
 
     def test_url_query_parameter_secret_is_masked(self) -> None:
         canary = _canary_hex()
-        cfg = _config({"polymarket": {"rpc_url": f"https://rpc.invalid/?api_key={canary}"}})
+        cfg = _config({"wallet": {"polygon_rpc_url": f"https://rpc.invalid/?api_key={canary}"}})
         rendered = json.dumps(config_command._config_to_dict(cfg, redacted=True))
 
         assert canary not in rendered
@@ -101,7 +108,9 @@ class TestPrintCommandEndToEnd:
         cfg = _config(
             {
                 "database": {"dsn": f"postgresql://u:{dsn_canary}@localhost/db"},
-                "polymarket": {"rpc_url": f"https://rpc.probe.invalid/v2/{path_key_canary}"},
+                "polymarket": {
+                    "rpc_url": f"https://polygon-mainnet.g.alchemy.com/v2/{path_key_canary}"
+                },
             }
         )
         # Swap the loader for the command's process-level call.

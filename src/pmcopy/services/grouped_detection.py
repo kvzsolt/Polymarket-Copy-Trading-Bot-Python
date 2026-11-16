@@ -54,30 +54,14 @@ class GroupedDetectionPlanner:
         self,
         *,
         pending_enabled: bool = False,
-        infura_logs_billing_verified: bool = False,
     ) -> None:
-        """Store explicit feed permissions without opening network connections.
-
-        Args:
-            pending_enabled: Admit the shared read-only pending observation feed.
-            infura_logs_billing_verified: Reserved; cannot bypass missing per-block metering.
-        """
-        if type(pending_enabled) is not bool or type(infura_logs_billing_verified) is not bool:
+        """Store explicit feed permissions without opening network connections."""
+        if type(pending_enabled) is not bool:
             raise ValueError("feed verification flags must be booleans")
         self._pending_enabled = pending_enabled
 
     def plan(self, policies: Sequence[TraderDetectionPolicy]) -> tuple[DetectionSubscription, ...]:
-        """Return complete owner groups or reject unsafe configuration.
-
-        Args:
-            policies: Exactly one immutable desired policy per wallet.
-
-        Returns:
-            Deterministic subscriptions; an empty active roster returns no feeds.
-
-        Raises:
-            ValueError: Duplicate owners or unverified Infura stream assignment.
-        """
+        """Return complete owner groups or reject unsafe configuration."""
         grouped: dict[str, list[str]] = {}
         observed: set[str] = set()
         pending: list[str] = []
@@ -89,8 +73,8 @@ class GroupedDetectionPlanner:
             observed.add(policy.wallet)
             if not policy.enabled:
                 continue
-            if policy.provider == "infura":
-                raise ValueError("Infura per-block stream billing is not implemented")
+            if policy.provider != "alchemy":
+                raise ValueError("only the Alchemy provider is supported")
             grouped.setdefault(policy.provider, []).append(policy.wallet)
             if policy.mode == "pending":
                 pending.append(policy.wallet)

@@ -131,7 +131,17 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
                 ORDER BY updated_at ASC
                 """
             )
-        unconfirmed = [dict(r) for r in rows]
+        unconfirmed = [
+            {
+                **dict(r),
+                "updated_at": (
+                    r["updated_at"].isoformat()
+                    if hasattr(r["updated_at"], "isoformat")
+                    else r["updated_at"]
+                ),
+            }
+            for r in rows
+        ]
 
         if dry_run:
             output = {
@@ -139,7 +149,7 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
                 "count": len(unconfirmed),
                 "orders": unconfirmed,
             }
-            print(json.dumps(output, indent=2))
+            print(json.dumps(output, indent=2, default=str))
             return 0
 
         reconciled = 0

@@ -20,7 +20,7 @@ def test_app_injects_existing_and_dynamic_contexts_into_v1_runtime() -> None:
     assert source.index("blocked_wallets = _wallets_blocked_by_reconcile_failures") < source.index(
         "v1_runtime.add_contexts(unblocked_contexts)"
     )
-    assert "native_detection_roster_awaiting_restart" in source
+    assert "_refresh_onchain_watched_wallets(" in source
 
 
 def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> None:
@@ -30,7 +30,7 @@ def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> No
 
     assert "run_leader_monitor(" not in source
     assert "v1_sink=v1_runtime.submit_raw_batch" not in source
-    assert "NativeDetectionRuntime.compose(" in source
+    assert "AlchemyDetectionRuntime.compose(" in source
     # On-chain signals reach v1 through ``OnchainSignalDispatchAdapter``
     # (``tests/test_onchain_signal_dispatch.py::test_prefers_v1_runtime_when_present``);
     # the app must hand it the same v1 runtime instance.

@@ -12,7 +12,11 @@ from typing import Protocol
 
 from pmcopy.adapters.clock import SystemReceiptClock
 from pmcopy.domain.history_import import HistoryImportError, HistoryImportPlan
-from pmcopy.services.history_import import HistoryGateway, HistoryImportCollector, HistoryImportOutcome
+from pmcopy.services.history_import import (
+    HistoryGateway,
+    HistoryImportCollector,
+    HistoryImportOutcome,
+)
 from pmcopy.storage.history_import import HistoryImportJournal
 from pmcopy.storage.provider_budget import SqliteProviderBudget
 

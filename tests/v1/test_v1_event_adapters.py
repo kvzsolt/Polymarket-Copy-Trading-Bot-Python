@@ -226,7 +226,7 @@ def event(*, side: TradeSide = TradeSide.BUY) -> CopyTaskSourceEvent:
     return LeaderEventNormalizer(clock=FixedClock()).normalize_raw(
         _LEADER,
         raw,
-        mode=DetectionMode.POLLING,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
 
 
@@ -257,7 +257,7 @@ def test_normalizer_preserves_decimal_identity_and_sell_fraction() -> None:
     assert normalized.trade.side is TradeSide.SELL
     assert normalized.trade.price == Decimal("0.4")
     assert normalized.trade.notional == Decimal("10")
-    assert normalized.trade.mode is DetectionMode.POLLING
+    assert normalized.trade.mode is DetectionMode.ON_CHAIN_LOGS_ONLY
     assert normalized.trade.finality is DetectionFinality.CONFIRMED
     assert normalized.trade.venue_timestamp == datetime.fromtimestamp(
         1786459200,
@@ -298,7 +298,7 @@ async def test_ingress_normalizes_polling_batch_and_onchain_signal_once() -> Non
 
     assert accepted == 1
     assert [item[1].trade.mode for item in workers.events] == [
-        DetectionMode.POLLING,
+        DetectionMode.ON_CHAIN_LOGS_ONLY,
         DetectionMode.ON_CHAIN_PENDING,
     ]
     assert workers.events[1][1].trade.finality is DetectionFinality.PROVISIONAL

@@ -42,7 +42,7 @@ exposes only a loopback health/metrics endpoint for supervision.
 - **Python** 3.13 only (`>=3.13,<3.14`); 3.11–3.12 and 3.14 are unsupported
   (3.14 is deliberately rejected by the fail-closed runtime gate, and by the
   `>=3.13,<3.14` bound in `pyproject.toml`).
-- **Venue transport** `ccxt==4.5.87` (`ccxt.prediction.polymarket`) behind a
+- **Venue transport** `ccxt==4.5.92` (`ccxt.prediction.polymarket`) behind a
   typed gateway; paper mode uses CCXT for public market reads and a local
   simulator for writes.
 - **Persistence** PostgreSQL (orders, fills, positions, reservations,

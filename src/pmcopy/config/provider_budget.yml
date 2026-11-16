@@ -1,7 +1,7 @@
-# Configuration guide: persist informational Alchemy and Infura usage estimates.
+# Configuration guide: persist informational Alchemy usage estimates.
 # Options: configure the ledger path, billing day, and initial usage estimates.
-# Historical quota, reserve, rate-limit, and approval fields are accepted but inert.
-# Trade-offs: counters do not restrict calls; provider-side plan limits still apply.
+# Trade-offs: local SQLite counters track estimated CUs; live WS bandwidth ceiling
+# is enforced in real time via PMCOPY__MAX_HOURLY_WS_MB.
 ledger_path: data/provider-budget.sqlite3
 limits:
   alchemy_billing_day: 1

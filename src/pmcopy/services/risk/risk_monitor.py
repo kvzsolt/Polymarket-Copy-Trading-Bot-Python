@@ -1574,7 +1574,14 @@ async def run_risk_check_for_context(
         await _pre_reconcile_for_context(context)
 
     if context.task_position_manager is not None:
-        await context.task_position_manager.run_once()
+        try:
+            await context.task_position_manager.run_once()
+        except Exception as exc:
+            logger.warning(
+                "risk_monitor_task_protective_error | user=%s error=%r",
+                context.user_id,
+                exc,
+            )
     await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)

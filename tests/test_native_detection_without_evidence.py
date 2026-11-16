@@ -39,12 +39,12 @@ def test_discarding_sink_accepts_and_drops_raw_observations() -> None:
 
 
 def test_application_has_no_durable_evidence_pause_gate() -> None:
-    """The evidence opt-out must not pause native detection."""
+    """The evidence opt-out must not pause Alchemy detection."""
     import pmcopy.app as app
 
     source = inspect.getsource(app._run_application)
     assert "durable_evidence_unavailable" not in source
-    assert "DiscardingRawObservationSink" in source
+    assert "AlchemyDetectionRuntime.compose(" in source
 
 
 @pytest.mark.asyncio

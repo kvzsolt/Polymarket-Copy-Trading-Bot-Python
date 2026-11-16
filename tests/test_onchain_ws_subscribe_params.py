@@ -22,7 +22,7 @@ import pytest
 from pmcopy.clients.onchain_ws import OnchainWebSocket
 from pmcopy.services.onchain_detection.order_filled_detector import (
     ORDER_FILLED_TOPIC0,
-    log_subscription_params,
+    log_subscription_params_for_watched,
 )
 from pmcopy.services.onchain_detection.pending_tx_detector import (
     pending_subscription_params,
@@ -66,10 +66,20 @@ def _build_client(subscribe_params: list[Any]) -> OnchainWebSocket:
     )
 
 
+_WATCHED_USER = "0x" + "11" * 20
+
+
+def _sample_log_subscribe_params() -> list[Any]:
+    maker_params, _taker_params = log_subscription_params_for_watched(
+        watched_wallets={_WATCHED_USER}
+    )
+    return maker_params
+
+
 @pytest.mark.asyncio
 async def test_subscribe_logs_params_is_json_rpc_positional_array() -> None:
     fake = _FakeWebSocket()
-    client = _build_client(log_subscription_params())
+    client = _build_client(_sample_log_subscribe_params())
 
     await client._send_subscribe(fake)
 
@@ -83,7 +93,8 @@ async def test_subscribe_logs_params_is_json_rpc_positional_array() -> None:
     assert request["params"][0] == "logs"
     filter_obj = request["params"][1]
     assert isinstance(filter_obj["address"], list)
-    assert filter_obj["topics"] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    assert filter_obj["topics"][0] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    assert filter_obj["topics"][2] == ["0x" + ("0" * 24) + ("11" * 20)]
 
 
 @pytest.mark.asyncio
@@ -123,7 +134,7 @@ async def test_sent_payload_is_valid_json_string() -> None:
     """The wire frame is a single JSON string (sanity guard against the
     builder accidentally returning a non-serializable object)."""
     fake = _FakeWebSocket()
-    client = _build_client(log_subscription_params())
+    client = _build_client(_sample_log_subscribe_params())
 
     await client._send_subscribe(fake)
 
@@ -144,7 +155,7 @@ async def test_connect_log_never_contains_api_key(monkeypatch: pytest.MonkeyPatc
     secret = "SuperSecretAlchemyKey123"
     client = OnchainWebSocket(
         ws_url=f"wss://polygon-mainnet.g.alchemy.com/v2/{secret}",
-        subscribe_params=log_subscription_params(),
+        subscribe_params=_sample_log_subscribe_params(),
         name="pendingtx",
         on_message=_empty_callback,
     )

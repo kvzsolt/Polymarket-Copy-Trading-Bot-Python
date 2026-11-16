@@ -38,6 +38,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import orjson
 import yaml
@@ -139,11 +140,41 @@ _PENDING_MODE_CONFIDENCE_VALUES = ("market_unattributed", "pending_probable")
 logger = logging.getLogger("AppConfig")
 
 from pmcopy.config.addresses import (  # noqa: E402
+    ALL_VERIFIED_EXCHANGE_ADDRESSES,
     POLYGON_USDCE_ADDRESS,
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
     POLYMARKET_PUSD_ADDRESS,
+    verified_polymarket_exchange_addresses,
 )
+
+
+def _alchemy_key_from_url(raw_url: object, *, expected_scheme: str) -> str | None:
+    """Extract the Alchemy API key from a strict Polygon URL, or return ``None``."""
+    value = str(raw_url or "").strip()
+    if not value or any(ch.isspace() for ch in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != expected_scheme
+        or parsed.hostname != "polygon-mainnet.g.alchemy.com"
+        or parsed.port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or bool(parsed.query)
+        or bool(parsed.fragment)
+        or not parsed.path.startswith("/v2/")
+    ):
+        return None
+    api_key = parsed.path[len("/v2/") :]
+    if not api_key or "/" in api_key:
+        return None
+    if not all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in api_key):
+        return None
+    return api_key
 
 
 # Frozen config sections.
@@ -187,33 +218,29 @@ class AppServiceConfig:
 
 @dataclass(frozen=True)
 class DetectionConfig:
-    """Native-owner production policy and retained offline compatibility settings.
-
-    Production uses ``native`` grouped mined subscriptions exclusively. The
-    legacy mode/onchain fields remain readable by compatibility tools and tests;
-    they never enable REST trade polling or provisional copying in app.py.
-    """
+    """Alchemy-only leader detection configuration and WSS bandwidth cost controls."""
 
     fetch_interval: float = 0.50
     aggregate_signal_window_seconds: float = 4.0
     leader_positions_min_fetch_spacing_ms: int = 250
     leader_activity_min_fetch_spacing_ms: int = 250
     trade_queue_max_batches: int = 64
-    mode: Literal["polling", "on_chain_pending", "on_chain_confirmed"] = "polling"
+    mode: str = "on_chain_logs_only"
     onchain: "OnchainDetectionConfig" = field(default_factory=lambda: OnchainDetectionConfig())
     native: NativeDetectionConfig = field(default_factory=NativeDetectionConfig)
 
+    def __post_init__(self) -> None:
+        normalized = str(self.mode or "").strip().lower()
+        if normalized == "on_chain_confirmed+mempool_reserved":
+            object.__setattr__(self, "mode", DetectionMode.CONFIRMED_MEMPOOL_RESERVED.value)
+        elif normalized and normalized != self.mode:
+            object.__setattr__(self, "mode", normalized)
+
     @property
     def detection_mode(self) -> DetectionMode:
-        """Return the typed detection source selected by ``mode``.
+        """Return the typed detection source selected by ``mode``."""
 
-        ``mode`` is a ``Literal`` validated at load time, so this property is
-        total for any loader-produced config. ``AppConfigSemanticValidator``
-        re-checks the value as defence in depth for directly constructed
-        instances.
-        """
-
-        return DetectionMode(str(self.mode or "").strip().lower())
+        return DetectionMode.parse_config_mode(self.mode)
 
 
 @dataclass(frozen=True)
@@ -450,6 +477,8 @@ class LeaderWalletConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     wallet: str
+    eoa_address: str = ""
+    proxy_address: str = ""
     enabled: bool = True
 
     @model_validator(mode="before")
@@ -1148,29 +1177,18 @@ class MarketDataConfig:
 
 @dataclass(frozen=True)
 class OnchainDetectionConfig:
-    """Early on-chain trader detection policy (PR2).
+    """Alchemy-only on-chain trader detection policy and WSS cost controls."""
 
-    The mined-``OrderFilled`` log subscription is always safe to run because
-    mined fills are authoritative; it is gated by ``enable_mined_detection``
-    (default False) so operators explicitly opt in with a WebSocket URL. The pending-
-    transaction subscription is provisional and gated by
-    ``enable_onchain_pending_detection`` (default False) — it must not feed
-    the copy path until the operator opts in.
-
-    The ``pending_copy_*`` fields govern the follow-up confirmation of a copy
-    that was executed off a *provisional* mempool sighting: the sighting may
-    never mine, may revert, or may be replaced, leaving an orphan position
-    that nothing else in the runtime detects. They are inert in ``polling``
-    and ``on_chain_confirmed`` modes.
-    """
-
+    alchemy_wss_url: str = ""
+    include_legacy_v1_exchanges: bool = False
+    track_direct_user_txs: bool = False
+    max_hourly_ws_mb: Decimal = Decimal("250")
+    active_exchange_addresses: tuple[str, ...] = ()
+    mempool_reservation_ttl_seconds: float = 15.0
+    subscription_debounce_seconds: float = 2.0
+    # Retained compatibility fields for legacy config/test layers.
     enable_onchain_pending_detection: bool = False
     enable_onchain_mined_detection: bool = False
-    # Confirmed-source variant for ``detection.mode=on_chain_confirmed``:
-    # ``mempool_reserved`` is the gen-2 Alchemy mempool-observed,
-    # receipt-confirmed runtime; ``logs_only`` runs the gen-1 mined
-    # ``OrderFilled`` subscriptions topic-filtered on the followed leaders, on
-    # any plain ``eth_subscribe`` WSS provider. Inert in every other mode.
     confirmed_source: Literal["mempool_reserved", "logs_only"] = "mempool_reserved"
     pending_tx_provider: str = "alchemy"
     onchain_ws_url: str = ""
@@ -1182,6 +1200,20 @@ class OnchainDetectionConfig:
     pending_copy_confirmation_deadline_seconds: float = 60.0
     pending_copy_confirmation_max_tracked: int = 2048
     pending_copy_auto_unwind_enabled: bool = False
+
+    def resolved_exchange_addresses(self) -> tuple[str, ...]:
+        """Return lowercase active Polymarket Exchange contract addresses."""
+        if self.active_exchange_addresses:
+            return tuple(
+                dict.fromkeys(
+                    str(addr).strip().lower()
+                    for addr in self.active_exchange_addresses
+                    if str(addr).strip()
+                )
+            )
+        return verified_polymarket_exchange_addresses(
+            include_legacy_v1=bool(self.include_legacy_v1_exchanges)
+        )
 
 
 @dataclass(frozen=True)
@@ -1354,10 +1386,33 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RPC_URL is required.")
     if not cfg.polymarket.rpc_url:
         errors.append("polymarket.rpc_url is required.")
+    elif _alchemy_key_from_url(cfg.polymarket.rpc_url, expected_scheme="https") is None:
+        errors.append(
+            "polymarket.rpc_url must be a valid Alchemy Polygon HTTPS URL "
+            "(https://polygon-mainnet.g.alchemy.com/v2/<key>); non-Alchemy RPC providers "
+            "are not supported."
+        )
+    if (
+        cfg.polymarket.fallback_rpc_url
+        and _alchemy_key_from_url(cfg.polymarket.fallback_rpc_url, expected_scheme="https") is None
+    ):
+        errors.append(
+            "polymarket.fallback_rpc_url must be a valid Alchemy Polygon HTTPS URL when set."
+        )
     for entry in cfg.copy_trading.wallets:
         wallet = entry.wallet
         if not _ETH_ADDR_RE.match(wallet):
             errors.append(f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).')
+        if entry.eoa_address and not _ETH_ADDR_RE.match(entry.eoa_address):
+            errors.append(
+                f'Invalid leader eoa_address "{entry.eoa_address}" '
+                "(expected 42-char Ethereum address)."
+            )
+        if entry.proxy_address and not _ETH_ADDR_RE.match(entry.proxy_address):
+            errors.append(
+                f'Invalid leader proxy_address "{entry.proxy_address}" '
+                "(expected 42-char Ethereum address)."
+            )
     for trader in cfg.copy_trading.traders:
         label = f"trader {trader.name} ({trader.wallet})"
         if trader.copy_decision_min_score is not None and not (
@@ -1553,83 +1608,62 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
 
 def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
-    """Fail closed when ``detection.mode`` selects an unusable on-chain source.
-
-    Both on-chain runtimes issue ``alchemy_pendingTransactions`` over the
-    configured WebSocket, so a non-polling mode requires an Alchemy ``wss://``
-    endpoint. The provisional pending path additionally needs full pending
-    transaction bodies (calldata) and a positive staleness budget. A
-    non-polling mode is also rejected while the v1 copy-task engine is
-    enabled: that route bypasses ``CrossSourceTradeClaimPolicy`` and would
-    copy the same fill from both sources.
-
-    ``on_chain_confirmed`` with ``confirmed_source=logs_only`` only opens
-    plain ``eth_subscribe`` ``logs`` subscriptions, so it runs on any
-    ``wss://`` provider (``pending_tx_provider`` ``alchemy`` or ``generic``)
-    and still needs the WebSocket URL. Every other non-polling combination
-    requires ``pending_tx_provider=alchemy`` because the mempool
-    subscriptions (``on_chain_pending``, gen-2 ``mempool_reserved``) are
-    Alchemy-specific; ``on_chain_pending`` additionally has no logs-only
-    variant at all.
-
-    ``on_chain_pending`` additionally pins the confidence floor to a value a
-    mempool sighting can actually reach and requires a usable pending-copy
-    confirmation budget, so the mode cannot be configured into silently
-    detecting (or silently confirming) nothing.
-    """
+    """Fail closed unless ``detection.mode`` and Alchemy WSS settings are strictly valid."""
 
     detection = cfg.detection
     oc = detection.onchain
-    mode = str(detection.mode or "").strip().lower()
-    if mode not in _DETECTION_MODE_VALUES:
+    try:
+        parsed_mode = DetectionMode.parse_config_mode(detection.mode)
+    except ValueError:
         allowed = ", ".join(_DETECTION_MODE_VALUES)
-        errors.append(f"detection.mode must be one of: {allowed}.")
+        errors.append(
+            f"detection.mode must be one of: {allowed} "
+            "(or alias on_chain_confirmed+mempool_reserved)."
+        )
         return
-    if mode == DetectionMode.POLLING.value:
-        return
-    if bool(cfg.copy_trading.copy_tasks.enabled):
+
+    if _alchemy_key_from_url(oc.alchemy_wss_url, expected_scheme="wss") is None:
         errors.append(
-            f"detection.mode={mode} is not supported with copy_trading.copy_tasks.enabled=true: "
-            "the v1 copy-task route has no cross-source (on-chain vs polling) dedup yet. "
-            "Set detection.mode=polling or disable copy_trading.copy_tasks."
+            "detection.onchain.alchemy_wss_url (PMCOPY__ALCHEMY_WSS_URL) must be set to a "
+            "valid Alchemy Polygon WSS URL (wss://polygon-mainnet.g.alchemy.com/v2/<key>)."
         )
-    ws_url = str(oc.onchain_ws_url or oc.pending_tx_ws_url or "").strip()
-    if not ws_url or not ws_url.lower().startswith("wss://"):
+
+    exchanges = oc.resolved_exchange_addresses()
+    if (
+        not exchanges
+        or len(exchanges) > 4
+        or any(addr.lower() not in ALL_VERIFIED_EXCHANGE_ADDRESSES for addr in exchanges)
+    ):
         errors.append(
-            f"detection.mode={mode} requires a wss:// endpoint in "
-            "detection.onchain.onchain_ws_url or detection.onchain.pending_tx_ws_url."
+            "detection.onchain.active_exchange_addresses must be non-empty and contain at most "
+            "4 verified Polymarket Exchange addresses."
         )
-    confirmed_source = str(
-        getattr(oc, "confirmed_source", "mempool_reserved") or "mempool_reserved"
-    )
-    confirmed_source = confirmed_source.strip().lower()
-    provider = str(oc.pending_tx_provider or "").strip().lower()
-    if mode == DetectionMode.ON_CHAIN_PENDING.value and confirmed_source != "mempool_reserved":
-        errors.append(
-            "detection.mode=on_chain_pending requires "
-            "detection.onchain.confirmed_source=mempool_reserved: the pending mempool path "
-            "has no logs-only variant."
-        )
-    if mode == DetectionMode.ON_CHAIN_CONFIRMED.value and confirmed_source == "logs_only":
-        if provider not in ("alchemy", "generic"):
+
+    max_hourly_mb = Decimal(str(oc.max_hourly_ws_mb))
+    if not max_hourly_mb.is_finite() or max_hourly_mb <= Decimal("0"):
+        errors.append("detection.onchain.max_hourly_ws_mb (PMCOPY__MAX_HOURLY_WS_MB) must be > 0.")
+
+    if float(oc.mempool_reservation_ttl_seconds) <= 0:
+        errors.append("detection.onchain.mempool_reservation_ttl_seconds must be > 0.")
+    if float(oc.subscription_debounce_seconds) < 0:
+        errors.append("detection.onchain.subscription_debounce_seconds must be >= 0.")
+
+    provider = str(oc.pending_tx_provider or "alchemy").strip().lower()
+    if provider != "alchemy":
+        errors.append("detection.onchain.pending_tx_provider must be alchemy.")
+
+    if parsed_mode in {DetectionMode.ON_CHAIN_PENDING, DetectionMode.CONFIRMED_MEMPOOL_RESERVED}:
+        if bool(oc.pending_tx_hashes_only):
             errors.append(
-                f"detection.mode={mode} with detection.onchain.confirmed_source=logs_only "
-                "requires detection.onchain.pending_tx_provider=alchemy or generic."
+                f"detection.onchain.pending_tx_hashes_only must be false for "
+                f"detection.mode={parsed_mode.value} (calldata is required)."
             )
-    elif provider != "alchemy":
-        errors.append(
-            f"detection.mode={mode} requires detection.onchain.pending_tx_provider=alchemy."
-        )
-    if mode == DetectionMode.ON_CHAIN_PENDING.value:
+
+    if parsed_mode is DetectionMode.ON_CHAIN_PENDING:
         if int(oc.pending_tx_max_signal_age_ms) <= 0:
             errors.append(
                 "detection.onchain.pending_tx_max_signal_age_ms must be > 0 for "
                 "detection.mode=on_chain_pending."
-            )
-        if bool(oc.pending_tx_hashes_only):
-            errors.append(
-                "detection.onchain.pending_tx_hashes_only must be false for "
-                "detection.mode=on_chain_pending (calldata is required)."
             )
         confidence = str(oc.pending_tx_detection_confidence_required or "").strip().lower()
         if (
@@ -1708,34 +1742,17 @@ _DETECTION_MODE_WARNINGS = DetectionModeWarningEmitter()
 
 
 class DetectionModeResolver:
-    """Resolve the raw ``detection`` payload onto exactly one detection source.
-
-    The resolver runs before typed validation. An explicit ``mode`` always
-    wins. Without one, the deprecated ``onchain.enable_onchain_*`` booleans
-    derive ``on_chain_confirmed`` (the mempool-observed, receipt-confirmed
-    runtime — what enabling either boolean used to wire); provisional copy on
-    mempool sightings must be an explicit ``on_chain_pending`` and is never
-    derived. Otherwise the source stays ``polling``.
-    """
+    """Resolve the raw ``detection`` payload onto one canonical detection mode."""
 
     _LEGACY_FLAGS = ("enable_onchain_pending_detection", "enable_onchain_mined_detection")
 
     def resolve(self, payload: Mapping[str, Any] | None) -> tuple[str, DetectionModeWarning | None]:
-        """Return ``(mode, warning)`` for one raw ``detection`` section.
-
-        Args:
-            payload: Raw ``detection`` mapping as merged from every config
-                layer, or ``None`` when the section is absent.
-
-        Returns:
-            The resolved mode string (not yet validated against
-            ``DetectionMode``) and a lazily rendered operator warning, or
-            ``None`` when no deprecated flag influenced or contradicted the
-            result.
-        """
+        """Return ``(mode, warning)`` for one raw ``detection`` section."""
 
         section: Mapping[str, Any] = payload if isinstance(payload, Mapping) else {}
         explicit = str(section.get("mode") or "").strip().lower()
+        if explicit == "on_chain_confirmed+mempool_reserved":
+            explicit = DetectionMode.CONFIRMED_MEMPOOL_RESERVED.value
         legacy_enabled = self._legacy_flags_enabled(section)
         if explicit:
             if legacy_enabled:
@@ -1749,7 +1766,11 @@ class DetectionModeResolver:
                 )
             return explicit, None
         if legacy_enabled:
-            derived = DetectionMode.ON_CHAIN_CONFIRMED.value
+            derived = (
+                DetectionMode.ON_CHAIN_PENDING.value
+                if "enable_onchain_pending_detection" in legacy_enabled
+                else DetectionMode.ON_CHAIN_LOGS_ONLY.value
+            )
             return derived, DetectionModeWarning(
                 template=(
                     "detection_legacy_flags_deprecated | derived_mode=%s from=%s "
@@ -1757,7 +1778,7 @@ class DetectionModeResolver:
                 ),
                 args=(derived, ",".join(legacy_enabled)),
             )
-        return DetectionMode.POLLING.value, None
+        return DetectionMode.ON_CHAIN_LOGS_ONLY.value, None
 
     @classmethod
     def _legacy_flags_enabled(cls, section: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1920,6 +1941,7 @@ class _LayeredModel(BaseModel):
         if not isinstance(values, dict):
             return values
         structured_paths = (
+            ("detection", "onchain", "active_exchange_addresses"),
             ("detection", "native", "traders"),
             ("copy_trading", "wallets"),
             ("copy_trading", "traders"),
@@ -2355,6 +2377,18 @@ def _read_secrets_contents(path: Path) -> str | None:
             os.close(fd)
 
 
+_FLAT_PMCOPY_ENV_ROUTES: dict[str, tuple[str, ...]] = {
+    "PMCOPY__ALCHEMY_WSS_URL": ("detection", "onchain", "alchemy_wss_url"),
+    "PMCOPY__INCLUDE_LEGACY_V1_EXCHANGES": (
+        "detection",
+        "onchain",
+        "include_legacy_v1_exchanges",
+    ),
+    "PMCOPY__TRACK_DIRECT_USER_TXS": ("detection", "onchain", "track_direct_user_txs"),
+    "PMCOPY__MAX_HOURLY_WS_MB": ("detection", "onchain", "max_hourly_ws_mb"),
+}
+
+
 def _read_secret_overrides(contents: str) -> dict[str, Any]:
     """Parse nested application secrets, rejecting the legacy PG key.
 
@@ -2402,9 +2436,13 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
                 "secrets.env application keys must use PMCOPY__SECTION__FIELD; "
                 f"unsupported key: {key}"
             )
-        path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
-        if len(path_parts) < 2 or any(not part for part in path_parts):
-            raise EnvValidationError(f"Malformed nested secrets key: {key}")
+        flat_route = _FLAT_PMCOPY_ENV_ROUTES.get(key)
+        if flat_route is not None:
+            path_parts = flat_route
+        else:
+            path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
+            if len(path_parts) < 2 or any(not part for part in path_parts):
+                raise EnvValidationError(f"Malformed nested secrets key: {key}")
         # dotenv is merged manually, outside BaseSettings' env source, so
         # ``env_ignore_empty`` does not apply automatically. Treat blank
         # template entries as absent instead of allowing them to erase a
@@ -2447,9 +2485,13 @@ def _read_process_env_overrides() -> dict[str, Any]:
         value = os.environ[key]
         if value is None or not str(value).strip():
             continue
-        path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
-        if len(path_parts) < 2 or any(not part for part in path_parts):
-            raise EnvValidationError(f"Malformed nested environment key: {key}")
+        flat_route = _FLAT_PMCOPY_ENV_ROUTES.get(key)
+        if flat_route is not None:
+            path_parts = flat_route
+        else:
+            path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
+            if len(path_parts) < 2 or any(not part for part in path_parts):
+                raise EnvValidationError(f"Malformed nested environment key: {key}")
         cursor = output
         for part in path_parts[:-1]:
             child = cursor.get(part)
@@ -2574,7 +2616,13 @@ def load_config(
             {
                 "copy_trading": {
                     "wallets": [
-                        {"wallet": trader.wallet, "enabled": trader.enabled} for trader in traders
+                        {
+                            "wallet": trader.wallet,
+                            "eoa_address": trader.eoa_address,
+                            "proxy_address": trader.proxy_address,
+                            "enabled": trader.enabled,
+                        }
+                        for trader in traders
                     ],
                     "leaders": trader_leader_entries + legacy_leaders,
                     "traders": [trader.model_dump(mode="python") for trader in traders],
@@ -2623,6 +2671,21 @@ def load_config(
         ) from exc
 
     validated = settings.model_dump()
+    alchemy_wss = str(validated["detection"]["onchain"].get("alchemy_wss_url") or "").strip()
+    alchemy_key = _alchemy_key_from_url(alchemy_wss, expected_scheme="wss")
+    if alchemy_key is not None:
+        derived_http_rpc = f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}"
+        current_rpc = str(validated["polymarket"].get("rpc_url") or "").strip()
+        if current_rpc in {"", "https://polygon-rpc.com"}:
+            validated["polymarket"]["rpc_url"] = derived_http_rpc
+    if not validated["detection"]["onchain"].get("active_exchange_addresses"):
+        validated["detection"]["onchain"]["active_exchange_addresses"] = (
+            verified_polymarket_exchange_addresses(
+                include_legacy_v1=bool(
+                    validated["detection"]["onchain"].get("include_legacy_v1_exchanges", False)
+                )
+            )
+        )
     # One RPC setting is enough for operators.  ``WalletConfig`` keeps these
     # compatibility fields because legacy service boundaries still consume
     # them, but their values are sourced from the canonical polymarket section.

@@ -70,9 +70,14 @@ def _valid_env(dsn: str) -> dict:
         "wallet": {
             "private_key": _VALID_PRIVATE_KEY,
             "funder_address": _VALID_FUNDER,
-            "polygon_rpc_url": "https://polygon-rpc.example.com",
+            "polygon_rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123",
         },
-        "network": {"rpc_url": "https://polygon-rpc.example.com"},
+        "network": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"},
+        "detection": {
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
+        },
     }
 
 

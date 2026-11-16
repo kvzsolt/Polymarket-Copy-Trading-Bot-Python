@@ -85,8 +85,14 @@ class OrderFilledReceiptDecoder:
         )
         if signal is None:
             return None
+        is_taker_summary = (
+            pending_match.watched_role is WatchedRole.TAKER
+            and signal.watched_role == "maker"
+            and decoded_log.taker.lower() == pending_match.exchange_address.lower()
+        )
+        effective_role = WatchedRole.TAKER if is_taker_summary else WatchedRole(signal.watched_role)
         if (
-            signal.watched_role != pending_match.watched_role.value
+            effective_role is not pending_match.watched_role
             or signal.token_id != pending_match.token_id
             or signal.side != pending_match.side.value
         ):
@@ -98,7 +104,7 @@ class OrderFilledReceiptDecoder:
                 log_index=signal.log_index if signal.log_index is not None else 0,
                 order_hash=order_hash,
                 leader_wallet=signal.leader_wallet,
-                watched_role=WatchedRole(signal.watched_role),
+                watched_role=effective_role,
                 exchange_address=signal.exchange,
                 token_id=signal.token_id,
                 condition_id=pending_match.condition_id,

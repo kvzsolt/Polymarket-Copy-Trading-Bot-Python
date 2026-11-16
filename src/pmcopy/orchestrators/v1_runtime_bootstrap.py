@@ -255,6 +255,7 @@ class CopyTaskV1RuntimeHandle:
         protective_bindings: TaskProtectiveRuntimeBindings | None = None,
         account_dispatcher: AccountTaskDispatcher | None = None,
         shutdown_timeout_seconds: float = 30.0,
+        settlement_factory: Callable[[object], TaskBudgetReconciliationService] | None = None,
     ) -> None:
         self.bundle = bundle
         self.restored_task_count = int(restored_task_count)
@@ -267,6 +268,7 @@ class CopyTaskV1RuntimeHandle:
         self._protective_bindings = protective_bindings
         self._account_dispatcher = account_dispatcher
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._settlement_factory = settlement_factory
         self._started = False
         self._closed = False
 
@@ -345,10 +347,25 @@ class CopyTaskV1RuntimeHandle:
         """Register contexts created by dynamic leader discovery."""
 
         values = tuple(contexts)
+        if self._settlement_factory is not None:
+            for context in values:
+                extra = getattr(context, "extra", None)
+                if isinstance(extra, dict) and "task_budget_settlement" not in extra:
+                    settlement = self._settlement_factory(context)
+                    extra["task_budget_settlement"] = settlement
+                    existing_reconciler = extra.get("_reconciliation_service")
+                    if existing_reconciler is not None:
+                        existing_reconciler.task_budget_settlement = settlement
         self._snapshot_provider.add_contexts(values)
         self._execution_adapter.add_contexts(values)
         if self._protective_bindings is not None:
             self._protective_bindings.bind(values)
+
+    async def retire_leader(self, leader: str) -> bool:
+        """Drain and free the per-leader worker slot when discovery retires a leader."""
+        if self.bundle.workers is None:
+            return False
+        return await self.bundle.workers.retire_leader(leader)
 
     def has_task_binding(self, task: CopyTask) -> bool:
         """Return whether a task has both evidence and execution bindings."""
@@ -424,15 +441,19 @@ async def start_v1_copy_task_runtime(
     from pmcopy.storage.postgres.orders_repo import OrdersRepo
 
     fallback_order_reader = OrdersRepo(pool)
-    for context in context_values:
-        extra = getattr(context, "extra", None)
-        if not isinstance(extra, dict):
-            continue
-        settlement = TaskBudgetReconciliationService(
+
+    def _make_settlement(context: object) -> TaskBudgetReconciliationService:
+        return TaskBudgetReconciliationService(
             lifecycle=bundle.lifecycle,
             order_reader=getattr(context, "orders_repo", fallback_order_reader),
             clock=_CallableClock(active_clock),
         )
+
+    for context in context_values:
+        extra = getattr(context, "extra", None)
+        if not isinstance(extra, dict):
+            continue
+        settlement = _make_settlement(context)
         extra["task_budget_settlement"] = settlement
         existing_reconciler = extra.get("_reconciliation_service")
         if existing_reconciler is not None:
@@ -502,6 +523,7 @@ async def start_v1_copy_task_runtime(
         protective_bindings=protective_bindings,
         account_dispatcher=account_dispatcher,
         shutdown_timeout_seconds=tasks_config.workers.shutdown_timeout_seconds,
+        settlement_factory=_make_settlement,
         quote_sink=(
             MarketPriceCacheSink(
                 cache=bundle.price_cache,

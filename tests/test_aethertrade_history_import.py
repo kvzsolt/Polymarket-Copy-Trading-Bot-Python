@@ -286,7 +286,8 @@ def test_shared_provider_price_query_does_not_admit_or_mutate_a_ledger():
     from pmcopy.storage.provider_budget import SqliteProviderBudget
 
     assert SqliteProviderBudget.rpc_cost("alchemy", "eth_getLogs") == 60
-    assert SqliteProviderBudget.rpc_cost("infura", "eth_getLogs") == 255
+    with pytest.raises(ValueError):
+        SqliteProviderBudget.rpc_cost("infura", "eth_getLogs")
     with pytest.raises(ValueError):
         SqliteProviderBudget.rpc_cost("alchemy", "eth_sendRawTransaction")
 

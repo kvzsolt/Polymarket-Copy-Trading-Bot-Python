@@ -122,9 +122,11 @@ class PostgresTaskFillProjection:
                 record.user_id,
             )
             metadata = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(metadata, Mapping):
-                raise ValueError("Confirmed task SELL has no durable lot allocation")
-            allocations = metadata.get("lot_allocations")
+            allocations = metadata.get("lot_allocations") if isinstance(metadata, Mapping) else None
+            if allocations is None:
+                fallback_allocs = recovery.get("lot_allocations")
+                if isinstance(fallback_allocs, dict):
+                    allocations = fallback_allocs
             if allocations is None and task_id is None:
                 allocations = {lot.lot_id: str(lot.shares) for lot in capacities}
             if not isinstance(allocations, dict):
@@ -182,16 +184,26 @@ class PostgresTaskFillProjection:
                 ),
             )
             if lot_id is not None and applied.lot.lot.remaining_shares == 0:
-                reason = ProtectiveExitReason(str(recovery.get("protective_reason")))
-                await connection.execute(
-                    "INSERT INTO market_reentry_locks "
-                    "(follower_account, task_id, leader_wallet, market_id, reason, fill_id, locked_at) "
-                    "SELECT follower_account, task_id, leader_wallet, $2, $3, $4, $5 "
-                    "FROM copy_tasks WHERE task_id = $1 ON CONFLICT DO NOTHING",
+                open_market_shares = await connection.fetchval(
+                    "SELECT COALESCE(SUM(remaining_shares), 0) "
+                    "FROM copy_task_risk_lots "
+                    "WHERE follower_account = $1 AND task_id = $2 "
+                    "AND market_id = $3 AND status = 'open'",
+                    record.user_id,
                     applied.lot.lot.task_id,
                     record.condition_id,
-                    reason.value,
-                    f"fill:{fill_id}:{lot.lot_id}",
-                    occurred_at,
                 )
+                if Decimal(str(open_market_shares or 0)) == 0:
+                    reason = ProtectiveExitReason(str(recovery.get("protective_reason")))
+                    await connection.execute(
+                        "INSERT INTO market_reentry_locks "
+                        "(follower_account, task_id, leader_wallet, market_id, reason, fill_id, locked_at) "
+                        "SELECT follower_account, task_id, leader_wallet, $2, $3, $4, $5 "
+                        "FROM copy_tasks WHERE task_id = $1 ON CONFLICT DO NOTHING",
+                        applied.lot.lot.task_id,
+                        record.condition_id,
+                        reason.value,
+                        f"fill:{fill_id}:{lot.lot_id}",
+                        occurred_at,
+                    )
             remaining -= shares

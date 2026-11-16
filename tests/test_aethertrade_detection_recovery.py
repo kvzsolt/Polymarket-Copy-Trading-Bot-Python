@@ -30,7 +30,7 @@ async def test_recovery_uses_chunks_and_marks_every_result_historical(tmp_path: 
         observer=observer,
         clock=clock,
         raw=raw,
-        provider="infura",
+        provider="alchemy",
         overlap=8,
     )
     state.advance_checkpoint(recovery.source_key(group), 16)
@@ -46,7 +46,7 @@ async def test_recovery_uses_chunks_and_marks_every_result_historical(tmp_path: 
     assert all(len(row["topics"]) == 3 for row in ranges)
     observer.observe.assert_awaited_once_with(LogFixture.make(), receipt, recovered=True)
     raw.record.assert_called_once_with(
-        "infura", "mined", LogFixture.make(), receipt, recovered=True
+        "alchemy", "mined", LogFixture.make(), receipt, recovered=True
     )
     assert state.checkpoint(recovery.source_key(group)) == 32
     state.close()
@@ -61,7 +61,7 @@ async def test_gap_above_bound_recovers_recent_overlap_before_advancing(tmp_path
     group = DetectionSubscription("alchemy", "mined", (OWNER,))
     gateway = Mock(call=AsyncMock(side_effect=["0x2000", []]))
     recovery = BoundedLogRecovery(
-        state=state, gateway=gateway, observer=Mock(), clock=Mock(), raw=Mock(), provider="infura"
+        state=state, gateway=gateway, observer=Mock(), clock=Mock(), raw=Mock(), provider="alchemy"
     )
     state.advance_checkpoint(recovery.source_key(group), 1)
     assert await recovery.recover(group) == 8192
@@ -87,7 +87,7 @@ async def test_recovery_invalidates_replaced_blocks_before_processing_new_logs(
     )
     raw = Mock()
     recovery = BoundedLogRecovery(
-        state=state, gateway=gateway, observer=Mock(), clock=Mock(), raw=raw, provider="infura"
+        state=state, gateway=gateway, observer=Mock(), clock=Mock(), raw=raw, provider="alchemy"
     )
     await recovery.recover(group)
     assert state.observe(fill, recovered=False) == "removed"
@@ -109,7 +109,7 @@ async def test_recovery_bound_counts_both_inclusive_endpoints(tmp_path: Path) ->
         observer=Mock(),
         clock=Mock(),
         raw=Mock(),
-        provider="infura",
+        provider="alchemy",
         overlap=8,
         maximum_gap=10,
     )

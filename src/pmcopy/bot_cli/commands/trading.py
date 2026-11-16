@@ -85,10 +85,12 @@ async def _apply_full_stop_to_live_venues(config) -> None:
     runtimes = []
     try:
         for runtime_user in load_runtime_users([], config):
-            runtimes.append(await build_polymarket_runtime(
-                runtime_user=runtime_user,
-                config=config,
-            ))
+            runtimes.append(
+                await build_polymarket_runtime(
+                    runtime_user=runtime_user,
+                    config=config,
+                )
+            )
         signal = TradingControlRuntimeSignal(
             gateways=tuple(runtime.gateway for runtime in runtimes),
             telemetry=NullRuntimeTelemetry(),

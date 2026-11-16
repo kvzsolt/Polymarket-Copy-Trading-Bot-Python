@@ -16,15 +16,22 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
 
 
+ALCHEMY_HTTP = "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+ALCHEMY_WSS = "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+LOCAL_ALCHEMY_HTTP = "https://polygon-mainnet.g.alchemy.com/v2/local-key-456"
+LOCAL_ALCHEMY_WSS = "wss://polygon-mainnet.g.alchemy.com/v2/local-key-456"
+
+
 def _overrides() -> dict:
     """Isolate loader tests from the separately tested task-engine profile."""
     return {
         "database": {"dsn": "postgresql://test:test@localhost/test"},
         "wallet": {
             "funder_address": ADDRESS,
-            "polygon_rpc_url": "https://rpc.invalid",
+            "polygon_rpc_url": ALCHEMY_HTTP,
         },
-        "network": {"rpc_url": "https://rpc.invalid"},
+        "network": {"rpc_url": ALCHEMY_HTTP},
+        "detection": {"onchain": {"alchemy_wss_url": ALCHEMY_WSS}},
         "copy_trading": {"copy_tasks": {"enabled": False}},
     }
 
@@ -192,10 +199,11 @@ def test_finite_numeric_values_still_load() -> None:
 
 
 def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
-    """The YAML layer must not silently re-enable a fail-closed code default."""
+    """The YAML layer must not silently re-enable a fail-closed pending mode."""
     packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
 
-    assert packaged["onchain"]["enable_onchain_pending_detection"] is False
+    assert packaged["mode"] == "on_chain_logs_only"
+    assert packaged["native"]["pending_enabled"] is False
 
 
 @pytest.mark.parametrize(
@@ -230,9 +238,10 @@ def test_legacy_local_shim_overrides_canonical_service_files(
             {
                 "wallet": {
                     "funder_address": ADDRESS,
-                    "polygon_rpc_url": "https://local-rpc.invalid",
+                    "polygon_rpc_url": LOCAL_ALCHEMY_HTTP,
                 },
-                "network": {"rpc_url": "https://local-rpc.invalid"},
+                "network": {"rpc_url": LOCAL_ALCHEMY_HTTP},
+                "detection": {"onchain": {"alchemy_wss_url": LOCAL_ALCHEMY_WSS}},
                 "database": {"dsn": "postgresql://test:test@localhost/test"},
                 "sizing": {"percentage": 7.5},
             }
@@ -244,7 +253,7 @@ def test_legacy_local_shim_overrides_canonical_service_files(
     config = load_config()
 
     assert config.sizing.percentage == 7.5
-    assert config.wallet.polygon_rpc_url == "https://local-rpc.invalid"
+    assert config.wallet.polygon_rpc_url == LOCAL_ALCHEMY_HTTP
 
 
 def test_default_local_and_secrets_paths_follow_deployment_cwd(
@@ -351,8 +360,8 @@ def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
 
     config = load_config(overrides, secrets_path=secrets)
 
-    assert config.wallet.polygon_rpc_url == "https://rpc.invalid"
-    assert config.polymarket.rpc_url == "https://rpc.invalid"
+    assert config.wallet.polygon_rpc_url == ALCHEMY_HTTP
+    assert config.polymarket.rpc_url == ALCHEMY_HTTP
     assert config.discovery.api.token.get_secret_value() == "yaml-token"
 
 
@@ -476,10 +485,13 @@ def test_nested_process_json_decodes_wallet_tuple(
     assert config.copy_trading.enabled_wallets() == (wallet,)
 
 
-def test_runtime_polymarket_rpc_url_is_required() -> None:
+def test_runtime_polymarket_rpc_url_derives_from_alchemy_wss_when_blank() -> None:
     overrides = _overrides()
     overrides["network"]["rpc_url"] = ""
-    with pytest.raises(EnvValidationError, match="polymarket.rpc_url is required"):
+    config = load_config(overrides)
+    assert config.polymarket.rpc_url == ALCHEMY_HTTP
+    overrides["network"]["rpc_url"] = "https://rpc.invalid"
+    with pytest.raises(EnvValidationError, match="polymarket.rpc_url must be a valid Alchemy"):
         load_config(overrides)
 
 
@@ -537,34 +549,31 @@ def test_trading_mode_is_single_immutable_selector(
 
 def _onchain_overrides(mode: str, **onchain: object) -> dict:
     overrides = _overrides()
-    section: dict = {"mode": mode}
-    if onchain:
-        section["onchain"] = dict(onchain)
-    overrides["detection"] = section
+    base_onchain = dict(overrides["detection"]["onchain"])
+    base_onchain.update(onchain)
+    overrides["detection"] = {"mode": mode, "onchain": base_onchain}
     return overrides
 
 
-def test_checked_in_yaml_keeps_detection_mode_polling() -> None:
-    """Base YAML must never select an on-chain source; polling is the default."""
+def test_checked_in_yaml_keeps_detection_mode_on_chain_logs_only() -> None:
+    """Base YAML defaults to server-side user-filtered OrderFilled logs (near-$0 CU)."""
     from pmcopy.domain.detection import DetectionMode
 
     packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
-    # The base file must not pin ``mode`` at all: an explicit base value would
-    # shadow the deprecated-boolean derivation in every real deployment (I1).
-    assert packaged.get("mode", "polling") == "polling"
+    assert packaged.get("mode") == "on_chain_logs_only"
 
     config = load_config(_overrides())
-    assert config.detection.mode == "polling"
-    assert config.detection.detection_mode is DetectionMode.POLLING
+    assert config.detection.mode == "on_chain_logs_only"
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_LOGS_ONLY
 
 
-def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
+def test_legacy_pending_flag_in_higher_layer_derives_on_chain_pending_when_mode_unset(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """A legacy ``enable_onchain_pending_detection: true`` above the base layer
-    still derives ``on_chain_confirmed`` (with the deprecation WARN) through the
-    real loader — the base YAML must not shadow the derivation."""
+    """A legacy ``enable_onchain_pending_detection: true`` with no explicit mode
+    derives ``on_chain_pending`` (with the deprecation WARN)."""
     import pmcopy.config.app_config as app_config_mod
     from pmcopy.domain.detection import DetectionMode
 
@@ -575,22 +584,21 @@ def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
     overrides["detection"] = {
         "onchain": {
             "enable_onchain_pending_detection": True,
-            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+            "alchemy_wss_url": ALCHEMY_WSS,
         }
     }
     with caplog.at_level(logging.WARNING, logger="AppConfig"):
-        config = load_config(overrides, environment="paper")
+        config = load_config(overrides, config_dir=tmp_path, environment="paper")
 
-    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
     warnings = [
         r.getMessage()
         for r in caplog.records
         if "detection_legacy_flags_deprecated" in r.getMessage()
     ]
     assert len(warnings) == 1
-    assert "derived_mode=on_chain_confirmed" in warnings[0]
+    assert "derived_mode=on_chain_pending" in warnings[0]
     assert "from=enable_onchain_pending_detection" in warnings[0]
-    # Lazy logging: the record carries the template and args, not a pre-rendered string.
     record = next(
         r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()
     )
@@ -601,6 +609,7 @@ def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
 def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import pmcopy.config.app_config as app_config_mod
 
@@ -611,12 +620,12 @@ def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
     overrides["detection"] = {
         "onchain": {
             "enable_onchain_pending_detection": True,
-            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+            "alchemy_wss_url": ALCHEMY_WSS,
         }
     }
     with caplog.at_level(logging.WARNING, logger="AppConfig"):
-        load_config(overrides, environment="paper")
-        load_config(overrides, environment="paper")
+        load_config(overrides, config_dir=tmp_path, environment="paper")
+        load_config(overrides, config_dir=tmp_path, environment="paper")
 
     warnings = [r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()]
     assert len(warnings) == 1
@@ -628,25 +637,22 @@ def test_detection_mode_env_override_selects_on_chain_pending(
     from pmcopy.domain.detection import DetectionMode
 
     monkeypatch.setenv("PMCOPY__DETECTION__MODE", "on_chain_pending")
-    monkeypatch.setenv(
-        "PMCOPY__DETECTION__ONCHAIN__PENDING_TX_WS_URL",
-        "wss://polygon.example.invalid/v2/redacted",
-    )
+    monkeypatch.setenv("PMCOPY__ALCHEMY_WSS_URL", ALCHEMY_WSS)
     config = load_config(_overrides())
     assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
 
 
 def test_on_chain_mode_without_ws_url_fails_closed() -> None:
-    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
-        load_config(_onchain_overrides("on_chain_confirmed"))
+    with pytest.raises(EnvValidationError, match="alchemy_wss_url"):
+        load_config(_onchain_overrides("on_chain_logs_only", alchemy_wss_url=""))
 
 
 def test_on_chain_mode_with_non_alchemy_provider_fails_closed() -> None:
     with pytest.raises(EnvValidationError, match="pending_tx_provider"):
         load_config(
             _onchain_overrides(
-                "on_chain_confirmed",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                "on_chain_logs_only",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_tx_provider="infura",
             )
         )
@@ -657,24 +663,19 @@ def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
         load_config(
             _onchain_overrides(
                 "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_tx_hashes_only=True,
             )
         )
 
 
 def test_on_chain_pending_rejects_confidence_above_pending_probable() -> None:
-    """A floor above ``pending_probable`` silently drops every pending signal.
-
-    ``PendingTxDetector`` emits at most ``PENDING_PROBABLE`` for a mempool
-    sighting, so requiring ``mined_authoritative``/``confirmed_final`` in
-    ``on_chain_pending`` mode is a mode that detects nothing at all.
-    """
+    """A floor above ``pending_probable`` silently drops every pending signal."""
     with pytest.raises(EnvValidationError) as excinfo:
         load_config(
             _onchain_overrides(
                 "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_tx_detection_confidence_required="mined_authoritative",
             )
         )
@@ -691,7 +692,7 @@ def test_on_chain_pending_accepts_market_unattributed_confidence() -> None:
     config = load_config(
         _onchain_overrides(
             "on_chain_pending",
-            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            alchemy_wss_url=ALCHEMY_WSS,
             pending_tx_detection_confidence_required="market_unattributed",
         )
     )
@@ -699,12 +700,12 @@ def test_on_chain_pending_accepts_market_unattributed_confidence() -> None:
     assert onchain.pending_tx_detection_confidence_required == "market_unattributed"
 
 
-def test_on_chain_confirmed_allows_confidence_above_pending_probable() -> None:
+def test_on_chain_logs_only_allows_confidence_above_pending_probable() -> None:
     """The confirmed source is receipt-backed; the pending floor does not bind."""
     config = load_config(
         _onchain_overrides(
-            "on_chain_confirmed",
-            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            "on_chain_logs_only",
+            alchemy_wss_url=ALCHEMY_WSS,
             pending_tx_detection_confidence_required="mined_authoritative",
         )
     )
@@ -720,7 +721,7 @@ def test_on_chain_pending_requires_positive_confirmation_deadline() -> None:
         load_config(
             _onchain_overrides(
                 "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_copy_confirmation_deadline_seconds=0,
             )
         )
@@ -734,7 +735,7 @@ def test_on_chain_pending_requires_positive_confirmation_max_tracked() -> None:
         load_config(
             _onchain_overrides(
                 "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_copy_confirmation_max_tracked=0,
             )
         )
@@ -762,7 +763,7 @@ def test_pending_copy_confirmation_keys_are_overridable() -> None:
     config = load_config(
         _onchain_overrides(
             "on_chain_pending",
-            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            alchemy_wss_url=ALCHEMY_WSS,
             pending_copy_confirmation_enabled=False,
             pending_copy_confirmation_deadline_seconds=30.5,
             pending_copy_confirmation_max_tracked=64,
@@ -776,83 +777,26 @@ def test_pending_copy_confirmation_keys_are_overridable() -> None:
     assert onchain.pending_copy_auto_unwind_enabled is True
 
 
-def test_confirmed_source_defaults_to_mempool_reserved() -> None:
-    """The gen-2 mempool-reserved confirmed source stays the typed default."""
-    config = load_config(_overrides())
-    assert config.detection.onchain.confirmed_source == "mempool_reserved"
+def test_confirmed_mempool_reserved_alias_normalizes() -> None:
+    """``on_chain_confirmed+mempool_reserved`` normalizes to ``confirmed+mempool_reserved``."""
+    from pmcopy.domain.detection import DetectionMode
 
-
-def test_confirmed_source_default_is_pinned_in_the_packaged_base_yaml() -> None:
-    """The base detection.yml carries the knob so operators can discover it."""
-    packaged = yaml.safe_load((ROOT / "src" / "pmcopy" / "config" / "detection.yml").read_text())
-    assert packaged["onchain"]["confirmed_source"] == "mempool_reserved"
-    assert load_config(_overrides()).detection.onchain.confirmed_source == "mempool_reserved"
-
-
-def test_confirmed_source_rejects_unknown_values() -> None:
-    """A typo must fail at load time, not silently select a runtime."""
-    with pytest.raises(EnvValidationError, match="confirmed_source"):
-        load_config(
-            _onchain_overrides(
-                "on_chain_confirmed",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
-                confirmed_source="shadow_logs",
-            )
-        )
-
-
-def test_on_chain_confirmed_logs_only_accepts_generic_provider() -> None:
-    """logs_only runs on any plain eth_subscribe logs endpoint."""
     config = load_config(
-        _onchain_overrides(
-            "on_chain_confirmed",
-            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
-            confirmed_source="logs_only",
-            pending_tx_provider="generic",
-        )
+        _onchain_overrides("on_chain_confirmed+mempool_reserved", alchemy_wss_url=ALCHEMY_WSS)
     )
-    assert config.detection.onchain.confirmed_source == "logs_only"
-    assert config.detection.onchain.pending_tx_provider == "generic"
-
-
-def test_on_chain_confirmed_logs_only_accepts_alchemy_provider() -> None:
-    """The operator's Alchemy WSS also serves the logs-only subscriptions."""
-    config = load_config(
-        _onchain_overrides(
-            "on_chain_confirmed",
-            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
-            confirmed_source="logs_only",
-        )
-    )
-    assert config.detection.onchain.confirmed_source == "logs_only"
+    assert config.detection.mode == "confirmed+mempool_reserved"
+    assert config.detection.detection_mode is DetectionMode.CONFIRMED_MEMPOOL_RESERVED
     assert config.detection.onchain.pending_tx_provider == "alchemy"
 
 
-def test_on_chain_confirmed_logs_only_still_requires_a_wss_url() -> None:
-    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
-        load_config(_onchain_overrides("on_chain_confirmed", confirmed_source="logs_only"))
-
-
-def test_on_chain_confirmed_mempool_reserved_rejects_generic_provider() -> None:
-    """The gen-2 mempool-reserved runtime needs Alchemy-only subscriptions."""
+def test_confirmed_mempool_reserved_rejects_generic_provider() -> None:
+    """Alchemy-only detection rejects non-Alchemy providers fail-closed."""
     with pytest.raises(EnvValidationError, match="pending_tx_provider"):
         load_config(
             _onchain_overrides(
-                "on_chain_confirmed",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                "confirmed+mempool_reserved",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_tx_provider="generic",
-            )
-        )
-
-
-def test_on_chain_pending_with_logs_only_fails_closed() -> None:
-    """The pending mode is the Alchemy mempool subscription, full stop."""
-    with pytest.raises(EnvValidationError, match="confirmed_source=mempool_reserved"):
-        load_config(
-            _onchain_overrides(
-                "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
-                confirmed_source="logs_only",
             )
         )
 
@@ -862,71 +806,46 @@ def test_on_chain_pending_with_generic_provider_fails_closed() -> None:
         load_config(
             _onchain_overrides(
                 "on_chain_pending",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url=ALCHEMY_WSS,
                 pending_tx_provider="generic",
             )
         )
 
 
 def test_invalid_detection_mode_rejected() -> None:
-    """``DetectionConfig.mode`` is a ``Literal``: pydantic rejects an unknown
-    mode before semantic validation, so ``detection_mode`` is total."""
-    with pytest.raises(EnvValidationError, match="detection.mode: Input should be 'polling'"):
-        load_config(_onchain_overrides("mempool"))
+    """Unknown or retired modes fail closed at validation time."""
+    for bad in ("mempool", "polling", "on_chain_confirmed"):
+        with pytest.raises(EnvValidationError, match="detection.mode"):
+            load_config(_onchain_overrides(bad))
 
 
-def test_on_chain_mode_with_copy_tasks_enabled_fails_closed() -> None:
-    """I5: the v1 copy-task route has no cross-source dedup yet."""
-    overrides = _onchain_overrides(
-        "on_chain_confirmed",
-        pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
-    )
-    overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
-    with pytest.raises(
-        EnvValidationError,
-        match="detection.mode=on_chain_confirmed is not supported with copy_trading.copy_tasks.enabled=true",
-    ):
-        load_config(overrides)
-
-
-def test_polling_mode_with_copy_tasks_enabled_is_allowed() -> None:
+def test_on_chain_logs_only_with_copy_tasks_enabled_is_allowed() -> None:
     overrides = _overrides()
     overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
     config = load_config(overrides)
     assert config.copy_trading.copy_tasks.enabled is True
-    assert config.detection.mode == "polling"
+    assert config.detection.mode == "on_chain_logs_only"
 
 
-def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
-    """The checked-in live environment detects at block inclusion, near-zero CU.
-
-    ``on_chain_confirmed`` + ``confirmed_source: logs_only`` subscribes to
-    topic-filtered ``logs`` only (OrderFilled topic0 + the followed leaders),
-    which sits inside the provider free tiers, keeps the Alchemy endpoint the
-    operator already runs, and leaves the mempool path one env var away
-    (``PMCOPY__DETECTION__MODE=on_chain_pending``).
-    """
+def test_live_environment_selects_on_chain_logs_only() -> None:
+    """The checked-in live environment detects via server-side user-filtered OrderFilled logs."""
     from pmcopy.domain.detection import DetectionMode
 
     packaged = yaml.safe_load(
         (ROOT / "src" / "pmcopy" / "config" / "environments" / "live" / "detection.yml").read_text()
     )
-    assert packaged["mode"] == "on_chain_confirmed"
-    assert packaged["onchain"]["confirmed_source"] == "logs_only"
+    assert packaged["mode"] == "on_chain_logs_only"
+    assert packaged["onchain"]["pending_tx_provider"] == "alchemy"
 
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
-    overrides["detection"] = {
-        "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
-    }
     config = load_config(overrides, environment="live")
 
     assert config.environment == "live"
     assert config.execution.trading_mode == "live"
-    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_LOGS_ONLY
     onchain = config.detection.onchain
-    assert onchain.confirmed_source == "logs_only"
-    assert onchain.pending_tx_provider == "generic"
+    assert onchain.pending_tx_provider == "alchemy"
     assert onchain.pending_tx_max_signal_age_ms == 700
     assert onchain.pending_tx_detection_confidence_required == "pending_probable"
     assert onchain.pending_tx_hashes_only is False
@@ -936,10 +855,11 @@ def test_live_environment_selects_on_chain_confirmed_logs_only() -> None:
 
 
 def test_live_environment_without_ws_url_fails_closed() -> None:
-    """Selecting an on-chain mode in live without a WS endpoint is a startup error."""
+    """Selecting an on-chain mode in live without an Alchemy WSS endpoint is a startup error."""
     overrides = _overrides()
     overrides["wallet"]["private_key"] = "0x" + "a" * 64
-    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+    overrides["detection"] = {"onchain": {"alchemy_wss_url": ""}}
+    with pytest.raises(EnvValidationError, match="alchemy_wss_url"):
         load_config(overrides, environment="live")
 
 

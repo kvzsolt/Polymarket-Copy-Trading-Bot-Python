@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import time
 from collections.abc import Iterable
@@ -1715,6 +1716,32 @@ class ExecutionService:
                             f" | venue_reason={venue_reason}" if venue_reason else "",
                         )
                         break
+                except asyncio.CancelledError:
+                    # C-02: An in-flight gateway POST cancelled mid-await may have
+                    # already reached the venue. Shield-persist submitted_unconfirmed
+                    # before propagating cancellation so the pending lock cannot
+                    # expire after TTL and permit a duplicate live submission.
+                    cancelled_response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": "cancelled_during_submit",
+                    }
+                    try:
+                        await asyncio.shield(
+                            self._save_submission(
+                                idempotency_key=idem_key,
+                                request=request_doc,
+                                response=cancelled_response,
+                                attempted_order_ids=attempted_order_ids,
+                            )
+                        )
+                    except Exception:
+                        logger.warning(
+                            "cancelled_submit_ambiguity_persist_failed | idem_key=%s",
+                            idem_key,
+                            exc_info=True,
+                        )
+                    raise
                 except VenueRateLimitError as exc:
                     last_error = redact_error_detail(exc)
                     logger.warning("clob rate limited (attempt %s): %s", attempt, last_error)
@@ -1921,7 +1948,9 @@ class ExecutionService:
                 and getattr(ec, "trading_mode", None) != "live"
             )
             if immediate_fak_fill:
-                if str(response.get("status") or "").lower() not in {
+                raw_status = str(response.get("status") or "").lower()
+                is_paper_closed = raw_status == "closed" and bool(response.get("paper"))
+                if not is_paper_closed and raw_status not in {
                     "matched",
                     "filled",
                     "cancelled",
@@ -1991,100 +2020,108 @@ class ExecutionService:
                             req.token_id,
                             **market_data_kwargs,
                         )
-                        next_quote_price = (
-                            next_bundle.quote.best_ask
-                            if side == "BUY"
-                            else next_bundle.quote.best_bid
+                    except Exception as exc:
+                        last_no_fill_error = redact_error_detail(exc)
+                        logger.warning(
+                            "copy_fak_repost_market_data_failed | token=%s attempt=%d error=%s",
+                            req.token_id,
+                            fak_attempt,
+                            last_no_fill_error,
                         )
-                        if next_quote_price is None or next_quote_price <= 0:
-                            logger.info(
-                                "copy_fak_repost_no_liquidity | token=%s attempt=%d side=%s",
-                                req.token_id,
-                                fak_attempt,
-                                side,
-                            )
-                            break
-                        if side == "BUY" and (
-                            (min_share_price > 0 and next_quote_price < min_share_price)
-                            or (max_share_price > 0 and next_quote_price > max_share_price)
-                        ):
-                            logger.info(
-                                "copy_fak_repost_price_gate | token=%s attempt=%d price=%s",
-                                req.token_id,
-                                fak_attempt,
-                                next_quote_price,
-                            )
-                            break
-                        next_top_level_amount = _top_level_marketable_amount(
-                            next_bundle,
+                        break
+                    next_quote_price = (
+                        next_bundle.quote.best_ask if side == "BUY" else next_bundle.quote.best_bid
+                    )
+                    if next_quote_price is None or next_quote_price <= 0:
+                        logger.info(
+                            "copy_fak_repost_no_liquidity | token=%s attempt=%d side=%s",
+                            req.token_id,
+                            fak_attempt,
+                            side,
+                        )
+                        break
+                    if side == "BUY" and (
+                        (min_share_price > 0 and next_quote_price < min_share_price)
+                        or (max_share_price > 0 and next_quote_price > max_share_price)
+                    ):
+                        logger.info(
+                            "copy_fak_repost_price_gate | token=%s attempt=%d price=%s",
+                            req.token_id,
+                            fak_attempt,
+                            next_quote_price,
+                        )
+                        break
+                    next_top_level_amount = _top_level_marketable_amount(
+                        next_bundle,
+                        side,
+                        next_quote_price,
+                    )
+                    if next_top_level_amount <= 0:
+                        logger.info(
+                            "copy_fak_repost_no_top_level_liquidity | token=%s attempt=%d side=%s price=%s",
+                            req.token_id,
+                            fak_attempt,
                             side,
                             next_quote_price,
                         )
-                        if next_top_level_amount <= 0:
-                            logger.info(
-                                "copy_fak_repost_no_top_level_liquidity | token=%s attempt=%d side=%s price=%s",
-                                req.token_id,
-                                fak_attempt,
-                                side,
-                                next_quote_price,
-                            )
-                            break
-                        if protective_band_limit is not None and _quote_outside_band(
+                        break
+                    if protective_band_limit is not None and _quote_outside_band(
+                        next_quote_price,
+                        protective_band_limit,
+                        side,
+                    ):
+                        logger.info(
+                            "protective_exit_price_band_rejected | "
+                            "token=%s side=%s quote=%s limit=%s "
+                            "leader=%s drift_pct=%s attempt=%d",
+                            req.token_id,
+                            side,
                             next_quote_price,
                             protective_band_limit,
-                            side,
-                        ):
-                            logger.info(
-                                "protective_exit_price_band_rejected | "
-                                "token=%s side=%s quote=%s limit=%s "
-                                "leader=%s drift_pct=%s attempt=%d",
-                                req.token_id,
-                                side,
-                                next_quote_price,
-                                protective_band_limit,
-                                metadata.get("leader_price") or protective_band_limit,
-                                band_drift_pct,
-                                fak_attempt,
-                                extra={
-                                    "type": "protective_exit_price_band_rejected",
-                                    "token_id": req.token_id,
-                                    "side": side,
-                                    "quote_price": str(next_quote_price),
-                                    "band_limit": str(protective_band_limit),
-                                    "drift_pct": str(band_drift_pct),
-                                    "fak_attempt": fak_attempt,
-                                },
-                            )
-                            break
-                        next_order_amount = min(remaining_amount, next_top_level_amount)
-                        next_tick_size = next_bundle.tick.tick_size
-                        next_worst_price = (
-                            next_quote_price * (Decimal("1") + slippage)
-                            if side == "BUY"
-                            else next_quote_price * (Decimal("1") - slippage)
+                            metadata.get("leader_price") or protective_band_limit,
+                            band_drift_pct,
+                            fak_attempt,
+                            extra={
+                                "type": "protective_exit_price_band_rejected",
+                                "token_id": req.token_id,
+                                "side": side,
+                                "quote_price": str(next_quote_price),
+                                "band_limit": str(protective_band_limit),
+                                "drift_pct": str(band_drift_pct),
+                                "fak_attempt": fak_attempt,
+                            },
                         )
-                        next_worst_price = _quantize_price(
-                            next_worst_price,
-                            next_tick_size,
-                            side,
-                        )
-                        if protective_band_limit is not None:
-                            next_worst_price = self._apply_marketable_price_protection(
-                                calculated_price=next_worst_price,
-                                caller_limit=protective_band_limit,
-                                tick_size=next_tick_size,
-                                side=side,
-                            )
-                        next_request = MarketableOrderRequest(
-                            token_id=req.token_id,
-                            side=side,
-                            size=next_order_amount,
-                            price_limit=next_worst_price,
-                            condition_id=getattr(req, "condition_id", None),
+                        break
+                    next_order_amount = min(remaining_amount, next_top_level_amount)
+                    next_tick_size = next_bundle.tick.tick_size
+                    next_worst_price = (
+                        next_quote_price * (Decimal("1") + slippage)
+                        if side == "BUY"
+                        else next_quote_price * (Decimal("1") - slippage)
+                    )
+                    next_worst_price = _quantize_price(
+                        next_worst_price,
+                        next_tick_size,
+                        side,
+                    )
+                    if protective_band_limit is not None:
+                        next_worst_price = self._apply_marketable_price_protection(
+                            calculated_price=next_worst_price,
+                            caller_limit=protective_band_limit,
                             tick_size=next_tick_size,
-                            neg_risk=next_bundle.tick.neg_risk,
-                            order_type=ExecutionOrderType.FAK,
+                            side=side,
                         )
+                    next_request = MarketableOrderRequest(
+                        token_id=req.token_id,
+                        side=side,
+                        size=next_order_amount,
+                        price_limit=next_worst_price,
+                        condition_id=getattr(req, "condition_id", None),
+                        tick_size=next_tick_size,
+                        neg_risk=next_bundle.tick.neg_risk,
+                        order_type=ExecutionOrderType.FAK,
+                    )
+                    try:
                         next_submit = await self._submit_gateway(next_request)
                         next_response = _submit_result_to_response(next_submit)
                         next_idem = f"{idem_key}:fak:{fak_attempt}"
@@ -2098,6 +2135,25 @@ class ExecutionService:
                             request=next_doc,
                             response=next_response,
                         )
+                    except asyncio.CancelledError:
+                        ambiguity_doc = dict(request_doc)
+                        ambiguity_doc["amount"] = str(next_order_amount)
+                        ambiguity_doc["remaining_amount"] = str(remaining_amount)
+                        ambiguity_doc["worst_price"] = str(next_worst_price)
+                        ambiguity_doc["fak_attempt"] = fak_attempt
+                        with contextlib.suppress(Exception):
+                            await asyncio.shield(
+                                self._save_submission(
+                                    idempotency_key=f"{idem_key}:fak:{fak_attempt}",
+                                    request=ambiguity_doc,
+                                    response={
+                                        "success": False,
+                                        "status": "submitted_unconfirmed",
+                                        "error": "cancelled_during_submit",
+                                    },
+                                )
+                            )
+                        raise
                     except Exception as exc:
                         # C5 — a POST that hit the wire then raised (timeout /
                         # connection drop) is ambiguous: the order may have

@@ -31,11 +31,16 @@ LEADER_A = "0x" + "a" * 40
 LEADER_B = "0x" + "b" * 40
 
 
+ALCHEMY_HTTP = "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+ALCHEMY_WSS = "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+
+
 def _overrides() -> dict:
     return {
         "database": {"dsn": "postgresql://test:test@localhost/test"},
         "wallet": {"funder_address": ADDRESS},
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "polymarket": {"rpc_url": ALCHEMY_HTTP},
+        "detection": {"onchain": {"alchemy_wss_url": ALCHEMY_WSS}},
     }
 
 
@@ -182,19 +187,22 @@ def test_legacy_secret_aliases_keep_working_at_the_loader_boundary(
     """The operator's existing secrets.env uses pre-split section names."""
     config_dir = _tree(tmp_path, {})
     secrets = tmp_path / "secrets.env"
+    legacy_http = "https://polygon-mainnet.g.alchemy.com/v2/legacy-alias-key"
+    legacy_wss = "wss://polygon-mainnet.g.alchemy.com/v2/legacy-alias-key"
     secrets.write_text(
-        "PMCOPY__NETWORK__RPC_URL=https://legacy-alias.invalid\n"
-        "PMCOPY__ONCHAIN_DETECTION__ONCHAIN_WS_URL=wss://legacy.invalid\n",
+        f"PMCOPY__NETWORK__RPC_URL={legacy_http}\n"
+        f"PMCOPY__ALCHEMY_WSS_URL={legacy_wss}\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
     overrides = _overrides()
     del overrides["polymarket"]
+    del overrides["detection"]
 
     config = load_config(overrides, config_dir=config_dir, secrets_path=secrets)
 
-    assert config.polymarket.rpc_url == "https://legacy-alias.invalid"
-    assert config.detection.onchain.onchain_ws_url == "wss://legacy.invalid"
+    assert config.polymarket.rpc_url == legacy_http
+    assert config.detection.onchain.alchemy_wss_url == legacy_wss
 
 
 def test_process_env_is_highest_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,11 @@ from typing import Protocol
 import aiohttp
 import asyncpg
 
-from pmcopy.clients.network.http_client import AsyncHttpClient, HttpRetryPolicy, build_shared_session
+from pmcopy.clients.network.http_client import (
+    AsyncHttpClient,
+    HttpRetryPolicy,
+    build_shared_session,
+)
 from pmcopy.config.app_config import AppConfig
 from pmcopy.domain.redemption import RedemptionReport
 from pmcopy.integrations.polymarket.settlement_chain import PolygonSettlementReader

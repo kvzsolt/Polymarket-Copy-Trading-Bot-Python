@@ -257,6 +257,9 @@ async def create_ccxt_prediction_client(
     try:
         install_ccxt_polymarket_precision_patch(exchange)
         if authenticated:
+            from pmcopy.utils.log_redaction import register_secret_values
+
+            register_secret_values([resolved_key])
             bootstrap = getattr(exchange, "load_api_credentials", None)
             if not callable(bootstrap):
                 raise CcxtPredictionConfigurationError(
@@ -265,6 +268,13 @@ async def create_ccxt_prediction_client(
             result = bootstrap()
             if inspect.isawaitable(result):
                 await result
+            register_secret_values(
+                [
+                    getattr(exchange, "apiKey", None),
+                    getattr(exchange, "secret", None),
+                    getattr(exchange, "password", None),
+                ]
+            )
     except BaseException:
         close = getattr(exchange, "close", None)
         if callable(close):

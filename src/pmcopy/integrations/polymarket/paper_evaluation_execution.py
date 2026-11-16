@@ -11,7 +11,10 @@ from pmcopy.integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
-from pmcopy.integrations.polymarket.paper_execution import PaperExecutionGateway, PaperOrderSimulator
+from pmcopy.integrations.polymarket.paper_execution import (
+    PaperExecutionGateway,
+    PaperOrderSimulator,
+)
 from pmcopy.interfaces.clob_gateway import ClobGateway
 
 

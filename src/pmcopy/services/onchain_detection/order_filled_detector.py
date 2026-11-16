@@ -39,12 +39,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
+from typing import Any
+
 from eth_utils.crypto import keccak
 
 from pmcopy.config.addresses import (
+    ALL_VERIFIED_EXCHANGE_ADDRESSES,
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    verified_polymarket_exchange_addresses,
 )
+from pmcopy.domain.tracked_users import TrackedUserDirectory
 from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
@@ -55,16 +60,24 @@ from pmcopy.services.onchain_detection.trade_detection_models import (
 )
 from pmcopy.utils.logger import get_logger
 
-ORDER_FILLED_TOPIC0: bytes = keccak(
+ORDER_FILLED_V2_TOPIC0: bytes = keccak(
     text="OrderFilled(bytes32,address,address,uint8,uint256,uint256,"
     "uint256,uint256,bytes32,bytes32)"
 )
-# 7 non-indexed words = 0xe0 bytes.
-_ORDER_FILLED_DATA_WORDS = 7
-_ORDER_FILLED_DATA_BYTES = _ORDER_FILLED_DATA_WORDS * 32
+ORDER_FILLED_TOPIC0: bytes = ORDER_FILLED_V2_TOPIC0
 
-# Both exchanges emit the identical event from the same source contract, so
-# a single topic0 + the two exchange addresses fully scope the subscription.
+ORDER_FILLED_V1_TOPIC0: bytes = keccak(
+    text="OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"
+)
+
+# V2: 7 non-indexed words = 0xe0 bytes.
+_ORDER_FILLED_V2_DATA_WORDS = 7
+_ORDER_FILLED_V2_DATA_BYTES = _ORDER_FILLED_V2_DATA_WORDS * 32
+# V1: 5 non-indexed words = 0xa0 bytes (makerAssetId, takerAssetId, makerAmountFilled, takerAmountFilled, fee).
+_ORDER_FILLED_V1_DATA_WORDS = 5
+_ORDER_FILLED_V1_DATA_BYTES = _ORDER_FILLED_V1_DATA_WORDS * 32
+
+# Default active V2 Exchange addresses.
 ONCHAIN_EXCHANGE_ADDRESSES: tuple[str, ...] = (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
@@ -85,12 +98,17 @@ def _hexstr_to_addr(value: str) -> str:
     return ("0x" + value[-40:].lower()) if len(value) >= 40 else ""
 
 
-def _hexstr_to_bytes32(value: str) -> bytes:
+def _hexstr_to_bytes32(value: str) -> bytes | None:
     if not value:
         return b"\x00" * 32
     if value.startswith("0x") or value.startswith("0X"):
         value = value[2:]
-    return bytes.fromhex(value.zfill(64))
+    if len(value) > 64:
+        return None
+    try:
+        return bytes.fromhex(value.zfill(64))
+    except ValueError:
+        return None
 
 
 def _word_to_int(data: bytes, word_index: int) -> int:
@@ -160,15 +178,19 @@ class _MinedLogIdentity:
         return cls(transaction_hash.lower(), index)
 
 
-def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
+def decode_order_filled_log(
+    log: dict[str, Any],
+    *,
+    include_legacy_v1: bool = False,
+) -> DecodedOrderFilledLog | None:
     """Decode a raw log dict (as delivered by an ``eth_subscribe`` ``logs`` sub).
 
-    Expected keys: ``address``, ``topics`` (list[str]), ``data`` (hex str),
-    ``transactionHash`` (or ``transaction_hash``), ``logIndex`` (or
-    ``log_index``), ``blockNumber`` (or ``block_number``).
+    Supports Polymarket CLOB V2 ``OrderFilled`` (7 non-indexed words) by default,
+    and additionally decodes V1 ``OrderFilled`` (5 non-indexed words) when
+    ``include_legacy_v1=True``.
 
-    Returns ``None`` if the log is not an ``OrderFilled`` event from a known
-    exchange, or if the data block is malformed. Never raises.
+    Returns ``None`` if the log is not an ``OrderFilled`` event from an enabled
+    verified exchange, or if the data block is malformed. Never raises.
     """
     if not isinstance(log, dict):
         return None
@@ -176,13 +198,19 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     if identity is None:
         return None
     address = str(log.get("address") or "").lower()
-    if address not in ONCHAIN_EXCHANGE_ADDRESSES:
+    allowed_exchanges = (
+        ALL_VERIFIED_EXCHANGE_ADDRESSES
+        if include_legacy_v1
+        else frozenset(ONCHAIN_EXCHANGE_ADDRESSES)
+    )
+    if address not in allowed_exchanges:
         return None
     topics = log.get("topics") or []
     if not isinstance(topics, list) or len(topics) < 4:
         return None
     topic0 = _hexstr_to_bytes32(str(topics[0]))
-    if topic0 != ORDER_FILLED_TOPIC0:
+    order_hash = _hexstr_to_bytes32(str(topics[1]))
+    if topic0 is None or order_hash is None:
         return None
 
     data_hex = str(log.get("data") or "")
@@ -192,32 +220,70 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         data = bytes.fromhex(data_hex)
     except ValueError:
         return None
-    if len(data) < _ORDER_FILLED_DATA_BYTES:
+
+    if topic0 == ORDER_FILLED_V2_TOPIC0:
+        if len(data) < _ORDER_FILLED_V2_DATA_BYTES:
+            return None
+        maker_side = _word_to_int(data, 0)
+        token_id = _word_to_int(data, 1)
+        maker_amount_filled = _word_to_int(data, 2)
+        taker_amount_filled = _word_to_int(data, 3)
+        fee = _word_to_int(data, 4)
+        builder = bytes.fromhex(format(_word_to_int(data, 5), "064x"))
+        metadata = bytes.fromhex(format(_word_to_int(data, 6), "064x"))
+    elif include_legacy_v1 and topic0 == ORDER_FILLED_V1_TOPIC0:
+        if len(data) < _ORDER_FILLED_V1_DATA_BYTES:
+            return None
+        maker_asset_id = _word_to_int(data, 0)
+        taker_asset_id = _word_to_int(data, 1)
+        if maker_asset_id == 0 and taker_asset_id != 0:
+            maker_side = MAKER_SIDE_BUY
+            token_id = taker_asset_id
+        elif taker_asset_id == 0 and maker_asset_id != 0:
+            maker_side = MAKER_SIDE_SELL
+            token_id = maker_asset_id
+        else:
+            return None
+        maker_amount_filled = _word_to_int(data, 2)
+        taker_amount_filled = _word_to_int(data, 3)
+        fee = _word_to_int(data, 4)
+        builder = b"\x00" * 32
+        metadata = b"\x00" * 32
+    else:
+        return None
+
+    if maker_side not in (MAKER_SIDE_BUY, MAKER_SIDE_SELL):
+        return None
+    if maker_amount_filled <= 0 or taker_amount_filled <= 0:
         return None
 
     block_raw = log.get("blockNumber", log.get("block_number"))
-    try:
-        block_number = (
-            int(block_raw, 16)
-            if isinstance(block_raw, str)
-            else int(block_raw)
-            if isinstance(block_raw, int)
-            else None
-        )
-    except (TypeError, ValueError):
-        block_number = None
+    block_number: int | None = None
+    if not isinstance(block_raw, bool):
+        try:
+            if isinstance(block_raw, str):
+                cleaned_blk = block_raw.strip()
+                block_number = (
+                    int(cleaned_blk, 16)
+                    if cleaned_blk.lower().startswith("0x")
+                    else int(cleaned_blk, 10)
+                )
+            elif isinstance(block_raw, int):
+                block_number = block_raw
+        except (TypeError, ValueError):
+            block_number = None
 
     return DecodedOrderFilledLog(
-        order_hash=_hexstr_to_bytes32(str(topics[1])),
+        order_hash=order_hash,
         maker=_hexstr_to_addr(str(topics[2])),
         taker=_hexstr_to_addr(str(topics[3])),
-        maker_side=_word_to_int(data, 0),
-        token_id=_word_to_int(data, 1),
-        maker_amount_filled=_word_to_int(data, 2),
-        taker_amount_filled=_word_to_int(data, 3),
-        fee=_word_to_int(data, 4),
-        builder=bytes.fromhex(format(_word_to_int(data, 5), "064x")),
-        metadata=bytes.fromhex(format(_word_to_int(data, 6), "064x")),
+        maker_side=maker_side,
+        token_id=token_id,
+        maker_amount_filled=maker_amount_filled,
+        taker_amount_filled=taker_amount_filled,
+        fee=fee,
+        builder=builder,
+        metadata=metadata,
         tx_hash=identity.transaction_hash,
         log_index=identity.log_index,
         block_number=block_number,
@@ -257,37 +323,24 @@ def _amounts_to_size_usdc(
     return size, price, usdc
 
 
-def build_signal_from_log(
+def _make_mined_signal(
     log: DecodedOrderFilledLog,
-    watched_wallets: set[str],
+    *,
+    leader_wallet: str,
+    watched_role: str,
     event_ts: int | None,
     condition_id: str = "",
-) -> OnchainTradeSignal | None:
-    """Build a ``MINED_AUTHORITATIVE`` signal if the log references a watched wallet.
-
-    Returns ``None`` if neither ``maker`` nor ``taker`` is in ``watched_wallets``
-    (lowercase). The signal's ``log_index`` is always set (mined fills carry
-    it), making the composite ``(tx_hash, log_index)`` dedupe key available.
-    """
-    watched_lower = {w.lower() for w in watched_wallets}
-    maker = log.maker.lower()
-    taker = log.taker.lower()
-    if maker in watched_lower:
-        watched_wallet = maker
-        watched_role = "maker"
-    elif taker in watched_lower:
-        watched_wallet = taker
-        watched_role = "taker"
-    else:
-        return None
-
+    token_holder_wallet: str = "",
+    source_receipt: Any = None,
+) -> OnchainTradeSignal:
     side = watched_side_from_maker_side(log.maker_side, watched_role)
     size, price, usdc = _amounts_to_size_usdc(
         log.maker_side, log.maker_amount_filled, log.taker_amount_filled
     )
     order_hash_hex = "0x" + log.order_hash.hex() if log.order_hash else None
+    holder = (token_holder_wallet or log.maker or leader_wallet).lower()
     return OnchainTradeSignal(
-        leader_wallet=watched_wallet,
+        leader_wallet=leader_wallet,
         token_id=str(log.token_id),
         side=side,
         size=size,
@@ -305,76 +358,159 @@ def build_signal_from_log(
         order_hash=order_hash_hex,
         block_number=log.block_number,
         block_hash=log.block_hash,
+        source_receipt=source_receipt,
+        token_holder_wallet=holder,
     )
 
 
-def log_subscription_params(exchange_addresses: tuple[str, ...] | None = None) -> list:
-    """Build the ``eth_subscribe`` JSON-RPC ``params`` list for mined logs.
+def build_signal_from_log(
+    log: DecodedOrderFilledLog,
+    watched_wallets: set[str],
+    event_ts: int | None,
+    condition_id: str = "",
+) -> OnchainTradeSignal | None:
+    """Build a ``MINED_AUTHORITATIVE`` signal if the log references a watched wallet."""
+    watched_lower = {w.lower() for w in watched_wallets}
+    maker = log.maker.lower()
+    taker = log.taker.lower()
+    if maker in watched_lower:
+        watched_wallet = maker
+        watched_role = "maker"
+    elif taker in watched_lower:
+        watched_wallet = taker
+        watched_role = "taker"
+    else:
+        return None
+    return _make_mined_signal(
+        log,
+        leader_wallet=watched_wallet,
+        watched_role=watched_role,
+        event_ts=event_ts,
+        condition_id=condition_id,
+    )
 
-    ``eth_subscribe`` expects ``params`` as a positional array like
-    ``["logs", filter]``. A single subscription with both exchange
-    addresses + the ``OrderFilled`` topic0 is sufficient; maker/taker
-    filtering is done client-side because the watched set can change at
-    runtime and a single sub cannot OR topic2/topic3.
+
+def build_signals_from_log_for_directory(
+    log: DecodedOrderFilledLog,
+    directory: TrackedUserDirectory,
+    event_ts: int | None,
+    condition_id: str = "",
+    *,
+    source_receipt: Any = None,
+) -> tuple[OnchainTradeSignal, ...]:
+    """Emit canonical leader signal from one deduplicated ``OrderFilled`` log.
+
+    On Polymarket CTF Exchange (V1 and V2), every matched order owner (resting
+    maker or active taker) receives its own canonical ``OrderFilled`` log with
+    ``topics[2] (maker) == order_owner`` (for takers, ``topics[3] == exchange``).
+    Suppressing counterparty-perspective logs (``topics[3] == leader`` where
+    ``topics[2]`` is a counterparty maker) prevents 2x double execution and
+    Mint/Merge token/side inversion while preserving additive maker fills.
     """
-    addresses = tuple(a.lower() for a in (exchange_addresses or ONCHAIN_EXCHANGE_ADDRESSES))
-    filter_obj = {
-        "address": list(addresses),
-        "topics": ["0x" + ORDER_FILLED_TOPIC0.hex()],
-    }
-    return ["logs", filter_obj]
+    if directory.is_empty:
+        return ()
+    maker_leader = directory.canonical_leader_for(log.maker)
+    if maker_leader is None:
+        return ()
+    return (
+        _make_mined_signal(
+            log,
+            leader_wallet=maker_leader,
+            watched_role="maker",
+            event_ts=event_ts,
+            condition_id=condition_id,
+            token_holder_wallet=log.maker,
+            source_receipt=source_receipt,
+        ),
+    )
 
 
-#: Maximum watched wallets embedded per ``logs`` topic filter. A filter that
-#: lists every followed leader keeps provider cost near zero; beyond this the
-#: WARN (counts only) names the truncation and the REST-polling fallback
-#: covers the leaders that no longer fit.
+#: Maximum watched wallets embedded per ``logs`` topic filter in legacy helper.
 WATCHED_TOPIC_FILTER_CAP = 100
 
 logger = get_logger("OrderFilledDetector")
 
+_HEX_CHARS = frozenset("0123456789abcdef")
+
 
 def _address_to_topic(address: str) -> str:
-    """Return the 32-byte topic word for an address (lowercase, left-padded)."""
-    body = str(address).strip().lower()
+    """Return the validated 32-byte topic word for an address or padded topic."""
+    body = str(address or "").strip().lower()
     if body.startswith("0x"):
         body = body[2:]
-    return "0x" + body.rjust(64, "0")
+    if len(body) == 64:
+        if body[:24] != "0" * 24 or any(ch not in _HEX_CHARS for ch in body[24:]):
+            raise ValueError(f"invalid 32-byte padded user topic: {address!r}")
+        return "0x" + body
+    if len(body) == 40 and all(ch in _HEX_CHARS for ch in body):
+        return "0x" + ("0" * 24) + body
+    raise ValueError(f"invalid tracked user address/topic: {address!r}")
+
+
+def build_user_filtered_log_subscriptions(
+    exchange_addresses: Iterable[str] | None = None,
+    padded_user_topics: Iterable[str] | None = None,
+    *,
+    include_legacy_v1: bool = False,
+) -> tuple[list[Any], ...]:
+    """Build strict server-side maker & taker ``eth_subscribe("logs", ...)`` filters.
+
+    NEVER builds an unfiltered Exchange ``logs`` subscription. If
+    ``padded_user_topics`` is empty, returns ``()`` so zero subscriptions are
+    opened until at least one tracked user exists.
+    """
+    raw_exchanges = (
+        tuple(exchange_addresses)
+        if exchange_addresses is not None
+        else verified_polymarket_exchange_addresses(include_legacy_v1=include_legacy_v1)
+    )
+    normalized_exchanges: list[str] = []
+    for raw_addr in raw_exchanges:
+        cleaned = str(raw_addr or "").strip().lower()
+        if cleaned not in ALL_VERIFIED_EXCHANGE_ADDRESSES:
+            raise ValueError(f"unverified exchange address in logs filter: {raw_addr!r}")
+        if cleaned not in normalized_exchanges:
+            normalized_exchanges.append(cleaned)
+    if not normalized_exchanges or len(normalized_exchanges) > 4:
+        raise ValueError("logs filter requires 1..4 verified Polymarket Exchange addresses")
+
+    topics_set = {
+        _address_to_topic(entry) for entry in (padded_user_topics or ()) if str(entry or "").strip()
+    }
+    if not topics_set:
+        return ()
+
+    sorted_user_topics = sorted(topics_set)
+    topic0_list = ["0x" + ORDER_FILLED_V2_TOPIC0.hex()]
+    if include_legacy_v1:
+        topic0_list.append("0x" + ORDER_FILLED_V1_TOPIC0.hex())
+
+    maker_role: list[Any] = [
+        "logs",
+        {
+            "address": normalized_exchanges,
+            "topics": [topic0_list, None, sorted_user_topics],
+        },
+    ]
+    taker_role: list[Any] = [
+        "logs",
+        {
+            "address": normalized_exchanges,
+            "topics": [topic0_list, None, None, list(sorted_user_topics)],
+        },
+    ]
+    if not maker_role[1]["topics"][2] or not taker_role[1]["topics"][3]:
+        raise AssertionError("logs subscription user topics must never be empty")
+    return (maker_role, taker_role)
 
 
 def log_subscription_params_for_watched(
     exchange_addresses: tuple[str, ...] | None = None,
     watched_wallets: Iterable[str] | None = None,
-) -> tuple[list, ...]:
-    """Build the leader-filtered ``logs`` subscriptions (maker role, taker role).
-
-    ``OrderFilled`` indexes the maker as topic2 and the taker as topic3, and a
-    single ``logs`` filter cannot OR two topic positions, so the caller opens
-    one subscription per role:
-
-    * maker role: ``topics = [[topic0], null, [<leader topics>]]``
-    * taker role: ``topics = [[topic0], null, null, [<leader topics>]]``
-
-    (``null`` is the positional wildcard; an array is OR-at-that-position —
-    the standard ``eth_getLogs``/``eth_subscribe`` filter format every WSS
-    provider implements.) The client-side maker/taker match in
-    :func:`build_signal_from_log` stays as the second guard.
-
-    Args:
-        exchange_addresses: CTF exchange contracts to filter on; defaults to
-            both Polymarket exchanges.
-        watched_wallets: Followed leader wallets, any case. Truncated to
-            :data:`WATCHED_TOPIC_FILTER_CAP` per filter (deterministic
-            lexicographic prefix, WARN with counts only). ``None`` or empty
-            returns ``()`` — an empty roster opens **no** subscription rather
-            than re-opening the unfiltered feed, whose ~40k CU/min cost is
-            exactly what the leader filter exists to avoid; the runtime idles
-            until the roster delivers a leader again.
-
-    Returns:
-        A tuple with one ``eth_subscribe`` params list per subscription to
-        open: two role filters with a watched set, none without.
-    """
+    *,
+    include_legacy_v1: bool = False,
+) -> tuple[list[Any], ...]:
+    """Build leader-filtered ``logs`` subscriptions (maker role, taker role)."""
     watched = {
         str(wallet).strip().lower() for wallet in (watched_wallets or ()) if str(wallet).strip()
     }
@@ -382,15 +518,13 @@ def log_subscription_params_for_watched(
         return ()
     if len(watched) > WATCHED_TOPIC_FILTER_CAP:
         logger.warning(
-            "orderfilled_topic_filter_capped | watched=%d cap=%d — leaders beyond the cap "
-            "keep the REST-polling path only",
+            "orderfilled_topic_filter_capped | watched=%d cap=%d — truncating topic filter",
             len(watched),
             WATCHED_TOPIC_FILTER_CAP,
         )
         watched = set(sorted(watched)[:WATCHED_TOPIC_FILTER_CAP])
-    leader_topics = sorted(_address_to_topic(wallet) for wallet in watched)
-    addresses = [a.lower() for a in (exchange_addresses or ONCHAIN_EXCHANGE_ADDRESSES)]
-    topic0 = ["0x" + ORDER_FILLED_TOPIC0.hex()]
-    maker_role = ["logs", {"address": addresses, "topics": [topic0, None, leader_topics]}]
-    taker_role = ["logs", {"address": addresses, "topics": [topic0, None, None, leader_topics]}]
-    return (maker_role, taker_role)
+    return build_user_filtered_log_subscriptions(
+        exchange_addresses=exchange_addresses,
+        padded_user_topics=watched,
+        include_legacy_v1=include_legacy_v1,
+    )

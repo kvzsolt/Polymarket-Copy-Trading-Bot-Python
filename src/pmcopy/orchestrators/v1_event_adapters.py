@@ -465,12 +465,12 @@ class CopyTaskRuntimeIngress:
                 event = self._normalizer.normalize_raw(
                     leader,
                     row,
-                    mode=DetectionMode.POLLING,
+                    mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
                 )
             except (TypeError, ValueError) as exc:
                 logger.warning(
                     "copy_task_source_event_rejected",
-                    extra={"error_type": type(exc).__name__, "source": "polling"},
+                    extra={"error_type": type(exc).__name__, "source": "on_chain_logs_only"},
                 )
                 continue
             if await self._buy_is_paused(event):
@@ -486,7 +486,7 @@ class CopyTaskRuntimeIngress:
         mode = (
             DetectionMode.ON_CHAIN_PENDING
             if signal.provisional
-            else DetectionMode.ON_CHAIN_CONFIRMED
+            else DetectionMode.ON_CHAIN_LOGS_ONLY
         )
         event = self._normalizer.normalize_raw(
             signal.leader_wallet,

@@ -72,7 +72,14 @@ def _render_value(section: str, key: str, value: Any) -> str:
         return ", ".join(rendered)
     if _looks_sensitive(key):
         return "<redacted>"
-    if key == "rpc_url":
+    if key in {
+        "rpc_url",
+        "fallback_rpc_url",
+        "polygon_rpc_url",
+        "alchemy_wss_url",
+        "onchain_ws_url",
+        "pending_tx_ws_url",
+    }:
         return _mask_url(str(value))
     if key.endswith("_address") or key in {"wallet", "funder", "user_id"}:
         return shorten_addr(str(value), 8, 4)

@@ -10,36 +10,36 @@ from __future__ import annotations
 from pmcopy.config.app_config import DetectionModeResolver
 
 
-def test_default_is_polling() -> None:
+def test_default_is_on_chain_logs_only() -> None:
     mode, warning = DetectionModeResolver().resolve({})
-    assert mode == "polling"
+    assert mode == "on_chain_logs_only"
     assert warning is None
 
     mode, warning = DetectionModeResolver().resolve(None)
-    assert mode == "polling"
+    assert mode == "on_chain_logs_only"
     assert warning is None
 
 
-def test_legacy_pending_flag_maps_to_on_chain_confirmed_with_warning() -> None:
+def test_legacy_pending_flag_maps_to_on_chain_pending_with_warning() -> None:
     mode, warning = DetectionModeResolver().resolve(
         {"onchain": {"enable_onchain_pending_detection": True}}
     )
-    assert mode == "on_chain_confirmed"
+    assert mode == "on_chain_pending"
     assert warning is not None
     rendered = warning.render()
     assert rendered.startswith("detection_legacy_flags_deprecated")
-    assert "derived_mode=on_chain_confirmed" in rendered
+    assert "derived_mode=on_chain_pending" in rendered
     assert "replace_with=detection.mode" in rendered
     # Lazy-logging shape: template + args, never pre-interpolated.
     assert "%s" in warning.template
-    assert warning.args == ("on_chain_confirmed", "enable_onchain_pending_detection")
+    assert warning.args == ("on_chain_pending", "enable_onchain_pending_detection")
 
 
-def test_legacy_mined_flag_maps_to_on_chain_confirmed() -> None:
+def test_legacy_mined_flag_maps_to_on_chain_logs_only() -> None:
     mode, warning = DetectionModeResolver().resolve(
         {"onchain": {"enable_onchain_mined_detection": True}}
     )
-    assert mode == "on_chain_confirmed"
+    assert mode == "on_chain_logs_only"
     assert warning is not None
     assert warning.render().startswith("detection_legacy_flags_deprecated")
 

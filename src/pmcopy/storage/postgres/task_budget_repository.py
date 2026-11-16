@@ -541,23 +541,26 @@ class PostgresTaskBudgetRepository:
         )
 
     async def release(self, reservation_id: str) -> bool:
-        """Release one pending reservation without touching committed spend."""
+        """Release one pending reservation without touching committed or partially settled spend."""
 
         identity = self._required_text(reservation_id, name="reservation_id")
         async with self._acquire() as connection:
-            count = await connection.fetchval(
-                """
-                WITH released AS (
-                    UPDATE copy_task_budget_reservations
-                       SET status = 'released', updated_at = NOW()
-                     WHERE reservation_id = $1
-                       AND status = 'reserved'
-                    RETURNING 1
+            async with connection.transaction():
+                await self._acquire_locks(connection, (f"reservation:{identity}",))
+                count = await connection.fetchval(
+                    """
+                    WITH released AS (
+                        UPDATE copy_task_budget_reservations
+                           SET status = 'released', updated_at = NOW()
+                         WHERE reservation_id = $1
+                           AND status = 'reserved'
+                           AND COALESCE(settled_notional, 0) = 0
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM released
+                    """,
+                    identity,
                 )
-                SELECT COUNT(*) FROM released
-                """,
-                identity,
-            )
         return self._non_negative_count(count) > 0
 
     async def sweep_expired(self, now: datetime) -> int:

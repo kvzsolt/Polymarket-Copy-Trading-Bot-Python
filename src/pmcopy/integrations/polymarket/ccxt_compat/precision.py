@@ -11,8 +11,8 @@ fork CCXT and is safe to remove once upstream accepts arbitrary tick sizes.
 Removal condition: upstream ``polymarket_order_raw_amounts`` must derive its
 rounding from the actual ``tickSize`` (no ``0.01`` fallback), quantize the
 price side-conservatively, and keep the maker/taker price inside the caller's
-tick.  Verified still lacking as of CCXT ``4.5.87`` (2026-10-13): the
-function is byte-identical to ``4.5.85`` and still selects
+tick.  Verified still lacking as of CCXT ``4.5.92`` (2026-11-16): the
+function is byte-identical to ``4.5.85``/``4.5.87`` and still selects
 ``configs['0.01']`` for any tick outside ``{'0.1', '0.01', '0.001',
 '0.0001'}``.  Re-check on every CCXT upgrade before removing this patch;
 ``tests/test_ccxt_precision.py`` pins the ``0.005``/``0.0025`` regressions.

@@ -21,7 +21,9 @@ class MarketEvidenceWriter(Protocol):
 class MarketEvidenceTap:
     """Preserve raw receipt order; local evidence failure never stops risk quotes."""
 
-    def __init__(self, writer: MarketEvidenceWriter, clock: ReceiptClock, *, stream_id: str) -> None:
+    def __init__(
+        self, writer: MarketEvidenceWriter, clock: ReceiptClock, *, stream_id: str
+    ) -> None:
         """Inject local storage and the same observer clock used by chain capture."""
         if not stream_id:
             raise ValueError("market evidence stream identity is required")
@@ -54,11 +56,17 @@ class MarketEvidenceTap:
         self._sequence += 1
         stream = sha256(f"{self._stream}:{receipt.boot_id}:{self._generation}".encode()).hexdigest()
         try:
-            self._writer.append_event({
-                "kind": "market_frame", "schema_version": 2,
-                "received_ns": str(receipt.wall_timestamp_ns), "clock_id": receipt.boot_id,
-                "stream_id": stream, "sequence": self._sequence, "frame": frame,
-            })
+            self._writer.append_event(
+                {
+                    "kind": "market_frame",
+                    "schema_version": 2,
+                    "received_ns": str(receipt.wall_timestamp_ns),
+                    "clock_id": receipt.boot_id,
+                    "stream_id": stream,
+                    "sequence": self._sequence,
+                    "frame": frame,
+                }
+            )
         except Exception:
             self._invalidate("market_evidence_unavailable")
             return False
@@ -73,10 +81,15 @@ class MarketEvidenceTap:
             self._invalidate("missing_native_clock")
             return
         try:
-            self._writer.append_event({
-                "kind": "gap", "provider": "clob", "reason": "disconnected",
-                "received_ns": str(receipt.wall_timestamp_ns), "clock_id": receipt.boot_id,
-            })
+            self._writer.append_event(
+                {
+                    "kind": "gap",
+                    "provider": "clob",
+                    "reason": "disconnected",
+                    "received_ns": str(receipt.wall_timestamp_ns),
+                    "clock_id": receipt.boot_id,
+                }
+            )
         except Exception:
             self._invalidate("market_evidence_unavailable")
 

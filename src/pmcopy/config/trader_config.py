@@ -282,6 +282,8 @@ class TraderConfig(_FrozenModel):
 
     name: str = ""
     wallet: str
+    eoa_address: str = ""
+    proxy_address: str = ""
     enabled: bool = True
     # Per-leader copy gates. ``None`` inherits the layered copy_trading value.
     copy_decision_min_score: float | None = None
@@ -311,6 +313,14 @@ class TraderConfig(_FrozenModel):
     def _validate_wallet(self) -> "TraderConfig":
         if not _ETH_ADDR_RE.match(str(self.wallet or "")):
             raise ValueError(f"trader wallet must be a 42-char Ethereum address: {self.wallet!r}")
+        if self.eoa_address and not _ETH_ADDR_RE.match(str(self.eoa_address)):
+            raise ValueError(
+                f"trader eoa_address must be a 42-char Ethereum address: {self.eoa_address!r}"
+            )
+        if self.proxy_address and not _ETH_ADDR_RE.match(str(self.proxy_address)):
+            raise ValueError(
+                f"trader proxy_address must be a 42-char Ethereum address: {self.proxy_address!r}"
+            )
         return self
 
 

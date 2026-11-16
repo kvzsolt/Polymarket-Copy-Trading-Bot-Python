@@ -132,12 +132,14 @@ async def _demand_submission_evidence(row: dict, orders_repo: Any) -> dict:
             "defer_reason": "orders_lookup_unavailable",
         }
     decision = classify_no_id_reservation_expiry(OrderRowLookup.from_lookup(order_row))
-    if decision is ReservationExpiryDecision.RELEASE_PRE_SUBMIT_ORPHAN:
+    if decision in (
+        ReservationExpiryDecision.RELEASE_PRE_SUBMIT_ORPHAN,
+        ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE,
+    ):
         return row
     defer_reason = (
         "unresolved_submission_row"
         if decision is ReservationExpiryDecision.KEEP_PENDING_RECOVERY
-        or decision is ReservationExpiryDecision.RELEASE_TERMINAL_EVIDENCE
         else "orders_lookup_unavailable"
     )
     return {

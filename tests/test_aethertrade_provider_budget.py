@@ -59,7 +59,7 @@ class TestProviderBudget:
             assert ledger.snapshot()["pending_daily_used"] == 14
 
     def test_existing_usage_is_seeded_once_and_persists_after_restart(self, tmp_path):
-        settings = self.settings(initial_alchemy_used=500, initial_infura_used=100)
+        settings = self.settings(initial_alchemy_used=500)
         path = tmp_path / "usage.sqlite"
         clock = FakeClock()
         with SqliteProviderBudget(path, settings, clock) as ledger:
@@ -67,7 +67,6 @@ class TestProviderBudget:
         with SqliteProviderBudget(path, settings, clock) as ledger:
             snapshot = ledger.snapshot()
             assert snapshot["alchemy"]["used"] == 520
-            assert snapshot["infura"]["used"] == 100
             assert snapshot["estimate_only"] is True
 
     def test_billing_day_change_requires_explicit_migration(self, tmp_path):
@@ -81,11 +80,10 @@ class TestProviderBudget:
         clock = FakeClock()
         with SqliteProviderBudget(tmp_path / "usage.sqlite", self.settings(), clock) as ledger:
             ledger.charge("alchemy", 20, category="pending")
-            ledger.charge("infura", 80)
+            assert ledger.snapshot()["pending_daily_used"] == 20
             clock.instant = datetime(2026, 9, 18, tzinfo=UTC)
             snapshot = ledger.snapshot()
             assert snapshot["alchemy"]["used"] == 20
-            assert snapshot["infura"]["used"] == 0
             assert snapshot["pending_daily_used"] == 0
             clock.instant = datetime(2026, 10, 1, tzinfo=UTC)
             assert ledger.snapshot()["alchemy"]["used"] == 0
@@ -112,8 +110,9 @@ class TestProviderBudget:
             tmp_path / "usage.sqlite", self.settings(), FakeClock()
         ) as ledger:
             assert ledger.rpc_cost("alchemy", "eth_call") == 26
-            assert ledger.rpc_cost("infura", "eth_call") == 80
             assert ledger.rpc_cost("alchemy", "eth_getCode") == 20
+            with pytest.raises(ProviderConfigurationError):
+                ledger.rpc_cost("infura", "eth_call")
             with pytest.raises(ProviderConfigurationError):
                 ledger.rpc_cost("alchemy", "eth_sendRawTransaction")
             with pytest.raises(ProviderConfigurationError):

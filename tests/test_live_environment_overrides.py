@@ -61,14 +61,10 @@ def _overrides() -> dict:
             "funder_address": "0x" + "1" * 40,
             "private_key": "0x" + "a" * 64,
         },
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
-        # The live environment selects ``detection.mode: on_chain_confirmed``
-        # with ``confirmed_source: logs_only`` (topic-filtered ``logs``
-        # subscriptions on any wss:// provider), which fails closed without
-        # the endpoint the operator keeps in ``secrets.env``
-        # (``PMCOPY__DETECTION__ONCHAIN__PENDING_TX_WS_URL``).
         "detection": {
-            "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
         },
     }
 
@@ -122,8 +118,8 @@ def test_live_environment_files_are_scoped_to_their_owning_service() -> None:
     }
     assert set(copy_trading) == {"copy_tasks"}
     assert set(detection) == {"mode", "onchain"}
-    assert detection["mode"] == "on_chain_confirmed"
-    assert detection["onchain"]["confirmed_source"] == "logs_only"
+    assert detection["mode"] == "on_chain_logs_only"
+    assert detection["onchain"]["pending_tx_provider"] == "alchemy"
     assert set(app_cfg) == {
         "enable_metrics_server",
         "metrics_bind_host",

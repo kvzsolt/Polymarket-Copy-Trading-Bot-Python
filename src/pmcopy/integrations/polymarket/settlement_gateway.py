@@ -22,7 +22,10 @@ from pmcopy.domain.redemption import (
 )
 from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
 from pmcopy.integrations.polymarket.settlement_chain import PolygonSettlementReader
-from pmcopy.integrations.polymarket.settlement_wallet import DepositWalletCodec, SignedSettlementBatch
+from pmcopy.integrations.polymarket.settlement_wallet import (
+    DepositWalletCodec,
+    SignedSettlementBatch,
+)
 from pmcopy.interfaces.settlement import SettlementClock
 
 

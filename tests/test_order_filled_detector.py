@@ -15,7 +15,7 @@ from pmcopy.services.onchain_detection.order_filled_detector import (
     ONCHAIN_EXCHANGE_ADDRESSES,
     build_signal_from_log,
     decode_order_filled_log,
-    log_subscription_params,
+    log_subscription_params_for_watched,
 )
 from pmcopy.services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
@@ -88,16 +88,17 @@ def test_topic0_matches_canonical_signature() -> None:
 
 
 def test_both_exchange_addresses_in_subscription() -> None:
-    params = log_subscription_params()
-    # JSON-RPC ``eth_subscribe`` expects params as a positional array:
-    # ``["logs", filter]``.
-    assert isinstance(params, list)
-    assert params[0] == "logs"
-    filter_obj = params[1]
-    addresses = [a.lower() for a in filter_obj["address"]]
-    assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
-    assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
-    assert filter_obj["topics"] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    maker_params, taker_params = log_subscription_params_for_watched(
+        watched_wallets={_WATCHED}
+    )
+    for params in (maker_params, taker_params):
+        assert isinstance(params, list)
+        assert params[0] == "logs"
+        filter_obj = params[1]
+        addresses = [a.lower() for a in filter_obj["address"]]
+        assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
+        assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
+        assert filter_obj["topics"][0] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
 
 
 def test_onchain_exchange_addresses_covers_both() -> None:
@@ -244,7 +245,10 @@ _TOPIC0_HEX = "0x" + ORDER_FILLED_TOPIC0.hex()
 
 _LEADER_A = "0x" + "11" * 20
 _LEADER_B = "0xAB" + "cd" * 19  # mixed case on purpose
-_EXCHANGE_FILTER = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+_EXCHANGE_FILTER = (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+)
 
 
 def test_watched_params_build_maker_and_taker_filters() -> None:
@@ -264,17 +268,21 @@ def test_watched_params_build_maker_and_taker_filters() -> None:
     )
 
     expected_topics = sorted((_pad32(_LEADER_A), _pad32(_LEADER_B)))
+    expected_addresses = [
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+    ]
     assert maker == [
         "logs",
         {
-            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "address": expected_addresses,
             "topics": [[_TOPIC0_HEX], None, expected_topics],
         },
     ]
     assert taker == [
         "logs",
         {
-            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "address": expected_addresses,
             "topics": [[_TOPIC0_HEX], None, None, expected_topics],
         },
     ]

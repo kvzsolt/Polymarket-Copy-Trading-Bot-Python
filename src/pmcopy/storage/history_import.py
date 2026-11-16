@@ -130,7 +130,8 @@ class HistoryImportJournal:
                 )
                 self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
 
     def response(self, slot: str) -> ObservedRpcResult | None:
@@ -180,7 +181,8 @@ class HistoryImportJournal:
                     )
                 self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
 
     def _append(self, event: EvidenceEvent, *, diagnostic: bool = False) -> None:
@@ -233,7 +235,8 @@ class HistoryImportJournal:
                 self._db.execute("UPDATE history_job SET cursor=? WHERE singleton=1", (end,))
                 self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
 
     def header(self, number: int) -> tuple[str, str] | None:
@@ -287,7 +290,8 @@ class HistoryImportJournal:
                 )
                 self._db.execute("COMMIT")
             except BaseException:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
 
     @staticmethod

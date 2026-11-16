@@ -54,6 +54,9 @@ _WHEEL_RESOURCE_FILES = (
     "pmcopy/config/environments/example/execution.yml",
     "pmcopy/config/traders/anon1.yml",
     "pmcopy/storage/postgres/migrations/20260808_01_copy_tasks_and_reentry_locks.sql",
+    "pmcopy/telemetry_ui/index.html",
+    "pmcopy/telemetry_ui/styles.css",
+    "pmcopy/telemetry_ui/app.js",
 )
 _SDIST_FORBIDDEN_NAMES = ("secrets.env", "db.env", "runtime.local.yml", "runtime.local.yml.example")
 _SDIST_FORBIDDEN_SUFFIXES = (".pyc", ".env.bak")
@@ -363,8 +366,12 @@ def prove_artifact(kind: str, artifact: Path, workspace: Path, uv: str | None) -
     # Runtime-built placeholder credentials only; never real material.
     dsn = f"postgresql://verify_{kind}:verify@localhost:5432/verify_{kind}"
     funder = "0x" + "5" * 40
+    alchemy_key = f"verify_placeholder_{kind}_key_12345"
+    alchemy_wss = f"wss://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}"
     secrets.write_text(
-        f"PMCOPY__DATABASE__DSN={dsn}\nPMCOPY__WALLET__FUNDER_ADDRESS={funder}\n",
+        f"PMCOPY__DATABASE__DSN={dsn}\n"
+        f"PMCOPY__WALLET__FUNDER_ADDRESS={funder}\n"
+        f"PMCOPY__ALCHEMY_WSS_URL={alchemy_wss}\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
@@ -392,6 +399,7 @@ def prove_artifact(kind: str, artifact: Path, workspace: Path, uv: str | None) -
     assert result.returncode == 0, f"{kind}/config validate failed:\n{result.stdout}{result.stderr}"
     assert '"valid": true' in result.stdout, result.stdout
     assert dsn not in result.stdout, "validate output must not echo the DSN"
+    assert alchemy_key not in result.stdout, "validate output must not echo the Alchemy WSS key"
     passed.append("config-validate (explicit external deployment root)")
 
     smoke = workspace / f"smoke-{kind}.py"

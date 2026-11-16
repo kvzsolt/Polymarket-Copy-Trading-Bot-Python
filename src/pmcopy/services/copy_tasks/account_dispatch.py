@@ -9,7 +9,11 @@ from hashlib import sha256
 
 from pmcopy.services.copy_tasks.domain import CopyTask
 from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor, CopyTaskSourceEvent
-from pmcopy.services.copy_tasks.worker import LeaderLimitReached, LeaderWorkerSupervisor, WorkerQueueFull
+from pmcopy.services.copy_tasks.worker import (
+    LeaderLimitReached,
+    LeaderWorkerSupervisor,
+    WorkerQueueFull,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -96,9 +96,14 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
                 "database": {"dsn": "postgresql://test:test@localhost/test"},
                 "wallet": {
                     "funder_address": "0x" + "b" * 40,
-                    "polygon_rpc_url": "https://polygon-rpc.example.com",
+                    "polygon_rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123",
                 },
-                "network": {"rpc_url": "https://polygon-rpc.example.com"},
+                "network": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"},
+                "detection": {
+                    "onchain": {
+                        "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                    }
+                },
                 "leader": {
                     "wallets": ["0x" + "c" * 40],
                     "copy_decision_min_score": 0.01,

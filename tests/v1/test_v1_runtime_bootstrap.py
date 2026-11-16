@@ -31,9 +31,14 @@ def _overrides() -> dict:
         "database": {"dsn": "postgresql://test:test@localhost/test"},
         "wallet": {
             "funder_address": _ADDRESS,
-            "polygon_rpc_url": "https://rpc.invalid",
+            "polygon_rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123",
         },
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "polymarket": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"},
+        "detection": {
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
+        },
         "execution": {"trading_mode": "paper"},
     }
 

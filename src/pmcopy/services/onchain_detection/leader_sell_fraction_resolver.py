@@ -302,10 +302,13 @@ class LeaderSellFractionResolver:
                 )
                 return None
             return state
+        holder_wallet = str(
+            getattr(signal, "token_holder_wallet", "") or signal.leader_wallet
+        ).lower()
         try:
             raw_balance = await self._source_deadline.run(
                 lambda: self._historical_balances.balance_at_block(
-                    signal.leader_wallet,
+                    holder_wallet,
                     signal.token_id,
                     block_number - 1,
                 ),

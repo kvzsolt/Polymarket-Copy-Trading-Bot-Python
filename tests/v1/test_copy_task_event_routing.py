@@ -105,7 +105,7 @@ def source_event(
     *,
     leader: str = _LEADER,
     side: TradeSide = TradeSide.BUY,
-    mode: DetectionMode = DetectionMode.ON_CHAIN_CONFIRMED,
+    mode: DetectionMode = DetectionMode.ON_CHAIN_LOGS_ONLY,
     finality: DetectionFinality = DetectionFinality.CONFIRMED,
     log_index: int | None = 7,
 ) -> CopyTaskSourceEvent:
@@ -330,7 +330,7 @@ async def test_sell_without_authoritative_follower_shares_fails_closed() -> None
         ),
         (
             source_event(),
-            source_event(mode=DetectionMode.POLLING),
+            source_event(mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED),
         ),
     ],
 )

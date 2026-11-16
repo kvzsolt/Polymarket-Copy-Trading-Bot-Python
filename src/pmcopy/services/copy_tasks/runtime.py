@@ -22,7 +22,12 @@ from pmcopy.services.copy_tasks.budget import (
     TaskBudgetReservationRequest,
     TaskBudgetReservationService,
 )
-from pmcopy.services.copy_tasks.domain import CopyTask, MonitoringMode, SourceTrade, TaskAdmissionContext
+from pmcopy.services.copy_tasks.domain import (
+    CopyTask,
+    MonitoringMode,
+    SourceTrade,
+    TaskAdmissionContext,
+)
 from pmcopy.services.copy_tasks.entry_price import TaskEntryPriceDecision
 from pmcopy.services.copy_tasks.lifecycle import TaskExecutionDisposition, TaskExecutionOutcome
 from pmcopy.services.copy_tasks.monitoring import MonitoringDecision

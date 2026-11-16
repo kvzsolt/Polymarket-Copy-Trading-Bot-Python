@@ -27,7 +27,7 @@ class FixedClock:
 class TestUnlimitedProviderUsage:
     """Exercise production accounting through its actual dispatch boundary."""
 
-    @pytest.mark.parametrize("provider", ["alchemy", "infura"])
+    @pytest.mark.parametrize("provider", ["alchemy"])
     @pytest.mark.parametrize("category", ["essential", "pending", "backfill", "research"])
     async def test_old_caps_and_reserves_never_block_dispatch(
         self, tmp_path: Path, provider: str, category: str
@@ -38,11 +38,8 @@ class TestUnlimitedProviderUsage:
             baseline_verified=True,
             alchemy_monthly_limit=100,
             essential_reserve=99,
-            infura_daily_limit=100,
-            infura_essential_reserve=99,
             pending_daily_limit=1,
             initial_alchemy_used=100,
-            initial_infura_used=100,
         )
         path = tmp_path / "usage.sqlite"
         transport = AsyncMock()
@@ -58,9 +55,9 @@ class TestUnlimitedProviderUsage:
         assert snapshot[provider]["remaining"] is None
         assert snapshot["limits_enforced"] is False
 
-    @pytest.mark.parametrize("provider", ["alchemy", "infura"])
+    @pytest.mark.parametrize("provider", ["alchemy"])
     async def test_bursts_have_no_local_rate_throttle(self, tmp_path: Path, provider: str) -> None:
-        """A fixed-clock burst exceeds both previous per-second ceilings."""
+        """A fixed-clock burst exceeds previous per-second ceilings."""
         transport = AsyncMock()
         settings = BudgetSettings(free_plan_verified=True, baseline_verified=True)
         with SqliteProviderBudget(tmp_path / "usage.sqlite", settings, FixedClock()) as ledger:
@@ -78,9 +75,7 @@ class TestUnlimitedProviderUsage:
             tmp_path / "usage.sqlite", BudgetSettings(), FixedClock()
         ) as ledger:
             ledger.admit_rpc("alchemy", "eth_call")
-            ledger.admit_rpc("infura", "eth_call")
             assert ledger.snapshot()["alchemy"]["used"] == 26
-            assert ledger.snapshot()["infura"]["used"] == 80
 
     def test_stream_usage_over_old_cap_continues_and_is_counted(self, tmp_path: Path) -> None:
         """Delivered frames remain usable after monthly and pending thresholds."""
@@ -102,9 +97,7 @@ class TestUnlimitedProviderUsage:
         settings = replace(
             BudgetSettings(),
             alchemy_monthly_limit=value,
-            infura_daily_limit=value,
             alchemy_per_second=value,
-            infura_per_second=value,
         )
         with SqliteProviderBudget(tmp_path / "usage.sqlite", settings, FixedClock()) as ledger:
-            ledger.admit_rpc("infura", "eth_getLogs")
+            ledger.admit_rpc("alchemy", "eth_getLogs")

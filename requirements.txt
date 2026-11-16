@@ -20,7 +20,7 @@ aiosignal==1.4.0
     #   ccxt
 annotated-types==0.8.0
     # via pydantic
-anyio==4.15.1
+anyio==4.16.0
     # via httpx
 asyncpg==0.32.0
     # via polymarket-copy-trading-bot
@@ -28,15 +28,16 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   ccxt
-bitarray==3.12.1
+bitarray==3.12.4
     # via eth-account
-ccxt==4.5.87
+ccxt==4.5.92
     # via polymarket-copy-trading-bot
-certifi==2026.6.17
+certifi==2026.10.23
     # via
     #   ccxt
     #   httpcore
     #   httpx
+    #   polymarket-copy-trading-bot
     #   requests
 cffi==2.0.0
     # via
@@ -124,7 +125,7 @@ idna==3.18
     #   yarl
 iniconfig==2.3.1
     # via pytest
-markdown-it-py==4.2.0
+markdown-it-py==4.3.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
@@ -133,7 +134,7 @@ multidict==6.9.1
     #   aiohttp
     #   ccxt
     #   yarl
-orjson==3.11.9
+orjson==3.13.0
     # via
     #   ccxt
     #   polymarket-copy-trading-bot
@@ -141,7 +142,7 @@ packaging==26.3
     # via pytest
 parsimonious==0.10.0
     # via eth-abi
-pluggy==1.6.0
+pluggy==1.7.0
     # via pytest
 propcache==0.5.2
     # via
@@ -156,26 +157,26 @@ pycryptodome==3.24.1
     # via
     #   eth-hash
     #   eth-keyfile
-pydantic==2.14.1
+pydantic==2.14.3
     # via
     #   eth-account
     #   eth-utils
     #   polymarket-copy-trading-bot
     #   pydantic-settings
     #   web3
-pydantic-core==2.50.1
+pydantic-core==2.50.4
     # via pydantic
-pydantic-settings==2.15.0
+pydantic-settings==2.16.3
     # via polymarket-copy-trading-bot
 pygments==2.21.0
     # via
     #   pytest
     #   rich
-pytest==9.1.1
+pytest==9.2.0
     # via
     #   polymarket-copy-trading-bot
     #   pytest-asyncio
-pytest-asyncio==1.4.0
+pytest-asyncio==1.5.0
     # via polymarket-copy-trading-bot
 python-dotenv==1.2.4
     # via
@@ -190,7 +191,7 @@ pywin32==312 ; sys_platform == 'win32'
     #   web3
 pyyaml==6.0.3
     # via polymarket-copy-trading-bot
-regex==2026.9.29
+regex==2026.11.15
     # via parsimonious
 requests==2.34.2
     # via
@@ -209,7 +210,7 @@ toolz==1.2.0 ; implementation_name == 'cpython' or implementation_name == 'pypy'
     # via
     #   cytoolz
     #   eth-utils
-types-requests==2.33.0.20261006
+types-requests==2.33.0.20261030
     # via web3
 typing-extensions==4.16.0
     # via
@@ -218,10 +219,11 @@ typing-extensions==4.16.0
     #   eth-typing
     #   pydantic
     #   pydantic-core
+    #   pydantic-settings
     #   testcontainers
     #   typing-inspection
     #   web3
-typing-inspection==0.4.4
+typing-inspection==0.4.5
     # via
     #   pydantic
     #   pydantic-settings
@@ -244,7 +246,7 @@ websockets==15.0.1
     #   web3
 winloop==0.6.3 ; implementation_name == 'cpython' and platform_machine in 'AMD64 ARM64' and sys_platform == 'win32'
     # via ccxt
-wrapt==2.5.0
+wrapt==2.5.2
     # via testcontainers
 yarl==1.25.1
     # via

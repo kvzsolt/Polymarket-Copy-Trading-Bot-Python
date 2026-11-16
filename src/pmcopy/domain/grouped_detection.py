@@ -15,7 +15,7 @@ class TraderDetectionPolicy:
 
     wallet: str
     mode: Literal["mined", "pending"] = "mined"
-    provider: Literal["alchemy", "infura"] = "alchemy"
+    provider: Literal["alchemy"] = "alchemy"
     on_budget_exhausted: Literal["mined", "pause"] = "mined"
     enabled: bool = True
 
@@ -26,10 +26,8 @@ class TraderDetectionPolicy:
         object.__setattr__(self, "wallet", self.wallet.lower())
         if self.mode not in ("mined", "pending"):
             raise ValueError("detection mode must be mined or pending")
-        if self.provider not in ("alchemy", "infura"):
+        if self.provider != "alchemy":
             raise ValueError("unsupported detection provider")
-        if self.mode == "pending" and self.provider != "alchemy":
-            raise ValueError("pending observation requires Alchemy")
         if self.on_budget_exhausted not in ("mined", "pause"):
             raise ValueError("budget fallback must be mined or pause")
         if type(self.enabled) is not bool:
@@ -79,7 +77,7 @@ class TraderDetectionState:
     wallet: str
     desired_mode: Literal["mined", "pending"]
     effective_mode: Literal["mined", "pending", "paused"]
-    provider: Literal["alchemy", "infura"]
+    provider: Literal["alchemy"]
     on_budget_exhausted: Literal["mined", "pause"]
     enabled: bool
     degraded_reason: str | None

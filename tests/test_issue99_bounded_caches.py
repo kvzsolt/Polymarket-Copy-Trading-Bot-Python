@@ -90,9 +90,12 @@ class TestRiskPriceCacheTypedConfig:
             "database": {"dsn": "postgresql://test:test@localhost/test"},
             "wallet": {
                 "funder_address": "0x" + "b" * 40,
-                "polygon_rpc_url": "https://polygon-rpc.example.com",
             },
-            "network": {"rpc_url": "https://polygon-rpc.example.com"},
+            "detection": {
+                "onchain": {
+                    "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                }
+            },
         }
         if max_size is not None:
             overrides["risk"] = {"risk_price_cache_max_size": max_size}

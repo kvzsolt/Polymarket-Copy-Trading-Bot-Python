@@ -98,7 +98,7 @@ class PaperOrderSimulator:
                 price=price_limit,
                 fee=Decimal("0"),
                 timestamp=int(now.timestamp()),
-                status="MATCHED",
+                status="CONFIRMED",
                 trader_side="TAKER",
                 raw={"paper": True},
             )

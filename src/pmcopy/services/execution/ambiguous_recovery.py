@@ -146,9 +146,7 @@ class AmbiguousSubmission:
             raise ValueError("submitted_at must be timezone-aware")
         if not isinstance(self.side, SubmissionSide):
             raise TypeError("side must be a SubmissionSide")
-        if self.amount_unit is not None and not isinstance(
-            self.amount_unit, SubmissionAmountUnit
-        ):
+        if self.amount_unit is not None and not isinstance(self.amount_unit, SubmissionAmountUnit):
             raise TypeError("amount_unit must be a SubmissionAmountUnit")
 
         object.__setattr__(self, "idempotency_key", key)

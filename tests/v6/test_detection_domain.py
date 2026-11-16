@@ -29,7 +29,7 @@ def _event(**changes: object) -> LeaderTradeEvent:
         "price": Decimal("0.42"),
         "shares": Decimal("10"),
         "notional": Decimal("4.20"),
-        "mode": DetectionMode.POLLING,
+        "mode": DetectionMode.ON_CHAIN_LOGS_ONLY,
         "finality": DetectionFinality.CONFIRMED,
         "detected_at": datetime(2026, 8, 5, 1, 2, 3, tzinfo=UTC),
         "venue_timestamp": datetime(2026, 8, 5, 1, 2, 2, tzinfo=UTC),
@@ -45,7 +45,7 @@ def _event(**changes: object) -> LeaderTradeEvent:
 def test_canonical_event_has_stable_exact_and_economic_keys() -> None:
     event = _event()
     same_economics = _event(
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED,
         source_identity="log-7",
     )
 

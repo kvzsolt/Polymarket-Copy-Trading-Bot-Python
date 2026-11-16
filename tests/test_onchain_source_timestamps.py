@@ -39,7 +39,7 @@ async def test_logs_use_block_source_time_instead_of_post_enrichment_clock(sourc
     event = LeaderEventNormalizer(clock=FakeClock()).normalize_raw(
         _WATCHED,
         signal.as_raw_signal_dict(),
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
     expected = (
         None if source_ms is None else datetime.fromtimestamp(source_ms // 1000, timezone.utc)
@@ -72,7 +72,7 @@ def test_explicit_millisecond_epoch_does_not_depend_on_its_magnitude():
     event = LeaderEventNormalizer(clock=FakeClock()).normalize_raw(
         _WATCHED,
         signal.as_raw_signal_dict(),
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
     assert event.trade.venue_timestamp == datetime.fromtimestamp(100, timezone.utc)
 

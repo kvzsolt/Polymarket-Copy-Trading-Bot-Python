@@ -96,7 +96,7 @@ pinned-release behavior against it when planning upgrades.
   — secret-free by design, wallet fields are env-var references). The
   v1 JSON roster (`app.multi_user_config_file`) still exists; combining the
   two is a configuration error.
-- Python 3.13 only (`>=3.13,<3.14`); ccxt is pinned `==4.5.87`. 3.14 is
+- Python 3.13 only (`>=3.13,<3.14`); ccxt is pinned `==4.5.92`. 3.14 is
   deliberately unsupported (the runtime gate rejects it fail-closed), which
   also keeps ccxt's `coincurve==21.0.0` in the lock — signing is the native
   `CoinCurveECCBackend`, not the pure-Python fallback.

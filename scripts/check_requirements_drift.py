@@ -271,9 +271,7 @@ def _uv_backed_problems(root: pathlib.Path) -> tuple[list[str], str | None]:
             first_diff = next(
                 (
                     i
-                    for i, (a, b) in enumerate(
-                        zip(committed_lines, expected_lines, strict=False)
-                    )
+                    for i, (a, b) in enumerate(zip(committed_lines, expected_lines, strict=False))
                     if a != b
                 ),
                 min(len(committed_lines), len(expected_lines)),

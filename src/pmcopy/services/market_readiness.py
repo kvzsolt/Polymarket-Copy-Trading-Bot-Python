@@ -64,9 +64,7 @@ class MarketReadinessGroup:
             "subscribed_token_count": sum(row.subscribed for row in rows),
             "stale_token_count": sum(row.stale for row in rows),
             "dirty_token_count": sum(row.dirty for row in rows),
-            "wss_market_accounts": {
-                name: row.connected for name, row in self._states.items()
-            },
+            "wss_market_accounts": {name: row.connected for name, row in self._states.items()},
             "market_data_accounts": {
                 name: (row.connected and row.ready) for name, row in self._states.items()
             },

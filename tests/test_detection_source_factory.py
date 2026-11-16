@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import pytest
 
+from pmcopy.config.addresses import (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+)
 from pmcopy.domain.detection import DetectionMode
 from pmcopy.orchestrators.detection_source_factory import (
     ConfirmedSourceBuilder,
@@ -24,8 +28,11 @@ from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfi
 from pmcopy.services.onchain_detection.trade_detection_models import DetectionConfidence
 
 _LEADER = "0x" + "11" * 20
-_WS_URL = "wss://polygon.example.invalid/v2/redacted"
-_EXCHANGES = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+_WS_URL = "wss://polygon-mainnet.g.alchemy.com/v2/redacted"
+_EXCHANGES = (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+)
 
 
 async def _sink(_signal) -> None:
@@ -38,7 +45,7 @@ async def _resolver(_token_id: str) -> str:
 
 def _request(
     mode: DetectionMode,
-    confirmed_source: str = "mempool_reserved",
+    confirmed_source: str = "",
 ) -> DetectionSourceRequest:
     return DetectionSourceRequest(
         mode=mode,
@@ -116,10 +123,11 @@ def _confirmed_builder(
 
 
 @pytest.mark.asyncio
-async def test_polling_mode_builds_no_runtime() -> None:
+async def test_unregistered_logs_only_mode_raises() -> None:
     factory = DetectionSourceFactory([_pending_builder(), _confirmed_builder()])
 
-    assert await factory.build(_request(DetectionMode.POLLING)) is None
+    with pytest.raises(UnsupportedDetectionModeError):
+        await factory.build(_request(DetectionMode.ON_CHAIN_LOGS_ONLY))
 
 
 @pytest.mark.asyncio
@@ -219,7 +227,7 @@ async def test_on_chain_confirmed_builds_polygon_source_runtime_and_awaits_state
     bootstrap = _RecordingBootstrap()
     factory = DetectionSourceFactory([_confirmed_builder(provider, bootstrap)])
 
-    runtime = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    runtime = await factory.build(_request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED))
 
     assert runtime is bootstrap.runtime
     assert provider.calls == 1
@@ -243,7 +251,7 @@ async def test_on_chain_confirmed_default_bootstrap_builds_polygon_runtime() -> 
         state_store_provider=_StateStoreProvider(),
     )
 
-    runtime = await builder.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    runtime = await builder.build(_request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED))
 
     assert isinstance(runtime, PolygonSourceTransactionRuntime)
 
@@ -253,7 +261,7 @@ async def test_unknown_mode_raises() -> None:
     factory = DetectionSourceFactory([_pending_builder()])
 
     with pytest.raises(UnsupportedDetectionModeError):
-        await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+        await factory.build(_request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED))
 
 
 def test_duplicate_builder_mode_rejected() -> None:
@@ -283,7 +291,7 @@ def _logs_only_builder(websocket_factory: object | None = None) -> LogsOnlyConfi
 @pytest.mark.asyncio
 async def test_logs_only_builds_gen1_runtime_mined_only_with_topic_filters() -> None:
     runtime = await _logs_only_builder().build(
-        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+        _request(DetectionMode.ON_CHAIN_LOGS_ONLY, confirmed_source="logs_only")
     )
 
     assert isinstance(runtime, _RecordingRuntime)
@@ -318,7 +326,7 @@ async def test_logs_only_builder_forwards_websocket_factory() -> None:
     from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
 
     runtime = await builder.build(
-        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+        _request(DetectionMode.ON_CHAIN_LOGS_ONLY, confirmed_source="logs_only")
     )
 
     assert isinstance(runtime, OnchainDetectionRuntime)
@@ -339,13 +347,13 @@ async def test_factory_selects_by_mode_and_confirmed_source() -> None:
     )
 
     logs_only = await factory.build(
-        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+        _request(DetectionMode.ON_CHAIN_LOGS_ONLY, confirmed_source="logs_only")
     )
     assert isinstance(logs_only, _RecordingRuntime)
     assert logs_only.kwargs["enable_mined"] is True
     assert logs_only.kwargs["enable_pending"] is False
 
-    mempool_reserved = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    mempool_reserved = await factory.build(_request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED))
     assert mempool_reserved is bootstrap.runtime
     assert bootstrap.config is not None
 
@@ -369,4 +377,4 @@ def test_duplicate_builder_key_rejected() -> None:
 
 def test_request_rejects_an_unknown_confirmed_source() -> None:
     with pytest.raises(ValueError, match="confirmed_source"):
-        _request(DetectionMode.ON_CHAIN_CONFIRMED, "shadow_logs")
+        _request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED, "shadow_logs")

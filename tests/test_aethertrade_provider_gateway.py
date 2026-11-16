@@ -84,11 +84,11 @@ class TestProviderGateway:
             with SqliteProviderBudget(path, settings, clock) as second:
                 a = ProviderGateway(first, transport)
                 b = ProviderGateway(second, transport)
-                await a.call("infura", "eth_getLogs", [])
-                await b.call("infura", "eth_getLogs", [])
-                assert second.snapshot()["infura"]["used"] == 510
+                await a.call("alchemy", "eth_getLogs", [])
+                await b.call("alchemy", "eth_getLogs", [])
+                assert second.snapshot()["alchemy"]["used"] == 120
                 clock.instant += timedelta(seconds=1)
-                await b.call("infura", "eth_getLogs", [])
+                await b.call("alchemy", "eth_getLogs", [])
                 assert len(transport.calls) == 3
 
     @pytest.mark.asyncio
@@ -112,9 +112,9 @@ class TestProviderGateway:
         transport = Transport()
         with SqliteProviderBudget(tmp_path / "budget.sqlite", settings, clock) as ledger:
             gateway = ProviderGateway(ledger, transport)
-            await gateway.call("infura", "eth_getLogs", [])
+            await gateway.call("alchemy", "eth_getLogs", [])
             clock.instant += timedelta(microseconds=200000)
-            await gateway.call("infura", "eth_getLogs", [])
+            await gateway.call("alchemy", "eth_getLogs", [])
             clock.instant += timedelta(microseconds=800000)
-            await gateway.call("infura", "eth_getLogs", [])
+            await gateway.call("alchemy", "eth_getLogs", [])
             assert len(transport.calls) == 3

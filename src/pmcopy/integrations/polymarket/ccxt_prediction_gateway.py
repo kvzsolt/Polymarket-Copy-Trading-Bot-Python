@@ -1034,9 +1034,9 @@ class CcxtPredictionGateway:
             return []
 
         trade_ids = _list(raw, "trade_ids", "tradeIds") or _list(info, "trade_ids", "tradeIds")
-        transactions_hashes = _list(raw, "transactions_hashes", "transactionHashes", "transaction_hashes") or _list(
-            info, "transactions_hashes", "transactionHashes", "transaction_hashes"
-        )
+        transactions_hashes = _list(
+            raw, "transactions_hashes", "transactionHashes", "transaction_hashes"
+        ) or _list(info, "transactions_hashes", "transactionHashes", "transaction_hashes")
 
         if success_marker is False or status in {"canceled", "rejected"}:
             return VenueSubmitResult(
@@ -1216,10 +1216,9 @@ class CcxtPredictionGateway:
         # the outcome cache misses), while raw ``/data/orders`` rows carry
         # ``asset_id`` directly.  No identity in the payload means ``None``:
         # the adapter never guesses a token mapping for the domain.
-        token_raw = (
-            _first(raw, "outcomeId", "outcome_id", "token_id", "asset_id", "tokenId")
-            or _first(info, "asset_id", "token_id", "tokenId")
-        )
+        token_raw = _first(
+            raw, "outcomeId", "outcome_id", "token_id", "asset_id", "tokenId"
+        ) or _first(info, "asset_id", "token_id", "tokenId")
         token_id = str(token_raw).strip() if token_raw is not None else None
         return VenueOrderState(
             order_id=order_id,
@@ -1308,16 +1307,27 @@ class CcxtPredictionGateway:
         return None
 
     @staticmethod
-    def _trade_legs(value: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    def _trade_legs(
+        value: dict[str, Any],
+        *,
+        wallet_address: str | None = None,
+    ) -> Iterable[dict[str, Any]]:
         info = _nested_dict_or_self(value, "info")
         role = str(
             _first(info, "trader_side", "traderSide") or value.get("takerOrMaker") or "TAKER"
         ).upper()
         makers = _first(info, "maker_orders", "makerOrders")
+        own_wallet = str(wallet_address or "").strip().lower()
         if role == "MAKER" and isinstance(makers, list) and makers:
             for maker in makers:
                 if not isinstance(maker, dict):
                     continue
+                if own_wallet:
+                    maker_addr = (
+                        str(_first(maker, "maker_address", "makerAddress") or "").strip().lower()
+                    )
+                    if maker_addr and maker_addr != own_wallet:
+                        continue
                 maker_fee = CcxtPredictionGateway._fee(maker)
                 if maker_fee is None and len(makers) == 1:
                     maker_fee = CcxtPredictionGateway._fee(value)
@@ -1387,7 +1397,10 @@ class CcxtPredictionGateway:
                 str(_first(info, "transaction_hash", "transactionHash") or "") or None
             )
             status = str(_first(info, "status") or _first(value, "status") or "") or None
-            for leg in self._trade_legs(value):
+            own_wallet = getattr(self._client, "wallet_address", None) or getattr(
+                self._exchange, "walletAddress", None
+            )
+            for leg in self._trade_legs(value, wallet_address=own_wallet):
                 leg_order_id = str(leg.get("order_id") or "")
                 if order_id and leg_order_id != order_id:
                     continue

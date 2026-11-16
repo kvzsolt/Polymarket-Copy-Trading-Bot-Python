@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PMCopy — Telemetry &amp; Performance Monitor</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>PMCopy Telemetry</h1>
+        <p class="subtitle">Read-Only Execution, Latency &amp; Alchemy WSS Cost Instrument</p>
+      </div>
+    </div>
+    <div class="topbar-controls">
+      <span id="badge-trading-mode" class="pill pill-neutral">MODE: --</span>
+      <span id="badge-detection-mode" class="pill pill-neutral">DETECTION: --</span>
+      <span id="badge-readiness" class="pill pill-warn">READINESS: CHECKING</span>
+      <span id="badge-sse" class="pill pill-neutral">SSE: CONNECTING</span>
+      <span id="label-uptime" class="mono-stat">UPTIME 00:00:00</span>
+      <button id="btn-pause" type="button" class="btn">Pause Stream</button>
+      <button id="btn-refresh" type="button" class="btn btn-primary">Sync Snapshot</button>
+    </div>
+  </header>
+
+  <main class="grid-layout">
+    <!-- Panel 1: Alchemy WSS Bandwidth & CU Circuit Breaker -->
+    <section class="panel panel-wide" aria-labelledby="heading-alchemy">
+      <div class="panel-header">
+        <div>
+          <h2 id="heading-alchemy">Alchemy WSS Bandwidth &amp; CU Circuit Breaker</h2>
+          <p class="panel-caption">Singleton multiplexed Polygon stream (0.04 CU / UTF-8 byte)</p>
+        </div>
+        <span id="alchemy-breaker-pill" class="pill pill-ok">BREAKER ARMED</span>
+      </div>
+
+      <div class="meter-wrap">
+        <div class="meter-labels">
+          <span>Rolling 60m Bandwidth vs Hourly Cap</span>
+          <span id="alchemy-mb-label" class="mono">0.00 / 250.00 MB (0.0%)</span>
+        </div>
+        <div class="meter-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="alchemy-mb-bar-wrap">
+          <div id="alchemy-mb-bar" class="meter-fill"></div>
+        </div>
+      </div>
+
+      <div class="kpi-grid kpi-grid-6">
+        <div class="kpi-card">
+          <span class="kpi-label">Burn Rate (CU/min)</span>
+          <span id="kpi-cu-min" class="kpi-value">0.00</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">24h CU Projection</span>
+          <span id="kpi-cu-day" class="kpi-value">0</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">WSS Frames / Bytes</span>
+          <span id="kpi-frames-bytes" class="kpi-value">0 / 0 B</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Active Subscriptions</span>
+          <span id="kpi-active-subs" class="kpi-value">0</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Matched User Fills</span>
+          <span id="kpi-matched-events" class="kpi-value">0</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">WSS Reconnects</span>
+          <span id="kpi-ws-reconnects" class="kpi-value">0</span>
+        </div>
+      </div>
+
+      <div class="substrip">
+        <div class="substrip-item">
+          <span class="substrip-label">Tracked Leaders / Addresses</span>
+          <span id="stat-tracked-users" class="mono">0 / 0</span>
+        </div>
+        <div class="substrip-item">
+          <span class="substrip-label">MEMPOOL_RESERVED Active</span>
+          <span id="stat-mempool-active" class="mono">0</span>
+        </div>
+        <div class="substrip-item">
+          <span class="substrip-label">Promoted → CONFIRMED</span>
+          <span id="stat-mempool-promoted" class="mono">0</span>
+        </div>
+        <div class="substrip-item">
+          <span class="substrip-label">Direct Confirmed</span>
+          <span id="stat-mempool-direct" class="mono">0</span>
+        </div>
+        <div class="substrip-item">
+          <span class="substrip-label">Expired Ghost Fills</span>
+          <span id="stat-mempool-ghost" class="mono">0</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Panel 2: Subsystem Readiness & Active Entities -->
+    <section class="panel" aria-labelledby="heading-subsystems">
+      <div class="panel-header">
+        <div>
+          <h2 id="heading-subsystems">Subsystem Health &amp; Entities</h2>
+          <p class="panel-caption">Strict fail-closed gates, drift &amp; runtime state</p>
+        </div>
+        <span id="failed-gates-count" class="mono-muted">0 failed</span>
+      </div>
+      <div id="subsystem-grid" class="status-grid"></div>
+      <h3 class="section-divider">Active Runtime Entities &amp; Queues</h3>
+      <div id="entities-grid" class="kv-grid"></div>
+    </section>
+
+    <!-- Panel 3: End-to-End Pipeline Latency Histograms -->
+    <section class="panel" aria-labelledby="heading-latency">
+      <div class="panel-header">
+        <div>
+          <h2 id="heading-latency">Pipeline Stage Latency (ms)</h2>
+          <p class="panel-caption">Bounded-window p50 / p95 / p99 across LatencyPhase</p>
+        </div>
+        <span id="latency-phase-count" class="mono-muted">0 phases</span>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th class="num">Samples</th>
+              <th class="num">p50</th>
+              <th class="num">p95</th>
+              <th class="num">p99</th>
+              <th>Profile</th>
+            </tr>
+          </thead>
+          <tbody id="latency-tbody">
+            <tr><td colspan="6" class="empty-cell">No latency observations recorded yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Panel 4: Key Counters -->
+    <section class="panel" aria-labelledby="heading-counters">
+      <div class="panel-header">
+        <div>
+          <h2 id="heading-counters">Execution, Risk &amp; Reconciliation Counters</h2>
+          <p class="panel-caption">Monotonic process counters &amp; gauges</p>
+        </div>
+        <span id="counters-updated-at" class="mono-muted">--</span>
+      </div>
+      <div id="counters-list" class="counter-list">
+        <div class="empty-cell">Waiting for snapshot...</div>
+      </div>
+    </section>
+
+    <!-- Panel 5: Live Telemetry Event Stream -->
+    <section class="panel" aria-labelledby="heading-events">
+      <div class="panel-header">
+        <div>
+          <h2 id="heading-events">Live Telemetry Event Feed</h2>
+          <p class="panel-caption">Non-blocking SSE fan-out from TelemetryHub</p>
+        </div>
+        <div class="filter-bar" role="group" aria-label="Filter telemetry events">
+          <button type="button" class="chip chip-active" data-filter="all">All</button>
+          <button type="button" class="chip" data-filter="trades">Trades &amp; Fills</button>
+          <button type="button" class="chip" data-filter="leaders">Leaders</button>
+          <button type="button" class="chip" data-filter="skips">Skips</button>
+          <button type="button" class="chip" data-filter="risk">Risk &amp; Locks</button>
+          <button type="button" class="chip" data-filter="alerts">Alerts</button>
+        </div>
+      </div>
+      <div id="events-feed" class="event-feed" aria-live="polite">
+        <div class="empty-cell">Listening for telemetry events...</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

@@ -30,12 +30,48 @@ POLYMARKET_CTF_EXCHANGE_V2_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B
 # docs.polymarket.com/resources/contracts (Neg Risk CTF Exchange).
 POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
+# Legacy Polymarket CTF Exchange (V1). Excluded by default unless
+# PMCOPY__INCLUDE_LEGACY_V1_EXCHANGES=true so we do not pay for legacy traffic.
+POLYMARKET_CTF_EXCHANGE_V1_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+# Legacy Polymarket negative-risk CTF Exchange (V1).
+POLYMARKET_NEG_RISK_EXCHANGE_V1_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
 POLYMARKET_CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
+ALL_VERIFIED_EXCHANGE_ADDRESSES: frozenset[str] = frozenset(
+    {
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+        POLYMARKET_CTF_EXCHANGE_V1_ADDRESS.lower(),
+        POLYMARKET_NEG_RISK_EXCHANGE_V1_ADDRESS.lower(),
+    }
+)
+
+
+def verified_polymarket_exchange_addresses(*, include_legacy_v1: bool = False) -> tuple[str, ...]:
+    """Return canonical lowercase verified Polymarket Exchange addresses."""
+    if include_legacy_v1:
+        return (
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+            POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+            POLYMARKET_CTF_EXCHANGE_V1_ADDRESS.lower(),
+            POLYMARKET_NEG_RISK_EXCHANGE_V1_ADDRESS.lower(),
+        )
+    return (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+    )
+
+
 __all__ = [
+    "ALL_VERIFIED_EXCHANGE_ADDRESSES",
     "POLYGON_USDCE_ADDRESS",
     "POLYMARKET_PUSD_ADDRESS",
+    "POLYMARKET_CTF_EXCHANGE_V1_ADDRESS",
     "POLYMARKET_CTF_EXCHANGE_V2_ADDRESS",
+    "POLYMARKET_NEG_RISK_EXCHANGE_V1_ADDRESS",
     "POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS",
     "POLYMARKET_CONDITIONAL_TOKENS_ADDRESS",
+    "verified_polymarket_exchange_addresses",
 ]

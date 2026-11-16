@@ -31,6 +31,7 @@ from pmcopy.services.copy_tasks.domain import (
     TaskAdmissionContext,
 )
 from pmcopy.services.copy_tasks.lifecycle import TaskExecutionOutcome
+from pmcopy.services.copy_tasks.reaction import CopyReactionEngine, ReactionAction
 from pmcopy.services.copy_tasks.reconciliation import Clock
 from pmcopy.services.copy_tasks.source_freshness import SourceFreshnessPolicy
 from pmcopy.services.copy_tasks.runtime import (
@@ -353,9 +354,21 @@ class CopyTaskEventProcessor:
         self, task: CopyTask, event: CopyTaskSourceEvent, decision_span: LatencyMeasurement | None
     ) -> TaskRouteResult:
         now = self._clock.now() if self._clock is not None else event.trade.detected_at
-        reason = self._freshness.rejection(event.trade, now)
-        if reason is not None:
-            return TaskRouteResult(task_id=task.task_id, allowed=False, reason=reason)
+        source = self._source_trade(event)
+        reaction = CopyReactionEngine().decide(task.reaction, source)
+        follower_action = (
+            reaction.action.value
+            if reaction.action in (ReactionAction.BUY, ReactionAction.SELL)
+            else source.action
+        )
+        if reaction.action is not ReactionAction.SKIP:
+            reason = self._freshness.rejection(
+                event.trade,
+                now,
+                follower_action=follower_action,
+            )
+            if reason is not None:
+                return TaskRouteResult(task_id=task.task_id, allowed=False, reason=reason)
         try:
             follower = await self._snapshot_provider.snapshot_for(task, event)
         except Exception as exc:
@@ -371,8 +384,7 @@ class CopyTaskEventProcessor:
                 allowed=False,
                 reason="follower_snapshot_unavailable",
             )
-        source = self._source_trade(event)
-        if source.action == "SELL" and follower.sell_shares is None:
+        if reaction.action is ReactionAction.SELL and follower.sell_shares is None:
             return TaskRouteResult(
                 task_id=task.task_id,
                 allowed=False,
@@ -388,7 +400,9 @@ class CopyTaskEventProcessor:
             now,
         )
         admission = self._admission_context(event, source, budget, now=now)
-        sizing = self._sizing_request(event, follower) if source.action == "BUY" else None
+        sizing = (
+            self._sizing_request(event, follower) if reaction.action is ReactionAction.BUY else None
+        )
         reservation_id = self._reservation_id(task, event)
 
         async def downstream(envelope: RuntimeExecutionEnvelope) -> TaskExecutionOutcome:

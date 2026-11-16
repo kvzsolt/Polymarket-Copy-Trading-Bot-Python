@@ -635,7 +635,7 @@ async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> No
 
     await runtime.start()
     try:
-        assert len(sockets) == 2
+        assert len(sockets) == 3  # 1 pendingtx + 2 user-filtered orderfilled (maker + taker)
         assert runtime.connected is True
         sockets[0]._connected = False
         assert runtime.connected is False
@@ -682,7 +682,15 @@ def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
     )
 
 
-_EXCHANGES = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+from pmcopy.config.addresses import (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+)
+
+_EXCHANGES = (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
+)
 
 
 def _make_logs_only_runtime(
@@ -733,16 +741,18 @@ async def test_logs_only_runtime_opens_the_two_watched_subscriptions() -> None:
             None,
             [_pad32(_WATCHED)],
         ]
-        assert maker_params[1]["address"] == ["0x" + "aa" * 20, "0x" + "bb" * 20]
+        assert maker_params[1]["address"] == list(_EXCHANGES)
     finally:
         await runtime.stop()
 
 
 @pytest.mark.asyncio
-async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -> None:
-    """Without a params factory the mined subscription is byte-identical to
-    today's gen-1 behaviour (one address-only filter)."""
-    from pmcopy.services.onchain_detection.order_filled_detector import log_subscription_params
+async def test_default_mined_runtime_enforces_user_filtered_subscriptions() -> None:
+    """Without a custom params factory, mined runtime STILL enforces user-filtered
+    maker + taker subscriptions (never an unfiltered firehose)."""
+    from pmcopy.services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
 
     _RecordingWebSocket.instances = []
 
@@ -760,8 +770,13 @@ async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -
     await runtime.start()
     try:
         mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
-        assert len(mined) == 1
-        assert mined[0].kwargs["subscribe_params"] == log_subscription_params()
+        assert len(mined) == 2
+        expected = list(
+            log_subscription_params_for_watched(
+                exchange_addresses=_EXCHANGES, watched_wallets=frozenset({_WATCHED})
+            )
+        )
+        assert [m.kwargs["subscribe_params"] for m in mined] == expected
     finally:
         await runtime.stop()
 
@@ -951,8 +966,8 @@ async def test_update_watched_wallets_before_start_updates_the_set_only() -> Non
 
 
 @pytest.mark.asyncio
-async def test_update_watched_wallets_without_factory_keeps_sockets_untouched() -> None:
-    """Legacy modes never resubscribe: the address-only filter has no roster."""
+async def test_update_watched_wallets_with_default_factory_also_resubscribes() -> None:
+    """Default mined runtime also resubscribes maker+taker role filters on roster change."""
     _RecordingWebSocket.instances = []
 
     async def sink(signal: OnchainTradeSignal) -> None:
@@ -971,8 +986,10 @@ async def test_update_watched_wallets_without_factory_keeps_sockets_untouched() 
         runtime.update_watched_wallets({"0x" + "66" * 20})
         await asyncio.sleep(0.05)
         mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
-        assert len(mined) == 1
-        assert mined[0].stopped == 0
-        assert mined[0].started == 1
+        assert len(mined) == 4
+        assert mined[0].stopped == 1
+        assert mined[1].stopped == 1
+        assert mined[2].started == 1
+        assert mined[3].started == 1
     finally:
         await runtime.stop()

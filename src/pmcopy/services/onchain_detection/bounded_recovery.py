@@ -44,12 +44,8 @@ class BoundedLogRecovery:
         overlap: int = 8,
         maximum_gap: int = 5000,
     ) -> None:
-        """Inject local evidence and a metered Alchemy/Infura read gateway."""
-        if (
-            provider not in ("alchemy", "infura")
-            or not 1 <= overlap <= 100
-            or not overlap <= maximum_gap <= 5000
-        ):
+        """Inject local evidence and a metered Alchemy read gateway."""
+        if provider != "alchemy" or not 1 <= overlap <= 100 or not overlap <= maximum_gap <= 5000:
             raise ValueError("invalid bounded recovery configuration")
         self._state, self._gateway, self._observer = state, gateway, observer
         self._clock, self._raw, self._provider = clock, raw, provider

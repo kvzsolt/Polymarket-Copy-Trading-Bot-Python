@@ -1,7 +1,10 @@
 import argparse
 import sys
 
-from pmcopy.bot_cli.commands.history_import import register_history_import_command, run_history_import
+from pmcopy.bot_cli.commands.history_import import (
+    register_history_import_command,
+    run_history_import,
+)
 
 from pmcopy.bot_cli.commands import (
     register_doctor_command,

@@ -41,6 +41,7 @@ _ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
     # discover this one; without an explicit alias the value fixtures already
     # pass would be silently dropped.
     "FUNDER_ADDRESS": (("wallet", "funder_address"),),
+    "ALCHEMY_WSS_URL": (("detection", "onchain", "alchemy_wss_url"),),
     "RPC_URL": (("wallet", "polygon_rpc_url"), ("polymarket", "rpc_url")),
     "CHAIN_ID": (("wallet", "chain_id"), ("polymarket", "chain_id")),
     "LEADER_WALLETS": (("copy_trading", "wallets"),),
@@ -103,7 +104,39 @@ def load_test_config(flat: Mapping[str, Any] | None = None, **nested: Any):
     # need not restate it. Fixtures that pass one keep theirs.
     overrides.setdefault("wallet", {}).setdefault("funder_address", "0x" + "1" * 40)
     for key, value in nested.items():
-        overrides[key] = value
+        if key in overrides and isinstance(overrides[key], dict) and isinstance(value, Mapping):
+            overrides[key] = {**overrides[key], **value}
+        else:
+            overrides[key] = value
+    det = overrides.setdefault("detection", {})
+    if isinstance(det, dict):
+        onchain = det.setdefault("onchain", {})
+        if (
+            isinstance(onchain, dict)
+            and "alchemy_wss_url" not in onchain
+            and "onchain_ws_url" not in onchain
+        ):
+            onchain["alchemy_wss_url"] = (
+                "wss://polygon-mainnet.g.alchemy.com/v2/test-fixture-key-12345"
+            )
+    placeholder_rpcs = {
+        "https://polygon-rpc.example.com",
+        "https://rpc.example.com",
+        "https://rpc.invalid",
+    }
+    default_alchemy_http = "https://polygon-mainnet.g.alchemy.com/v2/test-fixture-key-12345"
+    polymarket_section = overrides.get("polymarket")
+    if (
+        isinstance(polymarket_section, dict)
+        and polymarket_section.get("rpc_url") in placeholder_rpcs
+    ):
+        polymarket_section["rpc_url"] = default_alchemy_http
+    wallet_section = overrides.get("wallet")
+    if (
+        isinstance(wallet_section, dict)
+        and wallet_section.get("polygon_rpc_url") in placeholder_rpcs
+    ):
+        wallet_section["polygon_rpc_url"] = default_alchemy_http
     return load_config(overrides)
 
 

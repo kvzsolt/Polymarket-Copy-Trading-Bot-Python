@@ -1,27 +1,22 @@
-# Configuration guide — grouped native owner evidence in Finland.
-# Options: native.traders mode mined|pending, provider alchemy|infura, exhaustion
-# mined|pause; pending_enabled defaults false; state/recovery bounds are explicit.
-# Trade-offs: bounded mined logs reduce provider load; missed data is recovered
-# as evidence only, and new roster members require a restart before activation.
-# Finland production uses grouped native-owner mined logs only. No REST trade
-# monitor, provisional-copy source, broad exchange log feed, or newHeads feed starts.
-# Legacy fields below remain parse-compatible for offline compatibility tooling;
-# detection.mode/onchain do not select the production entry source.
-# RPC/WSS secrets are resolved only inside the approved shared ProviderRuntime.
-# Native owner settings and roster additions apply after restart. Pending is a
-# read-only observation feature and remains unavailable until its evaluator is wired.
-# Position/inventory/risk reads are separate from leader trade detection.
+# Configuration guide — Alchemy-only leader detection & WSS bandwidth cost controls.
+# Options: mode is on_chain_logs_only | on_chain_pending | confirmed+mempool_reserved
+# (alias on_chain_confirmed+mempool_reserved); booleans toggle V1 exchanges and direct txs.
+# Trade-offs: on_chain_logs_only uses server-side user-filtered OrderFilled topics at near-$0
+# CU cost; pending/mempool modes reduce latency at higher WSS bandwidth, capped by max_hourly_ws_mb.
+# Set PMCOPY__ALCHEMY_WSS_URL in secrets.env (never commit provider API keys here).
+mode: on_chain_logs_only
 fetch_interval: 0.5
 aggregate_signal_window_seconds: 1
 leader_positions_min_fetch_spacing_ms: 250
 leader_activity_min_fetch_spacing_ms: 250
 trade_queue_max_batches: 64
 onchain:
-  enable_onchain_pending_detection: false
-  enable_onchain_mined_detection: false
-  confirmed_source: mempool_reserved
-  onchain_ws_url: ''
-  pending_tx_ws_url: ''
+  alchemy_wss_url: ''
+  include_legacy_v1_exchanges: false
+  track_direct_user_txs: false
+  max_hourly_ws_mb: 250
+  mempool_reservation_ttl_seconds: 15.0
+  subscription_debounce_seconds: 2.0
   pending_tx_hashes_only: false
   pending_tx_max_signal_age_ms: 500
   pending_tx_detection_confidence_required: pending_probable

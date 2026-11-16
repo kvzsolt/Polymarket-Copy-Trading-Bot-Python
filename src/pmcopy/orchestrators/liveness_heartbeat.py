@@ -98,9 +98,7 @@ def render_heartbeat(state: Mapping[str, Any]) -> str:
     if failed is not None:
         return f"🟢 bot_heartbeat | alive | snapshot_failed={failed}"
     connected = state.get("detection_connected")
-    detection = (
-        _UNKNOWN if connected is None else ("connected" if connected else "DISCONNECTED")
-    )
+    detection = _UNKNOWN if connected is None else ("connected" if connected else "DISCONNECTED")
     active = state.get("active_leaders")
     monitored = state.get("monitored_leaders")
     leaders = f"{active if active is not None else _UNKNOWN}/{monitored if monitored is not None else _UNKNOWN}"

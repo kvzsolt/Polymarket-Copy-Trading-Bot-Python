@@ -25,7 +25,7 @@ def _env() -> dict[str, str]:
     return {
         "PRIVATE_KEY": _SECRET_KEY,
         "FUNDER_ADDRESS": _SECRET_FUNDER,
-        "RPC_URL": "https://rpc.example.com",
+        "RPC_URL": "https://polygon-mainnet.g.alchemy.com/v2/test-fixture-key-12345",
         "CHAIN_ID": "137",
         "USER_ADDRESS": _SECRET_USER,
     }

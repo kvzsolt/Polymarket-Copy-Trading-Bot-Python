@@ -18,10 +18,7 @@ def test_polygon_runtime_config_uses_sixty_second_confirmation_timeout() -> None
     )
 
     assert config.confirmation_timeout == timedelta(seconds=60)
-    assert config.pending_targets == (
-        "0x" + "11" * 20,
-        "0x" + "22" * 20,
-    )
+    assert config.pending_targets == ("0x" + "11" * 20,)
 
 
 def test_polygon_runtime_config_deduplicates_normalized_pending_targets() -> None:

@@ -13,7 +13,7 @@ from pmcopy.config.addresses import (
 )
 from pmcopy.services.onchain_detection.order_filled_detector import (
     ONCHAIN_EXCHANGE_ADDRESSES,
-    log_subscription_params,
+    log_subscription_params_for_watched,
 )
 from pmcopy.services.onchain_detection.pending_tx_detector import (
     pending_subscription_params,
@@ -38,11 +38,14 @@ def test_onchain_constant_covers_both() -> None:
 
 
 def test_log_subscription_covers_both() -> None:
-    params = log_subscription_params()
-    assert isinstance(params, list) and params[0] == "logs"
-    addresses = {a.lower() for a in params[1]["address"]}
-    assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
-    assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
+    maker_params, taker_params = log_subscription_params_for_watched(
+        watched_wallets={"0x" + "11" * 20}
+    )
+    for params in (maker_params, taker_params):
+        assert isinstance(params, list) and params[0] == "logs"
+        addresses = {a.lower() for a in params[1]["address"]}
+        assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
+        assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
 
 
 def test_pending_subscription_covers_both() -> None:

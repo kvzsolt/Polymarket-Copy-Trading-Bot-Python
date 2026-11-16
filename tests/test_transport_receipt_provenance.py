@@ -79,7 +79,7 @@ async def test_mined_receipt_survives_enrichment_and_canonical_normalization():
     event = LeaderEventNormalizer(clock=FakeClock()).normalize_raw(
         _WATCHED,
         signal.as_raw_signal_dict(),
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
     assert event.trade.detected_at == receipt.received_at
     assert event.trade.source_receipt == receipt
@@ -133,6 +133,7 @@ async def test_multiplexed_source_socket_preserves_receipt_before_queue_dispatch
         FakeJsonRpcSocket,
         FakeEventSink,
         _EXCHANGE,
+        _SAFE,
     )
 
     receipt = TransportReceipt(1786615000000, 123456789, "boot-a")
@@ -145,7 +146,10 @@ async def test_multiplexed_source_socket_preserves_receipt_before_queue_dispatch
     session = AlchemyJsonRpcSession(
         socket=socket,
         options=AlchemySubscriptionOptions(
-            chain_id=137, pending_targets=(_EXCHANGE,), log_addresses=(_EXCHANGE,)
+            chain_id=137,
+            pending_targets=(_EXCHANGE,),
+            log_addresses=(_EXCHANGE,),
+            watched_wallets=(_SAFE,),
         ),
         sink=sink,
         clock=FakeClock(),
@@ -153,7 +157,7 @@ async def test_multiplexed_source_socket_preserves_receipt_before_queue_dispatch
     )
     start = asyncio.create_task(session.start())
     try:
-        for index, subscription in enumerate(("pending-sub", "heads-sub", "logs-sub"), start=1):
+        for index, subscription in enumerate(("pending-sub", "logs-maker-sub", "logs-taker-sub"), start=1):
             await socket.wait_for_send_count(index)
             await socket.feed({"jsonrpc": "2.0", "id": index, "result": subscription})
         await start

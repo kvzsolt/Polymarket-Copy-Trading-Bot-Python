@@ -39,6 +39,76 @@ DEFAULT_MAX_PENDING = 10_000
 #: ceiling because one settlement tx contributes one key per ``OrderFilled``
 #: log, and replay/backfill batches arrive in bursts.
 DEFAULT_MAX_MINED = 50_000
+#: Default capacity for the raw ``OrderFilled`` ``(transactionHash, logIndex)``
+#: LRU ring buffer shared across maker and taker ``logs`` subscriptions.
+DEFAULT_LOG_LRU_CAPACITY = 16_384
+
+
+class LogEventLruDeduplicator:
+    """Bounded LRU deduplicator keyed by ``(transactionHash, logIndex)``.
+
+    Both ``logs_maker`` (``topics[2]``) and ``logs_taker`` (``topics[3]``)
+    subscriptions deliver the same ``OrderFilled`` log when both maker and
+    taker are tracked users. Deduplicating incoming log notifications in an
+    O(1) 16,384-entry LRU ensures each mined fill log is processed once.
+    """
+
+    def __init__(self, *, max_entries: int = DEFAULT_LOG_LRU_CAPACITY) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries must be > 0.")
+        self._max_entries = int(max_entries)
+        self._seen: OrderedDict[tuple[str, int], None] = OrderedDict()
+
+    @property
+    def max_entries(self) -> int:
+        """Return maximum retained ``(tx_hash, log_index)`` keys."""
+        return self._max_entries
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+    def is_duplicate(self, tx_hash: str, log_index: int) -> bool:
+        """Return True if ``(tx_hash, log_index)`` was seen; refresh MRU position."""
+        cleaned_tx = str(tx_hash or "").strip().lower()
+        if not cleaned_tx or isinstance(log_index, bool) or log_index < 0:
+            return False
+        key = (cleaned_tx, int(log_index))
+        if key in self._seen:
+            self._seen.move_to_end(key)
+            return True
+        self._seen[key] = None
+        while len(self._seen) > self._max_entries:
+            self._seen.popitem(last=False)
+        return False
+
+    def is_duplicate_raw_log(self, log: dict[str, object]) -> bool:
+        """Parse ``(transactionHash, logIndex)`` from a raw JSON-RPC log and dedupe.
+
+        Reorg removal notifications (``removed: True``) return ``True`` immediately
+        without inserting into the LRU so a later canonical re-inclusion is not dropped.
+        """
+        if not isinstance(log, dict):
+            return False
+        if bool(log.get("removed", False)):
+            return True
+        tx_raw = log.get("transactionHash", log.get("transaction_hash"))
+        idx_raw = log.get("logIndex", log.get("log_index"))
+        if not isinstance(tx_raw, str) or isinstance(idx_raw, bool):
+            return False
+        try:
+            if isinstance(idx_raw, str):
+                idx = int(idx_raw, 16) if idx_raw.lower().startswith("0x") else int(idx_raw)
+            elif isinstance(idx_raw, int):
+                idx = idx_raw
+            else:
+                return False
+        except ValueError:
+            return False
+        return self.is_duplicate(tx_raw, idx)
+
+    def clear(self) -> None:
+        """Reset all retained keys."""
+        self._seen.clear()
 
 
 class MinedFillDeduplicator:

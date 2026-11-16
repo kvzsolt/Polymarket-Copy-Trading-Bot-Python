@@ -9,7 +9,10 @@ from typing import Protocol, cast
 
 from pmcopy.adapters.clock import SystemReceiptClock
 from pmcopy.adapters.polygon.block_timestamp import RpcBlockTimestampReader
-from pmcopy.clients.network.grouped_websocket import GroupedWebSocketSession, ProviderWebSocketConnector
+from pmcopy.clients.network.grouped_websocket import (
+    GroupedWebSocketSession,
+    ProviderWebSocketConnector,
+)
 from pmcopy.config.native_detection import NativeDetectionConfig
 from pmcopy.domain.grouped_detection import TraderDetectionPolicy, TraderDetectionState
 from pmcopy.domain.provider_budget import BudgetExhausted
@@ -139,7 +142,7 @@ class NativeDetectionRuntime:
             observer=observer,
             raw=raw,
             clock=clock,
-            provider="infura" if provider_runtime.endpoints.infura else "alchemy",
+            provider="alchemy",
             overlap=config.recovery_overlap,
             maximum_gap=config.recovery_maximum_gap,
         )
@@ -170,7 +173,10 @@ class NativeDetectionRuntime:
             policy.enabled and policy.mode == "pending" for policy in policies
         ):
             from pmcopy.orchestrators.pending_evaluation_runtime import PendingEvaluationRuntime
-            from pmcopy.services.pending_evaluation import BoundedPendingEvaluator, PendingEvidenceSink
+            from pmcopy.services.pending_evaluation import (
+                BoundedPendingEvaluator,
+                PendingEvidenceSink,
+            )
 
             if not callable(getattr(raw, "append_event", None)) or not callable(
                 getattr(raw, "invalidate", None)

@@ -203,7 +203,11 @@ def test_metrics_are_reachable_with_canonical_config_and_paper_default(
         {
             "database": {"dsn": "postgresql://test:test@localhost/test"},
             "wallet": {"funder_address": "0x" + "1" * 40},
-            "polymarket": {"rpc_url": "https://rpc.invalid"},
+            "detection": {
+                "onchain": {
+                    "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                }
+            },
         },
         environment="paper",
     )

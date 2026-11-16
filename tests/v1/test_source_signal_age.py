@@ -38,7 +38,7 @@ def test_missing_source_timestamp_is_not_replaced_with_fetch_time():
     event = LeaderEventNormalizer(clock=Clock()).normalize_raw(
         _LEADER,
         {"side": "BUY", "asset": "1", "conditionId": "a", "size": "10", "price": "0.5"},
-        mode=DetectionMode.POLLING,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
     )
     assert event.trade.venue_timestamp is None
     assert event.trade.detected_at == Clock().now()

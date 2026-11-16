@@ -54,7 +54,7 @@ from pmcopy.services.onchain_detection.order_filled_detector import (
     DecodedOrderFilledLog,
     decode_order_filled_log,
     build_signal_from_log,
-    log_subscription_params,
+    log_subscription_params_for_watched,
 )
 from pmcopy.services.onchain_detection.pending_tx_detector import (
     PendingTxConfig,
@@ -507,14 +507,11 @@ class OnchainDetectionRuntime:
         )
 
     def _mined_subscription_params(self) -> list[list[Any]]:
-        """Return the ``eth_subscribe`` params for every mined subscription.
-
-        With a params factory (logs-only confirmed mode) the filters embed the
-        watched leaders as topic2/topic3 OR-lists; without one the runtime
-        keeps the single address-only subscription of the gen-1/pending shape.
-        """
+        """Return server-side user-filtered ``eth_subscribe`` params for mined logs."""
         if self._mined_params_factory is None:
-            return [log_subscription_params()]
+            return list(
+                log_subscription_params_for_watched(watched_wallets=frozenset(self._watched))
+            )
         return list(self._mined_params_factory(frozenset(self._watched)))
 
     def _schedule_mined_resubscribe(self) -> None:
@@ -624,13 +621,14 @@ class OnchainDetectionRuntime:
         logger.info("onchain_detection_runtime_stopped")
 
     def update_watched_wallets(self, wallets: set[str]) -> None:
-        """Runtime-update the watched set (lowercased).
+        """Runtime-update the watched set (lowercased) and schedule resubscribe.
 
-        In watched-topic-filtered modes the provider-side filters embed the
-        roster, so a roster change also schedules a resubscribe (off the
-        signal hot path). In the legacy address-only mode nothing resubscribes
-        — the client-side maker/taker match reads the updated set directly.
+        All mined modes embed the watched roster in server-side topic filters,
+        so any change to the normalized watched set schedules an off-hot-path
+        resubscribe.
         """
-        self._watched = {w.lower() for w in wallets}
-        if self._mined_params_factory is not None:
-            self._schedule_mined_resubscribe()
+        updated = {w.lower() for w in wallets}
+        if updated == self._watched:
+            return
+        self._watched = updated
+        self._schedule_mined_resubscribe()

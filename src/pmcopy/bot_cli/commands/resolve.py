@@ -133,6 +133,8 @@ class ResolveCommand:
         orders_repo: Any,
         reservations_repo: Any,
         *,
+        fills_repo: Any = None,
+        positions_repo: Any = None,
         backup_dir: str = "data",
         now: Callable[[], float] = time.time,
         emit: Callable[[str], None] = print,
@@ -144,6 +146,8 @@ class ResolveCommand:
         Args:
             orders_repo: Canonical orders repository.
             reservations_repo: Canonical reservations repository.
+            fills_repo: Optional fills repository for ledger updates on filled resolutions.
+            positions_repo: Optional positions repository paired with ``fills_repo``.
             backup_dir: Directory for the pre-write backup JSON.
             now: Monotonic-enough wall-clock source.
             emit: JSON sink for the command's single report line.
@@ -155,6 +159,8 @@ class ResolveCommand:
 
         self._orders_repo = orders_repo
         self._reservations_repo = reservations_repo
+        self._fills_repo = fills_repo
+        self._positions_repo = positions_repo
         self._backup_dir = Path(backup_dir)
         self._now = now
         self._emit = emit
@@ -175,20 +181,39 @@ class ResolveCommand:
 
     async def _load_reservation(self, order: dict[str, Any]) -> Any | None:
         order_id = str(order.get("order_id") or "")
-        if not order_id:
-            return None
-        try:
-            return await self._reservations_repo.get_active_by_order_id(order_id)
-        except Exception:
-            return None
+        if order_id:
+            try:
+                res = await self._reservations_repo.get_active_by_order_id(order_id)
+                if res is not None:
+                    return res
+            except Exception:
+                pass
+        raw_req = order.get("request")
+        req: dict[str, Any] = raw_req if isinstance(raw_req, dict) else {}
+        rec_meta = req.get("recovery_metadata")
+        meta: dict[str, Any] = rec_meta if isinstance(rec_meta, dict) else {}
+        res_id = str(req.get("reservation_id") or meta.get("reservation_id") or "").strip()
+        if res_id and hasattr(self._reservations_repo, "get_by_id"):
+            try:
+                candidate = await self._reservations_repo.get_by_id(res_id)
+                if (
+                    candidate is not None
+                    and str(getattr(candidate, "status", "")).lower() == "active"
+                ):
+                    return candidate
+            except Exception:
+                return None
+        return None
 
     # ------------------------------------------------------------------
     # Render
     # ------------------------------------------------------------------
     @staticmethod
     def _order_summary(order: dict[str, Any]) -> dict[str, Any]:
-        request = order.get("request") if isinstance(order.get("request"), dict) else {}
-        response = order.get("response") if isinstance(order.get("response"), dict) else {}
+        raw_req = order.get("request")
+        request: dict[str, Any] = raw_req if isinstance(raw_req, dict) else {}
+        raw_resp = order.get("response")
+        response: dict[str, Any] = raw_resp if isinstance(raw_resp, dict) else {}
         return {
             "idempotency_key": order.get("idempotency_key"),
             "order_id": order.get("order_id"),
@@ -229,13 +254,14 @@ class ResolveCommand:
     ) -> tuple[str | None, Decimal | None, Decimal | None]:
         """Return ``(error, size_matched, avg_price)``; error None means apply may proceed."""
         order_id = str(order.get("order_id") or "")
-        if not order_id:
-            return "order_id_missing", None, None
+        idem_key = str(order.get("idempotency_key") or "")
         status = str(order.get("status") or "")
         if status not in _RESOLVABLE_STATUSES:
             return "order_status_terminal", None, None
         if args.status not in _TERMINAL_STATUS_BY_RESOLUTION:
             return "status_required", None, None
+        if not order_id and (not idem_key or args.status not in _NO_FILL_RESOLUTIONS):
+            return "order_id_missing", None, None
         if not str(getattr(args, "note", "") or "").strip():
             return "note_required", None, None
         size_matched = _decimal_or_none(getattr(args, "size_matched", None))
@@ -252,9 +278,7 @@ class ResolveCommand:
 
     def _write_backup(self, order: dict[str, Any], reservation: Any | None) -> Path:
         self._backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.fromtimestamp(self._now(), tz=timezone.utc).strftime(
-            "%Y%m%dT%H%M%S"
-        )
+        timestamp = datetime.fromtimestamp(self._now(), tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
         path = self._backup_dir / f"manual-resolution-backup-{timestamp}.json"
         payload = {
             "created": datetime.fromtimestamp(self._now(), tz=timezone.utc).isoformat(),
@@ -272,7 +296,8 @@ class ResolveCommand:
         size_matched: Decimal | None,
         avg_price: Decimal | None,
     ) -> dict[str, Any]:
-        order_id = str(order["order_id"])
+        order_id = str(order.get("order_id") or "")
+        idem_key = str(order.get("idempotency_key") or "")
         prior_status = str(order.get("status") or "")
         target_status = _TERMINAL_STATUS_BY_RESOLUTION[str(args.status)]
         resolved_at = datetime.fromtimestamp(self._now(), tz=timezone.utc).isoformat()
@@ -295,16 +320,51 @@ class ResolveCommand:
         if avg_price is not None:
             response_patch["avg_price"] = str(avg_price)
 
-        await self._orders_repo.update_submission_status(
-            order_id=order_id,
-            status=target_status,
-            response_patch=response_patch,
-        )
-        if args.status == "filled":
+        if order_id:
+            await self._orders_repo.update_submission_status(
+                order_id=order_id,
+                status=target_status,
+                response_patch=response_patch,
+            )
+        elif hasattr(self._orders_repo, "update_submission_status_by_idempotency_key"):
+            await self._orders_repo.update_submission_status_by_idempotency_key(
+                idempotency_key=idem_key,
+                status=target_status,
+                response_patch=response_patch,
+            )
+
+        raw_req = order.get("request")
+        request: dict[str, Any] = raw_req if isinstance(raw_req, dict) else {}
+        if (
+            args.status == "filled"
+            and order_id
+            and size_matched is not None
+            and avg_price is not None
+        ):
             await self._orders_repo.upsert_matched_total(
                 order_id=order_id,
                 matched=str(size_matched),
             )
+            if self._fills_repo is not None and self._positions_repo is not None:
+                from pmcopy.storage.postgres.fills_repo import FillRecord
+
+                await self._fills_repo.append_fill_and_apply(
+                    FillRecord(
+                        user_id=str(order.get("user_id") or ""),
+                        leader_id=order.get("leader_id"),
+                        order_id=order_id,
+                        condition_id=str(request.get("condition_id") or ""),
+                        token_id=str(request.get("token_id") or ""),
+                        side=str(request.get("side") or "").upper(),
+                        size_tokens=size_matched,
+                        price=avg_price,
+                        fee=Decimal("0"),
+                        fill_ts=int(self._now()),
+                        dedup_key=str(size_matched),
+                    ),
+                    self._positions_repo,
+                    raw_payload={"manual_resolution": manual_resolution},
+                )
 
         reservation_released = False
         if reservation is not None:
@@ -324,20 +384,19 @@ class ResolveCommand:
                 )
                 reservation_released = True
 
-        request = order.get("request") if isinstance(order.get("request"), dict) else {}
-        trade_key = str(request.get("signal_id") or order.get("idempotency_key") or order_id)
+        trade_key = str(request.get("signal_id") or idem_key or order_id)
         processed_action = "none"
         if args.status == "filled":
             await self._orders_repo.mark_processed_trade(
                 trade_key=trade_key,
                 user_id=str(order.get("user_id") or ""),
                 leader_id=order.get("leader_id"),
-                tx_hash=request.get("signal_id") or trade_key,
+                tx_hash=str(request.get("signal_id") or trade_key),
                 side=str(request.get("side") or ""),
                 asset=str(request.get("token_id") or ""),
                 condition_id=str(request.get("condition_id") or ""),
                 status="filled_reconciled",
-                order_id=order_id,
+                order_id=order_id or None,
             )
             processed_action = "marked_filled"
         else:
@@ -356,7 +415,8 @@ class ResolveCommand:
         result: dict[str, Any] = {
             "applied": True,
             "dry_run": False,
-            "order_id": order_id,
+            "order_id": order_id or None,
+            "idempotency_key": idem_key or None,
             "status": target_status,
             "prior_status": prior_status,
             "backup": str(backup_path),
@@ -593,7 +653,9 @@ def run_resolve(args: argparse.Namespace) -> int:
         return 1
 
     from pmcopy.storage.postgres.connection import init_pool, shutdown_pool
+    from pmcopy.storage.postgres.fills_repo import FillsRepo
     from pmcopy.storage.postgres.orders_repo import OrdersRepo
+    from pmcopy.storage.postgres.positions_repo import PositionsRepo
     from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 
     async def _run() -> int:
@@ -604,13 +666,38 @@ def run_resolve(args: argparse.Namespace) -> int:
             command_timeout_seconds=15.0,
         )
         venue_runtime: Any = None
+        lease_manager: Any = None
         try:
             orders_repo = OrdersRepo(pool)
             redriver: LeaderSellTargetRedriver | None = None
             redriver_reason: str | None = "redrive_not_attempted_for_dry_run"
             # A dry run mutates nothing, so it never needs an authenticated
-            # venue runtime. Only an explicit --apply composes one.
+            # venue runtime or account lease. Only an explicit --apply composes them.
             if getattr(args, "apply", False):
+                target_row = await _fetch_order_row(orders_repo, args)
+                target_user = str((target_row or {}).get("user_id") or "").strip()
+                if target_user and hasattr(pool, "acquire"):
+                    from pmcopy.domain.account_identity import CopierAccountId
+                    from pmcopy.services.account_lease import AccountLeaseManager
+
+                    execution_cfg = getattr(config, "execution", None)
+                    lease_mode = str(getattr(execution_cfg, "trading_mode", "paper") or "paper")
+                    lease_manager = AccountLeaseManager(pool=pool)
+                    lease_res = await lease_manager.acquire(
+                        CopierAccountId(target_user),
+                        mode=lease_mode,
+                    )
+                    if not lease_res.acquired:
+                        print(
+                            json.dumps(
+                                {
+                                    "error": "account_lease_held_by_active_bot",
+                                    "user_id": target_user,
+                                },
+                                indent=2,
+                            )
+                        )
+                        return 1
                 redriver, redriver_reason, venue_runtime = await _compose_redriver(
                     pool=pool,
                     config=config,
@@ -620,6 +707,8 @@ def run_resolve(args: argparse.Namespace) -> int:
             command = ResolveCommand(
                 orders_repo,
                 ReservationsRepo(pool),
+                fills_repo=FillsRepo(pool),
+                positions_repo=PositionsRepo(pool),
                 backup_dir=getattr(args, "backup_dir", "data"),
                 redriver=redriver,
                 redriver_unavailable_reason=redriver_reason,
@@ -629,6 +718,11 @@ def run_resolve(args: argparse.Namespace) -> int:
             if venue_runtime is not None:
                 try:
                     await venue_runtime.close()
+                except Exception:
+                    pass
+            if lease_manager is not None:
+                try:
+                    await lease_manager.close()
                 except Exception:
                     pass
             await shutdown_pool()

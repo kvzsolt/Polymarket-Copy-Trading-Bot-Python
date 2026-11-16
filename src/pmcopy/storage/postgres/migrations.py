@@ -604,6 +604,7 @@ _DISCOVERY_DDL = [
 async def apply_migrations(conn: MigrationConnection) -> None:
     """Apply core schema and the one-time legacy-discovery reset atomically."""
     async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(7069802001)")
         for statement in _CORE_DDL:
             await conn.execute(statement)
 

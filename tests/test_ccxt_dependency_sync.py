@@ -29,9 +29,9 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
     runtime_ccxt = [
         dependency for dependency in runtime_requirements if dependency.startswith("ccxt")
     ]
-    assert project_ccxt == ["ccxt==4.5.87"]
-    assert exported_ccxt == ["ccxt==4.5.87"]
-    assert runtime_ccxt == ["ccxt==4.5.87"]
+    assert project_ccxt == ["ccxt==4.5.92"]
+    assert exported_ccxt == ["ccxt==4.5.92"]
+    assert runtime_ccxt == ["ccxt==4.5.92"]
 
     # The official SDK must not reappear in any dependency surface.
     for banned in ("polymarket-client", "py-clob-client"):
@@ -52,7 +52,7 @@ def test_standalone_constraint_uses_the_verified_exact_release() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert constraints == ["ccxt==4.5.87"]
+    assert constraints == ["ccxt==4.5.92"]
 
 
 def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
@@ -61,6 +61,7 @@ def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
     root = Path(__file__).resolve().parents[1]
     packages = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))["package"]
     locked_versions = [package["version"] for package in packages if package["name"] == "ccxt"]
+    certifi_versions = [package["version"] for package in packages if package["name"] == "certifi"]
     project = next(
         package for package in packages if package["name"] == "polymarket-copy-trading-bot"
     )
@@ -70,8 +71,13 @@ def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
         if dependency["name"] == "ccxt"
     ]
 
-    assert locked_versions == ["4.5.87"]
-    assert ccxt_requirements == ["==4.5.87"]
+    assert locked_versions == ["4.5.92"]
+    assert ccxt_requirements == ["==4.5.92"]
+    assert certifi_versions and tuple(int(p) for p in certifi_versions[0].split(".")) >= (
+        2026,
+        10,
+        18,
+    )
     assert not {"polymarket-client", "py-clob-client"}.intersection(
         package["name"] for package in packages
     )

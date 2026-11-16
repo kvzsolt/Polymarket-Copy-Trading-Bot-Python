@@ -92,6 +92,11 @@ class TestProviderRuntime:
                 "database": {"dsn": "postgresql://localhost/test"},
                 "wallet": {"funder_address": "0x" + "11" * 20},
                 "polymarket": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key"},
+                "detection": {
+                    "onchain": {
+                        "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key"
+                    }
+                },
             },
             config_dir=cfgdir,
             secrets_path=tmp_path / "absent-private-env",

@@ -259,6 +259,22 @@ class LeaderWorkerSupervisor(Generic[T]):
                 worker.start()
         return worker
 
+    async def retire_leader(self, leader: str) -> bool:
+        """Drain and remove a retired leader's worker slot so new leaders can enter."""
+        normalized = str(leader).strip().lower()
+        if not normalized:
+            return False
+        async with self._mutation_lock:
+            worker = self._workers.pop(normalized, None)
+        if worker is None:
+            return False
+        try:
+            async with asyncio.timeout(self._shutdown_timeout_seconds):
+                await worker.close()
+        except TimeoutError:
+            await worker.abort()
+        return True
+
     async def close(self) -> None:
         """Drain and close every worker exactly once."""
 

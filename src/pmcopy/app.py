@@ -201,9 +201,7 @@ def _should_wait_for_discovery_roster(
     return TraderStartupPolicy(auto_trader=force_discovery).should_wait_for_discovery_roster(config)
 
 
-def _reject_duplicate_user_state(
-    user_states: dict[str, "UserRuntimeState"], user_id: str
-) -> None:
+def _reject_duplicate_user_state(user_states: dict[str, "UserRuntimeState"], user_id: str) -> None:
     """A06 — a second copier with an already-built state must fail fast.
 
     The strict multi-user loader rejects duplicate configured user ids, but
@@ -281,7 +279,8 @@ def _validate_detection_confidence_floor(config: object) -> None:
     detection = getattr(config, "detection", None)
     if detection is None:
         return
-    if getattr(detection, "detection_mode", DetectionMode.POLLING) is DetectionMode.POLLING:
+    det_mode = getattr(detection, "detection_mode", None)
+    if det_mode is None or det_mode is DetectionMode.ON_CHAIN_LOGS_ONLY:
         return
     onchain = getattr(detection, "onchain", None)
     _detection_confidence_from_config(
@@ -342,12 +341,10 @@ def _build_onchain_ws_health_reporter(
 
     from pmcopy.services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
-    if mode is DetectionMode.ON_CHAIN_PENDING:
-        return OnchainWsHealthReporter(metrics_registry, readiness)
-    if (
-        mode is DetectionMode.ON_CHAIN_CONFIRMED
-        and str(confirmed_source).strip().lower() == "logs_only"
-    ):
+    if mode in {
+        DetectionMode.ON_CHAIN_PENDING,
+        DetectionMode.ON_CHAIN_LOGS_ONLY,
+    }:
         return OnchainWsHealthReporter(metrics_registry, readiness)
     return None
 
@@ -1367,6 +1364,7 @@ async def _shutdown_runtime(
     metrics_runner,
     onchain_runtime=None,
     pending_copy_tracker=None,
+    v1_runtime=None,
     evidence_drain=None,
     account_lease_manager: AccountLeaseManager | None = None,
 ) -> None:
@@ -1398,6 +1396,15 @@ async def _shutdown_runtime(
         except Exception as exc:
             logger.warning(
                 "pending_copy_tracker_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+    if v1_runtime is not None:
+        try:
+            await v1_runtime.close()
+        except Exception as exc:
+            logger.warning(
+                "v1_runtime_shutdown_failed",
                 extra={"error": redact_error_detail(exc)},
             )
 
@@ -1540,18 +1547,21 @@ async def _run_application(
             )
             return 1
 
+    import sqlite3
+
     from pmcopy.orchestrators.history_evidence_drain_runtime import HistoryEvidenceDrainRuntime
 
-    try:
-        history_drain = HistoryEvidenceDrainRuntime.from_config(
-            startup_config.evidence, evidence_runtime
-        )
-        if history_drain is not None:
-            client_registry.append(history_drain)
-            await history_drain.start()
-    except (ValueError, OSError):
-        print_error("The configured historical evidence journal could not be opened safely.")
-        return 1
+    if evidence_runtime is not None:
+        try:
+            history_drain = HistoryEvidenceDrainRuntime.from_config(
+                startup_config.evidence, evidence_runtime
+            )
+            if history_drain is not None:
+                client_registry.append(history_drain)
+                await history_drain.start()
+        except (ValueError, OSError, sqlite3.Error):
+            print_error("The configured historical evidence journal could not be opened safely.")
+            return 1
 
     from pmcopy.bot_cli.commands.doctor import run_doctor_checks
 
@@ -1620,6 +1630,7 @@ async def _run_application(
     application.readiness.configure_heartbeat_budget(
         staleness_seconds=_slowest_loop_interval * 3.0,
     )
+    heartbeat_state: dict[str, Any] = {}
     metrics_runner: _HealthServerResource | None = None
     if application.config.app.enable_metrics_server:
         metrics_runner = _HealthServerResource(
@@ -1627,6 +1638,14 @@ async def _run_application(
                 application.config.app.metrics_port,
                 tracker=application.readiness,
                 host=application.config.app.metrics_bind_host,
+                telemetry_query=telemetry_runtime.query if telemetry_runtime is not None else None,
+                telemetry_hub=telemetry_runtime.hub if telemetry_runtime is not None else None,
+                detection_telemetry=lambda: (
+                    det.telemetry_snapshot()
+                    if (det := heartbeat_state.get("detection")) is not None
+                    and hasattr(det, "telemetry_snapshot")
+                    else None
+                ),
             )
         )
         client_registry.append(metrics_runner)
@@ -2377,7 +2396,15 @@ async def _run_application(
                 dynamic_recon_failures,
             )
             blocked_set = set(blocked_wallets)
+            for blocked_wallet in blocked_set:
+                contexts_by_leader.pop(blocked_wallet, None)
             started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
+
+        _attach_market_data_runtime_to_contexts(
+            contexts_by_leader=contexts_by_leader,
+            risk_contexts_by_user=risk_contexts_by_user,
+            runtimes_by_user=market_data_runtimes,
+        )
 
         unblocked_contexts = [
             context for wallet in started_wallets for context in contexts_by_leader.get(wallet, ())
@@ -2386,16 +2413,23 @@ async def _run_application(
             v1_runtime.add_contexts(unblocked_contexts)
 
         if started_wallets:
+            for wallet in started_wallets:
+                if wallet not in monitored_set:
+                    monitored_leaders.append(wallet)
+                    monitored_set.add(wallet)
             if onchain_runtime is not None:
-                onchain_runtime.update_watched_wallets(monitored_set | set(started_wallets))
-            logger.info("native_detection_roster_awaiting_restart | count=%d", len(started_wallets))
+                onchain_runtime.update_watched_wallets(monitored_set)
+            logger.info(
+                "alchemy_detection_roster_updated | added=%d total=%d",
+                len(started_wallets),
+                len(monitored_set),
+            )
         application.readiness.update(
             monitored_leader_count=len(onchain_runtime.active_wallets())
             if onchain_runtime is not None
-            else 0
+            else len(monitored_set)
         )
-        # Discovery must not advertise these owners as actively monitored.
-        return []
+        return started_wallets
 
     async def _on_retired_leaders(wallets: list[str]) -> None:
         """Retire only monitors already proven free of outstanding exit ownership."""
@@ -2411,22 +2445,19 @@ async def _run_application(
                 monitor_tasks.remove(task)
         for wallet in retired:
             contexts_by_leader.pop(wallet, None)
+            if v1_runtime is not None:
+                await v1_runtime.retire_leader(wallet)
         monitored_leaders[:] = [wallet for wallet in monitored_leaders if wallet not in retired]
-        remaining = monitored_set - retired
-        _refresh_onchain_watched_wallets(onchain_runtime, remaining)
-        application.readiness.update(monitored_leader_count=len(remaining))
-        telemetry_emitters.detection.roster_updated(len(remaining))
+        monitored_set.difference_update(retired)
+        _refresh_onchain_watched_wallets(onchain_runtime, monitored_set)
+        application.readiness.update(monitored_leader_count=len(monitored_set))
+        telemetry_emitters.detection.roster_updated(len(monitored_set))
 
     # Auxiliary long-lived loops are registered as _Supervised specs and driven
     # by the main wait loop below (bounded restart, fail-closed on exhaustion)
     # instead of being fire-and-forget. Each factory must return a FRESH
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
-
-    # Filled in once the native source is composed (below). The heartbeat reads
-    # it so an early tick can honestly report "unknown" instead of fabricating a
-    # green light it cannot see yet.
-    heartbeat_state: dict[str, object] = {}
 
     # Bounded no-order-id lost-POST recovery. Registered only when at least one
     # follower has a read-only evidence source wired; a missing service leaves
@@ -2620,26 +2651,21 @@ async def _run_application(
     for spec in supervised:
         spec.spawn()
 
-    # Native-owner detection is the sole production leader-entry source.
+    # Alchemy-only singleton multiplexed WebSocket detection runtime.
     # Risk, inventory and reconciliation remain independent supervised loops.
     try:
-        from pmcopy.orchestrators.native_detection_runtime import (
-            DiscardingRawObservationSink,
-            NativeDetectionRuntime,
+        from pmcopy.orchestrators.alchemy_detection_runtime import (
+            AlchemyDetectionRuntime,
         )
         from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
         from pmcopy.orchestrators.trade_pipeline import execute_trades as _execute_trade_pipeline
 
-        def _native_source_changed() -> None:
+        def _alchemy_source_changed() -> None:
             active_owners = onchain_runtime.active_wallets() if onchain_runtime is not None else ()
             application.readiness.update(monitored_leader_count=len(active_owners))
             telemetry_emitters.detection.roster_updated(len(active_owners))
 
-        _native_source_changed()
-        # Durable evidence publication is optional: with it disabled the source
-        # still composes and dispatches, discarding raw observations instead of
-        # pausing detection. Pending evaluation still needs a durable sink and
-        # fails closed inside ``compose``.
+        _alchemy_source_changed()
         try:
             _onchain_signal_sink = OnchainSignalDispatchAdapter(
                 contexts_by_leader=contexts_by_leader,
@@ -2653,42 +2679,54 @@ async def _run_application(
                     provider_runtime=provider_runtime,
                 ),
             )
-            onchain_runtime = NativeDetectionRuntime.compose(
-                config=application.config.detection.native,
-                provider_runtime=provider_runtime,
+            onchain_runtime = AlchemyDetectionRuntime.compose(
+                config=application.config,
                 wallets=monitored_leaders,
                 sink=_onchain_signal_sink,
-                raw=evidence_runtime
-                if evidence_runtime is not None
-                else DiscardingRawObservationSink(),
-                status_changed=_native_source_changed,
+                status_changed=_alchemy_source_changed,
             )
             await onchain_runtime.start()
             heartbeat_state["detection"] = onchain_runtime
             telemetry_emitters.detection.attach_connection_probe(
                 _detection_connection_probe(onchain_runtime)
             )
-        except Exception:
-            logger.error("native_detection_paused | reason=composition_unavailable")
+        except Exception as exc:
+            logger.error(
+                "alchemy_detection_paused | reason=composition_unavailable error=%s",
+                redact_error_detail(exc),
+            )
             if onchain_runtime is not None:
                 await onchain_runtime.stop()
             onchain_runtime = None
-            _native_source_changed()
+            _alchemy_source_changed()
 
         loop = asyncio.get_running_loop()
+        inspected_done: set[asyncio.Task[Any]] = set()
         while True:
             # Wait on leader monitors AND every live supervised aux loop, so a
             # crash in risk / discovery is observed here rather than dying
             # silently while the process stays "up".
-            active = [task for task in monitor_tasks if not task.done()]
-            active += [spec.task for spec in supervised if spec.task and not spec.task.done()]
+            already_done = [
+                task for task in monitor_tasks if task.done() and task not in inspected_done
+            ]
+            already_done += [
+                spec.task
+                for spec in supervised
+                if spec.task is not None and spec.task.done() and spec.task not in inspected_done
+            ]
+            if already_done:
+                done: set[asyncio.Task[Any]] = set(already_done)
+            else:
+                active = [task for task in monitor_tasks if not task.done()]
+                active += [spec.task for spec in supervised if spec.task and not spec.task.done()]
 
-            if not active:
-                await asyncio.sleep(refresh_interval)
-                metrics.inc("no_leaders_monitored_total")
-                continue
+                if not active:
+                    await asyncio.sleep(refresh_interval)
+                    metrics.inc("no_leaders_monitored_total")
+                    continue
 
-            done, _ = await asyncio.wait(active, timeout=refresh_interval)
+                done, _ = await asyncio.wait(active, timeout=refresh_interval)
+            inspected_done.update(done)
 
             fail_closed = False
             for task in done:
@@ -2752,6 +2790,7 @@ async def _run_application(
                     },
                 )
                 if decision == "restart":
+                    await asyncio.sleep(min(5.0, 0.5 * (2 ** max(0, completed_spec.restarts - 1))))
                     completed_spec.spawn()
                 else:
                     logger.critical(
@@ -2776,6 +2815,7 @@ async def _run_application(
             metrics_runner=metrics_runner,
             onchain_runtime=onchain_runtime,
             pending_copy_tracker=pending_copy_tracker,
+            v1_runtime=v1_runtime,
             evidence_drain=evidence_drain,
             account_lease_manager=account_lease_manager,
         )
@@ -2835,6 +2875,15 @@ async def main(*, auto_trader: bool = False, copier: str | None = None) -> int:
         except Exception as exc:
             logger.warning(
                 "shared_http_client_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
+        try:
+            from pmcopy.storage.postgres.connection import shutdown_pool
+
+            await shutdown_pool()
+        except Exception as exc:
+            logger.warning(
+                "db_pool_shutdown_failed",
                 extra={"error": redact_error_detail(exc)},
             )
 

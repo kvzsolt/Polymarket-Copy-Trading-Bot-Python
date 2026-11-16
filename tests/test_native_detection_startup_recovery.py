@@ -57,7 +57,7 @@ class TestStaleDetectionCheckpoint:
             observer=observer,
             clock=Mock(capture=Mock(return_value=receipt)),
             raw=Mock(),
-            provider="infura",
+            provider="alchemy",
         )
         try:
             with caplog.at_level(logging.CRITICAL):
@@ -95,7 +95,7 @@ class TestStaleDetectionCheckpoint:
             observer=Mock(),
             clock=Mock(),
             raw=Mock(),
-            provider="infura",
+            provider="alchemy",
         )
         try:
             with pytest.raises((RuntimeError, RecoveryUnavailable)):
@@ -120,7 +120,7 @@ class TestStaleDetectionCheckpoint:
             observer=Mock(),
             clock=Mock(),
             raw=Mock(),
-            provider="infura",
+            provider="alchemy",
         )
         try:
             with pytest.raises(RecoveryUnavailable, match="precedes"):

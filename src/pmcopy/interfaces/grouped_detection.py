@@ -3,7 +3,11 @@
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol
 
-from pmcopy.domain.grouped_detection import NativeOwnerFill, TraderDetectionPolicy, TraderDetectionState
+from pmcopy.domain.grouped_detection import (
+    NativeOwnerFill,
+    TraderDetectionPolicy,
+    TraderDetectionState,
+)
 from pmcopy.domain.source_time import TransportReceipt
 
 ObservationDisposition = Literal["new", "removed", "duplicate", "recovered", "reincluded"]

@@ -146,6 +146,11 @@ def test_packaged_profile_caps_the_startup_sweep_at_fifty_candidates() -> None:
                 "funder_address": "0x" + "1" * 40,
                 "private_key": "0x" + "a" * 64,
             },
+            "detection": {
+                "onchain": {
+                    "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                }
+            },
         }
     )
     policy = discovery_policy_from_config(config)

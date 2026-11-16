@@ -1006,10 +1006,16 @@ class AdmittedDoctorCommand:
             runtime = self._provider_factory(config)
         except Exception:
             return {
-                "status": "blocked", "mode": mode,
-                "checks": [{"name": "provider_admission", "status": "blocked",
-                            "detail": "provider configuration or free-budget admission failed",
-                            "fix": "verify provider settings and budget baseline"}],
+                "status": "blocked",
+                "mode": mode,
+                "checks": [
+                    {
+                        "name": "provider_admission",
+                        "status": "blocked",
+                        "detail": "provider configuration or free-budget admission failed",
+                        "fix": "verify provider settings and budget baseline",
+                    }
+                ],
             }
         try:
             return await self._checks(mode, config=config, provider_runtime=runtime)

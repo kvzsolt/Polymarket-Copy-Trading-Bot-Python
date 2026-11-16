@@ -300,7 +300,10 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
     assert extra["openPositionCount"] == 1
     assert extra["activeLeadersCount"] == 1
     # The active leader-detection source is part of the summary payload.
-    assert extra["engineConfig"]["leader_discovery_and_polling"]["detection_mode"] == "polling"
+    assert (
+        extra["engineConfig"]["leader_discovery_and_polling"]["detection_mode"]
+        == "on_chain_logs_only"
+    )
 
 
 @pytest.mark.asyncio

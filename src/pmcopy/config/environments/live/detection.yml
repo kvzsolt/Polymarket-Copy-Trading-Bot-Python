@@ -1,54 +1,20 @@
-# Configuration guide — live overrides for leader detection.
-# Purpose: replace base polling-only selection with mined, topic-filtered
-# OrderFilled WSS detection while retaining REST polling as a deduped fallback.
-# Options: mode may be polling | on_chain_pending | on_chain_confirmed;
-# confirmed_source may be mempool_reserved | logs_only; provider may be alchemy
-# or, for logs_only only, generic. Pending-only fields remain staged below.
-# Trade-offs: this logs_only profile gives up the measured mempool lead for
-# authoritative mined fills, low provider cost, and no provisional orphan risk.
-# Switching to pending is faster but costlier and requires manual orphan handling.
-# Base config/detection.yml stays effectively mode: polling.
-# on_chain_confirmed + confirmed_source: logs_only = copy on the mined
-# OrderFilled event itself, delivered by a plain eth_subscribe "logs"
-# subscription filtered on the OrderFilled topic0 and the followed leader
-# wallets (gen-1 OnchainDetectionRuntime, mined subscriptions only). Detection
-# lands at block inclusion (~2 s Polygon blocks), behind the mempool by
-# roughly 0.7 s median (docs/audit/pending_detection_notes.md), but a mined
-# fill is authoritative: no orphan-position risk and no pending-copy
-# confirmation to run. A handful of filtered events per hour sits inside the
-# provider free tiers (Alchemy 30M CU/month, Infura 3M credits/day), so the
-# mempool path is no longer a cost decision away. Returning to it requires both
-# PMCOPY__DETECTION__MODE=on_chain_pending and
-# PMCOPY__DETECTION__ONCHAIN__PENDING_TX_PROVIDER=alchemy.
-#
-# REST polling keeps running as a parallel fallback in this mode exactly as in
-# every other one; the copy layer dedups the same fill by trade key
-# (CrossSourceTradeClaimPolicy), so a fill is copied once no matter which
-# source saw it first.
-#
-# The pending_* keys below are inert in this mode (kept for the mempool
-# fallback). pending_tx_provider is generic because logs_only needs only the
-# standard eth_subscribe contract; all mempool modes require alchemy instead.
-mode: on_chain_confirmed
+# Configuration guide — live environment overrides for Alchemy-only leader detection.
+# Options: mode is on_chain_logs_only | on_chain_pending | confirmed+mempool_reserved;
+# max_hourly_ws_mb sets the rolling 1-hour WSS bandwidth circuit breaker threshold.
+# Trade-offs: on_chain_logs_only streams server-side user-filtered OrderFilled logs at near-$0
+# CU cost; confirmed+mempool_reserved / on_chain_pending lower latency with automatic downgrade
+# to on_chain_logs_only if hourly WSS bandwidth exceeds PMCOPY__MAX_HOURLY_WS_MB.
+mode: on_chain_logs_only
 onchain:
-  # logs_only = standard mined log subscriptions. mempool_reserved = observe
-  # Alchemy mempool, persist reservation state, then wait for the receipt.
-  confirmed_source: logs_only
-  # generic declares that only standard eth_subscribe logs are required. Change
-  # to alchemy together with any switch to a mempool mode.
-  pending_tx_provider: generic
-  # Wider than the 500 ms base budget: a mempool sighting is only useful while
-  # it is still unmined, and 700 ms keeps the queue-age gate above the measured
-  # median lead instead of discarding usable signals under a load spike.
+  include_legacy_v1_exchanges: false
+  track_direct_user_txs: false
+  max_hourly_ws_mb: 250
+  mempool_reservation_ttl_seconds: 15.0
+  subscription_debounce_seconds: 2.0
+  pending_tx_provider: alchemy
+  pending_tx_hashes_only: false
   pending_tx_max_signal_age_ms: 700
-  # A mempool sighting never reaches better than pending_probable; a higher
-  # floor would drop 100 % of signals in this mode.
   pending_tx_detection_confidence_required: pending_probable
-  # The remaining keys are inert in logs_only and intentionally preconfigure a
-  # future on_chain_pending restart. true enables receipt reporting only after
-  # the mode is changed; it does not auto-close an orphan.
   pending_copy_confirmation_enabled: true
-  # In pending mode, wait 60 seconds before the final unconfirmed verdict.
   pending_copy_confirmation_deadline_seconds: 60
-  # In pending mode, retain at most 2048 outstanding receipt checks.
   pending_copy_confirmation_max_tracked: 2048

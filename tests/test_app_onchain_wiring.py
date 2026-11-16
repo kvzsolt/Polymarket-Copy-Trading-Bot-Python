@@ -73,7 +73,11 @@ async def test_app_composes_factory_from_config() -> None:
 
     assert isinstance(factory, DetectionSourceFactory)
     assert factory.supported_modes == frozenset(
-        {DetectionMode.ON_CHAIN_PENDING, DetectionMode.ON_CHAIN_CONFIRMED}
+        {
+            DetectionMode.ON_CHAIN_LOGS_ONLY,
+            DetectionMode.ON_CHAIN_PENDING,
+            DetectionMode.CONFIRMED_MEMPOOL_RESERVED,
+        }
     )
 
     def _request(mode: DetectionMode) -> DetectionSourceRequest:
@@ -85,21 +89,19 @@ async def test_app_composes_factory_from_config() -> None:
             signal_sink=_sink,
         )
 
-    assert await factory.build(_request(DetectionMode.POLLING)) is None
     pending = await factory.build(_request(DetectionMode.ON_CHAIN_PENDING))
     assert isinstance(pending, OnchainDetectionRuntime)
     assert pending._enable_pending is True
     assert pending._enable_mined is False
     assert pending._pending_config.max_signal_age_ms == 321
     assert pending._pending_config.confidence_required is DetectionConfidence.PENDING_PROBABLE
-    confirmed = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    confirmed = await factory.build(_request(DetectionMode.CONFIRMED_MEMPOOL_RESERVED))
     assert isinstance(confirmed, PolygonSourceTransactionRuntime)
 
 
 @pytest.mark.asyncio
 async def test_app_composes_the_logs_only_confirmed_runtime_from_config() -> None:
-    """``confirmed_source: logs_only`` routes the confirmed mode to the gen-1
-    mined-only runtime whose subscriptions embed the followed leaders."""
+    """``on_chain_logs_only`` routes to the mined-only runtime with user topic filters."""
     from pmcopy.app import _build_detection_source_factory
     from pmcopy.config.app_config import DetectionConfig, OnchainDetectionConfig
     from pmcopy.domain.detection import DetectionMode
@@ -108,10 +110,9 @@ async def test_app_composes_the_logs_only_confirmed_runtime_from_config() -> Non
 
     config = SimpleNamespace(
         detection=DetectionConfig(
-            mode="on_chain_confirmed",
+            mode="on_chain_logs_only",
             onchain=OnchainDetectionConfig(
-                confirmed_source="logs_only",
-                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                alchemy_wss_url="wss://polygon-mainnet.g.alchemy.com/v2/redacted",
             ),
         ),
         wallet=SimpleNamespace(chain_id=137),
@@ -126,10 +127,10 @@ async def test_app_composes_the_logs_only_confirmed_runtime_from_config() -> Non
     factory = _build_detection_source_factory(config, state_store_provider=_state_store_provider)
     runtime = await factory.build(
         DetectionSourceRequest(
-            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
             confirmed_source="logs_only",
             watched_wallets=frozenset({"0x" + "11" * 20}),
-            ws_url="wss://polygon.example.invalid/v2/redacted",
+            ws_url="wss://polygon-mainnet.g.alchemy.com/v2/redacted",
             chain_id=137,
             signal_sink=_sink,
         )
@@ -169,7 +170,7 @@ def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> Non
 
     runtime = builder.compose(
         DetectionSourceRequest(
-            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED,
             watched_wallets=frozenset({"0x" + "11" * 20}),
             ws_url="wss://polygon.example.invalid/v2/redacted",
             chain_id=137,
@@ -205,13 +206,13 @@ async def test_failed_runtime_start_is_stopped_before_being_dropped() -> None:
 
     runtime = _Runtime()
     with pytest.raises(RuntimeError, match="ws connect failed"):
-        await _start_onchain_runtime(runtime, mode=DetectionMode.ON_CHAIN_CONFIRMED)
+        await _start_onchain_runtime(runtime, mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED)
     assert runtime.started == 1
     assert runtime.stopped == 1
 
     noisy = _Runtime(stop_raises=True)
     with pytest.raises(RuntimeError, match="ws connect failed"):
-        await _start_onchain_runtime(noisy, mode=DetectionMode.ON_CHAIN_CONFIRMED)
+        await _start_onchain_runtime(noisy, mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED)
     assert noisy.stopped == 1
 
 
@@ -451,7 +452,7 @@ def test_pending_copy_tracker_is_not_built_outside_pending_mode() -> None:
 
     metrics = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
 
-    for mode in ("polling", "on_chain_confirmed"):
+    for mode in ("on_chain_logs_only", "confirmed+mempool_reserved"):
         assert (
             _build_pending_copy_tracker(
                 _pending_config(mode=mode), telemetry_service=None, metrics_registry=metrics
@@ -548,29 +549,23 @@ def test_onchain_ws_health_reporter_is_registered_in_pending_mode() -> None:
     assert readiness.snapshot()["checks"]["onchain_ws_ok"]["required"] is False
 
 
-def test_no_ws_health_check_is_registered_outside_pending_mode() -> None:
-    """Only the gen-1 runtime opens ``OnchainWebSocket``.
-
-    The gen-2 confirmed runtime uses its own connection manager, so an
-    ``onchain_ws_ok`` check there could never be marked ready — a permanent
-    false "WS down" in the operator snapshot.
-    """
+def test_no_ws_health_check_is_registered_for_mempool_reserved_mode() -> None:
+    """Only the gen-1 runtime opens ``OnchainWebSocket``."""
     from pmcopy.app import _build_onchain_ws_health_reporter
     from pmcopy.domain.detection import DetectionMode
     from pmcopy.services.healthServer import ReadinessTracker
     from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
-    for mode in (DetectionMode.POLLING, DetectionMode.ON_CHAIN_CONFIRMED):
-        readiness = ReadinessTracker()
+    readiness = ReadinessTracker()
 
-        reporter = _build_onchain_ws_health_reporter(
-            readiness,
-            MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
-            mode=mode,
-        )
+    reporter = _build_onchain_ws_health_reporter(
+        readiness,
+        MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED,
+    )
 
-        assert reporter is None, mode
-        assert "onchain_ws_ok" not in readiness.snapshot()["checks"], mode
+    assert reporter is None
+    assert "onchain_ws_ok" not in readiness.snapshot()["checks"]
 
 
 def test_onchain_ws_health_reporter_is_registered_for_confirmed_logs_only() -> None:
@@ -586,7 +581,7 @@ def test_onchain_ws_health_reporter_is_registered_for_confirmed_logs_only() -> N
     reporter = _build_onchain_ws_health_reporter(
         readiness,
         MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.ON_CHAIN_LOGS_ONLY,
         confirmed_source="logs_only",
     )
 
@@ -604,7 +599,7 @@ def test_no_ws_health_check_is_registered_for_confirmed_mempool_reserved() -> No
     reporter = _build_onchain_ws_health_reporter(
         readiness,
         MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
-        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        mode=DetectionMode.CONFIRMED_MEMPOOL_RESERVED,
         confirmed_source="mempool_reserved",
     )
 
@@ -697,7 +692,7 @@ def test_the_confidence_parse_sits_outside_the_onchain_start_guard() -> None:
 
     source = inspect.getsource(app._run_application)
     parse_at = source.index("_validate_detection_confidence_floor(")
-    guard_at = source.index("native_detection_paused")
+    guard_at = source.index("alchemy_detection_paused")
     try_at = source.rindex("try:", 0, guard_at)
 
     assert parse_at < try_at, (
@@ -745,17 +740,18 @@ async def test_startup_aborts_on_an_unparseable_confidence_floor(
 
 
 @pytest.mark.asyncio
-async def test_polling_mode_startup_does_not_validate_the_pending_floor(
+async def test_logs_only_mode_startup_does_not_validate_the_pending_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The floor is a pending-path policy; polling must not fail on it."""
+    """The floor is a pending-path policy; logs-only mode must not fail on it."""
     import pmcopy.app as app_module
     from pmcopy.config.app_config import AppConfig, DetectionConfig, OnchainDetectionConfig
 
     config = AppConfig(
         detection=DetectionConfig(
-            mode="polling",
+            mode="on_chain_logs_only",
             onchain=OnchainDetectionConfig(
+                alchemy_wss_url="wss://polygon-mainnet.g.alchemy.com/v2/redacted",
                 pending_tx_detection_confidence_required="almost_certain",
             ),
         )

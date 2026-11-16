@@ -126,11 +126,13 @@ class TestProviderHttpTransport:
         assert "test-key" not in caplog.text
 
 
-class TestInfuraWebSocketEndpoint:
-    """Infura's documented socket path differs from its HTTP path."""
+class TestAlchemyOnlyWebSocketEndpoint:
+    """ProviderEndpoints derives Alchemy WSS URLs and rejects Infura."""
 
-    def test_socket_path_contains_ws_prefix(self):
-        endpoints = ProviderEndpoints(infura="https://polygon-mainnet.infura.io/v3/test-key")
-        expected = "wss://polygon-mainnet.infura.io/ws/v3/test-key"
-        assert endpoints.websocket_url("infura") == expected
-        assert endpoints.alias_for(expected) == "infura"
+    def test_alchemy_socket_path_and_infura_rejection(self):
+        endpoints = ProviderEndpoints(alchemy="https://polygon-mainnet.g.alchemy.com/v2/test-key")
+        expected = "wss://polygon-mainnet.g.alchemy.com/v2/test-key"
+        assert endpoints.websocket_url("alchemy") == expected
+        assert endpoints.alias_for(expected) == "alchemy"
+        with pytest.raises(Exception):
+            endpoints.websocket_url("infura")

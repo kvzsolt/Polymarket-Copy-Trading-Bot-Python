@@ -96,6 +96,19 @@ class SqliteEvidenceOutbox:
                     valid INTEGER NOT NULL, blocked INTEGER NOT NULL, reason TEXT);
                 INSERT OR IGNORE INTO evidence_health VALUES(1,1,0,NULL);
             """)
+            init_counts = self._db.execute(
+                "SELECT COALESCE(SUM(status='pending'),0), "
+                "COALESCE(SUM(status='quarantined'),0), "
+                "COALESCE(SUM(length(payload)),0) "
+                "FROM evidence_outbox WHERE status IN ('pending','quarantined')"
+            ).fetchone()
+            self._pending_count = int(init_counts[0] or 0)
+            self._quarantined_count = int(init_counts[1] or 0)
+            self._active_bytes = int(init_counts[2] or 0)
+            self._max_seq = int(
+                self._db.execute("SELECT COALESCE(MAX(seq),0) FROM evidence_outbox").fetchone()[0]
+                or 0
+            )
             if interrupted:
                 self.invalidate("storage_interrupted")
         except (OSError, sqlite3.Error):
@@ -148,18 +161,13 @@ class SqliteEvidenceOutbox:
                     raise EvidenceError("evidence_continuity_invalid")
                 self._latch(True)
                 self._db.execute("BEGIN IMMEDIATE")
-                count, size = self._db.execute(
-                    "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM evidence_outbox "
-                    "WHERE status IN ('pending','quarantined')"
-                ).fetchone()
-                # Rows are never deleted: the indexed local sequence is a safe
-                # upper bound on retained identities without rescanning history.
-                history = self._db.execute(
-                    "SELECT COALESCE(MAX(seq),0) FROM evidence_outbox"
-                ).fetchone()[0]
+                count = self._pending_count + self._quarantined_count
+                size = self._active_bytes
+                history = self._max_seq
+                payload_len = len(event.canonical_bytes)
                 if (
-                    (count or 0) >= self._max_events
-                    or size + len(event.canonical_bytes) > self._max_bytes
+                    count >= self._max_events
+                    or size + payload_len > self._max_bytes
                     or history >= self._max_history
                 ):
                     self._db.execute("ROLLBACK")
@@ -167,6 +175,9 @@ class SqliteEvidenceOutbox:
                     raise EvidenceError("evidence_capacity_exhausted")
                 sequence = self._insert(event)
                 self._db.execute("COMMIT")
+                self._pending_count += 1
+                self._active_bytes += payload_len
+                self._max_seq = max(self._max_seq, sequence)
                 self._latch(False)
                 return sequence
             except (sqlite3.Error, OSError):
@@ -210,8 +221,15 @@ class SqliteEvidenceOutbox:
                             "clock_id": self._clock.clock_id,
                         }
                     )
-                    self._insert(gap)
+                    gap_seq = self._insert(gap)
+                else:
+                    gap = None
+                    gap_seq = 0
                 self._db.execute("COMMIT")
+                if gap is not None:
+                    self._pending_count += 1
+                    self._active_bytes += len(gap.canonical_bytes)
+                    self._max_seq = max(self._max_seq, gap_seq)
             except (sqlite3.Error, OSError, ValueError):
                 if self._db.in_transaction:
                     self._db.execute("ROLLBACK")
@@ -294,12 +312,16 @@ class SqliteEvidenceOutbox:
                 if self.peek(len(batch)) != batch:
                     raise EvidenceError("evidence_nonprefix_ack")
                 self._db.execute("BEGIN IMMEDIATE")
+                acked_bytes = 0
                 for item, row in zip(batch, results, strict=True):
+                    acked_bytes += len(item.event.canonical_bytes)
                     self._db.execute(
                         "UPDATE evidence_outbox SET status='acked',payload=NULL,remote_seq=? WHERE seq=?",
                         (row["seq"], item.sequence),
                     )
                 self._db.execute("COMMIT")
+                self._pending_count = max(0, self._pending_count - len(batch))
+                self._active_bytes = max(0, self._active_bytes - acked_bytes)
             except sqlite3.Error:
                 if self._db.in_transaction:
                     self._db.execute("ROLLBACK")
@@ -328,6 +350,8 @@ class SqliteEvidenceOutbox:
                     [(item.sequence,) for item in batch],
                 )
                 self._db.execute("COMMIT")
+                self._pending_count = max(0, self._pending_count - len(batch))
+                self._quarantined_count += len(batch)
             except (sqlite3.Error, OSError):
                 if self._db.in_transaction:
                     self._db.execute("ROLLBACK")

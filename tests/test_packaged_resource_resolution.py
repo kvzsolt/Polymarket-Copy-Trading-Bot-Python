@@ -86,6 +86,11 @@ class TestPackagedDefaultsAreReadonlyInputs:
             {
                 "database": {"dsn": "postgresql://probe:probe@localhost/probe"},
                 "wallet": {"funder_address": "0x" + "2" * 40},
+                "detection": {
+                    "onchain": {
+                        "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+                    }
+                },
             }
         )
         assert snapshot() == before

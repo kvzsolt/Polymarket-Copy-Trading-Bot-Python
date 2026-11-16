@@ -642,4 +642,4 @@ async def test_polling_trade_increments_detection_signals_polling_counter():
     ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
-    inc.assert_any_call(METRIC_DETECTION_SIGNALS, labels={"source": "polling"})
+    inc.assert_any_call(METRIC_DETECTION_SIGNALS, labels={"source": "on_chain_logs_only"})

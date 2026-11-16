@@ -15,7 +15,10 @@ from pmcopy.domain.redemption import (
     SettlementUnavailable,
 )
 from pmcopy.integrations.polymarket.settlement_wallet import DepositWalletCodec, SettlementContracts
-from pmcopy.integrations.polymarket.settlement_rpc import SettlementRpcClient, SettlementRpcTransport
+from pmcopy.integrations.polymarket.settlement_rpc import (
+    SettlementRpcClient,
+    SettlementRpcTransport,
+)
 from pmcopy.interfaces.settlement import SettlementClock
 
 

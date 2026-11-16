@@ -251,11 +251,7 @@ def _run_config_print(args: argparse.Namespace) -> int:
     try:
         output["copiers"] = _copiers_summary(config)
     except ValueError as exc:
-        print(
-            json.dumps(
-                {"error": "copiers_config_invalid", "details": str(exc)}, indent=2
-            )
-        )
+        print(json.dumps({"error": "copiers_config_invalid", "details": str(exc)}, indent=2))
         return 1
     print(json.dumps(output, indent=2, default=str))
     return 0

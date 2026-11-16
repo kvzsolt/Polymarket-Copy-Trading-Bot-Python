@@ -8,7 +8,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from pmcopy.integrations.pmrecon.codec import _Base
-from pmcopy.integrations.pmrecon.protocol_codec import ADDRESS_PATTERN, HASH_PATTERN, ProtocolBoundary
+from pmcopy.integrations.pmrecon.protocol_codec import (
+    ADDRESS_PATTERN,
+    HASH_PATTERN,
+    ProtocolBoundary,
+)
 from pmcopy.config.addresses import (
     POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_PUSD_ADDRESS,

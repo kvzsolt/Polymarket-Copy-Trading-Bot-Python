@@ -53,8 +53,12 @@ def _isolated_packaged_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 def _overrides() -> dict:
     return {
         "database": {"dsn": "postgresql://test:test@localhost/test"},
-        "wallet": {"funder_address": ADDRESS, "polygon_rpc_url": "https://rpc.invalid"},
-        "polymarket": {"rpc_url": "https://rpc.invalid"},
+        "wallet": {"funder_address": ADDRESS},
+        "detection": {
+            "onchain": {
+                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
+            }
+        },
     }
 
 
@@ -130,9 +134,10 @@ def test_deployment_root_resolved_from_foreign_cwd_via_env_var(
     still find the deployment's secrets.env and legacy shim."""
     deployment = _deployment(tmp_path, "leader:\n  wallets: []\n")
     secrets = deployment / "secrets.env"
+    secrets_rpc = "https://polygon-mainnet.g.alchemy.com/v2/from-secrets-key-456"
     secrets.write_text(
         "PMCOPY__DATABASE__DSN=postgresql://t:t@l/t\n"
-        "PMCOPY__NETWORK__RPC_URL=https://from-secrets.invalid\n",
+        f"PMCOPY__NETWORK__RPC_URL={secrets_rpc}\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
@@ -145,7 +150,7 @@ def test_deployment_root_resolved_from_foreign_cwd_via_env_var(
     config = load_config(_overrides())
 
     # Legacy secret alias PMCOPY__NETWORK__RPC_URL routes to polymarket.
-    assert config.polymarket.rpc_url == "https://from-secrets.invalid"
+    assert config.polymarket.rpc_url == secrets_rpc
     assert config.copy_trading.enabled_wallets() == PACKAGED_TRADER_WALLETS
 
 

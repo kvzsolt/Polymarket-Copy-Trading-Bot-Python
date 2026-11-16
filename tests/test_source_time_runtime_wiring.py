@@ -35,9 +35,14 @@ async def test_selected_detector_receives_hash_verified_public_timestamp_reader(
     factory = app._build_detection_source_factory(
         load_test_config(), state_store_provider=AsyncMock(return_value=None)
     )
+    mode = (
+        DetectionMode.ON_CHAIN_LOGS_ONLY
+        if variant == "logs_only"
+        else DetectionMode.CONFIRMED_MEMPOOL_RESERVED
+    )
     runtime = await factory.build(
         DetectionSourceRequest(
-            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            mode=mode,
             watched_wallets=frozenset({_WATCHED}),
             ws_url="wss://unused.invalid",
             chain_id=137,

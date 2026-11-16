@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias, cast
 
 from pydantic import (
     BaseModel,
@@ -302,12 +302,11 @@ class _MarketFrame(_Base):
         return value
 
 
-_ADAPTER = TypeAdapter(
-    Annotated[
-        _Chain | _Pending | _Book | _Fill | _Gap | _Header | _MarketFrame | _ObservedFill,
-        Field(discriminator="kind"),
-    ]
-)
+_UnionPayload: TypeAlias = Annotated[
+    _Chain | _Pending | _Book | _Fill | _Gap | _Header | _MarketFrame | _ObservedFill,
+    Field(discriminator="kind"),
+]
+_ADAPTER: TypeAdapter[_UnionPayload] = TypeAdapter(cast(Any, _UnionPayload))
 
 
 class PmreconEvidenceCodec:

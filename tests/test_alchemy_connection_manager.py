@@ -71,8 +71,9 @@ class FakeSocket:
     async def wait_for_sends(self, count: int) -> None:
         """Wait until ``count`` outgoing frames exist."""
 
-        async with self._condition:
-            await self._condition.wait_for(lambda: len(self.sent) >= count)
+        async with asyncio.timeout(2.0):
+            async with self._condition:
+                await self._condition.wait_for(lambda: len(self.sent) >= count)
 
 
 class FakeConnector:
@@ -171,8 +172,6 @@ class FakePipelineSink:
 async def _ack_subscriptions(socket: FakeSocket) -> None:
     await socket.wait_for_sends(1)
     await socket.feed({"jsonrpc": "2.0", "id": 1, "result": f"{socket.prefix}-pending"})
-    await socket.wait_for_sends(2)
-    await socket.feed({"jsonrpc": "2.0", "id": 2, "result": f"{socket.prefix}-heads"})
 
 
 @pytest.mark.asyncio

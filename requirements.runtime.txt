@@ -20,7 +20,7 @@ aiosignal==1.4.0
     #   ccxt
 annotated-types==0.8.0
     # via pydantic
-anyio==4.15.1
+anyio==4.16.0
     # via httpx
 asyncpg==0.32.0
     # via polymarket-copy-trading-bot
@@ -28,15 +28,16 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   ccxt
-bitarray==3.12.1
+bitarray==3.12.4
     # via eth-account
-ccxt==4.5.87
+ccxt==4.5.92
     # via polymarket-copy-trading-bot
-certifi==2026.6.17
+certifi==2026.10.23
     # via
     #   ccxt
     #   httpcore
     #   httpx
+    #   polymarket-copy-trading-bot
     #   requests
 cffi==2.0.0
     # via
@@ -118,7 +119,7 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
-markdown-it-py==4.2.0
+markdown-it-py==4.3.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
@@ -127,7 +128,7 @@ multidict==6.9.1
     #   aiohttp
     #   ccxt
     #   yarl
-orjson==3.11.9
+orjson==3.13.0
     # via
     #   ccxt
     #   polymarket-copy-trading-bot
@@ -146,16 +147,16 @@ pycryptodome==3.24.1
     # via
     #   eth-hash
     #   eth-keyfile
-pydantic==2.14.1
+pydantic==2.14.3
     # via
     #   eth-account
     #   eth-utils
     #   polymarket-copy-trading-bot
     #   pydantic-settings
     #   web3
-pydantic-core==2.50.1
+pydantic-core==2.50.4
     # via pydantic
-pydantic-settings==2.15.0
+pydantic-settings==2.16.3
     # via polymarket-copy-trading-bot
 pygments==2.21.0
     # via rich
@@ -169,7 +170,7 @@ pywin32==312 ; sys_platform == 'win32'
     # via web3
 pyyaml==6.0.3
     # via polymarket-copy-trading-bot
-regex==2026.9.29
+regex==2026.11.15
     # via parsimonious
 requests==2.34.2
     # via
@@ -185,7 +186,7 @@ toolz==1.2.0 ; implementation_name == 'cpython' or implementation_name == 'pypy'
     # via
     #   cytoolz
     #   eth-utils
-types-requests==2.33.0.20261006
+types-requests==2.33.0.20261030
     # via web3
 typing-extensions==4.16.0
     # via
@@ -194,9 +195,10 @@ typing-extensions==4.16.0
     #   eth-typing
     #   pydantic
     #   pydantic-core
+    #   pydantic-settings
     #   typing-inspection
     #   web3
-typing-inspection==0.4.4
+typing-inspection==0.4.5
     # via
     #   pydantic
     #   pydantic-settings

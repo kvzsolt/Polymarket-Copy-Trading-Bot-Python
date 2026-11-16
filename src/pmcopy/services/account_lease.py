@@ -138,9 +138,7 @@ class AccountLeaseManager:
                 self._ttl_seconds,
             )
         elif outcome.reacquired:
-            logger.info(
-                "account_lease_reacquired | user=%s mode=%s", account.value, mode
-            )
+            logger.info("account_lease_reacquired | user=%s mode=%s", account.value, mode)
         else:
             logger.info(
                 "account_lease_acquired | user=%s mode=%s ttl_seconds=%s %s",
@@ -217,9 +215,7 @@ class AccountLeaseManager:
             self._last_success_monotonic[user_id] = attempt_started
             renewed[user_id] = expires_at
         if lost:
-            raise AccountLeaseLost(
-                "account lease lost to another process for: " + ", ".join(lost)
-            )
+            raise AccountLeaseLost("account lease lost to another process for: " + ", ".join(lost))
         return renewed
 
     async def release_all(self) -> int:
@@ -227,9 +223,7 @@ class AccountLeaseManager:
         released = 0
         for user_id in sorted(self._held):
             try:
-                ok = await self._repo.release(
-                    user_id=user_id, holder_token=self.process_token
-                )
+                ok = await self._repo.release(user_id=user_id, holder_token=self.process_token)
             except Exception as exc:
                 logger.warning(
                     "account_lease_release_failed | user=%s error_type=%s — "

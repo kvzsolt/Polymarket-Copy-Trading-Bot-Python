@@ -134,8 +134,10 @@ async def test_unsupported_trader_does_not_disable_other_approved_owner_groups(
         groups_seen.extend(groups)
         return Session()
 
+    with pytest.raises(ValueError, match="provider"):
+        TraderDetectionPolicy(other, provider="infura")
     runtime = NativeDetectionRuntime(
-        policies=(TraderDetectionPolicy(OWNER), TraderDetectionPolicy(other, provider="infura")),
+        policies=(TraderDetectionPolicy(OWNER), TraderDetectionPolicy(other, enabled=False)),
         state=state,
         session_factory=factory,
         observer=Mock(),
@@ -144,8 +146,5 @@ async def test_unsupported_trader_does_not_disable_other_approved_owner_groups(
     await runtime.start()
     await runtime.wait()
     assert [g.wallets for g in groups_seen] == [(OWNER,)]
-    assert {s.wallet: s.degraded_reason for s in runtime.states()}[
-        other
-    ] == "unsupported_stream_billing"
     await runtime.stop()
     state.close()

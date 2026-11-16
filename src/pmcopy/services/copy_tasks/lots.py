@@ -13,7 +13,11 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Protocol
 
-from pmcopy.services.copy_tasks.protective_exits import FillRiskLot, PendingLayerExit, ProtectiveRiskPolicy
+from pmcopy.services.copy_tasks.protective_exits import (
+    FillRiskLot,
+    PendingLayerExit,
+    ProtectiveRiskPolicy,
+)
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")

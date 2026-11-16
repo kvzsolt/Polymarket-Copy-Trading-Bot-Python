@@ -579,7 +579,7 @@ async def fetch_trade_data(
             if str(trade.get("type", "")).upper() != "TRADE":
                 continue
             metrics.inc("signals_seen_total")
-            metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": "polling"})
+            metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": "on_chain_logs_only"})
             logger.debug(
                 "detection_signal | source=polling leader=%s tx=%s side=%s token=%s",
                 user_address,

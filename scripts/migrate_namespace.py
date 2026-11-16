@@ -196,7 +196,9 @@ def _verify_inventory() -> None:
 
 
 def _already_migrated() -> bool:
-    return NS_ROOT.is_dir() and all(not (REPO / p).exists() for p in (*PACKAGES, *(f"{m}.py" for m in MODULES)))
+    return NS_ROOT.is_dir() and all(
+        not (REPO / p).exists() for p in (*PACKAGES, *(f"{m}.py" for m in MODULES))
+    )
 
 
 def _do_moves() -> None:
@@ -213,7 +215,7 @@ def _do_moves() -> None:
 # `old` texts match the pristine post-move content).
 # ---------------------------------------------------------------------------
 
-SYS_PATH_LINE = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))'
+SYS_PATH_LINE = "sys.path.insert(0, str(Path(__file__).resolve().parents[1]))"
 SYS_PATH_LINE_NEW = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))'
 
 _CORE_PACKAGES_OLD = """CORE_PACKAGES = {
@@ -272,7 +274,7 @@ _PRODUCTION_ROOTS_NEW = """PRODUCTION_ROOTS: tuple[str, ...] = (
     "src/pmcopy/utils",
 )"""
 
-_WHEEL_CONTRACT_OLD = '''def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
+_WHEEL_CONTRACT_OLD = """def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     modules = set(project["tool"]["setuptools"]["py-modules"])
     packages = set(project["tool"]["setuptools"]["packages"]["find"]["include"])
@@ -282,8 +284,8 @@ _WHEEL_CONTRACT_OLD = '''def test_console_entrypoint_modules_are_in_the_installe
     )
     assert "cache*" in packages, (
         "app imports the cache package, so it must be included in the wheel"
-    )'''
-_WHEEL_CONTRACT_NEW = '''def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
+    )"""
+_WHEEL_CONTRACT_NEW = """def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     setuptools_cfg = project["tool"]["setuptools"]
     find_cfg = setuptools_cfg["packages"]["find"]
@@ -295,22 +297,22 @@ _WHEEL_CONTRACT_NEW = '''def test_console_entrypoint_modules_are_in_the_installe
     )
     assert "py-modules" not in setuptools_cfg, (
         "flat py-modules must not reappear beside the src/pmcopy namespace"
-    )'''
+    )"""
 
-_COMPOSE_MOUNT_OLD = '''    volumes:
+_COMPOSE_MOUNT_OLD = """    volumes:
       # Keep this tree from the same checkout as the image: config includes
       # Python modules as well as YAML. Fail instead of creating a missing path.
       - type: bind
         source: ./config
-        target: /app/config'''
-_COMPOSE_MOUNT_NEW = '''    volumes:
+        target: /app/config"""
+_COMPOSE_MOUNT_NEW = """    volumes:
       # Keep this tree from the same checkout as the image: config includes
       # Python modules as well as YAML. Fail instead of creating a missing path.
       - type: bind
         source: ./src/pmcopy/config
-        target: /app/src/pmcopy/config'''
+        target: /app/src/pmcopy/config"""
 
-_COMPOSE_TEST_OLD = '''    mounts = artifacts.compose["services"]["bot"]["volumes"]
+_COMPOSE_TEST_OLD = """    mounts = artifacts.compose["services"]["bot"]["volumes"]
     mount = next(
         (item for item in mounts if isinstance(item, dict) and item["target"] == "/app/config"),
         None,
@@ -322,8 +324,8 @@ _COMPOSE_TEST_OLD = '''    mounts = artifacts.compose["services"]["bot"]["volume
     assert mount["bind"]["create_host_path"] is False
     assert artifacts.environment().get("PYTHONPATH") == "/app", (
         "The installed pmcopy command must import config from the mounted tree"
-    )'''
-_COMPOSE_TEST_NEW = '''    mounts = artifacts.compose["services"]["bot"]["volumes"]
+    )"""
+_COMPOSE_TEST_NEW = """    mounts = artifacts.compose["services"]["bot"]["volumes"]
     mount = next(
         (item for item in mounts if isinstance(item, dict) and item["target"] == "/app/src/pmcopy/config"),
         None,
@@ -335,35 +337,35 @@ _COMPOSE_TEST_NEW = '''    mounts = artifacts.compose["services"]["bot"]["volume
     assert mount["bind"]["create_host_path"] is False
     assert artifacts.environment().get("PYTHONPATH") == "/app/src", (
         "The installed pmcopy command must import config from the mounted tree"
-    )'''
+    )"""
 
 _DOCKERFILE_CHECK_OLD = (
-    '# Run this outside /app so the check proves the installed console entry point\n'
-    '# can import the top-level application modules from site-packages. Checking\n'
-    '# from /app masks missing ``py-modules`` packaging because cwd is importable.\n'
+    "# Run this outside /app so the check proves the installed console entry point\n"
+    "# can import the top-level application modules from site-packages. Checking\n"
+    "# from /app masks missing ``py-modules`` packaging because cwd is importable.\n"
     'RUN cd /tmp && python -c "import app, bootstrap; from config.app_config import load_config;'
     " import storage.postgres.connection; print('OK')\""
 )
 _DOCKERFILE_CHECK_NEW = (
-    '# Run this outside /app so the check proves the installed console entry point\n'
-    '# can import the namespaced application modules from site-packages. Checking\n'
-    '# from /app masks missing ``pmcopy`` packaging because cwd is importable.\n'
+    "# Run this outside /app so the check proves the installed console entry point\n"
+    "# can import the namespaced application modules from site-packages. Checking\n"
+    "# from /app masks missing ``pmcopy`` packaging because cwd is importable.\n"
     'RUN cd /tmp && python -c "import pmcopy.app, pmcopy.bootstrap; from'
-    ' pmcopy.config.app_config import load_config; import pmcopy.storage.postgres.connection;'
+    " pmcopy.config.app_config import load_config; import pmcopy.storage.postgres.connection;"
     " print('OK')\""
 )
 
-_DOCKERFILE_PYTHONPATH_OLD = '''# The console script otherwise imports the installed config package and
+_DOCKERFILE_PYTHONPATH_OLD = """# The console script otherwise imports the installed config package and
 # silently ignores service YAML mounted at /app/config. Set this only after
 # the installed-wheel checks above so those checks cannot use the source tree.
-ENV PYTHONPATH=/app'''
-_DOCKERFILE_PYTHONPATH_NEW = '''# The console script otherwise imports the installed config package and
+ENV PYTHONPATH=/app"""
+_DOCKERFILE_PYTHONPATH_NEW = """# The console script otherwise imports the installed config package and
 # silently ignores service YAML mounted at /app/src/pmcopy/config. Set this
 # only after the installed-wheel checks above so those checks cannot use the
 # source tree.
-ENV PYTHONPATH=/app/src'''
+ENV PYTHONPATH=/app/src"""
 
-_PYPROJECT_SETUPTOOLS_OLD = '''[tool.setuptools]
+_PYPROJECT_SETUPTOOLS_OLD = """[tool.setuptools]
 py-modules = ["app", "bootstrap", "bot"]
 
 [tool.setuptools.package-data]
@@ -394,8 +396,8 @@ include = [
   "application*",
   "orchestration*",
 ]
-exclude = ["tests*", "legacy*"]'''
-_PYPROJECT_SETUPTOOLS_NEW = '''[tool.setuptools]
+exclude = ["tests*", "legacy*"]"""
+_PYPROJECT_SETUPTOOLS_NEW = """[tool.setuptools]
 
 [tool.setuptools.package-data]
 "pmcopy.storage.postgres" = ["migrations/*.sql"]
@@ -410,7 +412,7 @@ _PYPROJECT_SETUPTOOLS_NEW = '''[tool.setuptools]
 where = ["src"]
 include = ["pmcopy*"]
 exclude = ["tests*", "legacy*"]
-namespaces = false'''
+namespaces = false"""
 
 _CI_BANDIT_OLD = (
     "          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations b"
@@ -422,18 +424,18 @@ _CI_BANDIT_NEW = (
     "rc/pmcopy/bot_cli src/pmcopy/app.py src/pmcopy/bootstrap.py -ll --skip B101,B311,B608,B108,B310"
 )
 
-_CI_MYPY_OLD = '''          mypy --install-types --non-interactive --explicit-package-bases \\
+_CI_MYPY_OLD = """          mypy --install-types --non-interactive --explicit-package-bases \\
             --ignore-missing-imports --follow-imports=silent \\
             integrations/polymarket/ccxt_prediction_client.py \\
             integrations/polymarket/ccxt_prediction_gateway.py \\
             integrations/polymarket/venue_runtime.py \\
-            clients/network/http_client.py'''
-_CI_MYPY_NEW = '''          mypy --install-types --non-interactive --explicit-package-bases \\
+            clients/network/http_client.py"""
+_CI_MYPY_NEW = """          mypy --install-types --non-interactive --explicit-package-bases \\
             --ignore-missing-imports --follow-imports=silent \\
             src/pmcopy/integrations/polymarket/ccxt_prediction_client.py \\
             src/pmcopy/integrations/polymarket/ccxt_prediction_gateway.py \\
             src/pmcopy/integrations/polymarket/venue_runtime.py \\
-            src/pmcopy/clients/network/http_client.py'''
+            src/pmcopy/clients/network/http_client.py"""
 
 _CI_MYPY_SOFT_OLD = (
     "          mypy --install-types --non-interactive --ignore-missing-imports services orchestrators domain || tru"
@@ -483,7 +485,7 @@ _RC1_ROOTS_NEW = 'for root in ["src/pmcopy/orchestrators", "src/pmcopy/services"
 _RC1_DOCTOR_OLD = "python -m bot_cli.main doctor --live"
 _RC1_DOCTOR_NEW = "python -m pmcopy.bot_cli.main doctor --live"
 
-_GREPTILE_OLD = '''      "config/**",
+_GREPTILE_OLD = """      "config/**",
       "services/**",
       "orchestrators/**",
       "integrations/**",
@@ -494,8 +496,8 @@ _GREPTILE_OLD = '''      "config/**",
       "bot_cli/**",
       "app.py",
       "bot.py",
-      "bootstrap.py",'''
-_GREPTILE_NEW = '''      "src/pmcopy/config/**",
+      "bootstrap.py","""
+_GREPTILE_NEW = """      "src/pmcopy/config/**",
       "src/pmcopy/services/**",
       "src/pmcopy/orchestrators/**",
       "src/pmcopy/integrations/**",
@@ -506,7 +508,7 @@ _GREPTILE_NEW = '''      "src/pmcopy/config/**",
       "src/pmcopy/bot_cli/**",
       "src/pmcopy/app.py",
       "src/pmcopy/bot.py",
-      "src/pmcopy/bootstrap.py",'''
+      "src/pmcopy/bootstrap.py","""
 
 _DOCKERMD_OLD = """Compose mounts the checkout's `config/` read-only, including service YAML,
 `config/environments/`, and `config/traders/`. Keep that directory and the image"""
@@ -536,7 +538,7 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         (
             "tests/test_v31_features.py",
             "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))",
-            "sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), \"src\"))",
+            'sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))',
             1,
         )
     )
@@ -545,9 +547,9 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
             (
                 rel,
                 "REPO_ROOT = Path(__file__).resolve().parents[2]\nif str(REPO_ROOT) not in sys.path:\n    sys.path.inse"
-                    "rt(0, str(REPO_ROOT))",
-                "REPO_ROOT = Path(__file__).resolve().parents[2]\nSRC_ROOT = REPO_ROOT / \"src\"\nif str(SRC_ROOT) not "
-                    "in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
+                "rt(0, str(REPO_ROOT))",
+                'REPO_ROOT = Path(__file__).resolve().parents[2]\nSRC_ROOT = REPO_ROOT / "src"\nif str(SRC_ROOT) not '
+                "in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
                 1,
             )
         )
@@ -556,9 +558,9 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
             (
                 rel,
                 "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nif str(PROJECT_ROOT) not in sys.path:\n    sys.pat"
-                    "h.insert(0, str(PROJECT_ROOT))",
-                "PROJECT_ROOT = Path(__file__).resolve().parents[1]\nSRC_ROOT = PROJECT_ROOT / \"src\"\nif str(SRC_ROOT"
-                    ") not in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
+                "h.insert(0, str(PROJECT_ROOT))",
+                'PROJECT_ROOT = Path(__file__).resolve().parents[1]\nSRC_ROOT = PROJECT_ROOT / "src"\nif str(SRC_ROOT'
+                ") not in sys.path:\n    sys.path.insert(0, str(SRC_ROOT))",
                 1,
             )
         )
@@ -587,8 +589,8 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
             "src/pmcopy/bot_cli/commands/doctor.py",
             '    roots: tuple[str, ...] = ("orchestrators", "services", "clients", "domain", "cache", "utils"),',
             '    roots: tuple[str, ...] = (\n        "src/pmcopy/orchestrators",\n        "src/pmcopy/services",\n     '
-                '   "src/pmcopy/clients",\n        "src/pmcopy/domain",\n        "src/pmcopy/cache",\n        "src/pmco'
-                'py/utils",\n    ),',
+            '   "src/pmcopy/clients",\n        "src/pmcopy/domain",\n        "src/pmcopy/cache",\n        "src/pmco'
+            'py/utils",\n    ),',
             1,
         )
     )
@@ -624,7 +626,7 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         (
             "tests/v1/test_v1_migration_runner.py",
             "sys.path.insert(0, str(Path(__file__).resolve().parents[2]))",
-            "sys.path.insert(0, str(Path(__file__).resolve().parents[2] / \"src\"))",
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))',
             1,
         )
     )
@@ -659,19 +661,33 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(
         (
             "tests/test_service_config_loader.py",
-            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrid"
-                "es())],\n        cwd=Path(__file__).resolve().parents[1],",
-            "    result = subprocess.run(\n        [sys.executable, \"-c\", probe, str(config_dir), json.dumps(_overrid"
-                "es())],\n        cwd=Path(__file__).resolve().parents[1],\n        env={**os.environ, \"PYTHONPATH\": "
-                "str(Path(__file__).resolve().parents[1] / \"src\")},",
+            '    result = subprocess.run(\n        [sys.executable, "-c", probe, str(config_dir), json.dumps(_overrid'
+            "es())],\n        cwd=Path(__file__).resolve().parents[1],",
+            '    result = subprocess.run(\n        [sys.executable, "-c", probe, str(config_dir), json.dumps(_overrid'
+            'es())],\n        cwd=Path(__file__).resolve().parents[1],\n        env={**os.environ, "PYTHONPATH": '
+            'str(Path(__file__).resolve().parents[1] / "src")},',
             1,
         )
     )
 
     # --- packaging-contract and layout-contract tests ---
     ed.append(("tests/test_packaging_consistency.py", _CORE_PACKAGES_OLD, _CORE_PACKAGES_NEW, 1))
-    ed.append(("tests/release_gate/test_no_legacy_imports.py", _PRODUCTION_ROOTS_OLD, _PRODUCTION_ROOTS_NEW, 1))
-    ed.append(("tests/release_gate/test_dockerfile_safety_defaults.py", _WHEEL_CONTRACT_OLD, _WHEEL_CONTRACT_NEW, 1))
+    ed.append(
+        (
+            "tests/release_gate/test_no_legacy_imports.py",
+            _PRODUCTION_ROOTS_OLD,
+            _PRODUCTION_ROOTS_NEW,
+            1,
+        )
+    )
+    ed.append(
+        (
+            "tests/release_gate/test_dockerfile_safety_defaults.py",
+            _WHEEL_CONTRACT_OLD,
+            _WHEEL_CONTRACT_NEW,
+            1,
+        )
+    )
     ed.append(("tests/test_docker_ccxt_runtime.py", _COMPOSE_TEST_OLD, _COMPOSE_TEST_NEW, 1))
 
     # --- embedded subprocess scripts (control-plane-free composition roots) ---
@@ -734,11 +750,11 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(
         (
             "tests/test_control_plane_free_primitives.py",
-            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n     "
-                "   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n    )",
-            "    return subprocess.run(\n        [sys.executable, \"-c\", script],\n        capture_output=True,\n     "
-                "   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n        env={**os.environ, \"PYTHON"
-                "PATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
+            '    return subprocess.run(\n        [sys.executable, "-c", script],\n        capture_output=True,\n     '
+            "   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n    )",
+            '    return subprocess.run(\n        [sys.executable, "-c", script],\n        capture_output=True,\n     '
+            '   text=True,\n        timeout=300,\n        cwd=REPOSITORY_ROOT,\n        env={**os.environ, "PYTHON'
+            'PATH": str(REPOSITORY_ROOT / "src")},\n    )',
             1,
         )
     )
@@ -765,27 +781,27 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(
         (
             "tests/test_packaging_entrypoint.py",
-            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]'
-                '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    modules = '
-                'set(project["tool"]["setuptools"]["py-modules"])\n    packages = set(project["tool"]["setuptools"]["pa'
-                'ckages"]["find"]["include"])\n\n    assert {"app", "bootstrap", "bot"} <= modules\n    assert "cache*"'
-                ' in packages',
-            'def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]'
-                '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    find_cfg ='
-                ' project["tool"]["setuptools"]["packages"]["find"]\n    packages = set(find_cfg["include"])\n\n    ass'
-                'ert find_cfg["where"] == ["src"]\n    assert packages == {"pmcopy*"}\n    assert "py-modules" not in p'
-                'roject["tool"]["setuptools"]',
+            "def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]"
+            '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    modules = '
+            'set(project["tool"]["setuptools"]["py-modules"])\n    packages = set(project["tool"]["setuptools"]["pa'
+            'ckages"]["find"]["include"])\n\n    assert {"app", "bootstrap", "bot"} <= modules\n    assert "cache*"'
+            " in packages",
+            "def test_top_level_runtime_modules_are_packaged() -> None:\n    root = Path(__file__).resolve().parents[1]"
+            '\n    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))\n\n    find_cfg ='
+            ' project["tool"]["setuptools"]["packages"]["find"]\n    packages = set(find_cfg["include"])\n\n    ass'
+            'ert find_cfg["where"] == ["src"]\n    assert packages == {"pmcopy*"}\n    assert "py-modules" not in p'
+            'roject["tool"]["setuptools"]',
             1,
         )
     )
     ed.append(
         (
             "tests/test_rc1_release_artifacts.py",
-            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", \"--help\"],\n        cwd"
-                "=repo_root,\n        capture_output=True,\n        check=False,\n        text=True,\n    )",
-            "    result = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", \"--help\"],\n    "
-                "    cwd=repo_root,\n        env={**os.environ, \"PYTHONPATH\": str(repo_root / \"src\")},\n        cap"
-                "ture_output=True,\n        check=False,\n        text=True,\n    )",
+            '    result = subprocess.run(\n        [sys.executable, "-m", "bot_cli.main", "--help"],\n        cwd'
+            "=repo_root,\n        capture_output=True,\n        check=False,\n        text=True,\n    )",
+            '    result = subprocess.run(\n        [sys.executable, "-m", "pmcopy.bot_cli.main", "--help"],\n    '
+            '    cwd=repo_root,\n        env={**os.environ, "PYTHONPATH": str(repo_root / "src")},\n        cap'
+            "ture_output=True,\n        check=False,\n        text=True,\n    )",
             1,
         )
     )
@@ -801,20 +817,20 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         (
             "tests/test_rc1_release_artifacts.py",
             "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if"
-                " not (repo_root / rel).is_file()\n    }",
+            " not (repo_root / rel).is_file()\n    }",
             "    missing = {\n        rel: sorted(set(where))\n        for rel, where in referenced.items()\n        if"
-                " not (repo_root / \"src\" / \"pmcopy\" / rel).is_file()\n    }",
+            ' not (repo_root / "src" / "pmcopy" / rel).is_file()\n    }',
             1,
         )
     )
     ed.append(
         (
             "tests/test_standalone_config_rejects_control_plane.py",
-            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"bot_cli.main\", *command],\n        ca"
-                "pture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n    )",
-            "    completed = subprocess.run(\n        [sys.executable, \"-m\", \"pmcopy.bot_cli.main\", *command],\n   "
-                "     capture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n   "
-                "     env={**os.environ, \"PYTHONPATH\": str(REPOSITORY_ROOT / \"src\")},\n    )",
+            '    completed = subprocess.run(\n        [sys.executable, "-m", "bot_cli.main", *command],\n        ca'
+            "pture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n    )",
+            '    completed = subprocess.run(\n        [sys.executable, "-m", "pmcopy.bot_cli.main", *command],\n   '
+            "     capture_output=True,\n        text=True,\n        timeout=120,\n        cwd=REPOSITORY_ROOT,\n   "
+            '     env={**os.environ, "PYTHONPATH": str(REPOSITORY_ROOT / "src")},\n    )',
             1,
         )
     )
@@ -838,7 +854,9 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     )
 
     # --- packaging / tooling configuration ---
-    ed.append(("pyproject.toml", 'pmcopy = "bot_cli.main:main"', 'pmcopy = "pmcopy.bot_cli.main:main"', 1))
+    ed.append(
+        ("pyproject.toml", 'pmcopy = "bot_cli.main:main"', 'pmcopy = "pmcopy.bot_cli.main:main"', 1)
+    )
     ed.append(("pyproject.toml", _PYPROJECT_SETUPTOOLS_OLD, _PYPROJECT_SETUPTOOLS_NEW, 1))
     ed.append(("pytest.ini", "testpaths = tests", "testpaths = tests\npythonpath = src", 1))
     ed.append(("Dockerfile", _DOCKERFILE_CHECK_OLD, _DOCKERFILE_CHECK_NEW, 1))
@@ -857,7 +875,7 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
             ".dockerignore",
             "config/bot.toml\n",
             "config/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/runtime.local.*\nsrc/pmcopy/config"
-                "/bot.toml\n",
+            "/bot.toml\n",
             1,
         )
     )
@@ -866,7 +884,7 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
             ".gitignore",
             "config/runtime.local.yml\nconfig/bot.toml\n",
             "config/runtime.local.yml\nconfig/bot.toml\nsrc/pmcopy/config/runtime.local.yml\nsrc/pmcopy/config/bot.toml"
-                "\nsrc/pmcopy/config/data/\nsrc/pmcopy/config/logs/\n",
+            "\nsrc/pmcopy/config/data/\nsrc/pmcopy/config/logs/\n",
             1,
         )
     )
@@ -913,9 +931,13 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
         )
     )
     ed.append(("README.md", "python bot.py redeem", "pmcopy redeem", 2))
-    ed.append(("docs/03-paper-trading.md", "python3 bot.py rotate-traders", "pmcopy rotate-traders", 1))
+    ed.append(
+        ("docs/03-paper-trading.md", "python3 bot.py rotate-traders", "pmcopy rotate-traders", 1)
+    )
     ed.append(("docs/auto-follow.md", "python bot.py run", "pmcopy run", 2))
-    ed.append(("docs/handoffs/logs_only_confirmed_source_prompt.md", "python bot.py run", "pmcopy run", 1))
+    ed.append(
+        ("docs/handoffs/logs_only_confirmed_source_prompt.md", "python bot.py run", "pmcopy run", 1)
+    )
     ed.append(
         (
             "docs/historical-evidence-import.md",
@@ -944,7 +966,14 @@ def _special_edits() -> list[tuple[str, str, str, int]]:
     ed.append(("docs/recovery_playbook.md", "python bot.py resolve", "pmcopy resolve", 2))
     ed.append(("docs/redemption.md", "python bot.py redeem", "pmcopy redeem", 5))
     ed.append(("docs/runbooks/00-index.md", "python3 bot.py ", "pmcopy ", 2))
-    ed.append(("docs/trader_discovery.md", "python bot.py run --auto-trader", "pmcopy run --auto-trader", 1))
+    ed.append(
+        (
+            "docs/trader_discovery.md",
+            "python bot.py run --auto-trader",
+            "pmcopy run --auto-trader",
+            1,
+        )
+    )
     ed.append(("docs/docker.md", _DOCKERMD_OLD, _DOCKERMD_NEW, 1))
 
     return ed
@@ -982,9 +1011,7 @@ _DOTTED_RE = re.compile(r"^(?:" + "|".join(sorted(MOVED)) + r")(?:\.[A-Za-z_]\w*
 # than a module path. Attribute-plausible tails (log, db, env, sh) are
 # deliberately NOT excluded — real patch targets like
 # "services.execution.reconciliation_service._log.log" end in them.
-_FILE_EXT_RE = re.compile(
-    r"\.(?:py|pyi|yml|yaml|toml|json|sql|md|txt|cfg|ini|lock|example)$"
-)
+_FILE_EXT_RE = re.compile(r"\.(?:py|pyi|yml|yaml|toml|json|sql|md|txt|cfg|ini|lock|example)$")
 
 
 def _rewrite_module_source(data: bytes, rel: str) -> tuple[bytes, dict[str, int]]:
@@ -1183,7 +1210,9 @@ def _vetted_path_pass() -> int:
         text = target.read_text(encoding="utf-8")
         alts = []
         if join:
-            alts.append(rf"(?P<jleft>{_JOIN_LEFT}\s*/\s*)(?P<jq>[\"'])(?P<jseg>{_SLASHED}|{_PYFILE}|{_BARE})(?P=jq)")
+            alts.append(
+                rf"(?P<jleft>{_JOIN_LEFT}\s*/\s*)(?P<jq>[\"'])(?P<jseg>{_SLASHED}|{_PYFILE}|{_BARE})(?P=jq)"
+            )
         if pathform:
             alts.append(rf"Path\(\s*(?P<pq>[\"'])(?P<pseg>{_SLASHED}|{_PYFILE})(?P=pq)\s*\)")
         if bare:
@@ -1197,8 +1226,8 @@ def _vetted_path_pass() -> int:
             if "jleft" in groups and m.group("jleft") is not None:
                 return f'{m.group("jleft")}"src" / "{NAMESPACE}" / {m.group("jq")}{m.group("jseg")}{m.group("jq")}'
             if "pq" in groups and m.group("pq") is not None:
-                return f'Path({m.group("pq")}src/{NAMESPACE}/{m.group("pseg")}{m.group("pq")})'
-            return f'{m.group("bq")}src/{NAMESPACE}/{m.group("bseg")}{m.group("bq")}'
+                return f"Path({m.group('pq')}src/{NAMESPACE}/{m.group('pseg')}{m.group('pq')})"
+            return f"{m.group('bq')}src/{NAMESPACE}/{m.group('bseg')}{m.group('bq')}"
 
         new_text, n = pattern.subn(_sub, text)
         if n:
@@ -1238,7 +1267,9 @@ def _verify() -> None:
                 if _DOTTED_RE.match(node.value) and not _FILE_EXT_RE.search(node.value):
                     if (rel, node.value) in allowlist:
                         continue
-                    problems.append(f"{rel}: unprefixed dotted module string remains: {node.value!r}")
+                    problems.append(
+                        f"{rel}: unprefixed dotted module string remains: {node.value!r}"
+                    )
     for name in (*PACKAGES, *(f"{m}.py" for m in MODULES)):
         if (REPO / name).exists():
             problems.append(f"flat root still exists: {name}")
@@ -1258,7 +1289,9 @@ def main() -> int:
         print("already migrated (src/pmcopy present, flat roots gone) — nothing to do")
         return 0
     if NS_ROOT.exists():
-        raise RuntimeError("src/pmcopy exists but flat roots remain — tree is half-migrated; restore and retry")
+        raise RuntimeError(
+            "src/pmcopy exists but flat roots remain — tree is half-migrated; restore and retry"
+        )
     _require_clean_worktree()
     _verify_inventory()
     _do_moves()

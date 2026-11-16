@@ -1,25 +1,14 @@
-# Configuration guide — Polymarket public network/account-data endpoints.
-# Purpose: configure Polygon reads, collateral identity, and geoblock safety;
-# authenticated order writes still go only through ccxt.prediction.polymarket.
-# Options: RPC values are HTTP(S) URLs or empty where optional; chain_id must
-# match the wallet chain; contract fields are empty or 42-character addresses.
-# Trade-offs: public RPC is easy but may rate-limit; private RPC is steadier but
-# secret-bearing. Disabling geoblock removes a safety check and is discouraged.
-# Keyless public default. Override with PMCOPY__POLYMARKET__RPC_URL in
-# secrets.env; never commit a private provider URL/key here.
-rpc_url: https://polygon-rpc.com
-# Polygon production network. Keep consistent with wallet.chain_id.
+# Configuration guide — Polymarket network/account-data settings (Alchemy-only).
+# Purpose: configure Polygon chain identity, collateral addresses, and geoblock safety;
+# authenticated order writes go exclusively through ccxt.prediction.polymarket.
+# Options: rpc_url and fallback_rpc_url accept empty string (auto-derived from
+# PMCOPY__ALCHEMY_WSS_URL) or an Alchemy Polygon HTTPS URL; chain_id is 137 | 80002.
+# Trade-offs: enforce_geoblock=true fails closed in restricted regions with an extra
+# startup/order check; disabling it skips client-side geoblock probes.
+rpc_url: ''
 chain_id: 137
-# Legacy-named collateral address used by compatibility readers.
 usdc_contract_address: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'
-# true fails closed where Polymarket access is restricted; false skips that
-# protection and transfers legal/operational responsibility to the operator.
 enforce_geoblock: true
-# Empty disables failover. A second non-secret RPC improves availability but
-# can return data at a different freshness/consistency point.
 fallback_rpc_url: ''
-# Optional explicit collateral address; empty lets the runtime use its canonical
-# pUSD/compatibility resolution rather than introducing a second override.
 collateral_contract_address: ''
-# Canonical pUSD collateral address for balance/account-data reads.
 pusd_contract_address: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'

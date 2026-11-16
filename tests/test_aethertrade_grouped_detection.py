@@ -68,16 +68,16 @@ def test_invalid_policies_fail_closed(changes: dict[str, object]) -> None:
         TraderDetectionPolicy(**({"wallet": "0x" + "11" * 20} | changes))
 
 
-def test_unverified_infura_stream_and_duplicate_wallet_policy_are_rejected() -> None:
-    """A wallet gets one owner policy; Infura stream billing needs explicit proof."""
+def test_non_alchemy_provider_and_duplicate_wallet_policy_are_rejected() -> None:
+    """A wallet gets one owner policy; non-Alchemy providers fail closed."""
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
     from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
-    policy = TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="infura")
-    with pytest.raises(ValueError, match="billing"):
-        GroupedDetectionPlanner().plan((policy,))
+    with pytest.raises(ValueError, match="provider"):
+        TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="infura")
+    policy = TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="alchemy")
     with pytest.raises(ValueError, match="duplicate"):
-        GroupedDetectionPlanner(infura_logs_billing_verified=True).plan((policy, policy))
+        GroupedDetectionPlanner().plan((policy, policy))
 
 
 def test_disabled_trader_is_never_subscribed() -> None:
@@ -93,12 +93,11 @@ def test_disabled_trader_is_never_subscribed() -> None:
     )
 
 
-def test_boolean_verification_cannot_bypass_missing_infura_per_block_metering() -> None:
-    """A claimed billing verification cannot implement an absent stream meter."""
-    from pmcopy.domain.grouped_detection import TraderDetectionPolicy
+def test_planner_rejects_non_alchemy_provider_object() -> None:
+    """GroupedDetectionPlanner only allows Alchemy streams even if policy is bypassed."""
+    from types import SimpleNamespace
     from pmcopy.services.grouped_detection import GroupedDetectionPlanner
 
-    with pytest.raises(ValueError, match="billing"):
-        GroupedDetectionPlanner(infura_logs_billing_verified=True).plan(
-            (TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="infura"),)
-        )
+    bypassed = SimpleNamespace(wallet="0x" + "11" * 20, enabled=True, provider="infura", mode="mined")
+    with pytest.raises(ValueError, match="Alchemy"):
+        GroupedDetectionPlanner().plan((bypassed,))  # type: ignore[arg-type]

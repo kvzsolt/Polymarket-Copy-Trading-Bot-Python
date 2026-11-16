@@ -112,6 +112,7 @@ class AccountLeaseRepo:
      WHERE user_id = $1
        AND holder_token = $2
        AND released_at IS NULL
+       AND expires_at > now()
     RETURNING expires_at
     """
 
@@ -158,11 +159,7 @@ class AccountLeaseRepo:
             inserted = bool(row.get("inserted"))
             old_token = row.get("old_token")
             old_released = row.get("old_released_at")
-            reacquired = (
-                not inserted
-                and isinstance(old_token, str)
-                and old_token == holder_token
-            )
+            reacquired = not inserted and isinstance(old_token, str) and old_token == holder_token
             # Takeover = we won an EXPIRED foreign lease that was never
             # released (crash recovery — logged as a warning). A gracefully
             # released row is a clean handoff, not a takeover.
