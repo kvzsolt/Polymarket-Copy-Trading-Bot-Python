@@ -93,6 +93,8 @@ last_phase.md
 docs/refactor-cleanup-review.md
 AGENTS.MD
 CLAUDE.md
+!/AGENTS.md
+!/CLAUDE.md
 CODEX.md
 KILOCODE.md
 
