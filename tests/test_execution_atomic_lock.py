@@ -24,7 +24,7 @@ from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSna
 from pmcopy.services.executionService import ExecutionRequest, ExecutionService
 from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
 from pmcopy.storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
-from pmcopy.utils.createClobClient import MarketMeta
+from tests.fixtures_market_meta import MarketMeta
 from tests.conftest import make_clob_gateway
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 

@@ -14,116 +14,23 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
-from enum import Enum
-from typing import Literal, Protocol
+from decimal import Decimal, InvalidOperation
+from typing import Protocol
 
-OrderSide = Literal["BUY", "SELL"]
-
-
-class TickRounding(Enum):
-    """Which way a price moves when it is snapped onto the tick grid.
-
-    A limit price and a marketable price want opposite rounding, and the venue
-    only accepts exact tick multiples, so the direction has to be an explicit
-    decision rather than one hard-coded convention.
-
-    Attributes:
-        CONSERVATIVE: Round away from crossing — a BUY rounds down, a SELL
-            rounds up — so the signed order never breaches the caller's cap or
-            floor. Correct for a resting limit.
-        MARKETABLE: Round toward crossing — a BUY rounds up, a SELL rounds down
-            — so quantization never costs the order its marketability. Correct
-            for FAK/FOK, whose only outcome otherwise is a kill. The caller
-            re-asserts any absolute ceiling afterwards, since this may overshoot
-            the requested price by up to one tick.
-    """
-
-    CONSERVATIVE = "conservative"
-    MARKETABLE = "marketable"
-
+from pmcopy.domain.price_bound import (
+    InvalidTickSize,
+    OrderSide,
+    TickRounding,
+    TickSize,
+    _coerce_decimal,
+    quantize_price_to_tick,
+)
 
 _DEFAULT_TTL_SECONDS = 300.0
 
 
-class InvalidTickSize(ValueError):
-    """Raised when a tick size is unusable for order construction."""
-
-
 class TickSizeUnavailable(RuntimeError):
     """Raised when no authoritative source can provide a tick size."""
-
-
-def _coerce_decimal(value: object, *, field: str, error: type[Exception]) -> Decimal:
-    try:
-        result = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError) as exc:
-        raise error(f"{field} must be a finite decimal") from exc
-    return result
-
-
-@dataclass(frozen=True, slots=True)
-class TickSize:
-    """Validated venue tick size."""
-
-    value: Decimal
-
-    def __post_init__(self) -> None:
-        if not self.value.is_finite():
-            raise ValueError("Tick size must be finite")
-        if self.value <= Decimal("0"):
-            raise ValueError("Tick size must be greater than zero")
-
-
-def quantize_price_to_tick(
-    *,
-    price: Decimal,
-    tick_size: Decimal,
-    side: OrderSide,
-    rounding: TickRounding = TickRounding.CONSERVATIVE,
-) -> Decimal:
-    """Return an exact integer multiple of ``tick_size`` for ``side``.
-
-    Rounding happens in tick units because tick sizes such as ``0.0025`` are
-    not representable by a fixed number of decimal places.
-
-    Args:
-        price: The unquantized price.
-        tick_size: The venue tick for this token; must be finite and positive.
-        side: ``"BUY"`` or ``"SELL"``.
-        rounding: Direction to snap in. Defaults to
-            :attr:`TickRounding.CONSERVATIVE`, which preserves the caller's cap
-            or floor; pass :attr:`TickRounding.MARKETABLE` for an order that
-            must cross.
-
-    Returns:
-        The quantized price, an exact multiple of ``tick_size``.
-
-    Raises:
-        InvalidTickSize: If the tick is unusable or the result leaves the
-            tradable ``(0, 1)`` range.
-        ValueError: If the price is not finite or the side is unsupported.
-    """
-
-    tick = _coerce_decimal(tick_size, field="tick_size", error=InvalidTickSize)
-    if not tick.is_finite() or tick <= 0:
-        raise InvalidTickSize("tick_size must be finite and greater than zero")
-    raw_price = _coerce_decimal(price, field="price", error=ValueError)
-    if not raw_price.is_finite():
-        raise ValueError("price must be finite")
-    normalized_side = str(side).upper()
-    if normalized_side not in {"BUY", "SELL"}:
-        raise ValueError(f"unsupported order side: {side!r}")
-
-    tick_units = raw_price / tick
-    rounds_up = (normalized_side == "BUY") == (rounding is TickRounding.MARKETABLE)
-    rounded_units = tick_units.to_integral_value(
-        rounding=ROUND_CEILING if rounds_up else ROUND_FLOOR
-    )
-    quantized = rounded_units * tick
-    if quantized <= 0 or quantized >= 1:
-        raise InvalidTickSize("tick-quantized price is outside the tradable range")
-    return quantized
 
 
 class TickSizeResolver(Protocol):
@@ -280,6 +187,7 @@ class PublicClobTickSizeSource:
 __all__ = [
     "InvalidTickSize",
     "MarketMetadataClient",
+    "OrderSide",
     "PolymarketTickSizeResolver",
     "PublicClobTickSizeSource",
     "TickSize",

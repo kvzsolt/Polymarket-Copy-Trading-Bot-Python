@@ -18,6 +18,17 @@ from typing import Any, Callable
 
 from pmcopy.config.app_config import AppConfig, ExecutionConfig
 from pmcopy.application.copy_trade_service import CopyTradeIdentityBuilder
+from pmcopy.application.runtime_state import (
+    resolve_account_execution_state,
+    resolve_accounted_fill_reader,
+    resolve_clob_gateway,
+    resolve_leader_sell_scope_guard,
+    resolve_leader_sell_target_service,
+    resolve_reservation_service,
+    resolve_reservations_repo,
+    resolve_slippage_tolerance_bps,
+    resolve_task_budget_settlement,
+)
 from pmcopy.domain.execution import ExecutionOrderType, LeaderPriceBand
 from pmcopy.domain.models import TradeSignal
 from pmcopy.domain.source_time import SourceTimestampParser
@@ -191,20 +202,22 @@ def _positive_int(raw: Any, default: int) -> int:
 
 
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
-    semaphore = context.extra.get("_trade_analysis_semaphore")
+    exec_state = resolve_account_execution_state(context)
+    semaphore = exec_state.trade_analysis_semaphore
     if semaphore is None:
         config_val = context.config.execution.trade_analysis_concurrency if context.config else 6
         semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
-        context.extra["_trade_analysis_semaphore"] = semaphore
+        exec_state.trade_analysis_semaphore = semaphore
     return semaphore
 
 
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
-    semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
+    exec_state = resolve_account_execution_state(context)
+    semaphore = exec_state.reconcile_unconfirmed_semaphore
     if semaphore is None:
         config_val = context.config.execution.reconcile_concurrency if context.config else 4
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
-        context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
+        exec_state.reconcile_unconfirmed_semaphore = semaphore
     return semaphore
 
 
@@ -225,20 +238,17 @@ def _execution_telemetry(context: TradingContext) -> ExecutionTelemetryEmitter:
 
 
 def get_reconciliation_service(context: TradingContext) -> ReconciliationService:
-    """Return the shared reconciler bound to this trading context.
+    """Return the shared account-scoped reconciler bound to ``context``.
 
     The reconciler is the canonical owner of unconfirmed-order settlement
-    (issue #71). One instance per ``TradingContext`` keeps batch reconciles
-    consistent across trade and risk paths.
+    (issue #71). One instance per follower account keeps batch reconciles
+    and poll backoffs consistent across all leader bindings and risk paths.
     """
-    svc = context.extra.get("_reconciliation_service")
-    task_budget_settlement = context.extra.get("task_budget_settlement")
-    reservation_service = context.extra.get("reservation_service")
-    if reservation_service is None:
-        coordinator = getattr(context, "execution_coordinator", None)
-        reservation_service = getattr(coordinator, "reservation_service", None)
-        if reservation_service is not None:
-            context.extra["reservation_service"] = reservation_service
+    exec_state = resolve_account_execution_state(context)
+    svc = exec_state.reconciliation_service
+    task_budget_settlement = resolve_task_budget_settlement(context)
+    reservation_service = resolve_reservation_service(context)
+    target_service = resolve_leader_sell_target_service(context)
     if svc is None:
         from pmcopy.services.execution.recovery_inventory import CompleteRecoveryInventoryReader
 
@@ -257,7 +267,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             positions_repo=context.positions_repo,
             risk_blocks_repo=getattr(context, "risk_blocks_repo", None),
             risk_triggers_repo=getattr(context, "risk_triggers_repo", None),
-            clob_gateway=context.extra.get("clob_gateway"),
+            clob_gateway=resolve_clob_gateway(context),
             audit_logger=getattr(context, "audit_logger", None),
             reservation_service=reservation_service,
             # Funder wallet is the dedup key for the ManualSync write-back.
@@ -275,16 +285,15 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             ),
             task_budget_settlement=task_budget_settlement,
             telemetry=_execution_telemetry(context),
-            leader_sell_target_service=context.extra.get("leader_sell_target_service"),
-            accounted_fill_reader=context.extra.get("accounted_fill_reader"),
+            leader_sell_target_service=target_service,
+            accounted_fill_reader=resolve_accounted_fill_reader(context),
             recovery_inventory=recovery_inventory,
         )
-        context.extra["_reconciliation_service"] = svc
+        exec_state.reconciliation_service = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
         svc.reservation_service = reservation_service
     if task_budget_settlement is not None:
         svc.task_budget_settlement = task_budget_settlement
-    target_service = context.extra.get("leader_sell_target_service")
     if target_service is not None:
         svc.leader_sell_target_service = target_service
     return svc
@@ -427,7 +436,7 @@ async def _submit_copy_through_coordinator(
         sub_min_sell_policy=getattr(exec_req, "sub_min_sell_policy", None),
     )
     if side == "SELL":
-        target_service = getattr(context, "extra", {}).get("leader_sell_target_service")
+        target_service = resolve_leader_sell_target_service(context)
         if target_service is not None:
             try:
                 intent = await target_service.record_fresh_target(intent)
@@ -609,25 +618,19 @@ async def _resolve_market_bundle(
 async def _prefetch_market_data_for_signals(
     context: TradingContext,
     normalized: list,
+    *,
+    metadata_out: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
     """Resolve the execution inputs required for each signal token.
 
-    In REST-primary mode this reads only dynamic execution metadata. It never
-    fetches `/book`, never gates on spread/depth, and never substitutes a book
-    quote for the copied price. WSS is warmed in the background.
+    In REST-primary mode this reads only dynamic execution metadata into the
+    batch-local ``metadata_out`` mapping (eliminating shared context mutation
+    across concurrent batches). It never fetches ``/book``, never gates on
+    spread/depth, and never substitutes a book quote for the copied price.
+    WSS is warmed in the background.
 
-    In WSS primary mode the legacy path is used: subscribe → wait for
-    ``ensure_token_ready_or_bootstrapped`` → ``require_fresh_data`` retry loop.
-
-    Returns:
-        bundles_by_token: token_id -> MarketDataBundle for WSS-primary tokens.
-            Metadata-only results are stored on ``context.extra`` instead.
-        stale_tokens: token_ids whose primary-mode lookup failed at least
-            once. Retained for back-compat with callers that key off the
-            token only.
-        stale_skip_codes: ``(token_id, side)`` -> ``skip_code`` for each
-            failed lookup. Used by the per-signal loop to surface a
-            specific fail-closed reason.
+    In WSS primary mode the legacy path is used: subscribe -> wait for
+    ``ensure_token_ready_or_bootstrapped`` -> ``require_fresh_data`` retry loop.
     """
     if not normalized:
         return {}, set(), {}
@@ -635,7 +638,11 @@ async def _prefetch_market_data_for_signals(
     primary_source = _market_data_primary_source(context)
 
     if primary_source == "rest_snapshot":
-        return await _prefetch_copy_execution_metadata(context, normalized)
+        return await _prefetch_copy_execution_metadata(
+            context,
+            normalized,
+            metadata_out=metadata_out,
+        )
 
     return await _prefetch_market_data_wss(context, normalized)
 
@@ -643,6 +650,8 @@ async def _prefetch_market_data_for_signals(
 async def _prefetch_copy_execution_metadata(
     context: TradingContext,
     normalized: list,
+    *,
+    metadata_out: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
     """Fetch copy sizing metadata without reading or gating an order book.
 
@@ -650,8 +659,10 @@ async def _prefetch_copy_execution_metadata(
     only dynamic tick size, share minimum, and negative-risk metadata, then
     warms WSS subscriptions in the background for non-execution consumers.
     """
-    context.extra["_md_bundles_by_pair"] = {}
-    context.extra["_copy_execution_metadata_by_token"] = {}
+    if metadata_out is not None:
+        metadata_out.clear()
+    else:
+        resolve_account_execution_state(context).last_prefetched_metadata_by_token = {}
     warm_tokens = {
         token_id for signal, _ in normalized if (token_id := getattr(signal, "token_id", None))
     }
@@ -727,7 +738,12 @@ async def _prefetch_copy_execution_metadata(
         stale_tokens.add(token_id)
         for side in sides_by_token.get(token_id, {""}):
             stale_codes[(token_id, side)] = skip_code or "market_metadata_unavailable"
-    context.extra["_copy_execution_metadata_by_token"] = metadata_by_token
+    if metadata_out is not None:
+        metadata_out.update(metadata_by_token)
+    else:
+        resolve_account_execution_state(
+            context
+        ).last_prefetched_metadata_by_token = metadata_by_token
     # This prefetch is the largest single block of the detection-to-submit
     # budget (two CLOB round trips per token), and the copy race it feeds is
     # decided in 1-2 seconds. Report it so the cost is visible next to the
@@ -942,12 +958,6 @@ class _BuyRiskCap:
     cap_notional_usdc: Decimal
 
 
-_POSITION_PCT_CAP_BALANCE_KEY = "_max_position_pct_balance_snapshot_usdc"
-_POSITION_PCT_CAP_BALANCE_AT_KEY = "_max_position_pct_balance_snapshot_at"
-_POSITION_PCT_CAP_BALANCE_WALLET_KEY = "_max_position_pct_balance_snapshot_wallet"
-_POSITION_PCT_CAP_REFRESH_SECONDS = 24 * 60 * 60
-
-
 def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -1078,11 +1088,11 @@ def seed_position_pct_cap_snapshot(
     balance policies may still use live free cash.
     """
     balance = max(Decimal("0"), _to_decimal(balance_usdc))
-    context.extra[_POSITION_PCT_CAP_BALANCE_KEY] = balance
-    context.extra[_POSITION_PCT_CAP_BALANCE_AT_KEY] = (
-        float(timestamp) if timestamp is not None else time.time()
+    resolve_account_execution_state(context).position_pct_cap_snapshot.seed(
+        balance,
+        wallet=_funder_wallet_address(context),
+        captured_at=timestamp,
     )
-    context.extra[_POSITION_PCT_CAP_BALANCE_WALLET_KEY] = _funder_wallet_address(context)
 
 
 def _position_pct_cap_snapshot_is_fresh(
@@ -1090,23 +1100,9 @@ def _position_pct_cap_snapshot_is_fresh(
     *,
     now: float | None = None,
 ) -> bool:
-    wallet = _funder_wallet_address(context)
-    cached_wallet = str(context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or "").strip()
-    try:
-        cached_at_raw = context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY)
-        if cached_at_raw is None:
-            return False
-        cached_at = float(cached_at_raw)
-    except (TypeError, ValueError):
-        return False
-    cached_balance = _to_decimal(
-        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
-        default="-1",
-    )
-    wallet_matches = not cached_wallet or cached_wallet.lower() == wallet.lower()
-    age_seconds = max(0.0, (time.time() if now is None else now) - cached_at)
-    return (
-        cached_balance >= 0 and wallet_matches and age_seconds < _POSITION_PCT_CAP_REFRESH_SECONDS
+    return resolve_account_execution_state(context).position_pct_cap_snapshot.is_fresh(
+        wallet=_funder_wallet_address(context),
+        now=now,
     )
 
 
@@ -1352,12 +1348,9 @@ async def _fetch_balance_snapshot(
 
 async def _position_pct_cap_balance_usdc(context: TradingContext) -> Decimal | None:
     now = time.time()
-    cached_balance = _to_decimal(
-        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
-        default="-1",
-    )
-    if _position_pct_cap_snapshot_is_fresh(context, now=now):
-        return cached_balance
+    snapshot = resolve_account_execution_state(context).position_pct_cap_snapshot
+    if _position_pct_cap_snapshot_is_fresh(context, now=now) and snapshot.balance_usdc is not None:
+        return snapshot.balance_usdc
 
     wallet = _funder_wallet_address(context)
     refreshed = await get_my_balance(wallet)
@@ -1675,8 +1668,8 @@ async def reconcile_submitted_unconfirmed(
         max_age_seconds=max_age_seconds,
         user_id=reconcile_user_id,
     )
-    extra = getattr(context, "extra", {})
-    pending_query = extra.get("_pending_order_query_service")
+    exec_state = resolve_account_execution_state(context)
+    pending_query = exec_state.pending_order_query_service
     if pending_query is None and hasattr(
         type(context.orders_repo),
         "get_unconfirmed_order_submissions",
@@ -1685,7 +1678,7 @@ async def reconcile_submitted_unconfirmed(
             context.orders_repo,
             max_batch_size=200,
         )
-        extra["_pending_order_query_service"] = pending_query
+        exec_state.pending_order_query_service = pending_query
     if pending_query is not None:
         try:
             order_records = await pending_query.list_records(
@@ -2069,7 +2062,7 @@ async def _execute_trades_impl(
     neg_risk_by_token: dict[str, bool] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    context.extra["_copy_execution_metadata_by_token"] = {}
+    metadata_by_token: dict[str, Any] = {}
     # The compatibility source name ``rest_snapshot`` now selects metadata-only
     # copy prefetch; WSS mode retains its subscribe/bootstrap/bundle path. Both
     # modes must run before sizing so absent dynamic metadata fails closed.
@@ -2078,21 +2071,23 @@ async def _execute_trades_impl(
             bundles_by_token,
             market_data_stale_tokens,
             market_data_stale_codes,
-        ) = await _prefetch_market_data_for_signals(context, normalized)
-        metadata_by_token = context.extra.get("_copy_execution_metadata_by_token", {})
-        if isinstance(metadata_by_token, dict):
-            for token_id, metadata in metadata_by_token.items():
-                try:
-                    tick_size = Decimal(str(metadata.tick_size))
-                    min_order_size = Decimal(str(metadata.min_order_size))
-                    neg_risk = metadata.neg_risk
-                    if tick_size <= 0 or min_order_size <= 0 or not isinstance(neg_risk, bool):
-                        raise ValueError("invalid execution metadata")
-                    tick_size_by_token[str(token_id)] = tick_size
-                    market_min_size_by_token[str(token_id)] = min_order_size
-                    neg_risk_by_token[str(token_id)] = neg_risk
-                except (AttributeError, TypeError, ValueError):
-                    market_data_stale_tokens.add(str(token_id))
+        ) = await _prefetch_market_data_for_signals(
+            context,
+            normalized,
+            metadata_out=metadata_by_token,
+        )
+        for token_id, metadata in metadata_by_token.items():
+            try:
+                tick_size = Decimal(str(metadata.tick_size))
+                min_order_size = Decimal(str(metadata.min_order_size))
+                neg_risk = metadata.neg_risk
+                if tick_size <= 0 or min_order_size <= 0 or not isinstance(neg_risk, bool):
+                    raise ValueError("invalid execution metadata")
+                tick_size_by_token[str(token_id)] = tick_size
+                market_min_size_by_token[str(token_id)] = min_order_size
+                neg_risk_by_token[str(token_id)] = neg_risk
+            except (AttributeError, TypeError, ValueError):
+                market_data_stale_tokens.add(str(token_id))
         for token_id, bundle in bundles_by_token.items():
             try:
                 market_min_size_by_token[token_id] = Decimal(str(bundle.tick.min_order_size))
@@ -2111,8 +2106,6 @@ async def _execute_trades_impl(
                     if sig.token_id == token_id:
                         side = str(getattr(sig, "side", "") or "").upper()
                         market_data_stale_codes.setdefault((token_id, side), "market_data_stale")
-    else:
-        context.extra["_md_bundles_by_pair"] = {}
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
@@ -2186,7 +2179,7 @@ async def _execute_trades_impl(
                     )
 
         if str(signal.side or "").upper() == "BUY":
-            _sell_scope_guard = context.extra.get("leader_sell_scope_guard")
+            _sell_scope_guard = resolve_leader_sell_scope_guard(context)
             if _sell_scope_guard is not None:
                 try:
                     _sell_scope_paused = await _sell_scope_guard.is_buy_paused(
@@ -2255,13 +2248,7 @@ async def _execute_trades_impl(
         _signal_side_norm = str(getattr(signal, "side", "") or "").upper()
         _stale_pair_key = (signal.token_id, _signal_side_norm)
         _bundle_for_pair = None
-        if normalized:
-            # SHP-09: read from the canonical ``context.extra`` extension
-            # point — matches the write at the top of this module.
-            _bundle_for_pair = context.extra.get("_md_bundles_by_pair", {}).get(_stale_pair_key)
-        if _stale_pair_key in market_data_stale_codes or (
-            _bundle_for_pair is None and signal.token_id in market_data_stale_tokens
-        ):
+        if _stale_pair_key in market_data_stale_codes or signal.token_id in market_data_stale_tokens:
             skip_code = market_data_stale_codes.get(_stale_pair_key, "market_data_stale")
             print_skip_reason(
                 "Execution inputs unavailable",
@@ -2678,7 +2665,7 @@ async def _execute_trades_impl(
                 if copier_exposure_cap is not None:
                     reserved_quote = Decimal("0")
                     cap_evidence_failed = snapshot.total_exposure_usdc is None
-                    _reservations_repo = context.extra.get("reservations_repo")
+                    _reservations_repo = resolve_reservations_repo(context)
                     if _reservations_repo is not None:
                         try:
                             reserved_quote = await _reservations_repo.sum_active_quote_for_user(
@@ -3045,7 +3032,7 @@ async def _execute_trades_impl(
                     token_id=signal.token_id,
                     side="BUY",
                     amount=gated_notional,
-                    max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
+                    max_slippage_bps=resolve_slippage_tolerance_bps(context, 200),
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
@@ -3397,7 +3384,7 @@ async def _execute_trades_impl(
                     token_id=signal.token_id,
                     side="SELL",
                     amount=sell_tokens,
-                    max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
+                    max_slippage_bps=resolve_slippage_tolerance_bps(context, 200),
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
@@ -3699,7 +3686,7 @@ async def _execute_trades_impl(
                         live_position_fetcher=lambda _token_id=signal.token_id: (
                             _fetch_live_position_size(context, token_id=_token_id)
                         ),
-                        reservation_service=context.extra.get("reservation_service"),
+                        reservation_service=resolve_reservation_service(context),
                     )
                     live_synced_size = drift_result.get("live_size")
                     if drift_result.get("reconciled"):

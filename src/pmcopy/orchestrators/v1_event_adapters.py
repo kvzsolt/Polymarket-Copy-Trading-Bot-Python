@@ -15,6 +15,11 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol, cast
 
+from pmcopy.application.runtime_state import (
+    resolve_leader_sell_target_service,
+    resolve_leader_wallet,
+    resolve_reservations_repo,
+)
 from pmcopy.domain.source_time import SourceTimestampParser, TransportReceipt
 from pmcopy.services.metrics import LatencyPhase
 from pmcopy.services.telemetry.latency import PipelineLatency
@@ -163,14 +168,7 @@ class _TaskContextRegistry:
 
     @staticmethod
     def _leader(context: object) -> str:
-        for name in ("leader_wallet", "leader_id", "leader_address"):
-            value = str(getattr(context, name, "") or "").strip().lower()
-            if value:
-                return value
-        extra = getattr(context, "extra", {}) or {}
-        if isinstance(extra, Mapping):
-            return str(extra.get("leader_wallet") or "").strip().lower()
-        return ""
+        return resolve_leader_wallet(context)
 
 
 class CopyTaskWorkerPort(Protocol):
@@ -644,13 +642,7 @@ class TradingContextTaskSnapshotProvider:
 
     @staticmethod
     def _reservations_repo(context: object) -> ActiveReservationReader | None:
-        extra = getattr(context, "extra", {}) or {}
-        if isinstance(extra, Mapping):
-            repository = extra.get("reservations_repo")
-            if repository is not None:
-                return cast(ActiveReservationReader, repository)
-        coordinator = getattr(context, "execution_coordinator", None)
-        repository = getattr(coordinator, "reservations_repo", None)
+        repository = resolve_reservations_repo(context)
         return None if repository is None else cast(ActiveReservationReader, repository)
 
 
@@ -757,10 +749,7 @@ class TradingContextTaskExecutionAdapter:
             live_position_size=live_position_size,
         )
         if command.side == "SELL":
-            extra = getattr(context, "extra", {}) or {}
-            target_service = (
-                extra.get("leader_sell_target_service") if isinstance(extra, Mapping) else None
-            )
+            target_service = resolve_leader_sell_target_service(context)
             if target_service is not None:
                 try:
                     intent = await target_service.record_fresh_target(intent)

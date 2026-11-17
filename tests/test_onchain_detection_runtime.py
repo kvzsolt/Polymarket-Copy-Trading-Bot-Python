@@ -8,7 +8,10 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.config.addresses import POLYMARKET_CTF_EXCHANGE_V2_ADDRESS
+from pmcopy.config.addresses import (
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+)
 from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
 from pmcopy.services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
 from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfig
@@ -681,11 +684,6 @@ def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
         log_subscription_params_for_watched(exchange_addresses=_EXCHANGES, watched_wallets=watched)
     )
 
-
-from pmcopy.config.addresses import (
-    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
-    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
-)
 
 _EXCHANGES = (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),

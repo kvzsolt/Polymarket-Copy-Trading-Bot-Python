@@ -163,34 +163,30 @@ async def test_venue_unavailable_trips_circuit_after_threshold():
     assert breaker.allow_request() is False
 
 
-def test_shared_breaker_honours_config_failure_threshold():
-    """P2-d: when no breaker is injected the service falls back to the shared
-    module breaker, which must adopt ``config.execution.circuit_failure_threshold``
-    so the typed config value is not dead. Default-injected path only.
+def test_default_breaker_honours_config_failure_threshold_without_mutating_global():
+    """WP-F: when no breaker is injected, standalone ExecutionService creates a
+    dedicated breaker adopting ``config.execution.circuit_failure_threshold``
+    without mutating hidden module-global state ``_CLOB_CIRCUIT`` (multi-copier
+    sharing is owned explicitly at composition in ``runtime_bootstrap``).
     """
     from pmcopy.services.executionService import _CLOB_CIRCUIT
 
     original_threshold = _CLOB_CIRCUIT.failure_threshold
-    try:
-        cfg = _make_exec_config()
-        cfg.execution.circuit_failure_threshold = 11
-        gateway = MagicMock(spec=ClobGateway)
-        gateway.get_order = AsyncMock()
-        svc = ExecutionService(
-            _StubClob(),
-            _FeeSvc(),
-            _mock_order_repo(),
-            config=cfg,
-            clob_gateway=gateway,
-            market_data_service=_make_mds(),
-        )
-        # Default path returns the shared module breaker...
-        assert svc.circuit_breaker is _CLOB_CIRCUIT
-        # ...reconfigured from typed config (was the hardcoded module default).
-        assert svc.circuit_breaker.failure_threshold == 11
-    finally:
-        _CLOB_CIRCUIT.failure_threshold = original_threshold
-        _CLOB_CIRCUIT.reset()
+    cfg = _make_exec_config()
+    cfg.execution.circuit_failure_threshold = 11
+    gateway = MagicMock(spec=ClobGateway)
+    gateway.get_order = AsyncMock()
+    svc = ExecutionService(
+        _StubClob(),
+        _FeeSvc(),
+        _mock_order_repo(),
+        config=cfg,
+        clob_gateway=gateway,
+        market_data_service=_make_mds(),
+    )
+    assert svc.circuit_breaker is not _CLOB_CIRCUIT
+    assert svc.circuit_breaker.failure_threshold == 11
+    assert _CLOB_CIRCUIT.failure_threshold == original_threshold
 
 
 def test_injected_breaker_threshold_not_overwritten_by_config():

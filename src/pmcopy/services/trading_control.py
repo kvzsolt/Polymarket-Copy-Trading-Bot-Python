@@ -14,31 +14,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pmcopy.integrations.polymarket.models import VenueCancelResult, VenueOrderState
+from pmcopy.interfaces.clob_gateway import OrderControlGateway as OpenOrderControlGateway
 from pmcopy.services.telemetry import (
     RuntimeEvent,
     RuntimeOutcome,
     TelemetryProducer,
 )
-
-
-class OpenOrderControlGateway(Protocol):
-    """Read and cancel resting venue orders for one follower account."""
-
-    async def list_open_orders(
-        self,
-        *,
-        order_id: str | None = None,
-        market: str | None = None,
-    ) -> list[VenueOrderState]:
-        """Return the complete deduplicated open-order snapshot."""
-
-        ...
-
-    async def cancel_order(self, order_id: str) -> VenueCancelResult:
-        """Cancel one order idempotently."""
-
-        ...
 
 
 class RuntimeTelemetry(Protocol):

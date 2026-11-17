@@ -23,7 +23,7 @@ from pmcopy.services.intentRegistry import (
 from pmcopy.services.positionActionCoordinator import PositionScope
 
 if TYPE_CHECKING:
-    from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
+    from pmcopy.ports.repositories import AbstractReservationRepository
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def _registry_side(side: LifecycleIntentSide | str) -> RegistryIntentSide:
 
 async def recover_intents_from_db(
     registry: IntentRegistry,
-    reservations_repo: ReservationsRepo,
+    reservations_repo: AbstractReservationRepository,
     *,
     account_user_id: str | None = None,
 ) -> int:
@@ -60,7 +60,7 @@ class IntentRecoveryService:
     def __init__(
         self,
         registry: IntentRegistry,
-        reservations_repo: ReservationsRepo,
+        reservations_repo: AbstractReservationRepository,
         *,
         account_user_id: str | None = None,
     ) -> None:

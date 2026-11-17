@@ -36,7 +36,7 @@ from pmcopy.services.risk.risk_monitor import (
     _refresh_context_price_cache,
     _should_log_active_reservation_skip,
 )
-from pmcopy.utils.createClobClient import PRICE_TOKEN_NOT_FOUND
+from pmcopy.integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 
 
 class _NotFoundPriceClient:

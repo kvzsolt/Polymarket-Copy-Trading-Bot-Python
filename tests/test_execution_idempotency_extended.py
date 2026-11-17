@@ -35,7 +35,7 @@ from pmcopy.services.executionService import (
     _truncate_text,
 )
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
-from pmcopy.utils.createClobClient import MarketMeta
+from tests.fixtures_market_meta import MarketMeta
 from tests.conftest import make_clob_gateway
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot

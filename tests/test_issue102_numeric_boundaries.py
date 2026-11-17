@@ -24,16 +24,16 @@ from itertools import product
 
 import pytest
 
+from pmcopy.domain.price_bound import TickRounding, quantize_price_to_tick
 from pmcopy.services.executionService import _effective_idempotency_key
 from pmcopy.services.order_sizing import size_buy_order, size_sell_order
-from pmcopy.utils.numeric import quantize_and_convert_to_float
 
 TICKS = ("0.001", "0.01", "0.05", "0.1")
 PRICES = ("0.01", "0.10", "0.50", "0.95", "0.99", "0.999")
 
 
 # ---------------------------------------------------------------------------
-# Adapter — no float leakage; on-grid values pass through exactly.
+# Domain exact-Decimal tick quantization — zero drift on grid values.
 # ---------------------------------------------------------------------------
 
 
@@ -41,27 +41,36 @@ PRICES = ("0.01", "0.10", "0.50", "0.95", "0.99", "0.999")
     "tick, multiplier",
     [(t, m) for t, m in product(TICKS, range(1, 21))],
 )
-def test_adapter_on_grid_values_round_trip_exactly(tick: str, multiplier: int):
-    """For every (tick, k) the value k*tick is on the grid; the adapter must
-    return exactly float(Decimal(k*tick)) with zero rounding drift."""
+def test_domain_quantizer_on_grid_values_round_trip_exactly(tick: str, multiplier: int):
+    """For every (tick, k) with k*tick < 1, ``quantize_price_to_tick`` is exact."""
     on_grid = Decimal(tick) * Decimal(multiplier)
-    out = quantize_and_convert_to_float(on_grid, tick)
-    assert out == float(on_grid)
+    if on_grid >= Decimal("1"):
+        pytest.skip("binary prices are strictly in (0, 1)")
+    out = quantize_price_to_tick(
+        price=on_grid,
+        tick_size=Decimal(tick),
+        side="BUY",
+        rounding=TickRounding.CONSERVATIVE,
+    )
+    assert out == on_grid
 
 
 @pytest.mark.parametrize("tick", TICKS)
 @pytest.mark.parametrize("price", PRICES)
-def test_adapter_quantizes_near_1_prices(tick: str, price: str):
-    """Prices close to 1.0 are a typical Polymarket failure zone (binary
-    markets quote close to 0.99). When a price is on the tick grid, the
-    adapter must accept it; when off-grid by more than epsilon, raise."""
+def test_domain_quantizer_preserves_signed_bounds_near_1(tick: str, price: str):
+    """Conservative BUY quantization never exceeds the input price."""
     value = Decimal(price)
     tick_d = Decimal(tick)
-    # If already on grid (remainder ≈ 0), accepts. Otherwise rejects below.
-    remainder = value % tick_d
-    if remainder == 0:
-        out = quantize_and_convert_to_float(value, tick)
-        assert out == float(value)
+    if value < tick_d:
+        return
+    out = quantize_price_to_tick(
+        price=value,
+        tick_size=tick_d,
+        side="BUY",
+        rounding=TickRounding.CONSERVATIVE,
+    )
+    assert out <= value
+    assert out % tick_d == Decimal("0")
 
 
 # ---------------------------------------------------------------------------

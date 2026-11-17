@@ -23,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION_ROOTS: tuple[str, ...] = (
     "src/pmcopy/bootstrap.py",
     "src/pmcopy/app.py",
-    "src/pmcopy/bot.py",
     "src/pmcopy/bot_cli",
     "src/pmcopy/clients",
     "src/pmcopy/config",

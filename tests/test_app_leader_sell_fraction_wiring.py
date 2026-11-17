@@ -71,7 +71,7 @@ def test_onchain_dispatch_receives_the_production_resolver() -> None:
 
     assert "sell_fraction_resolver=_build_leader_sell_fraction_resolver(" in source
     assert "buy_scope_guard=leader_sell_scope_guard" in source
-    assert 'context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard' in source
+    assert "context.leader_sell_scope_guard = leader_sell_scope_guard" in source
 
 
 @pytest.mark.asyncio

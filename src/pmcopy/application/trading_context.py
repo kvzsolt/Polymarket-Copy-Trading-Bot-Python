@@ -1,4 +1,4 @@
-"""Define immutable dependencies for a follower trading runtime."""
+"""Define explicit typed dependencies for a follower trading runtime."""
 
 from __future__ import annotations
 
@@ -6,25 +6,47 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from pmcopy.application.runtime_state import (
+    AccountExecutionRuntimeState,
+    AccountRiskRuntimeState,
+    ContextExtraBridge,
+)
 from pmcopy.config.app_config import AppConfig
 from pmcopy.interfaces.account_inventory import PositionSizeReader
 from pmcopy.services.balance_regime import BalanceRegime
+from pmcopy.services.copy_tasks.protective_runtime import TaskProtectivePositionManager
 from pmcopy.services.copyDecisionService import CopyDecisionService
 from pmcopy.services.copyStrategy import CopySizingResult, calculate_copy_notional
 from pmcopy.services.entryPermissionService import EntryPermissionService
 from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.leaderScoringService import LeaderScoringService
 from pmcopy.services.leader_performance import LeaderPerformanceReader
-from pmcopy.services.copy_tasks.protective_runtime import TaskProtectivePositionManager
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.leaderScoringService import LeaderScoringService
 from pmcopy.services.portfolio_valuation import MarketQuoteSource
+from pmcopy.services.positionCoordinator import PositionCoordinator
 from pmcopy.services.telemetry import TelemetryEmitters
 
 if TYPE_CHECKING:
+    from pmcopy.interfaces.clob_gateway import ClobGateway, PriceQuoteGateway
     from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+    from pmcopy.ports.repositories import (
+        AbstractFillRepository,
+        AbstractLeaderRepository,
+        AbstractOrderRepository,
+        AbstractPositionRepository,
+        AbstractReservationRepository,
+    )
+    from pmcopy.services.accountingService import AccountingService
     from pmcopy.services.execution.coordinator import ExecutionCoordinator
+    from pmcopy.services.execution.reservation_service import ReservationService
+    from pmcopy.services.executionService import ExecutionService
     from pmcopy.services.market_data_service import MarketDataService
+    from pmcopy.services.onchain_detection.leader_sell_scope_guard import (
+        LeaderSellBuyScopeGuard,
+    )
+    from pmcopy.services.pnlTracker import PnLTracker
     from pmcopy.services.position_drift_service import PositionDriftService
+    from pmcopy.services.positionManager import PositionManager
+    from pmcopy.services.risk.risk_engine import RiskEngine
 
 
 @dataclass
@@ -33,18 +55,18 @@ class TradingContext:
 
     user_id: str
     wallet_address: str
-    client: Any
-    positions_repo: Any
-    fills_repo: Any
-    orders_repo: Any
+    client: ClobGateway | PriceQuoteGateway | Any
+    positions_repo: AbstractPositionRepository | Any
+    fills_repo: AbstractFillRepository | Any
+    orders_repo: AbstractOrderRepository | Any
     risk_blocks_repo: Any
-    pnl_tracker: Any
-    risk_engine: Any
-    accounting_service: Any
-    position_manager: Any
+    pnl_tracker: PnLTracker | Any
+    risk_engine: RiskEngine | Any
+    accounting_service: AccountingService | Any
+    position_manager: PositionManager | Any
     entry_permission_service: EntryPermissionService | None = None
-    execution_service: Any | None = None
-    leaders_repo: Any | None = None
+    execution_service: ExecutionService | Any | None = None
+    leaders_repo: AbstractLeaderRepository | Any | None = None
     config: AppConfig | None = None
     # A06 — exact-decimal money: multi-user follows inject ``Decimal`` values
     # from the strict config loader (see services/multiUserConfig); legacy
@@ -71,47 +93,39 @@ class TradingContext:
     # instance built once in ``orchestrators.runtime_bootstrap.build_user_state``
     # so every leader binding, the risk context, and the ExecutionCoordinator
     # for one follower account serialize on ONE lock map and ONE intent
-    # registry. The default factory exists ONLY for direct/test construction
-    # of TradingContext outside the bootstrap; nothing in production may rely
-    # on it, and ``build_trading_context`` never re-points it after
-    # construction.
+    # registry.
     position_coordinator: PositionCoordinator = field(default_factory=PositionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
     risk_triggers_repo: Any | None = None
-    # Freshness-aware market data wiring. ``market_data_service`` is the
-    # single execution-time authority for quote/book/tick state; the trade
-    # pipeline reads sizing inputs from it, never from MarketStateStore or
-    # the deprecated meta-service path. ``market_data_runtime`` owns WSS
-    # subscription lifecycle for the user; the pipeline must subscribe new
-    # signal tokens before placing orders.
-    market_data_service: "MarketDataService | None" = None
-    market_data_runtime: "MarketDataRuntime | None" = None
-    # Production execution funnel — set by ``build_trading_context``. The
-    # trade pipeline and risk monitor route through this so
-    # ReservationService and the PositionActionCoordinator apply universally.
-    # See PR6 plan in `.claude/plans/replicated-leaping-breeze.md`.
-    execution_coordinator: "ExecutionCoordinator | None" = None
-    # PR7 — proactive manual/off-bot position drift detection. Coordinator
-    # checks ``is_scope_paused`` before every production submit.
-    position_drift_service: "PositionDriftService | None" = None
-    # Phase 4 — balance regime gate (per-position cap, daily spend ceiling,
-    # min headroom floor). Built from ``config.execution`` when ``None``.
+    market_data_service: MarketDataService | None = None
+    market_data_runtime: MarketDataRuntime | None = None
+    execution_coordinator: ExecutionCoordinator | Any | None = None
+    position_drift_service: PositionDriftService | Any | None = None
     balance_regime: BalanceRegime | None = None
-    # Part C — operator telemetry emitters, injected by ``build_user_state``.
-    # The default is the disabled null-object bundle so every existing
-    # construction (tests, tools, paper harnesses) keeps working and no call
-    # site has to branch on whether telemetry is running.
     telemetry: TelemetryEmitters = field(default_factory=TelemetryEmitters.disabled)
     leader_performance: LeaderPerformanceReader | None = None
     task_position_manager: TaskProtectivePositionManager | None = None
     market_quotes: MarketQuoteSource | None = None
     holdings_reader: PositionSizeReader | None = None
+    # WP-C — explicit typed runtime bindings & account-scoped state owners
+    # replacing untyped ``context.extra`` keys in production code.
+    leader_wallet: str = ""
+    slippage_tolerance_bps: int = 200
+    clob_gateway: ClobGateway | None = None
+    accounted_fill_reader: Any | None = None
+    reservation_service: ReservationService | Any | None = None
+    reservations_repo: AbstractReservationRepository | Any | None = None
+    leader_sell_target_service: Any | None = None
+    leader_sell_scope_guard: LeaderSellBuyScopeGuard | None = None
+    task_budget_settlement: Any | None = None
+    audit_logger: Any | None = None
+    account_execution_state: AccountExecutionRuntimeState = field(
+        default_factory=AccountExecutionRuntimeState
+    )
+    risk_state: AccountRiskRuntimeState = field(default_factory=AccountRiskRuntimeState)
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.
-        # They default to None only to ease unit-test construction, but any
-        # production code path that calls trade_pipeline or riskMonitor will
-        # crash with a late AttributeError if they are absent.
         _required_for_runtime = {
             "risk_blocks_repo": self.risk_blocks_repo,
             "pnl_tracker": self.pnl_tracker,
@@ -121,12 +135,18 @@ class TradingContext:
         }
         missing = [k for k, v in _required_for_runtime.items() if v is None]
         if missing and self.config is not None:
-            # If a typed config was injected this is a production context —
-            # all runtime deps must be present.
             raise TypeError(
                 f"TradingContext created with config but missing required "
                 f"dependencies: {', '.join(missing)}"
             )
+
+        if not isinstance(self.account_execution_state, AccountExecutionRuntimeState):
+            self.account_execution_state = AccountExecutionRuntimeState()
+        if not isinstance(self.risk_state, AccountRiskRuntimeState):
+            self.risk_state = AccountRiskRuntimeState()
+        if not isinstance(self.extra, ContextExtraBridge):
+            initial_extra = self.extra if isinstance(self.extra, dict) else {}
+            self.extra = ContextExtraBridge(self, initial_extra)
 
         if isinstance(self.config, AppConfig):
             if self.leader_scorer is None:

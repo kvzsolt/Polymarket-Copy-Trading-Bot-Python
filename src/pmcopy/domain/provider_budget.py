@@ -15,10 +15,6 @@ class BudgetExhausted(RuntimeError):
     """Reject dispatch without exposing provider endpoints or credentials."""
 
 
-class ProviderThrottled(BudgetExhausted):
-    """A weighted provider throughput window has no remaining capacity."""
-
-
 @dataclass(frozen=True, slots=True)
 class BudgetSettings:
     """Configure usage estimates without locally limiting provider requests.

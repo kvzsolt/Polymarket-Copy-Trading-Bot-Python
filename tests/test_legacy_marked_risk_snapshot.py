@@ -97,9 +97,6 @@ async def test_unknown_entry_cost_keeps_equity_but_withholds_cost_based_headroom
 
 @pytest.mark.asyncio
 async def test_absent_account_baseline_does_not_read_global_json(monkeypatch, tmp_path) -> None:
-    import pmcopy.utils.dayEquity as day_equity
-
-    monkeypatch.setattr(day_equity, "_STATE_FILE", tmp_path / "day_equity.json")
     monkeypatch.setattr(trade_pipeline, "get_my_balance", AsyncMock(return_value=Decimal(55)))
     current = context(quote=FixedQuote())
     current.config = load_test_config(
