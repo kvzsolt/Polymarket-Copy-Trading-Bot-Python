@@ -28,7 +28,7 @@ from typing import Any, Protocol
 from pmcopy.cache.market_state_store import BookSnapshot, MarketStateStore, QuoteSnapshot
 from pmcopy.clients.market_ws import DEFAULT_MARKET_WS_URL, MarketWebSocket
 from pmcopy.integrations.polymarket.errors import VenueOrderbookNotFoundError
-from pmcopy.interfaces.clob_gateway import ClobGateway
+from pmcopy.interfaces.clob_gateway import MarketDataGateway
 from pmcopy.interfaces.readiness import ReadinessWriter
 from pmcopy.services.telemetry import WssTelemetryEmitter
 from pmcopy.services.telemetry.latency import PipelineLatency
@@ -96,7 +96,7 @@ class MarketDataRuntime:
     """
 
     market_store: MarketStateStore
-    gateway: ClobGateway
+    gateway: MarketDataGateway
     readiness: ReadinessWriter
     config: Any
     ws_url: str = DEFAULT_MARKET_WS_URL

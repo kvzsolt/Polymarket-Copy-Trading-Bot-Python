@@ -15,25 +15,10 @@ closed rather than ranking against an unknown bankroll.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from typing import Any
 
-__all__ = ["build_discovery_funds_callable", "resolve_first_funder_address"]
-
-
-def resolve_first_funder_address(
-    runtime_users: Iterable[Any] | None,
-    config: Any,
-) -> str:
-    """Return the first runtime user's funder address, else the single-user funder."""
-    if runtime_users is not None:
-        for user in runtime_users:
-            funder = getattr(getattr(user, "wallet", None), "funder_address", "")
-            if funder:
-                return str(funder).strip().lower()
-    single = getattr(getattr(config, "wallet", None), "funder_address", "")
-    return str(single or "").strip().lower()
+__all__ = ["build_discovery_funds_callable"]
 
 
 def build_discovery_funds_callable(

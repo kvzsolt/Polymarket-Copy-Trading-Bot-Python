@@ -58,15 +58,21 @@ class TestReadinessTracker:
 
 
 class TestExecutionCircuitBreakerDI:
-    def test_default_uses_module_breaker(self) -> None:
+    def test_default_creates_isolated_breaker_without_mutating_module_global(self) -> None:
+        original_threshold = _CLOB_CIRCUIT.failure_threshold
+        cfg = _make_config()
+        cfg.execution = SimpleNamespace(circuit_failure_threshold=9)
         svc = ExecutionService(
             clob_client=object(),
             fee_service=object(),
             order_repo=object(),
-            config=_make_config(),
+            config=cfg,
             clob_gateway=object(),
         )
-        assert svc.circuit_breaker is _CLOB_CIRCUIT
+        assert isinstance(svc.circuit_breaker, CircuitBreaker)
+        assert svc.circuit_breaker is not _CLOB_CIRCUIT
+        assert svc.circuit_breaker.failure_threshold == 9
+        assert _CLOB_CIRCUIT.failure_threshold == original_threshold
 
     def test_custom_breaker_is_respected(self) -> None:
         custom = CircuitBreaker(name="t", failure_threshold=1, cooldown_seconds=1)

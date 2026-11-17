@@ -53,7 +53,6 @@ __all__ = [
     "register_config_secrets",
     "register_secret_values",
     "reset_secret_registry",
-    "registered_secret_count",
 ]
 
 REDACTED_PLACEHOLDER = "***REDACTED***"
@@ -121,11 +120,6 @@ def reset_secret_registry() -> int:
     _VALUE_REGISTRY.clear()
     _rebuild_snapshot()
     return count
-
-
-def registered_secret_count() -> int:
-    """Return how many secret values are currently registered."""
-    return len(_VALUE_REGISTRY)
 
 
 def register_config_secrets(config: object) -> int:

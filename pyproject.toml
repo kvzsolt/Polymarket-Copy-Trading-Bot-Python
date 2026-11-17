@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "coverage>=7.6,<8",
   "pytest==9.2.0",
   "pytest-asyncio==1.5.0",
   "testcontainers[postgres]>=4.0.0",
@@ -89,3 +90,84 @@ max-line-length = 120
 # Operational scripts bootstrap sys.path/dotenv before imports (E402) and are
 # allowed simple blocking pathlib IO in their one-shot async mains (ASYNC240).
 "scripts/**" = ["E402", "ASYNC240"]
+
+[tool.coverage.run]
+source = ["src/pmcopy"]
+branch = false
+
+[tool.coverage.report]
+# Aggregate core-only statement coverage floor (>= 60%).
+# Uses coverage.py 7.x `**/pmcopy/...` patterns so unexecuted files discovered
+# via `source = ["src/pmcopy"]` are included whether paths are relative or absolute.
+fail_under = 60
+precision = 2
+show_missing = true
+include = [
+  "**/pmcopy/domain/*.py",
+  "**/pmcopy/application/runtime_state.py",
+  "**/pmcopy/application/trading_context.py",
+  "**/pmcopy/application/copy_trade_service.py",
+  "**/pmcopy/application/source_transaction_pipeline.py",
+  "**/pmcopy/application/confirmed_signal_execution_adapter.py",
+  "**/pmcopy/services/copyStrategy.py",
+  "**/pmcopy/services/order_sizing.py",
+  "**/pmcopy/services/copy_sizing_v5/domain.py",
+  "**/pmcopy/services/copy_sizing_v5/policy.py",
+  "**/pmcopy/services/copy_sizing_v5/strategies.py",
+  "**/pmcopy/services/copy_sizing_v5/engine.py",
+  "**/pmcopy/services/copyDecisionService.py",
+  "**/pmcopy/services/leaderScoringService.py",
+  "**/pmcopy/services/tradeScoringService.py",
+  "**/pmcopy/services/idempotency.py",
+  "**/pmcopy/services/balance_regime.py",
+  "**/pmcopy/services/portfolio_valuation.py",
+  "**/pmcopy/services/market_data_quality.py",
+  "**/pmcopy/services/positionManager.py",
+  "**/pmcopy/services/positionCoordinator.py",
+  "**/pmcopy/services/positionActionCoordinator.py",
+  "**/pmcopy/services/intentRegistry.py",
+  "**/pmcopy/services/circuitBreaker.py",
+  "**/pmcopy/services/entryPermissionService.py",
+  "**/pmcopy/services/trading_permission.py",
+  "**/pmcopy/services/trading_control.py",
+  "**/pmcopy/services/leader_performance.py",
+  "**/pmcopy/services/auto_trader.py",
+  "**/pmcopy/services/auto_trader_performance.py",
+  "**/pmcopy/services/paper_evaluation.py",
+  "**/pmcopy/services/settlement.py",
+  "**/pmcopy/services/market_readiness.py",
+  "**/pmcopy/services/user_readiness.py",
+  "**/pmcopy/services/executionService.py",
+  "**/pmcopy/services/position_drift_service.py",
+  "**/pmcopy/services/market_data_service.py",
+  "**/pmcopy/services/execution/*.py",
+  "**/pmcopy/services/risk/*.py",
+  "**/pmcopy/services/copy_tasks/*.py",
+  "**/pmcopy/services/discovery/bankroll_compatibility.py",
+  "**/pmcopy/services/discovery/bot_signals.py",
+  "**/pmcopy/services/discovery/category_profile.py",
+  "**/pmcopy/services/discovery/cycle_summary.py",
+  "**/pmcopy/services/discovery/discovery_models.py",
+  "**/pmcopy/services/discovery/falcon_candidate_service.py",
+  "**/pmcopy/services/discovery/falcon_discovery_service.py",
+  "**/pmcopy/services/discovery/models.py",
+  "**/pmcopy/services/discovery/policy_config.py",
+  "**/pmcopy/services/discovery/ranking_report.py",
+  "**/pmcopy/services/strategy_profile/strategy_classifier.py",
+  "**/pmcopy/services/strategy_profile/strategy_profiler.py",
+  "**/pmcopy/services/onchain_detection/calldata_decoder.py",
+  "**/pmcopy/services/onchain_detection/order_filled_detector.py",
+  "**/pmcopy/services/onchain_detection/order_filled_receipt_decoder.py",
+  "**/pmcopy/services/onchain_detection/pending_tx_detector.py",
+  "**/pmcopy/services/onchain_detection/pending_transaction_factory.py",
+  "**/pmcopy/services/onchain_detection/trade_detection_models.py",
+  "**/pmcopy/services/onchain_detection/mempool_reservation_state.py",
+  "**/pmcopy/services/onchain_detection/mined_fill_deduplicator.py",
+  "**/pmcopy/services/onchain_detection/source_transaction_gate.py",
+  "**/pmcopy/services/onchain_detection/leader_sell_fraction_resolver.py",
+  "**/pmcopy/services/onchain_detection/leader_sell_scope_guard.py",
+  "**/pmcopy/services/onchain_detection/pending_copy_confirmation_tracker.py",
+]
+omit = [
+  "**/__init__.py",
+]

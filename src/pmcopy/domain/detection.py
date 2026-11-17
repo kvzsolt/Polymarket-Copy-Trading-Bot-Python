@@ -244,38 +244,9 @@ class LeaderTradeEvent:
         return sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
-class LeaderTradeRetraction:
-    """Retraction of a previously emitted provisional event.
-
-    A retraction is bookkeeping evidence. It is never translated into an
-    inverse trade automatically.
-    """
-
-    transaction_hash: str
-    source_identity: str
-    leader_wallet: str
-    original_side: TradeSide
-    reason: object
-    observed_at: datetime
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "leader_wallet",
-            _normalize_wallet(self.leader_wallet),
-        )
-        object.__setattr__(
-            self,
-            "observed_at",
-            _aware(self.observed_at, name="observed_at"),
-        )
-
-
 __all__ = [
     "DetectionFinality",
     "DetectionMode",
     "LeaderTradeEvent",
-    "LeaderTradeRetraction",
     "TradeSide",
 ]

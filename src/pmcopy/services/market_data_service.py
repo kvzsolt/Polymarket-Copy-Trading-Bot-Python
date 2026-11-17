@@ -39,7 +39,7 @@ from pmcopy.cache.market_state_store import (
 from pmcopy.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from pmcopy.interfaces.clob_gateway import ClobGateway
+    from pmcopy.interfaces.clob_gateway import MarketDataGateway
 
 logger = get_logger("MarketDataService")
 
@@ -123,7 +123,7 @@ class MarketDataService:
     def __init__(
         self,
         cache: MarketStateStore,
-        gateway: ClobGateway,
+        gateway: MarketDataGateway,
         *,
         policy: MarketDataPolicy | None = None,
         is_wss_down_fn: Callable[[], bool] | None = None,

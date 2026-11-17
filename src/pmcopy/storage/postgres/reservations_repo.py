@@ -40,10 +40,14 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from typing import TypeAlias
+from typing import TypeAlias, override
 
 import asyncpg
 
+from pmcopy.ports.repositories import (
+    AbstractReservationRepository,
+    DuplicateActiveReservationError,
+)
 from pmcopy.storage.postgres.task_buy_capacity import PostgresTaskBuyCapacity
 from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reservation
 from pmcopy.domain.position_ownership import PositionOwnership
@@ -71,12 +75,13 @@ def _lock_key(key: str) -> int:
     return int.from_bytes(digest, "big", signed=True)
 
 
-class ReservationsRepo:
+class ReservationsRepo(AbstractReservationRepository):
     """Persist collateral and share reservations in PostgreSQL."""
 
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
+    @override
     async def get_active_by_intent_key(self, intent_key: str) -> Reservation | None:
         """Return active by intent key."""
         async with self._pool.acquire() as conn:
@@ -267,15 +272,21 @@ class ReservationsRepo:
                         return None, None, "copier_open_exposure_cap"
                 if not await PostgresTaskBuyCapacity.permits(conn, intent, reserved_usdc):
                     return None, None, "task_capacity"
-                await self._insert_reservation(
-                    conn,
-                    res_id,
-                    intent,
-                    reserved_usdc,
-                    Decimal("0"),
-                    created_at,
-                    expires_at,
-                )
+                try:
+                    await self._insert_reservation(
+                        conn,
+                        res_id,
+                        intent,
+                        reserved_usdc,
+                        Decimal("0"),
+                        created_at,
+                        expires_at,
+                    )
+                except asyncpg.exceptions.UniqueViolationError as exc:
+                    raise DuplicateActiveReservationError(
+                        str(exc),
+                        constraint_name=getattr(exc, "constraint_name", None),
+                    ) from exc
         new_row = await self.get_by_id(res_id)
         return None, new_row, None
 
@@ -439,20 +450,26 @@ class ReservationsRepo:
                     target_size = min(target_size, free_size)
                 if target_size <= 0 or capacity < target_size:
                     return None, None
-                await self._insert_reservation(
-                    conn,
-                    res_id,
-                    intent,
-                    Decimal("0"),
-                    target_size,
-                    created_at,
-                    expires_at,
-                    lot_allocations=(
-                        PostgresTaskLotCapacity.allocate(available_lots, min(target_size, owned))
-                        if available_lots
-                        else {}
-                    ),
-                )
+                try:
+                    await self._insert_reservation(
+                        conn,
+                        res_id,
+                        intent,
+                        Decimal("0"),
+                        target_size,
+                        created_at,
+                        expires_at,
+                        lot_allocations=(
+                            PostgresTaskLotCapacity.allocate(available_lots, min(target_size, owned))
+                            if available_lots
+                            else {}
+                        ),
+                    )
+                except asyncpg.exceptions.UniqueViolationError as exc:
+                    raise DuplicateActiveReservationError(
+                        str(exc),
+                        constraint_name=getattr(exc, "constraint_name", None),
+                    ) from exc
         new_row = await self.get_by_id(res_id)
         return None, new_row
 

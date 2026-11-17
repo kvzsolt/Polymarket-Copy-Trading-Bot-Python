@@ -134,5 +134,5 @@ class TestAlchemyOnlyWebSocketEndpoint:
         expected = "wss://polygon-mainnet.g.alchemy.com/v2/test-key"
         assert endpoints.websocket_url("alchemy") == expected
         assert endpoints.alias_for(expected) == "alchemy"
-        with pytest.raises(Exception):
+        with pytest.raises(ProviderConfigurationError):
             endpoints.websocket_url("infura")

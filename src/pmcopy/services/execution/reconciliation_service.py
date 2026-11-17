@@ -47,6 +47,7 @@ from pmcopy.domain.performance import PerformanceUnits
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from pmcopy.domain.order_lifecycle import OrderLifecycleStatus
+from pmcopy.interfaces.clob_gateway import OrderQueryGateway
 from pmcopy.services.telemetry import ExecutionTelemetryEmitter
 from pmcopy.services.execution.user_order_evidence import (
     UserOrderEvidence,
@@ -161,57 +162,10 @@ class LeaderSellTargetRedriver(Protocol):
         ...
 
 
-# NOTE: The canonical CLOB venue gateway Protocol lives in
-# ``interfaces.clob_gateway.ClobGateway``. ``OrderQueryGateway`` is the
-# query-only subset used by the reconciler; satisfied by the canonical
-# gateway directly (``get_order`` and ``get_fills`` signatures match).
-# See issue #66 for context.
-class OrderQueryGateway(Protocol):
-    """Define the OrderQueryGateway port used by application services."""
-
-    async def get_order(self, venue_order_id: str) -> Any:
-        """Return one normalized venue order when it exists."""
-        ...
-
-    async def list_open_orders(
-        self,
-        *,
-        order_id: str | None = None,
-        market: str | None = None,
-    ) -> list[Any]:
-        """Return normalized open orders with pagination deduplication."""
-        ...
-
-    async def get_fills(
-        self,
-        market: str | None = None,
-        *,
-        trade_id: str | None = None,
-        order_id: str | None = None,
-    ) -> list[Any]:
-        """Return normalized fills with exact maker and taker attribution."""
-        ...
-
-
 # Backward-compatible alias for any out-of-tree imports that referenced the
 # previous local name. New code should import ``OrderQueryGateway`` directly
 # or the canonical ``interfaces.clob_gateway.ClobGateway``.
 ClobGateway = OrderQueryGateway
-
-
-class DbTransaction(Protocol):
-    """Define the asynchronous transaction context port."""
-
-    async def __aenter__(self) -> None: ...
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None: ...
-
-
-class DbProvider(Protocol):
-    """Define the narrow database transaction provider."""
-
-    def transaction(self) -> DbTransaction:
-        """Provide an atomic database transaction context."""
-        ...
 
 
 # ---------------------------------------------------------------------------

@@ -152,23 +152,6 @@ async def discover_and_render(
     return result, render_ranking_report(report, as_json=as_json)
 
 
-async def rank_with_service(
-    service: Any,
-    *,
-    funds: Decimal,
-    top: int,
-    as_json: bool,
-) -> str:
-    """Return a rendered report from an injected discovery service."""
-    _result, rendered = await discover_and_render(
-        service,
-        funds=funds,
-        top=top,
-        as_json=as_json,
-    )
-    return rendered
-
-
 async def build_cli_resources(
     *,
     api_key: str,
@@ -275,7 +258,6 @@ __all__ = [
     "discover_and_render",
     "main",
     "parse_cli_args",
-    "rank_with_service",
     "resolve_api_key",
     "run_cli",
 ]

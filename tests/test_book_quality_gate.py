@@ -13,7 +13,9 @@ import pytest
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from pmcopy.services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
-from pmcopy.utils.createClobClient import _top_of_book_from_levels
+from pmcopy.services.market_data_quality import (
+    top_of_book_from_levels as _top_of_book_from_levels,
+)
 
 
 # ---------------------------------------------------------------------------

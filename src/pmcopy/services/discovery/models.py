@@ -28,18 +28,6 @@ class Candidate:
     rejected_reason: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class RosterEntry:
-    """Describe one durable leader-roster membership state."""
-
-    wallet: str
-    tier: str
-    score: float
-    cycles_in_tier: int
-    tier_changed_at: float
-    first_promoted_at: float | None
-
-
 class DiscoveryRepository(Protocol):
     """Structural port for the live discovery service's persistence backend.
 
@@ -117,4 +105,4 @@ def discovery_config_hash(config: Any) -> str:
     return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
-__all__ = ["Candidate", "DiscoveryRepository", "RosterEntry", "discovery_config_hash"]
+__all__ = ["Candidate", "DiscoveryRepository", "discovery_config_hash"]

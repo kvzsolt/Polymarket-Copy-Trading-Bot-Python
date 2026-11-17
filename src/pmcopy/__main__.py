@@ -1,4 +1,4 @@
-"""``python -m pmcopy`` entry (mirrors ``pmcopy.bot``)."""
+"""``python -m pmcopy`` CLI entry point."""
 
 import sys
 

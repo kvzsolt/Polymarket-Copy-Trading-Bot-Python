@@ -16,6 +16,13 @@ if TYPE_CHECKING:
     from pmcopy.config.app_config import AppConfig
     from pmcopy.services.healthServer import ReadinessTracker
 
+from pmcopy.application.runtime_state import (
+    resolve_enable_balance_tiered_policy,
+    resolve_reservation_service,
+    resolve_reservations_repo,
+    resolve_risk_state,
+    resolve_slippage_tolerance_bps,
+)
 from pmcopy.services.metrics import metrics
 from pmcopy.services.executionService import ExecutionRequest
 from pmcopy.services.positionActionCoordinator import PositionScope
@@ -194,10 +201,6 @@ async def _fetch_live_risk_position_size(
     return await context.holdings_reader.shares(context.wallet_address, token_id)
 
 
-# Per-context "already warned about this token" set lives in context.extra
-# under this key. Module-level state would leak warning suppression across
-# users in multi-user runtimes and grow unbounded.
-_WARNED_INVALID_TOKENS_KEY = "warned_invalid_tokens"
 _DEFAULT_RISK_PRICE_SEMAPHORE = 8
 _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 # Dead / illiquid markets return ``price=0`` on every probe. Cache that
@@ -206,7 +209,6 @@ _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 # entry (clients/user_ws.py), so genuine reactivation re-arms the probe.
 _DORMANT_TOKEN_TTL_SECONDS = 300.0
 
-_RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
 # Must exceed the worst case of ONE healthy-but-slow venue order-status GET:
 # the first aiohttp attempt can burn its full 10s total timeout, and
 # ``_async_signed_get`` then retries once (idempotent GET) after 0.15s, which
@@ -218,14 +220,8 @@ _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 25.0
 _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
 _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
 
-# Cooldown after a terminal (rejected/cancelled) risk-exit submission. The
-# near-max/stop-loss decision is stateless — it re-fires whenever the live
-# price still satisfies the trigger — so without a cooldown a doomed SELL is
-# resubmitted at the risk-loop cadence (observed 2026-07-04: 1 Hz for ~3 min
-# against a phantom position, plus one risk_triggers spam row per attempt).
-# 0 disables (legacy behavior). Transient failures are NOT suppressed.
+# Cooldown after a terminal (rejected/cancelled) risk-exit submission.
 _DEFAULT_RISK_EXIT_REJECT_COOLDOWN_SECONDS = 60.0
-_RISK_EXIT_REJECT_COOLDOWN_KEY = "risk_exit_reject_cooldown_until"
 
 
 @dataclass
@@ -346,11 +342,12 @@ def _risk_cache_stale_after(refresh_interval: float) -> float:
 def _ensure_context_venue_circuit_breaker(
     context: TradingContext,
 ) -> VenueCircuitBreaker:
-    breaker = context.extra.get("venue_circuit_breaker")
+    risk_state = resolve_risk_state(context)
+    breaker = risk_state.venue_circuit_breaker
     if isinstance(breaker, VenueCircuitBreaker):
         return breaker
     breaker = VenueCircuitBreaker()
-    context.extra["venue_circuit_breaker"] = breaker
+    risk_state.venue_circuit_breaker = breaker
     return breaker
 
 
@@ -478,7 +475,8 @@ async def _refresh_price_cache_for_tokens(
 
 
 def _ensure_context_price_cache(context: TradingContext) -> RiskPriceCache:
-    cache = context.extra.get("risk_price_cache")
+    risk_state = resolve_risk_state(context)
+    cache = risk_state.price_cache
     if isinstance(cache, RiskPriceCache):
         return cache
     # PR #105 review: prefer the typed cap from AppConfig.risk when a config
@@ -493,7 +491,7 @@ def _ensure_context_price_cache(context: TradingContext) -> RiskPriceCache:
             if isinstance(cap, int) and cap > 0:
                 max_size = cap
     cache = RiskPriceCache(max_size=max_size)
-    context.extra["risk_price_cache"] = cache
+    risk_state.price_cache = cache
     return cache
 
 
@@ -1070,15 +1068,8 @@ async def _active_sell_reserved_size(
     TTL alone would open a double-spend window while the ambiguous venue
     order may still be live.
     """
-    coordinator = getattr(context, "execution_coordinator", None)
-    reservation_service = getattr(coordinator, "reservation_service", None)
-    repo = getattr(coordinator, "reservations_repo", None)
-    if repo is None:
-        repo = getattr(reservation_service, "reservations_repo", None)
-    if repo is None:
-        repo = context.extra.get("reservations_repo")
-    if reservation_service is None:
-        reservation_service = context.extra.get("reservation_service")
+    reservation_service = resolve_reservation_service(context)
+    repo = resolve_reservations_repo(context)
     if getattr(reservation_service, "enabled", True) is False:
         return Decimal("0")
     list_active = getattr(repo, "list_active_for_scope", None)
@@ -1187,7 +1178,7 @@ def _should_log_active_reservation_skip(
 ) -> bool:
     current = time.time() if now is None else now
     key = f"{condition_id}:{token_id}:{reason}"
-    state = context.extra.setdefault("risk_active_reservation_skip_logged_at", {})
+    state = resolve_risk_state(context).active_reservation_skip_logged_at
     try:
         last = float(state.get(key, 0.0))
     except Exception:
@@ -1211,10 +1202,7 @@ async def _reap_expired_reservations_for_context(context: TradingContext) -> int
     the linked order is venue-terminal, so a still-live order is never
     blind-released — duplicate-order / stale-lock protections are preserved.
     """
-    coordinator = getattr(context, "execution_coordinator", None)
-    reservation_service = getattr(coordinator, "reservation_service", None)
-    if reservation_service is None:
-        reservation_service = context.extra.get("reservation_service")
+    reservation_service = resolve_reservation_service(context)
     if getattr(reservation_service, "enabled", True) is False:
         return 0
     release_expired = getattr(reservation_service, "release_expired_active", None)
@@ -1291,7 +1279,7 @@ def _should_attempt_no_fill_prune(
     """
     current = time.time() if now is None else now
     key = f"{condition_id}:{token_id}"
-    state = context.extra.setdefault("risk_no_fill_prune_attempted_at", {})
+    state = resolve_risk_state(context).no_fill_prune_attempted_at
     try:
         last = float(state.get(key, 0.0) or 0.0)
     except Exception:
@@ -1326,9 +1314,7 @@ def _risk_exit_cooldown_active(
     now: float | None = None,
 ) -> bool:
     current = time.time() if now is None else now
-    state = context.extra.get(_RISK_EXIT_REJECT_COOLDOWN_KEY)
-    if not isinstance(state, dict):
-        return False
+    state = resolve_risk_state(context).exit_reject_cooldown_until
     try:
         until = float(state.get(f"{condition_id}:{token_id}", 0.0) or 0.0)
     except Exception:
@@ -1353,7 +1339,7 @@ def _arm_risk_exit_reject_cooldown(
     if seconds <= 0:
         return
     current = time.time() if now is None else now
-    state = context.extra.setdefault(_RISK_EXIT_REJECT_COOLDOWN_KEY, {})
+    state = resolve_risk_state(context).exit_reject_cooldown_until
     state[f"{condition_id}:{token_id}"] = current + seconds
 
 
@@ -1480,13 +1466,11 @@ def _risk_pre_reconcile_backoff_base_seconds(
 
 
 def _risk_pre_reconcile_state(context: TradingContext) -> RiskPreReconcileBackoff:
-    extra = getattr(context, "extra", None)
-    if not isinstance(extra, dict):
-        return RiskPreReconcileBackoff()
-    state = extra.get(_RISK_PRE_RECONCILE_BACKOFF_KEY)
+    risk_state = resolve_risk_state(context)
+    state = risk_state.pre_reconcile_backoff
     if not isinstance(state, RiskPreReconcileBackoff):
         state = RiskPreReconcileBackoff()
-        extra[_RISK_PRE_RECONCILE_BACKOFF_KEY] = state
+        risk_state.pre_reconcile_backoff = state
     return state
 
 
@@ -1583,17 +1567,13 @@ async def run_risk_check_for_context(
                 exc,
             )
     await rehydrate_position_manager(context)
-    slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
-    refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
+    risk_state = resolve_risk_state(context)
+    slippage_bps = resolve_slippage_tolerance_bps(context, 200)
+    refresh_interval = float(risk_state.check_interval_seconds or 0.25)
 
-    # Read enable_tiered from context extra (set by bootstrap from config)
-    enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    enable_tiered = resolve_enable_balance_tiered_policy(context)
 
-    warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
+    warned_tokens: set[str] = risk_state.warned_invalid_tokens
     for pos in await context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
             if pos.token_id not in warned_tokens:
@@ -2173,7 +2153,7 @@ async def risk_monitor_loop_for_contexts(
         return
 
     for context in contexts:
-        context.extra["risk_check_interval_seconds"] = poll_interval
+        resolve_risk_state(context).check_interval_seconds = poll_interval
 
     # Reservation reaping is far cheaper than worthwhile every 0.25s tick;
     # throttle to a coarse cadence. The reaper only releases reservations past
@@ -2262,12 +2242,12 @@ async def risk_monitor_loop_for_contexts(
             for context in contexts
         ]
         refresh_results = await asyncio.gather(*refresh_tasks, return_exceptions=True)
-        for context, result in zip(contexts, refresh_results, strict=False):
-            if isinstance(result, Exception):
+        for context, refresh_result in zip(contexts, refresh_results, strict=False):
+            if isinstance(refresh_result, Exception):
                 logger.error(
                     "Risk price cache refresh failed user=%s: %r",
                     context.user_id,
-                    result,
+                    refresh_result,
                 )
         # Pre-fix: sequential iteration blocked every context behind a
         # stalled venue call for any single one. Parallel gather mirrors
@@ -2285,16 +2265,16 @@ async def risk_monitor_loop_for_contexts(
             for c in contexts
         ]
         check_results = await asyncio.gather(*check_tasks, return_exceptions=True)
-        for context, result in zip(contexts, check_results, strict=False):
-            if isinstance(result, asyncio.TimeoutError):
+        for context, check_result in zip(contexts, check_results, strict=False):
+            if isinstance(check_result, asyncio.TimeoutError):
                 logger.error(
                     f"Risk loop TIMEOUT user={context.user_id} "
                     f"after {ceiling:.1f}s — context skipped this cycle"
                 )
-            elif isinstance(result, Exception):
+            elif isinstance(check_result, Exception):
                 logger.error(
                     "Risk loop error user=%s: %r",
                     context.user_id,
-                    result,
+                    check_result,
                 )
         await asyncio.sleep(poll_interval)

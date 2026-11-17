@@ -26,11 +26,25 @@ from typing import TYPE_CHECKING, Any
 # runtime — and so storage adapters can subclass these ABCs without creating
 # a circular import.
 if TYPE_CHECKING:
+    from pmcopy.domain.order_lifecycle import OrderIntent, Reservation
     from pmcopy.storage.postgres.cursors_repo import TradeCursor
     from pmcopy.storage.postgres.fills_repo import FillRecord
     from pmcopy.storage.postgres.leaders_repo import LeaderTierRecord
     from pmcopy.storage.postgres.orders_repo import OrderSubmissionRecord
     from pmcopy.storage.postgres.positions_repo import PositionRecord
+
+
+class DuplicateActiveReservationError(Exception):
+    """Raised by a reservation repository when an active intent uniqueness constraint fires."""
+
+    def __init__(
+        self,
+        message: str = "active reservation already exists",
+        *,
+        constraint_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.constraint_name = constraint_name
 
 
 class AbstractOrderRepository(ABC):
@@ -50,6 +64,34 @@ class AbstractOrderRepository(ABC):
 
     @abstractmethod
     async def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    async def get_by_order_id(self, order_id: str) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    async def get_unconfirmed_order_submissions(
+        self,
+        *,
+        user_id: str | None = None,
+        side: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    async def get_unconfirmed_buys(
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    async def get_unconfirmed_sells(
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
 
     @abstractmethod
     async def save_submission(self, record: OrderSubmissionRecord) -> None: ...
@@ -99,6 +141,9 @@ class AbstractPositionRepository(ABC):
     async def list_open_positions(self, user_id: str) -> list[PositionRecord]: ...
 
     @abstractmethod
+    async def list_held_positions(self, user_id: str) -> list[PositionRecord]: ...
+
+    @abstractmethod
     async def get_position(
         self, user_id: str, condition_id: str, *, token_id: str | None = None
     ) -> PositionRecord | None: ...
@@ -130,6 +175,15 @@ class AbstractFillRepository(ABC):
         *,
         raw_payload: dict | None = None,
     ) -> int: ...
+
+    @abstractmethod
+    async def append_fill_and_apply(
+        self,
+        record: FillRecord,
+        positions_repo: Any,
+        *,
+        raw_payload: dict | None = None,
+    ) -> tuple[int, Any]: ...
 
     @abstractmethod
     async def list_fills_for_user(self, user_id: str) -> list[dict]: ...
@@ -257,4 +311,82 @@ class AbstractDiscoveryRepository(ABC):
         wallet: str,
         rows: Iterable[Mapping[str, Any]],
         config_hash: str,
+    ) -> None: ...
+
+
+class AbstractReservationRepository(ABC):
+    """Atomic collateral and share reservation persistence port.
+
+    Concrete PostgreSQL adapters enforce per-account BUY and per-scope SELL
+    advisory locks inside a single database transaction so checked admissions
+    never split into a racy read/check/write sequence.
+    """
+
+    @abstractmethod
+    async def get_active_by_intent_key(self, intent_key: str) -> Reservation | None: ...
+
+    @abstractmethod
+    async def get_active_by_order_id(self, order_id: str) -> Reservation | None: ...
+
+    @abstractmethod
+    async def create_buy_reservation_checked_by_intent(
+        self,
+        intent: OrderIntent,
+        reserved_usdc: Decimal,
+        expires_at: int,
+        available_balance: Decimal,
+        *,
+        open_exposure_cap: Decimal | None = None,
+        confirmed_open_exposure: Decimal | None = None,
+    ) -> tuple[Reservation | None, Reservation | None, str | None]: ...
+
+    @abstractmethod
+    async def create_sell_reservation_checked_by_intent(
+        self,
+        intent: OrderIntent,
+        reserved_size: Decimal,
+        expires_at: int,
+        held_size: Decimal,
+        sell_fraction: Decimal | None = None,
+        live_position_size: Decimal | None = None,
+        min_order_size: Decimal | None = None,
+        round_up_to_minimum: bool = False,
+    ) -> tuple[Reservation | None, Reservation | None]: ...
+
+    @abstractmethod
+    async def get_by_id(self, res_id: str) -> Reservation | None: ...
+
+    @abstractmethod
+    async def list_expired_active(
+        self, now_ts: int, user_id: str | None = None
+    ) -> list[Reservation]: ...
+
+    @abstractmethod
+    async def list_active(self) -> list[Reservation]: ...
+
+    @abstractmethod
+    async def list_active_for_scope(
+        self, user_id: str, condition_id: str, token_id: str
+    ) -> list[Reservation]: ...
+
+    @abstractmethod
+    async def sum_active_for_scope(
+        self, user_id: str, condition_id: str, token_id: str, side: str
+    ) -> tuple[Decimal, Decimal]: ...
+
+    @abstractmethod
+    async def sum_active_quote_for_user(self, user_id: str) -> Decimal: ...
+
+    @abstractmethod
+    async def link_order(
+        self,
+        reservation_id: str,
+        *,
+        order_id: str | None = None,
+        venue_order_id: str | None = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def mark_released(
+        self, reservation_id: str, reason: str, released_at: int
     ) -> None: ...

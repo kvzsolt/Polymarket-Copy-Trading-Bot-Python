@@ -82,21 +82,29 @@ Thumbs.db
 .logs/stdio-server.log.*
 /logs
 .pytest_cache
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 .codex
 .ruff_cache
 .aider*
 .firecrawl/
 
-# Useless plans and markdown trash
+# Local plans, review policies, and AI/PR-agent configs
 bot_audit_export_and_fix_plan.md
 last_phase.md
 docs/refactor-cleanup-review.md
 AGENTS.MD
+AGENTS.md
 CLAUDE.md
-!/AGENTS.md
-!/CLAUDE.md
+REVIEW.md
+REFACTORING_PLAN.md
+REFACTORING_REVIEW.md
+ARCHITECTURE.md
 CODEX.md
 KILOCODE.md
+.pr_agent.toml
 
 pytest_output.txt
 .serena

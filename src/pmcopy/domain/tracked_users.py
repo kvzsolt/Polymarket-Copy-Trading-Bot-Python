@@ -45,12 +45,6 @@ def try_normalize_eth_address(raw: object) -> str | None:
     return "0x" + hex40
 
 
-def pad_address_topic(address: str) -> str:
-    """Return 32-byte left-zero-padded topic ``0x000000000000000000000000<40-hex>``."""
-    canonical = normalize_eth_address(address)
-    return "0x" + _TOPIC_ZERO_PAD + canonical[2:]
-
-
 @dataclass(frozen=True, slots=True)
 class TrackedTraderAddresses:
     """All on-chain identities (canonical wallet, EOA, Proxy/Safe) for one leader."""
@@ -219,6 +213,5 @@ __all__ = [
     "TrackedTraderAddresses",
     "TrackedUserDirectory",
     "normalize_eth_address",
-    "pad_address_topic",
     "try_normalize_eth_address",
 ]

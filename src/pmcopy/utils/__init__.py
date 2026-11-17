@@ -5,7 +5,6 @@ import threading as _threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .createClobClient import MarketMeta
     from .fetchData import close_session, fetch_data
     from .getMyBalance import get_my_balance
     from .idempotency import build_trade_key, has_processed, mark_processed
@@ -35,7 +34,6 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
 # ---------------------------------------------------------------------------
 _LAZY_IMPORTS: dict[str, str] = {
     # symbol_name: module_path
-    "MarketMeta": "pmcopy.utils.createClobClient",
     "fetch_data": "pmcopy.utils.fetchData",
     "close_session": "pmcopy.utils.fetchData",
     "get_my_balance": "pmcopy.utils.getMyBalance",
@@ -110,8 +108,6 @@ from .logger import (  # noqa: E402 - kept after lazy-export definitions intenti
 __all__ = [
     # validation
     "is_valid_clob_token_id",
-    # exact-decimal market metadata
-    "MarketMeta",
     # fetchData
     "fetch_data",
     "close_session",

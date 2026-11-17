@@ -14,11 +14,21 @@ from decimal import Decimal, InvalidOperation
 from collections.abc import Awaitable, Callable, Mapping, Sized
 from typing import TYPE_CHECKING, Any, cast
 
+from pmcopy.application.runtime_state import (
+    AccountExecutionRuntimeState,
+    AccountRiskRuntimeState,
+    resolve_account_execution_state,
+    resolve_reservation_service,
+    resolve_reservations_repo,
+)
 from pmcopy.application.trading_context import TradingContext
+from pmcopy.config.app_config import AppConfig
 from pmcopy.domain.account_identity import CopierAccountId
 from pmcopy.interfaces.clob_gateway import ClobGateway
 from pmcopy.cache.market_state_store import MarketStateStore
 from pmcopy.services.accountingService import AccountingService
+from pmcopy.services.balance_regime import BalanceRegime
+from pmcopy.services.circuitBreaker import CircuitBreaker
 from pmcopy.services.compliance import GeoblockGate
 from pmcopy.services.executionService import ExecutionService
 from pmcopy.services.execution.coordinator import CopyAdmission
@@ -64,7 +74,6 @@ if TYPE_CHECKING:
     from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection
     from pmcopy.services.manual_sync_service import ManualSyncService
     from pmcopy.services.execution.ambiguous_recovery import AmbiguousSubmissionRecoveryService
-    from pmcopy.config.app_config import AppConfig
     from pmcopy.integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
     from pmcopy.integrations.polymarket.venue_runtime import PolymarketVenueRuntime
 
@@ -72,11 +81,7 @@ logger = get_logger("RuntimeBootstrap")
 
 
 async def _release_expired_reservations_for_context(context: TradingContext) -> int:
-    extra = getattr(context, "extra", {}) or {}
-    reservation_service = extra.get("reservation_service")
-    if reservation_service is None:
-        coordinator = getattr(context, "execution_coordinator", None)
-        reservation_service = getattr(coordinator, "reservation_service", None)
+    reservation_service = resolve_reservation_service(context)
     release_expired = getattr(reservation_service, "release_expired_active", None)
     if getattr(reservation_service, "enabled", True) is False:
         return 0
@@ -263,6 +268,14 @@ class UserRuntimeState:
     # pre-existing test fixtures that construct partial states stay valid
     # (``account_id`` derives it lazily for those).
     account: "CopierAccountId | None" = None
+    # WP-C — account-owned daily spend regime, execution/reconciliation state,
+    # and risk-monitor state shared across every per-leader TradingContext and
+    # the protective risk context of this follower account.
+    balance_regime: BalanceRegime | None = None
+    account_execution_state: AccountExecutionRuntimeState = field(
+        default_factory=AccountExecutionRuntimeState
+    )
+    risk_state: AccountRiskRuntimeState = field(default_factory=AccountRiskRuntimeState)
 
     @property
     def account_id(self) -> "CopierAccountId":
@@ -367,6 +380,7 @@ def build_user_state(
     copy_admission: CopyAdmission | None = None,
     provider_runtime: Any = None,
     evidence_projection: PostgresFillEvidenceProjection | None = None,
+    venue_circuit_breaker: CircuitBreaker | None = None,
 ) -> UserRuntimeState:
     """Build one follower runtime from injected configuration and ports.
 
@@ -479,6 +493,7 @@ def build_user_state(
             follower_accounts=(runtime_user.user_id, runtime_user.wallet.funder_address or ""),
             protective_management_enabled=config.risk.enable_risk_mgmt,
         ),
+        circuit_breaker=venue_circuit_breaker,
     )
 
     # A04 — exactly ONE PositionCoordinator (per-scope lock map + intent
@@ -611,6 +626,10 @@ def build_user_state(
         provider_runtime=provider_runtime,
     )
 
+    balance_regime = (
+        BalanceRegime.from_config(config.execution) if isinstance(config, AppConfig) else None
+    )
+
     return UserRuntimeState(
         user=runtime_user,
         client=client,
@@ -638,6 +657,7 @@ def build_user_state(
         leader_performance=PostgresLeaderPerformanceReader(pool),
         ambiguous_recovery=ambiguous_recovery,
         position_coordinator=position_coordinator,
+        balance_regime=balance_regime,
     )
 
 
@@ -1018,12 +1038,7 @@ def _build_execution_coordinator(
 
 
 def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> None:
-    """Expose the coordinator's reservation service to reconciliation paths.
-
-    The coordinator owns the service instance. Reconciliation code discovers it
-    through ``context.extra`` so terminal fills/cancels can release active
-    reservations.
-    """
+    """Expose the coordinator's reservation service via typed ``TradingContext`` fields."""
     if coord is None:
         return
 
@@ -1034,12 +1049,12 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     reservations_repo = getattr(coord, "reservations_repo", None) or getattr(
         reservation_service, "reservations_repo", None
     )
-    context.extra["reservation_service"] = reservation_service
+    context.reservation_service = reservation_service
     if reservations_repo is not None:
-        context.extra["reservations_repo"] = reservations_repo
+        context.reservations_repo = reservations_repo
     target_service = getattr(coord, "leader_sell_target_service", None)
     if target_service is not None:
-        context.extra["leader_sell_target_service"] = target_service
+        context.leader_sell_target_service = target_service
 
     def _reservation_attr(reservation: object, name: str) -> Any:
         return getattr(reservation, name, None)
@@ -1328,7 +1343,13 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
             )
         return decision
 
-    reservation_service.reconciler_callback = _reconcile_expired_reservation
+    exec_state = resolve_account_execution_state(context)
+    if (
+        not exec_state.reconciler_callback_bound
+        or getattr(reservation_service, "reconciler_callback", None) is None
+    ):
+        reservation_service.reconciler_callback = _reconcile_expired_reservation
+        exec_state.reconciler_callback_bound = True
 
 
 def _user_state_telemetry(user_state: object) -> TelemetryEmitters:
@@ -1337,6 +1358,27 @@ def _user_state_telemetry(user_state: object) -> TelemetryEmitters:
     if isinstance(emitters, TelemetryEmitters):
         return emitters
     return TelemetryEmitters.disabled()
+
+
+def _ensure_user_state_account_containers(
+    user_state: Any,
+) -> tuple[AccountExecutionRuntimeState, AccountRiskRuntimeState]:
+    """Return (and lazily attach on synthetic test states) per-account state owners."""
+    exec_state = getattr(user_state, "account_execution_state", None)
+    if not isinstance(exec_state, AccountExecutionRuntimeState):
+        exec_state = AccountExecutionRuntimeState()
+        try:
+            user_state.account_execution_state = exec_state
+        except AttributeError:
+            pass
+    risk_state = getattr(user_state, "risk_state", None)
+    if not isinstance(risk_state, AccountRiskRuntimeState):
+        risk_state = AccountRiskRuntimeState()
+        try:
+            user_state.risk_state = risk_state
+        except AttributeError:
+            pass
+    return exec_state, risk_state
 
 
 async def build_trading_context(
@@ -1370,6 +1412,7 @@ async def build_trading_context(
         config=config,
         roster_score=roster_score,
     )
+    account_exec_state, account_risk_state = _ensure_user_state_account_containers(user_state)
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
@@ -1419,13 +1462,14 @@ async def build_trading_context(
         market_data_service=getattr(user_state, "market_data_service", None),
         market_quotes=getattr(user_state, "market_store", None),
         holdings_reader=DataApiPositionSizeReader(_get_http_client),
+        balance_regime=getattr(user_state, "balance_regime", None),
         telemetry=_user_state_telemetry(user_state),
-        extra={
-            "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
-            "clob_gateway": user_state.clob_gateway,
-            "leader_wallet": follow.leader_id,
-            "accounted_fill_reader": user_state.fills_repo,
-        },
+        leader_wallet=follow.leader_id,
+        slippage_tolerance_bps=int(config.execution.slippage_tolerance * 100),
+        clob_gateway=user_state.clob_gateway,
+        accounted_fill_reader=user_state.fills_repo,
+        account_execution_state=account_exec_state,
+        risk_state=account_risk_state,
     )
     if user_state.risk_triggers_repo is not None:
         context.risk_triggers_repo = user_state.risk_triggers_repo
@@ -1441,14 +1485,14 @@ async def build_trading_context(
         _bind_reservation_runtime(context, coord)
     # Phase 4 / A04 — seed the ACCOUNT-owned IntentRegistry from durable
     # reservation rows on restart. Must run after _bind_reservation_runtime so
-    # context.extra["reservations_repo"] is populated. The registry is shared
+    # ``context.reservations_repo`` is populated. The registry is shared
     # by every leader binding of this account, so recovery runs ONCE per
     # account (guarded by ``user_state.intents_recovered``) and is scoped to
     # this account's rows: intents from all leaders land in the one registry,
     # and another account's ownership never does. A missing reservations_repo
     # (test contexts, no-reservation deployments) is silently skipped — the
     # registry starts empty which is safe.
-    _reservations_repo = context.extra.get("reservations_repo")
+    _reservations_repo = resolve_reservations_repo(context)
     if _reservations_repo is not None and not getattr(user_state, "intents_recovered", False):
         try:
             from pmcopy.services.execution.intent_recovery import recover_intents_from_db

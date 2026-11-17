@@ -15,7 +15,7 @@ import pytest
 
 from pmcopy.bootstrap import Application, build_app
 from pmcopy.config.app_config import AppConfig
-from pmcopy.domain.ports.repositories import AbstractLeaderRepository
+from pmcopy.ports.repositories import AbstractLeaderRepository
 from pmcopy.orchestrators.leader_registry import LeaderRegistry
 from pmcopy.services.discovery.falcon_discovery_service import (
     FalconDiscoveryService,

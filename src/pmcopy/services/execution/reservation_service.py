@@ -8,12 +8,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
 
-import asyncpg
-
 from pmcopy.domain.order_lifecycle import OrderIntent, IntentSide, Reservation
+from pmcopy.ports.repositories import (
+    AbstractPositionRepository,
+    AbstractReservationRepository,
+    DuplicateActiveReservationError,
+)
 from pmcopy.services.execution.reservation_expiry import ReservationExpiryDecision
-from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
-from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,8 @@ class ReservationService:
 
     def __init__(
         self,
-        reservations_repo: ReservationsRepo,
-        positions_repo: PositionsRepo,
+        reservations_repo: AbstractReservationRepository,
+        positions_repo: AbstractPositionRepository,
         get_balance_func: Callable[[str], Awaitable[Decimal | None]],
         funder_address: str,
         clock: Clock | None = None,
@@ -298,10 +299,16 @@ class ReservationService:
                     open_exposure_cap=_open_exposure_cap,
                     confirmed_open_exposure=_confirmed_open_exposure,
                 )
-            except asyncpg.exceptions.UniqueViolationError as exc:
+            except DuplicateActiveReservationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
+            except Exception as exc:
+                if type(exc).__name__ == "UniqueViolationError":
+                    raise ReservationConflict(
+                        f"active reservation exists for intent={stable_key}"
+                    ) from exc
+                raise
             if existing_under_lock is not None:
                 # A concurrent caller raced past the fast-path lookup and
                 # committed an active row before we acquired the lock.
@@ -370,10 +377,16 @@ class ReservationService:
                     min_order_size=intent.min_order_size,
                     round_up_to_minimum=intent.round_up_to_minimum,
                 )
-            except asyncpg.exceptions.UniqueViolationError as exc:
+            except DuplicateActiveReservationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
+            except Exception as exc:
+                if type(exc).__name__ == "UniqueViolationError":
+                    raise ReservationConflict(
+                        f"active reservation exists for intent={stable_key}"
+                    ) from exc
+                raise
             if existing_under_lock is not None:
                 logger.warning(
                     "reservation.acquire.sell.race_lost key=%s existing_id=%s",

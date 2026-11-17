@@ -2,7 +2,7 @@
 
 Single top-level package introduced by the standalone refactor (Task 18).
 Every former flat top-level package and module lives under here:
-``pmcopy.app``, ``pmcopy.bootstrap``, ``pmcopy.bot``, ``pmcopy.bot_cli``,
+``pmcopy.app``, ``pmcopy.bootstrap``, ``pmcopy.bot_cli``,
 ``pmcopy.services``, ... No forwarding shims remain at the old flat paths.
 
 Entry points:

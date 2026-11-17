@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.domain.ports import (
+from pmcopy.ports.repositories import (
     AbstractCursorRepository,
     AbstractDiscoveryRepository,
     AbstractFillRepository,

@@ -3,14 +3,10 @@
 from __future__ import annotations
 from pmcopy.adapters.clock import SystemReceiptClock
 from pmcopy.services.telemetry.latency import PipelineLatency
-from pmcopy.services.market_readiness import MarketReadinessGroup
-from pmcopy.services.user_readiness import UserReadinessGroup
 
 import asyncio
 import functools
-import inspect
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sized
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 
 from typing import TYPE_CHECKING, Any
@@ -38,11 +34,22 @@ from pmcopy.config.env import is_valid_eth_address
 from pmcopy.domain.detection import DetectionMode
 from pmcopy.integrations.polymarket.venue_runtime import build_polymarket_runtime
 from pmcopy.orchestrators.leader_registry import LeaderRegistry, LeaderRegistryState
-from pmcopy.orchestrators.market_data_runtime import (
-    MarketDataRuntime,
-    extract_token_ids_from_contexts,
-    extract_token_ids_from_live_positions,
+from pmcopy.orchestrators.app_lifecycle import (
+    HealthServerResource as _HealthServerResource,
+    RuntimeShutdownCoordinator,
+    RuntimeStreamCoordinator,
+    SupervisedTaskSpec as _Supervised,
+    TaskSupervisor,
+    close_polymarket_clients,
+    empty_user_ws_api_creds as _empty_user_ws_api_creds,  # noqa: F401
+    flatten_contexts as _flatten_contexts,
+    get_clob_wrapper_from_user_state as _get_clob_wrapper_from_user_state,  # noqa: F401
+    live_monitor_count as _live_monitor_count,  # noqa: F401
+    normalise_user_ws_api_creds as _normalise_user_ws_api_creds,  # noqa: F401
+    on_supervised_crash as _on_supervised_crash,  # noqa: F401
+    user_ws_api_creds as _user_ws_api_creds,
 )
+from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
 from pmcopy.orchestrators.runtime_bootstrap import (
     UserRuntimeState,
     build_context_maps,
@@ -64,13 +71,13 @@ from pmcopy.orchestrators.runtime_summary import print_startup_summary
 from pmcopy.orchestrators.startup_health import perform_startup_health_check
 from pmcopy.orchestrators.telemetry_bootstrap import TelemetryRuntime
 from pmcopy.orchestrators.user_data_runtime import UserDataRuntime
+from pmcopy.services.circuitBreaker import CircuitBreaker
 from pmcopy.services.healthServer import start_health_server
 from pmcopy.services.account_lease import AccountLeaseManager, account_lease_renewal_loop
 from pmcopy.services.metrics import MetricsRegistry, metrics
 from pmcopy.services.telemetry import TelemetryEmitters, WssTelemetryEmitter
 from pmcopy.services.multiUserConfig import (
     RuntimeUser,
-    UserFollowConfig,
     load_runtime_users,
 )
 from pmcopy.services.copierConfig import select_runtime_copiers
@@ -152,38 +159,15 @@ def _to_decimal_balance(value: object) -> Decimal:
         return Decimal("0")
 
 
-def _flatten_contexts(
-    contexts_by_leader: dict[str, list["TradingContext"]],
-) -> list["TradingContext"]:
-    return [context for contexts in contexts_by_leader.values() for context in contexts]
-
-
 def _refresh_onchain_watched_wallets(
     onchain_runtime: object | None,
     wallets: Iterable[str],
 ) -> bool:
-    """Retire owners immediately and expose additions as awaiting restart.
-
-    Updating desired roster state never creates an unacknowledged subscription
-    or a REST trade monitor. Source exceptions leave additions paused.
-    """
-    if onchain_runtime is None:
-        return False
-    update = getattr(onchain_runtime, "update_watched_wallets", None)
-    if not callable(update):
-        return False
-    watched = {str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()}
-    try:
-        update(watched)
-    except Exception as exc:
-        logger.warning(
-            "onchain_watched_wallets_update_failed | error=%s — added "
-            "leaders remain paused pending restart",
-            redact_error_detail(exc),
-        )
-        return False
-    logger.info("onchain_watched_wallets_updated | watched=%d", len(watched))
-    return True
+    """Retire owners immediately and expose additions as awaiting restart."""
+    return RuntimeStreamCoordinator(logger=logger).refresh_onchain_watched_wallets(
+        onchain_runtime,
+        wallets,
+    )
 
 
 def _should_wait_for_discovery_roster(
@@ -674,21 +658,12 @@ def _wallets_blocked_by_reconcile_failures(
     contexts_by_leader: dict[str, list["TradingContext"]],
     failed_user_ids: list[str],
 ) -> list[str]:
-    """Return wallets whose downstream contexts include any failed user_id.
-
-    Used by the dynamic-leader discovery refresh to refuse starting a
-    leader monitor when startup reconciliation failed for a user under
-    that leader: starting the monitor on stale state is the same
-    double-fill exposure the cold-start path already gates against.
-    """
-    if not failed_user_ids:
-        return []
-    failed = set(failed_user_ids)
-    return [
-        wallet
-        for wallet in started_wallets
-        if any(ctx.user_id in failed for ctx in contexts_by_leader.get(wallet, []))
-    ]
+    """Return wallets whose downstream contexts include any failed user_id."""
+    return RuntimeStreamCoordinator.wallets_blocked_by_reconcile_failures(
+        started_wallets,
+        contexts_by_leader,
+        failed_user_ids,
+    )
 
 
 def _cold_start_monitored_after_reconcile(
@@ -696,23 +671,12 @@ def _cold_start_monitored_after_reconcile(
     contexts_by_leader: dict[str, list["TradingContext"]],
     reconcile_failures: list[str],
 ) -> list[str]:
-    """Filter the cold-start leader set so monitors do NOT start for wallets
-    whose users failed startup reconciliation.
-
-    Starting a leader monitor on an un-reconciled snapshot is the double-fill
-    exposure (an unconfirmed prior-session fill is invisible, so the next
-    leader signal re-buys). The dynamic-discovery path already refuses such
-    wallets via ``_wallets_blocked_by_reconcile_failures``; the cold-start path
-    must apply the same gate instead of merely recording ``reconciler_ok``.
-    """
-    blocked = set(
-        _wallets_blocked_by_reconcile_failures(
-            monitored_leaders, contexts_by_leader, reconcile_failures
-        )
+    """Filter the cold-start leader set to exclude failed-reconcile accounts."""
+    return RuntimeStreamCoordinator.cold_start_monitored_after_reconcile(
+        monitored_leaders,
+        contexts_by_leader,
+        reconcile_failures,
     )
-    if not blocked:
-        return monitored_leaders
-    return [wallet for wallet in monitored_leaders if wallet not in blocked]
 
 
 async def _refresh_contexts_for_new_leaders(
@@ -725,164 +689,16 @@ async def _refresh_contexts_for_new_leaders(
     config,
     readiness,
 ) -> list[str]:
-    started_wallets: list[str] = []
-    # A05 — follows whitelists: newly discovered wallets are only copied by
-    # accounts whose explicit follows configuration lists them. The one
-    # exception is the legacy lone account with NO follows configuration
-    # (the config-less fallback): the legacy default keys on configuration
-    # absence, not on the in-memory follows map being empty, so that account
-    # keeps auto-following newly discovered leaders at every refresh —
-    # exactly like the pre-whitelist behavior. Existing positions keep their
-    # protective exits regardless (risk-only contexts).
-    ensure_runtime_follows(runtime_users, new_wallets, config)
-
-    for wallet in new_wallets:
-        if wallet in contexts_by_leader:
-            continue
-
-        contexts_by_leader[wallet] = []
-
-        for runtime_user in runtime_users:
-            user_state = user_states.get(runtime_user.user_id)
-            follow: UserFollowConfig | None = runtime_user.follows.get(wallet)
-
-            if not user_state or not follow or not follow.enabled:
-                continue
-
-            context = await build_trading_context(
-                user_state,
-                follow,
-                config,
-                leaders_repo=leaders_repo,
-                readiness=readiness,
-            )
-            contexts_by_leader[wallet].append(context)
-
-        if contexts_by_leader[wallet]:
-            started_wallets.append(wallet)
-
-    return started_wallets
-
-
-def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | None:
-    """Best-effort access to the CCXT venue client that owns L2 credentials.
-
-    Preferred source is ``user_state.client`` (the ``CcxtPredictionClient``),
-    which exposes derived ``api_creds`` for user-stream auth. Fallbacks keep
-    older test fixtures working.
-    """
-    for attr_name in (
-        "client",
-        "clob_client",
-        "clob_wrapper",
-        "clob",
-    ):
-        value = getattr(user_state, attr_name, None)
-        if value is not None:
-            return value
-
-    execution_service = getattr(user_state, "execution_service", None)
-    if execution_service is not None:
-        for attr_name in (
-            "clob_client",
-            "_clob_client",
-            "client",
-            "_client",
-        ):
-            value = getattr(execution_service, attr_name, None)
-            if value is not None:
-                return value
-
-    clob_gateway = getattr(user_state, "clob_gateway", None)
-    if clob_gateway is not None:
-        for attr_name in (
-            "clob_client",
-            "_clob_client",
-            "client",
-            "_client",
-            "wrapper",
-            "_wrapper",
-        ):
-            value = getattr(clob_gateway, attr_name, None)
-            if value is not None:
-                return value
-
-    return None
-
-
-def _empty_user_ws_api_creds() -> dict[str, str]:
-    """Return the unauthenticated user-stream credential shape."""
-    return {field: "" for field in ("api_key", "api_secret", "api_passphrase")}
-
-
-def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
-    """Normalize SDK API credentials into UserWebSocket's expected shape."""
-
-    if raw_creds is None:
-        return _empty_user_ws_api_creds()
-
-    def read(*names: str) -> str:
-        """Return the first populated credential attribute without logging it."""
-        if isinstance(raw_creds, dict):
-            for name in names:
-                value = raw_creds.get(name)
-                if value:
-                    return str(value)
-
-        for name in names:
-            value = getattr(raw_creds, name, None)
-            if value:
-                return str(value)
-
-        return ""
-
-    return {
-        "api_key": read("api_key", "key", "apiKey"),
-        "api_secret": read("api_secret", "secret", "apiSecret"),
-        "api_passphrase": read(
-            "api_passphrase",
-            "passphrase",
-            "apiPassphrase",
-        ),
-    }
-
-
-def _user_ws_api_creds(user_state: UserRuntimeState) -> dict[str, str]:
-    """Read already-derived CLOB API credentials from the CLOB client wrapper.
-
-    Do not read these from AppConfig or wallet config. The bot uses one private
-    key to create the secure SDK client, which exposes the CLOB API credentials
-    used for user websocket authentication.
-    """
-    wrapper = _get_clob_wrapper_from_user_state(user_state)
-
-    if wrapper is None:
-        return _empty_user_ws_api_creds()
-
-    for attr_name in (
-        "api_creds",
-        "user_api_creds",
-        "creds",
-    ):
-        raw_creds = getattr(wrapper, attr_name, None)
-        creds = _normalise_user_ws_api_creds(raw_creds)
-        if all(creds.values()):
-            return creds
-
-    inner_client = getattr(wrapper, "client", None)
-    if inner_client is not None:
-        for attr_name in (
-            "api_creds",
-            "creds",
-            "_api_creds",
-            "_creds",
-        ):
-            raw_creds = getattr(inner_client, attr_name, None)
-            creds = _normalise_user_ws_api_creds(raw_creds)
-            if all(creds.values()):
-                return creds
-
-    return _empty_user_ws_api_creds()
+    return await RuntimeStreamCoordinator(logger=logger).refresh_contexts_for_new_leaders(
+        new_wallets=new_wallets,
+        runtime_users=runtime_users,
+        user_states=user_states,
+        contexts_by_leader=contexts_by_leader,
+        leaders_repo=leaders_repo,
+        config=config,
+        readiness=readiness,
+        context_builder=build_trading_context,
+    )
 
 
 async def _start_market_data_runtimes(
@@ -897,84 +713,23 @@ async def _start_market_data_runtimes(
     telemetry: WssTelemetryEmitter | None = None,
     latency: PipelineLatency | None = None,
     evidence_runtime: Any | None = None,
+    runtimes_out: dict[str, MarketDataRuntime] | None = None,
 ) -> dict[str, MarketDataRuntime]:
-    """Start WSS-backed market data runtimes, keyed by user_id.
-
-    These runtimes keep market quote/book/tick state fresh for execution
-    and risk exits while tapping original frames into local evidence. The
-    caller must attach the matching runtime to each user's TradingContext so
-    the trade pipeline can subscribe new signal tokens dynamically.
-    """
-    market_data_runtimes: dict[str, MarketDataRuntime] = {}
-    from pmcopy.adapters.clock import SystemReceiptClock
-    from pmcopy.services.market_evidence import MarketEvidenceTap
-
-    context_tokens = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
-    market_readiness = MarketReadinessGroup(
-        readiness, tuple(user.user_id for user in runtime_users)
+    """Start WSS-backed market data runtimes, keyed by user_id."""
+    return await RuntimeStreamCoordinator(logger=logger).start_market_data_runtimes(
+        runtime_users=runtime_users,
+        user_states=user_states,
+        live_positions_by_user=live_positions_by_user,
+        contexts_by_leader=contexts_by_leader,
+        readiness=readiness,
+        config=config,
+        quote_sink=quote_sink,
+        telemetry=telemetry,
+        latency=latency,
+        evidence_runtime=evidence_runtime,
+        market_runtime_cls=MarketDataRuntime,
+        runtimes_out=runtimes_out,
     )
-
-    for runtime_user in runtime_users:
-        user_state = user_states.get(runtime_user.user_id)
-
-        if user_state is None:
-            logger.error(
-                "market_data_runtime_skipped",
-                extra={
-                    "user_id": runtime_user.user_id,
-                    "reason": "missing user runtime state",
-                },
-            )
-            continue
-
-        market_store = getattr(user_state, "market_store", None)
-        clob_gateway = getattr(user_state, "clob_gateway", None)
-
-        if market_store is None or clob_gateway is None:
-            logger.warning(
-                "market_data_runtime_skipped",
-                extra={
-                    "user_id": runtime_user.user_id,
-                    "reason": "missing market_store or clob_gateway",
-                },
-            )
-            continue
-
-        live_position_tokens = extract_token_ids_from_live_positions(
-            live_positions_by_user.get(runtime_user.user_id, [])
-        )
-
-        initial_tokens = sorted(set(live_position_tokens) | set(context_tokens))
-
-        market_runtime = MarketDataRuntime(
-            market_store=market_store,
-            gateway=clob_gateway,
-            readiness=market_readiness.scope(runtime_user.user_id),
-            config=config,
-            quote_sink=quote_sink,
-            telemetry=telemetry,
-            latency=latency,
-            evidence=(
-                MarketEvidenceTap(
-                    evidence_runtime, SystemReceiptClock(), stream_id=runtime_user.user_id
-                )
-                if evidence_runtime is not None
-                else None
-            ),
-        )
-
-        await market_runtime.start(initial_tokens)
-        market_data_runtimes[runtime_user.user_id] = market_runtime
-
-        logger.info(
-            "market_data_runtime_started_for_user",
-            extra={
-                "user_id": runtime_user.user_id,
-                "subscribed_token_count": len(initial_tokens),
-            },
-        )
-
-    return market_data_runtimes
 
 
 def _attach_market_data_runtime_to_contexts(
@@ -983,129 +738,27 @@ def _attach_market_data_runtime_to_contexts(
     risk_contexts_by_user: dict[str, "TradingContext"],
     runtimes_by_user: dict[str, MarketDataRuntime],
 ) -> None:
-    """Bind each user's MarketDataRuntime onto their TradingContext.
-
-    Trade pipeline reads ``context.market_data_runtime.subscribe_tokens`` to
-    register new signal tokens with WSS before placing orders.
-    """
-    for contexts in contexts_by_leader.values():
-        for context in contexts:
-            runtime = runtimes_by_user.get(context.user_id)
-            if runtime is not None:
-                context.market_data_runtime = runtime
-    for context in risk_contexts_by_user.values():
-        runtime = runtimes_by_user.get(context.user_id)
-        if runtime is not None:
-            context.market_data_runtime = runtime
+    """Bind each user's MarketDataRuntime onto their TradingContext."""
+    RuntimeStreamCoordinator.attach_market_data_runtime_to_contexts(
+        contexts_by_leader=contexts_by_leader,
+        risk_contexts_by_user=risk_contexts_by_user,
+        runtimes_by_user=runtimes_by_user,
+    )
 
 
 def _build_reconcile_wake_closure(context):
-    """Return an async wake closure that converges ReconciliationService.
-
-    Throttled by a per-context asyncio.Lock so that a burst of WSS fill events
-    cannot stack reconcile passes. The closure delegates to the canonical
-    ``reconcile_submitted_unconfirmed``; it never touches positions directly.
-    """
-    from pmcopy.orchestrators.trade_pipeline import (
-        get_reconciliation_service,
-        reconcile_submitted_unconfirmed,
-    )
-
-    lock = asyncio.Lock()
-
-    async def _wake(event):
-        # Persist the user-channel fact before the reconcile lock. MATCHED
-        # starts a pass; MINED and CONFIRMED follow immediately and must not
-        # be dropped while that pass is still running.
-        try:
-            reconciler = get_reconciliation_service(context)
-            await reconciler.record_user_order_evidence(event)
-        except Exception as exc:
-            logger.warning(
-                "user_wss_wake_reconcile_error",
-                extra={
-                    "user_id": context.user_id,
-                    "error": redact_error_detail(exc),
-                },
-            )
-            return
-        if lock.locked():
-            return
-        async with lock:
-            try:
-                reconciled = await reconcile_submitted_unconfirmed(context)
-                reservation_reaped = 0
-                extra = getattr(context, "extra", {}) or {}
-                reservation_service = extra.get("reservation_service")
-                if reservation_service is None:
-                    coordinator = getattr(context, "execution_coordinator", None)
-                    reservation_service = getattr(coordinator, "reservation_service", None)
-                release_expired = getattr(
-                    reservation_service,
-                    "release_expired_active",
-                    None,
-                )
-                if callable(release_expired):
-                    release_result = release_expired()
-                    released_ids = (
-                        await release_result
-                        if inspect.isawaitable(release_result)
-                        else release_result
-                    )
-                    reservation_reaped = len(released_ids) if isinstance(released_ids, Sized) else 0
-                if reconciled or reservation_reaped:
-                    logger.info(
-                        "user_wss_wake_reconcile_complete | user=%s reconciled=%d reservations_reaped=%d order_id=%s",
-                        context.user_id,
-                        reconciled,
-                        reservation_reaped,
-                        (event.get("order_id") or event.get("orderID") or event.get("id"))
-                        if isinstance(event, dict)
-                        else None,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "user_wss_wake_reconcile_error",
-                    extra={
-                        "user_id": context.user_id,
-                        "error": redact_error_detail(exc),
-                    },
-                )
-
-    return _wake
+    """Return an async wake closure that converges ReconciliationService."""
+    return RuntimeStreamCoordinator(logger=logger).build_reconcile_wake_closure(context)
 
 
 def _build_risk_cache_evict_closure(context):
-    """Build a sync callable that evicts a token from the per-context
-    ``RiskPriceCache`` so a WSS fill on a dormant (zero-bid) market re-arms
-    the price probe immediately. Returns None when the cache is not yet
-    constructed; the runtime treats None as "no risk cache wired".
-    """
-
-    def _evict(token_id: str) -> None:
-        cache = context.extra.get("risk_price_cache")
-        if cache is None:
-            return
-        try:
-            cache.evict(token_id)
-        except Exception:
-            # Cache is best-effort hygiene; never let an evict raise into
-            # the WSS message loop.
-            return
-
-    return _evict
+    """Return a sync callable that evicts a token from ``RiskPriceCache``."""
+    return RuntimeStreamCoordinator.build_risk_cache_evict_closure(context)
 
 
 def _build_market_token_subscribe_closure(runtime: MarketDataRuntime):
     """Return a user-fill hook that subscribes newly seen tokens to MarketWS."""
-
-    async def _subscribe(token_id: str) -> None:
-        token_id = str(token_id or "").strip()
-        if not token_id:
-            return
-        await runtime.subscribe_tokens([token_id])
-
-    return _subscribe
+    return RuntimeStreamCoordinator.build_market_token_subscribe_closure(runtime)
 
 
 async def _start_user_data_runtimes(
@@ -1116,74 +769,20 @@ async def _start_user_data_runtimes(
     risk_contexts_by_user: dict[str, "TradingContext"] | None = None,
     market_data_runtimes: dict[str, MarketDataRuntime] | None = None,
     telemetry: WssTelemetryEmitter | None = None,
+    runtimes_out: list[UserDataRuntime] | None = None,
 ) -> list[UserDataRuntime]:
-    """Start user WSS runtimes.
-
-    User WSS is authenticated with CLOB API credentials derived by
-    create_clob_client(). It sets wss_user_ok=True only after auth success.
-
-    When ``risk_contexts_by_user`` is provided, each user's runtime gets a
-    wake-reconciler closure so own fills converge through the canonical
-    ReconciliationService without waiting for the next polled cycle.
-    """
-    user_data_runtimes: list[UserDataRuntime] = []
-    user_readiness = UserReadinessGroup(readiness, tuple(user.user_id for user in runtime_users))
-
-    for runtime_user in runtime_users:
-        user_state = user_states.get(runtime_user.user_id)
-
-        if user_state is None:
-            logger.error(
-                "user_data_runtime_skipped",
-                extra={
-                    "user_id": runtime_user.user_id,
-                    "reason": "missing user runtime state",
-                },
-            )
-            continue
-
-        market_store = getattr(user_state, "market_store", None)
-        if market_store is None:
-            logger.warning(
-                "user_data_runtime_skipped",
-                extra={
-                    "user_id": runtime_user.user_id,
-                    "reason": "missing market_store",
-                },
-            )
-            continue
-
-        api_creds = _user_ws_api_creds(user_state)
-
-        wake_closure = None
-        risk_cache_evict = None
-        market_token_subscribe = None
-        if risk_contexts_by_user is not None:
-            user_context = risk_contexts_by_user.get(runtime_user.user_id)
-            if user_context is not None:
-                wake_closure = _build_reconcile_wake_closure(user_context)
-                risk_cache_evict = _build_risk_cache_evict_closure(user_context)
-        if market_data_runtimes is not None:
-            market_runtime = market_data_runtimes.get(runtime_user.user_id)
-            if market_runtime is not None:
-                market_token_subscribe = _build_market_token_subscribe_closure(market_runtime)
-
-        runtime = UserDataRuntime(
-            market_store=market_store,
-            readiness=user_readiness.scope(runtime_user.user_id),
-            api_creds=api_creds,
-            user_id=runtime_user.user_id,
-            on_reconcile_signal=wake_closure,
-            manual_sync_service=getattr(user_state, "manual_sync_service", None),
-            on_risk_cache_evict=risk_cache_evict,
-            on_market_token_seen=market_token_subscribe,
-            telemetry=telemetry,
-        )
-
-        await runtime.start()
-        user_data_runtimes.append(runtime)
-
-    return user_data_runtimes
+    """Start authenticated user WSS runtimes."""
+    return await RuntimeStreamCoordinator(logger=logger).start_user_data_runtimes(
+        runtime_users=runtime_users,
+        user_states=user_states,
+        readiness=readiness,
+        risk_contexts_by_user=risk_contexts_by_user,
+        market_data_runtimes=market_data_runtimes,
+        telemetry=telemetry,
+        api_creds_resolver=_user_ws_api_creds,
+        user_runtime_cls=UserDataRuntime,
+        runtimes_out=runtimes_out,
+    )
 
 
 async def _subscribe_context_tokens(
@@ -1191,45 +790,11 @@ async def _subscribe_context_tokens(
     market_data_runtimes: dict[str, MarketDataRuntime],
     contexts_by_leader: dict[str, list],
 ) -> None:
-    """Subscribe tokens visible from runtime contexts.
-
-    New trade-signal tokens should also be subscribed from the trade pipeline
-    when they appear. This helper only handles context-visible tokens.
-    """
-    token_ids = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
-
-    if not token_ids:
-        return
-
-    for runtime in market_data_runtimes.values():
-        try:
-            await runtime.subscribe_tokens(token_ids)
-        except Exception as exc:
-            logger.warning(
-                "market_data_dynamic_subscribe_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-
-@dataclass
-class _HealthServerResource:
-    """Idempotent owner for an aiohttp health-server runner."""
-
-    runner: Any
-    closed: bool = False
-
-    async def close(self) -> None:
-        """Close the health server once."""
-
-        if self.closed:
-            return
-        self.closed = True
-        await self.runner.cleanup()
-
-    async def cleanup(self) -> None:
-        """Provide the aiohttp-compatible cleanup alias."""
-
-        await self.close()
+    """Subscribe tokens visible from runtime contexts."""
+    await RuntimeStreamCoordinator(logger=logger).subscribe_context_tokens(
+        market_data_runtimes=market_data_runtimes,
+        contexts_by_leader=contexts_by_leader,
+    )
 
 
 async def _start_telemetry_runtime(
@@ -1305,56 +870,6 @@ def _detection_connection_probe(runtime: object) -> Callable[[], bool | None]:
     return probe
 
 
-@dataclass
-class _Supervised:
-    """A long-lived auxiliary background loop owned by the main supervisor.
-
-    ``factory`` must return a FRESH awaitable on every call so a crashed loop
-    can be restarted by re-invoking it. The supervisor restarts a crashed loop
-    up to ``max_restarts`` times within a rolling window; surviving longer than
-    ``recovery_seconds`` resets the counter (transient blips don't accumulate).
-    Once the budget is exhausted the supervisor fail-closes the whole process
-    rather than limp along with a dead safety subsystem.
-    """
-
-    name: str
-    factory: Callable[[], Coroutine[object, object, None]]
-    max_restarts: int = 5
-    recovery_seconds: float = 60.0
-    task: asyncio.Task | None = None
-    restarts: int = 0
-    started: float = 0.0
-
-    def spawn(self) -> asyncio.Task:
-        """Start and track a supervised background task."""
-        self.started = asyncio.get_running_loop().time()
-        self.task = asyncio.create_task(self.factory(), name=self.name)
-        return self.task
-
-
-def _live_monitor_count(monitor_tasks: list[asyncio.Task]) -> int:
-    """Count leader-monitor tasks that are still running.
-
-    P2-h accounting helper: after a leader monitor crashes (its task is
-    ``done`` at that point), the readiness ``monitored_leader_count`` gauge must
-    be re-derived from the survivors so health/metrics stop advertising a
-    monitor that no longer exists. Kept pure for unit-testing.
-    """
-    return sum(1 for task in monitor_tasks if not task.done())
-
-
-def _on_supervised_crash(spec: _Supervised, now: float) -> str:
-    """Pure restart decision for a crashed supervised loop.
-
-    Mutates ``spec.restarts`` and returns ``"restart"`` or ``"fail_closed"``.
-    Kept free of asyncio/logging so it is unit-testable in isolation.
-    """
-    if now - spec.started >= spec.recovery_seconds:
-        spec.restarts = 0  # survived long enough — reset before counting this crash
-    spec.restarts += 1
-    return "fail_closed" if spec.restarts >= spec.max_restarts else "restart"
-
-
 async def _shutdown_runtime(
     *,
     monitor_tasks: list[asyncio.Task],
@@ -1368,71 +883,19 @@ async def _shutdown_runtime(
     evidence_drain=None,
     account_lease_manager: AccountLeaseManager | None = None,
 ) -> None:
-    shutdown_tasks = list(monitor_tasks)
+    coordinator = RuntimeShutdownCoordinator(logger=logger)
+    await coordinator.cancel_tasks_and_stop_streams(
+        monitor_tasks=monitor_tasks,
+        supervised=supervised,
+        market_data_runtimes=market_data_runtimes,
+        user_data_runtimes=user_data_runtimes,
+        onchain_runtime=onchain_runtime,
+        pending_copy_tracker=pending_copy_tracker,
+        v1_runtime=v1_runtime,
+        evidence_drain=evidence_drain,
+    )
 
-    # Cancel the CURRENT task ref of each supervised loop (a restarted loop
-    # holds a new task object, so we must read spec.task here, not a captured
-    # reference from startup).
-    shutdown_tasks.extend(spec.task for spec in supervised if spec.task)
-
-    for task in shutdown_tasks:
-        task.cancel()
-
-    if shutdown_tasks:
-        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-
-    if onchain_runtime is not None:
-        try:
-            await onchain_runtime.stop()
-        except Exception as exc:
-            logger.warning(
-                "onchain_runtime_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-    if pending_copy_tracker is not None:
-        try:
-            await pending_copy_tracker.stop()
-        except Exception as exc:
-            logger.warning(
-                "pending_copy_tracker_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-    if v1_runtime is not None:
-        try:
-            await v1_runtime.close()
-        except Exception as exc:
-            logger.warning(
-                "v1_runtime_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-    for runtime in user_data_runtimes:
-        try:
-            await runtime.stop()
-        except Exception as exc:
-            logger.warning(
-                "user_data_runtime_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-    for runtime in market_data_runtimes.values():
-        try:
-            await runtime.stop()
-        except Exception as exc:
-            logger.warning(
-                "market_data_runtime_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
-
-    if evidence_drain is not None:
-        await evidence_drain.aclose()
-
-    # Task 21 — release every held account lease for a clean handoff. Must
-    # run BEFORE the pool closes (the release needs the database); a failed
-    # release only logs — the lease then expires by TTL and the next process
-    # takes over with the documented takeover warning.
+    # Task 21 — release every held account lease BEFORE the pool closes.
     if account_lease_manager is not None:
         try:
             await account_lease_manager.close()
@@ -1455,11 +918,6 @@ async def _shutdown_runtime(
     if metrics_runner:
         await metrics_runner.cleanup()
 
-    # Honour the connection layer's documented shutdown contract: the
-    # process-wide asyncpg pool is opened during startup and must be closed
-    # here. Idempotent (no-op when the pool was never initialised, e.g. paper
-    # mode with no DATABASE_URL) and warning-only so a teardown hiccup never
-    # masks the real shutdown reason.
     try:
         from pmcopy.storage.postgres.connection import shutdown_pool
 
@@ -1905,6 +1363,11 @@ async def _run_application(
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
 
+    venue_circuit_breaker = CircuitBreaker.for_venue_config(
+        application.config,
+        on_state_change=lambda st: application.readiness.update(circuit_breaker_state=st.value),
+    )
+
     for runtime_user in runtime_users:
         venue_runtime = await build_polymarket_runtime(
             runtime_user=runtime_user,
@@ -1927,6 +1390,7 @@ async def _run_application(
             copy_admission=auto_traders,
             provider_runtime=provider_runtime,
             evidence_projection=evidence_projection,
+            venue_circuit_breaker=venue_circuit_breaker,
         )
 
     logger.info(
@@ -2033,7 +1497,7 @@ async def _run_application(
             *(item for values in contexts_by_leader.values() for item in values),
         )
     }.values():
-        context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
+        context.leader_sell_scope_guard = leader_sell_scope_guard
     from pmcopy.orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
 
     seeded_user_ids: set[str] = set()
@@ -2199,206 +1663,55 @@ async def _run_application(
             extra={"error": redact_error_detail(exc)},
         )
 
-    if v1_runtime is not None:
-        await v1_runtime.start()
-
-    onchain_runtime = None
-
-    # Start market-data WSS only after portfolio/database convergence. Starting
-    # it earlier can subscribe/probe stale tokens that manual_sync has not yet
-    # filtered and drift has not yet pruned.
-    live_positions_by_user = {}
-    for runtime_user in runtime_users:
-        logger.info(
-            "startup_stage | stage=live_positions_refresh_started user=%s",
-            runtime_user.user_id,
-        )
-        _refreshed = await fetch_live_positions(runtime_user.wallet.funder_address)
-        live_positions_by_user[runtime_user.user_id] = _refreshed or []
-        logger.info(
-            "startup_stage | stage=live_positions_refresh_completed user=%s positions=%s",
-            runtime_user.user_id,
-            "fetch_failed" if _refreshed is None else len(_refreshed),
-        )
-
-    logger.info("startup_stage | stage=market_data_runtimes_starting")
-    market_data_runtimes = await _start_market_data_runtimes(
-        runtime_users=runtime_users,
-        user_states=user_states,
-        live_positions_by_user=live_positions_by_user,
-        contexts_by_leader=contexts_by_leader,
-        readiness=application.readiness,
-        config=application.config,
-        quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
-        telemetry=telemetry_emitters.wss,
-        latency=telemetry_emitters.latency,
-        evidence_runtime=evidence_runtime,
-    )
-    logger.info(
-        "startup_stage | stage=market_data_runtimes_started users=%d",
-        len(market_data_runtimes),
-    )
-
-    _attach_market_data_runtime_to_contexts(
-        contexts_by_leader=contexts_by_leader,
-        risk_contexts_by_user=risk_contexts_by_user,
-        runtimes_by_user=market_data_runtimes,
-    )
-
-    # User WSS runtimes are started AFTER reconciler readiness is set AND
-    # after drift_check populated prune timestamps so on_reconcile_signal
-    # + manual_sync.trigger_sync(reason="wss_authenticated") respect the
-    # holdoff window.
-    logger.info("startup_stage | stage=user_data_runtimes_starting")
-    user_data_runtimes = await _start_user_data_runtimes(
-        runtime_users=runtime_users,
-        user_states=user_states,
-        readiness=application.readiness,
-        risk_contexts_by_user=risk_contexts_by_user,
-        market_data_runtimes=market_data_runtimes,
-        telemetry=telemetry_emitters.wss,
-    )
-    logger.info(
-        "startup_stage | stage=user_data_runtimes_started users=%d",
-        len(user_data_runtimes),
-    )
-    if drift_per_user and not all(drift_per_user.values()):
-        unresolved = [u for u, ok in drift_per_user.items() if not ok]
-        logger.warning(
-            "startup_drift_unresolved | users=%s — affected scopes are paused",
-            unresolved,
-        )
-
-    if startup_reconciled:
-        application.readiness.update(
-            startup_reconciled_orders=sum(startup_reconciled.values()),
-        )
-
-    first_user = runtime_users[0]
-    live_positions = live_positions_by_user.get(first_user.user_id, [])
-    health_report = health_reports_by_user[first_user.user_id]
-
-    # INF-01: keep portfolio totals as Decimal end-to-end. ``currentValue``
-    # is a venue-returned string/float; ``_to_decimal_balance`` normalises
-    # both representations before summing so a single bad row cannot
-    # silently coerce the running total back to float.
-    live_positions_value: Decimal = sum(
-        (_to_decimal_balance(position.get("currentValue")) for position in live_positions),
-        start=Decimal("0"),
-    )
-    available_cash: Decimal = user_balances.get(first_user.user_id, Decimal("0"))
-
-    all_health_reports = list(health_reports_by_user.values())
-    startup_health_healthy = all(report.healthy for report in all_health_reports)
-    startup_health_status = "healthy" if startup_health_healthy else "unhealthy"
-    startup_pruned_positions = sum(
-        report.position_sync.pruned_positions for report in all_health_reports
-    )
-    startup_purged_failed_orders = sum(
-        report.order_cleanup.purged_failed for report in all_health_reports
-    )
-
-    for runtime_user in runtime_users[1:]:
-        secondary_report = health_reports_by_user.get(runtime_user.user_id)
-        if secondary_report is not None and not secondary_report.healthy:
-            logger.warning(
-                "secondary_startup_health_unhealthy",
-                extra={
-                    "user_id": runtime_user.user_id,
-                    "wallet": runtime_user.wallet.funder_address,
-                    "status": secondary_report.status,
-                },
-            )
-
-    application.readiness.update(
-        startup_health_status=startup_health_status,
-        startup_health_healthy=startup_health_healthy,
-        startup_pruned_positions=startup_pruned_positions,
-        startup_purged_failed_orders=startup_purged_failed_orders,
-    )
-
-    print_startup_summary(
-        wallet=first_user.wallet.funder_address,
-        available_cash=available_cash,
-        total_portfolio=available_cash + live_positions_value,
-        positions=live_positions,
-        active_leaders=monitored_leaders,
-        config=application.config,
-        health_report=health_report,
-    )
-
     monitor_tasks: list[asyncio.Task] = []
     monitor_wallet_by_task: dict[asyncio.Task, str] = {}
     monitored_set: set[str] = set(monitored_leaders)
-    # Bound before ``_on_new_leaders`` closes over it: the discovery loop is
-    # spawned before the on-chain runtime is constructed below, so the name
-    # must already exist for the closure to read at call time.
+    supervised: list[_Supervised] = []
+    market_data_runtimes: dict[str, MarketDataRuntime] = {}
+    user_data_runtimes: list[UserDataRuntime] = []
     onchain_runtime = None
-    # Bound here so the shutdown path can stop it even when the on-chain
-    # composition below never runs or fails part-way through.
     pending_copy_tracker = None
 
-    async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
-        started_wallets = await _refresh_contexts_for_new_leaders(
-            new_wallets=new_wallets,
+    # WP-B: enter the deterministic shutdown guard BEFORE starting background
+    # workers, market/user WSS streams, paper evaluation, or supervised loops
+    # so any mid-startup exception tears down every started runtime cleanly.
+    try:
+        if v1_runtime is not None:
+            await v1_runtime.start()
+
+        # Start market-data WSS only after portfolio/database convergence.
+        live_positions_by_user = {}
+        for runtime_user in runtime_users:
+            logger.info(
+                "startup_stage | stage=live_positions_refresh_started user=%s",
+                runtime_user.user_id,
+            )
+            _refreshed = await fetch_live_positions(runtime_user.wallet.funder_address)
+            live_positions_by_user[runtime_user.user_id] = _refreshed or []
+            logger.info(
+                "startup_stage | stage=live_positions_refresh_completed user=%s positions=%s",
+                runtime_user.user_id,
+                "fetch_failed" if _refreshed is None else len(_refreshed),
+            )
+
+        logger.info("startup_stage | stage=market_data_runtimes_starting")
+        market_data_runtimes = await _start_market_data_runtimes(
             runtime_users=runtime_users,
             user_states=user_states,
+            live_positions_by_user=live_positions_by_user,
             contexts_by_leader=contexts_by_leader,
-            leaders_repo=leaders_repo,
-            config=application.config,
             readiness=application.readiness,
+            config=application.config,
+            quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
+            telemetry=telemetry_emitters.wss,
+            latency=telemetry_emitters.latency,
+            evidence_runtime=evidence_runtime,
+            runtimes_out=market_data_runtimes,
         )
-
-        monitored_leader_count = len(
-            [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
+        logger.info(
+            "startup_stage | stage=market_data_runtimes_started users=%d",
+            len(market_data_runtimes),
         )
-        # Off-path operator projection: the roster only changes when discovery
-        # promotes leaders, and the emit is synchronous and exception-guarded.
-        telemetry_emitters.detection.roster_updated(monitored_leader_count)
-
-        await _subscribe_context_tokens(
-            market_data_runtimes=market_data_runtimes,
-            contexts_by_leader=contexts_by_leader,
-        )
-
-        # CLAUDE.md non-negotiable: startup reconciliation MUST run before
-        # risk / trade loops for every context — including those wired
-        # dynamically by the discovery refresh loop. Pre-fix, the new
-        # monitor task started without ever running reconcile, leaving any
-        # unconfirmed fills from the prior session unobserved.
-        new_contexts: list["TradingContext"] = []
-        for wallet in started_wallets:
-            new_contexts.extend(contexts_by_leader.get(wallet, []))
-        dynamic_recon_failures: list[str] = []
-        if new_contexts:
-            for context in new_contexts:
-                context.extra["leader_sell_scope_guard"] = leader_sell_scope_guard
-            await startup_reconcile_unconfirmed(
-                new_contexts,
-                failures_out=dynamic_recon_failures,
-            )
-
-        # SHP-11: drop any leader whose downstream contexts include a
-        # failed user_id. Starting a monitor on stale state is the same
-        # double-fill exposure the startup path already gates against —
-        # the dynamic-discovery path must match.
-        blocked_wallets = _wallets_blocked_by_reconcile_failures(
-            started_wallets,
-            contexts_by_leader,
-            dynamic_recon_failures,
-        )
-        if blocked_wallets:
-            logger.error(
-                "dynamic_leader_reconcile_failed | blocked_leaders=%s "
-                "failed_users=%s — monitors will NOT start for these "
-                "leaders; operators must inspect and re-trigger",
-                blocked_wallets,
-                dynamic_recon_failures,
-            )
-            blocked_set = set(blocked_wallets)
-            for blocked_wallet in blocked_set:
-                contexts_by_leader.pop(blocked_wallet, None)
-            started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
 
         _attach_market_data_runtime_to_contexts(
             contexts_by_leader=contexts_by_leader,
@@ -2406,254 +1719,376 @@ async def _run_application(
             runtimes_by_user=market_data_runtimes,
         )
 
-        unblocked_contexts = [
-            context for wallet in started_wallets for context in contexts_by_leader.get(wallet, ())
-        ]
-        if v1_runtime is not None and unblocked_contexts:
-            v1_runtime.add_contexts(unblocked_contexts)
-
-        if started_wallets:
-            for wallet in started_wallets:
-                if wallet not in monitored_set:
-                    monitored_leaders.append(wallet)
-                    monitored_set.add(wallet)
-            if onchain_runtime is not None:
-                onchain_runtime.update_watched_wallets(monitored_set)
-            logger.info(
-                "alchemy_detection_roster_updated | added=%d total=%d",
-                len(started_wallets),
-                len(monitored_set),
+        # User WSS runtimes are started AFTER reconciler readiness is set AND
+        # after drift_check populated prune timestamps.
+        logger.info("startup_stage | stage=user_data_runtimes_starting")
+        user_data_runtimes = await _start_user_data_runtimes(
+            runtime_users=runtime_users,
+            user_states=user_states,
+            readiness=application.readiness,
+            risk_contexts_by_user=risk_contexts_by_user,
+            market_data_runtimes=market_data_runtimes,
+            telemetry=telemetry_emitters.wss,
+            runtimes_out=user_data_runtimes,
+        )
+        logger.info(
+            "startup_stage | stage=user_data_runtimes_started users=%d",
+            len(user_data_runtimes),
+        )
+        if drift_per_user and not all(drift_per_user.values()):
+            unresolved = [u for u, ok in drift_per_user.items() if not ok]
+            logger.warning(
+                "startup_drift_unresolved | users=%s — affected scopes are paused",
+                unresolved,
             )
+
+        if startup_reconciled:
+            application.readiness.update(
+                startup_reconciled_orders=sum(startup_reconciled.values()),
+            )
+
+        first_user = runtime_users[0]
+        live_positions = live_positions_by_user.get(first_user.user_id, [])
+        health_report = health_reports_by_user[first_user.user_id]
+
+        live_positions_value: Decimal = sum(
+            (_to_decimal_balance(position.get("currentValue")) for position in live_positions),
+            start=Decimal("0"),
+        )
+        available_cash: Decimal = user_balances.get(first_user.user_id, Decimal("0"))
+
+        all_health_reports = list(health_reports_by_user.values())
+        startup_health_healthy = all(report.healthy for report in all_health_reports)
+        startup_health_status = "healthy" if startup_health_healthy else "unhealthy"
+        startup_pruned_positions = sum(
+            report.position_sync.pruned_positions for report in all_health_reports
+        )
+        startup_purged_failed_orders = sum(
+            report.order_cleanup.purged_failed for report in all_health_reports
+        )
+
+        for runtime_user in runtime_users[1:]:
+            secondary_report = health_reports_by_user.get(runtime_user.user_id)
+            if secondary_report is not None and not secondary_report.healthy:
+                logger.warning(
+                    "secondary_startup_health_unhealthy",
+                    extra={
+                        "user_id": runtime_user.user_id,
+                        "wallet": runtime_user.wallet.funder_address,
+                        "status": secondary_report.status,
+                    },
+                )
+
         application.readiness.update(
-            monitored_leader_count=len(onchain_runtime.active_wallets())
-            if onchain_runtime is not None
-            else len(monitored_set)
-        )
-        return started_wallets
-
-    async def _on_retired_leaders(wallets: list[str]) -> None:
-        """Retire only monitors already proven free of outstanding exit ownership."""
-        retired = set(wallets)
-        tasks = [task for task, wallet in monitor_wallet_by_task.items() if wallet in retired]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for task in tasks:
-            monitor_wallet_by_task.pop(task, None)
-            if task in monitor_tasks:
-                monitor_tasks.remove(task)
-        for wallet in retired:
-            contexts_by_leader.pop(wallet, None)
-            if v1_runtime is not None:
-                await v1_runtime.retire_leader(wallet)
-        monitored_leaders[:] = [wallet for wallet in monitored_leaders if wallet not in retired]
-        monitored_set.difference_update(retired)
-        _refresh_onchain_watched_wallets(onchain_runtime, monitored_set)
-        application.readiness.update(monitored_leader_count=len(monitored_set))
-        telemetry_emitters.detection.roster_updated(len(monitored_set))
-
-    # Auxiliary long-lived loops are registered as _Supervised specs and driven
-    # by the main wait loop below (bounded restart, fail-closed on exhaustion)
-    # instead of being fire-and-forget. Each factory must return a FRESH
-    # awaitable per call so a crashed loop can be respawned.
-    supervised: list[_Supervised] = []
-
-    # Bounded no-order-id lost-POST recovery. Registered only when at least one
-    # follower has a read-only evidence source wired; a missing service leaves
-    # the ambiguous rows duplicate-blocking exactly as before. The factory must
-    # return a FRESH awaitable per call (see _Supervised).
-    recovery_services = {
-        user_id: getattr(state, "ambiguous_recovery", None)
-        for user_id, state in user_states.items()
-    }
-    recovery_services = {
-        user_id: service for user_id, service in recovery_services.items() if service is not None
-    }
-    if recovery_services:
-        from pmcopy.orchestrators.runtime_bootstrap import ambiguous_recovery_loop
-
-        _recovery_interval = float(
-            application.config.reconciliation.ambiguous_recovery.interval_seconds
-        )
-        supervised.append(
-            _Supervised(
-                name="ambiguous-recovery",
-                factory=lambda: ambiguous_recovery_loop(
-                    recovery_services, interval_seconds=_recovery_interval
-                ),
-            )
-        )
-        logger.info(
-            "ambiguous_recovery_wired | users=%d interval_seconds=%s",
-            len(recovery_services),
-            _recovery_interval,
+            startup_health_status=startup_health_status,
+            startup_health_healthy=startup_health_healthy,
+            startup_pruned_positions=startup_pruned_positions,
+            startup_purged_failed_orders=startup_purged_failed_orders,
         )
 
-    paper_evaluation = None
-    if auto_traders is not None:
-        from pmcopy.orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
-
-        paper_evaluation = AutoTraderPaperRuntime.create(
-            lifecycle=auto_traders,
-            pool=_pool,
-            states=user_states,
+        print_startup_summary(
+            wallet=first_user.wallet.funder_address,
+            available_cash=available_cash,
+            total_portfolio=available_cash + live_positions_value,
+            positions=live_positions,
+            active_leaders=monitored_leaders,
             config=application.config,
-            contexts=contexts_by_leader,
-            seed_funds=user_balances,
-            clock=AutoTraderRuntime.now,
+            health_report=health_report,
         )
-        await paper_evaluation.prepare()
-        supervised.append(_Supervised(name="auto-trader-paper", factory=paper_evaluation.run))
 
-    if not application.config.execution.paper_trade_only:
-        control_refresh_interval = float(
-            application.config.reconciliation.reconcile_interval_seconds
-        )
-        supervised.append(
-            _Supervised(
-                name="trading-control-refresh",
-                factory=lambda: trading_permission_runtime.run(
-                    interval_seconds=control_refresh_interval
-                ),
+        async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
+            started_wallets = await _refresh_contexts_for_new_leaders(
+                new_wallets=new_wallets,
+                runtime_users=runtime_users,
+                user_states=user_states,
+                contexts_by_leader=contexts_by_leader,
+                leaders_repo=leaders_repo,
+                config=application.config,
+                readiness=application.readiness,
             )
-        )
 
-    if auto_traders is not None:
-        supervised.append(
-            _Supervised(
-                name="auto-trader-evaluation",
-                factory=lambda: auto_traders.run(
-                    evaluation_seconds=application.config.discovery.scheduler.rescore_seconds,
-                    falcon_seconds=application.config.discovery.scheduler.rediscover_seconds,
-                    on_new_leaders=_on_new_leaders,
-                    monitored=monitored_set,
-                    on_retired_leaders=_on_retired_leaders,
-                    evaluate_results=paper_evaluation.evaluate_results
-                    if paper_evaluation is not None
-                    else None,
-                ),
+            monitored_leader_count = len(
+                [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
             )
-        )
-    elif startup_policy.discovery_loop_enabled(application.config) and not configured:
-        dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
-        if not dynamic_monitoring_enabled:
-            logger.info(
-                "discovery_roster_hot_add_disabled",
-                extra={
-                    "roster_hot_add_enabled": False,
-                    "configured_value": False,
-                    "effect": "background discovery will refresh DB only and will not hot-add monitors",
-                },
+            telemetry_emitters.detection.roster_updated(monitored_leader_count)
+
+            await _subscribe_context_tokens(
+                market_data_runtimes=market_data_runtimes,
+                contexts_by_leader=contexts_by_leader,
             )
-        supervised.append(
-            _Supervised(
-                name="discovery-refresh",
-                factory=lambda: _discovery_refresh_loop(
-                    registry,
-                    configured,
-                    refresh_interval,
-                    on_new_leaders=(_on_new_leaders if dynamic_monitoring_enabled else None),
-                    already_monitored=monitored_set,
-                    force_discovery=startup_policy.force_discovery,
-                ),
+
+            new_contexts: list["TradingContext"] = []
+            for wallet in started_wallets:
+                new_contexts.extend(contexts_by_leader.get(wallet, []))
+            dynamic_recon_failures: list[str] = []
+            if new_contexts:
+                for context in new_contexts:
+                    context.leader_sell_scope_guard = leader_sell_scope_guard
+                await startup_reconcile_unconfirmed(
+                    new_contexts,
+                    failures_out=dynamic_recon_failures,
+                )
+
+            blocked_wallets = _wallets_blocked_by_reconcile_failures(
+                started_wallets,
+                contexts_by_leader,
+                dynamic_recon_failures,
             )
-        )
-    elif configured:
-        logger.info(
-            "discovery_skipped_manual_leaders",
-            extra={"configured_leader_count": len(configured)},
-        )
+            if blocked_wallets:
+                logger.error(
+                    "dynamic_leader_reconcile_failed | blocked_leaders=%s "
+                    "failed_users=%s — monitors will NOT start for these "
+                    "leaders; operators must inspect and re-trigger",
+                    blocked_wallets,
+                    dynamic_recon_failures,
+                )
+                blocked_set = set(blocked_wallets)
+                for blocked_wallet in blocked_set:
+                    contexts_by_leader.pop(blocked_wallet, None)
+                started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
 
-    if application.config.risk.enable_risk_mgmt:
-        from pmcopy.services.risk.risk_monitor import risk_monitor_loop_for_contexts
-
-        supervised.append(
-            _Supervised(
-                name="risk-monitor",
-                factory=lambda: risk_monitor_loop_for_contexts(
-                    list(risk_contexts_by_user.values()),
-                    readiness_tracker=application.readiness,
-                    config=application.config,
-                ),
+            _attach_market_data_runtime_to_contexts(
+                contexts_by_leader=contexts_by_leader,
+                risk_contexts_by_user=risk_contexts_by_user,
+                runtimes_by_user=market_data_runtimes,
             )
-        )
 
-    # Standalone reservation reaper for risk-disabled runs. When risk
-    # management is on, its loop already reaps expired reservations in-session;
-    # with it off, a TTL-expired reservation on a stuck submitted_unconfirmed
-    # order would otherwise strand capital/shares until restart. Registered as a
-    # supervised task (only when risk mgmt is off) so it inherits the same
-    # bounded-restart / fail-closed / shutdown treatment as the other aux loops.
-    # See docs/concurrency-audit-response.md (C8-adjacent gap).
-    if not application.config.risk.enable_risk_mgmt:
-        _reaper_interval = max(
-            30.0, float(application.config.reconciliation.reconcile_interval_seconds)
-        )
+            unblocked_contexts = [
+                context
+                for wallet in started_wallets
+                for context in contexts_by_leader.get(wallet, ())
+            ]
+            if v1_runtime is not None and unblocked_contexts:
+                v1_runtime.add_contexts(unblocked_contexts)
 
-        async def _reservation_reaper_loop() -> None:
-            # Re-derive the context list every tick: dynamic leader discovery
-            # (``_on_new_leaders``) mutates ``contexts_by_leader`` in place after
-            # startup, so a one-time snapshot would silently miss any
-            # later-discovered leader — reinstating the exact gap this reaper
-            # closes. Sweep first, then sleep, so an already-expired reservation
-            # is reaped promptly instead of waiting a full interval.
-            while True:
-                await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
-                await asyncio.sleep(_reaper_interval)
+            if started_wallets:
+                for wallet in started_wallets:
+                    if wallet not in monitored_set:
+                        monitored_leaders.append(wallet)
+                        monitored_set.add(wallet)
+                if onchain_runtime is not None:
+                    onchain_runtime.update_watched_wallets(monitored_set)
+                logger.info(
+                    "alchemy_detection_roster_updated | added=%d total=%d",
+                    len(started_wallets),
+                    len(monitored_set),
+                )
+            application.readiness.update(
+                monitored_leader_count=len(onchain_runtime.active_wallets())
+                if onchain_runtime is not None
+                else len(monitored_set)
+            )
+            return started_wallets
 
-        supervised.append(_Supervised(name="reservation-reaper", factory=_reservation_reaper_loop))
+        async def _on_retired_leaders(wallets: list[str]) -> None:
+            """Retire only monitors already proven free of outstanding exit ownership."""
+            retired = set(wallets)
+            tasks = [task for task, wallet in monitor_wallet_by_task.items() if wallet in retired]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                monitor_wallet_by_task.pop(task, None)
+                if task in monitor_tasks:
+                    monitor_tasks.remove(task)
+            for wallet in retired:
+                contexts_by_leader.pop(wallet, None)
+                if v1_runtime is not None:
+                    await v1_runtime.retire_leader(wallet)
+            monitored_leaders[:] = [wallet for wallet in monitored_leaders if wallet not in retired]
+            monitored_set.difference_update(retired)
+            _refresh_onchain_watched_wallets(onchain_runtime, monitored_set)
+            application.readiness.update(monitored_leader_count=len(monitored_set))
+            telemetry_emitters.detection.roster_updated(len(monitored_set))
 
-    supervised.append(
-        _Supervised(
-            name="account-lease-renewal",
-            factory=lambda: account_lease_renewal_loop(account_lease_manager),
-        )
-    )
-
-    # Fixed-cadence operator liveness heartbeat. The runtime is otherwise silent
-    # while idle: the native source logs only on state *change* and risk /
-    # reconciliation only on action, so a healthy idle bot and a wedged one look
-    # identical in the log. This is the one line that always moves.
-    from pmcopy.orchestrators.liveness_heartbeat import (
-        DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-        bot_heartbeat_loop,
-    )
-
-    def _heartbeat_snapshot() -> dict[str, object]:
-        """Read live supervisor state; never mutates and never blocks on I/O."""
-        detection = heartbeat_state.get("detection")
-        ready, _missing = application.readiness.is_ready(strict=False)
-        readiness = application.readiness.snapshot()
-        return {
-            "detection_connected": (bool(detection.connected) if detection is not None else None),
-            "active_leaders": (len(detection.active_wallets()) if detection is not None else None),
-            "monitored_leaders": len(monitored_leaders),
-            "ready": ready,
-            "wss_user_ok": readiness.get("wss_user_ok"),
-            "wss_market_ok": readiness.get("wss_market_ok"),
-            "reconciler_ok": readiness.get("reconciler_ok"),
-            "db_ok": readiness.get("db_ok"),
-            "api_ok": readiness.get("api_ok"),
+        recovery_services = {
+            user_id: getattr(state, "ambiguous_recovery", None)
+            for user_id, state in user_states.items()
         }
+        recovery_services = {
+            user_id: service for user_id, service in recovery_services.items() if service is not None
+        }
+        if recovery_services:
+            from pmcopy.orchestrators.runtime_bootstrap import ambiguous_recovery_loop
 
-    supervised.append(
-        _Supervised(
-            name="bot-heartbeat",
-            factory=lambda: bot_heartbeat_loop(
-                _heartbeat_snapshot,
-                logger=logger,
-                interval_seconds=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-            ),
+            _recovery_interval = float(
+                application.config.reconciliation.ambiguous_recovery.interval_seconds
+            )
+            supervised.append(
+                _Supervised(
+                    name="ambiguous-recovery",
+                    factory=lambda: ambiguous_recovery_loop(
+                        recovery_services, interval_seconds=_recovery_interval
+                    ),
+                )
+            )
+            logger.info(
+                "ambiguous_recovery_wired | users=%d interval_seconds=%s",
+                len(recovery_services),
+                _recovery_interval,
+            )
+
+        paper_evaluation = None
+        if auto_traders is not None:
+            from pmcopy.orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
+
+            paper_evaluation = AutoTraderPaperRuntime.create(
+                lifecycle=auto_traders,
+                pool=_pool,
+                states=user_states,
+                config=application.config,
+                contexts=contexts_by_leader,
+                seed_funds=user_balances,
+                clock=AutoTraderRuntime.now,
+            )
+            await paper_evaluation.prepare()
+            supervised.append(_Supervised(name="auto-trader-paper", factory=paper_evaluation.run))
+
+        if not application.config.execution.paper_trade_only:
+            control_refresh_interval = float(
+                application.config.reconciliation.reconcile_interval_seconds
+            )
+            supervised.append(
+                _Supervised(
+                    name="trading-control-refresh",
+                    factory=lambda: trading_permission_runtime.run(
+                        interval_seconds=control_refresh_interval
+                    ),
+                )
+            )
+
+        if auto_traders is not None:
+            supervised.append(
+                _Supervised(
+                    name="auto-trader-evaluation",
+                    factory=lambda: auto_traders.run(
+                        evaluation_seconds=application.config.discovery.scheduler.rescore_seconds,
+                        falcon_seconds=application.config.discovery.scheduler.rediscover_seconds,
+                        on_new_leaders=_on_new_leaders,
+                        monitored=monitored_set,
+                        on_retired_leaders=_on_retired_leaders,
+                        evaluate_results=paper_evaluation.evaluate_results
+                        if paper_evaluation is not None
+                        else None,
+                    ),
+                )
+            )
+        elif startup_policy.discovery_loop_enabled(application.config) and not configured:
+            dynamic_monitoring_enabled = bool(
+                application.config.discovery.scheduler.start_from_roster
+            )
+            if not dynamic_monitoring_enabled:
+                logger.info(
+                    "discovery_roster_hot_add_disabled",
+                    extra={
+                        "roster_hot_add_enabled": False,
+                        "configured_value": False,
+                        "effect": "background discovery will refresh DB only and will not hot-add monitors",
+                    },
+                )
+            supervised.append(
+                _Supervised(
+                    name="discovery-refresh",
+                    factory=lambda: _discovery_refresh_loop(
+                        registry,
+                        configured,
+                        refresh_interval,
+                        on_new_leaders=(_on_new_leaders if dynamic_monitoring_enabled else None),
+                        already_monitored=monitored_set,
+                        force_discovery=startup_policy.force_discovery,
+                    ),
+                )
+            )
+        elif configured:
+            logger.info(
+                "discovery_skipped_manual_leaders",
+                extra={"configured_leader_count": len(configured)},
+            )
+
+        if application.config.risk.enable_risk_mgmt:
+            from pmcopy.services.risk.risk_monitor import risk_monitor_loop_for_contexts
+
+            supervised.append(
+                _Supervised(
+                    name="risk-monitor",
+                    factory=lambda: risk_monitor_loop_for_contexts(
+                        list(risk_contexts_by_user.values()),
+                        readiness_tracker=application.readiness,
+                        config=application.config,
+                    ),
+                )
+            )
+
+        if not application.config.risk.enable_risk_mgmt:
+            _reaper_interval = max(
+                30.0, float(application.config.reconciliation.reconcile_interval_seconds)
+            )
+
+            async def _reservation_reaper_loop() -> None:
+                while True:
+                    await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
+                    await asyncio.sleep(_reaper_interval)
+
+            supervised.append(
+                _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
+            )
+
+        supervised.append(
+            _Supervised(
+                name="account-lease-renewal",
+                factory=lambda: account_lease_renewal_loop(account_lease_manager),
+            )
         )
-    )
 
-    for spec in supervised:
-        spec.spawn()
+        from pmcopy.orchestrators.liveness_heartbeat import (
+            DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+            bot_heartbeat_loop,
+        )
 
-    # Alchemy-only singleton multiplexed WebSocket detection runtime.
-    # Risk, inventory and reconciliation remain independent supervised loops.
-    try:
+        def _heartbeat_snapshot() -> dict[str, object]:
+            """Read live supervisor state; never mutates and never blocks on I/O."""
+            detection = heartbeat_state.get("detection")
+            ready, _missing = application.readiness.is_ready(strict=False)
+            readiness = application.readiness.snapshot()
+            return {
+                "detection_connected": (
+                    bool(detection.connected) if detection is not None else None
+                ),
+                "active_leaders": (
+                    len(detection.active_wallets()) if detection is not None else None
+                ),
+                "monitored_leaders": len(monitored_leaders),
+                "ready": ready,
+                "wss_user_ok": readiness.get("wss_user_ok"),
+                "wss_market_ok": readiness.get("wss_market_ok"),
+                "reconciler_ok": readiness.get("reconciler_ok"),
+                "db_ok": readiness.get("db_ok"),
+                "api_ok": readiness.get("api_ok"),
+            }
+
+        supervised.append(
+            _Supervised(
+                name="bot-heartbeat",
+                factory=lambda: bot_heartbeat_loop(
+                    _heartbeat_snapshot,
+                    logger=logger,
+                    interval_seconds=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+                ),
+            )
+        )
+
+        supervisor = TaskSupervisor(
+            supervised=supervised,
+            monitor_tasks=monitor_tasks,
+            monitor_wallet_by_task=monitor_wallet_by_task,
+            readiness=application.readiness,
+            refresh_interval=float(refresh_interval),
+            metrics_registry=metrics,
+            logger=logger,
+        )
+        supervisor.spawn_all()
+
         from pmcopy.orchestrators.alchemy_detection_runtime import (
             AlchemyDetectionRuntime,
         )
@@ -2700,111 +2135,7 @@ async def _run_application(
             onchain_runtime = None
             _alchemy_source_changed()
 
-        loop = asyncio.get_running_loop()
-        inspected_done: set[asyncio.Task[Any]] = set()
-        while True:
-            # Wait on leader monitors AND every live supervised aux loop, so a
-            # crash in risk / discovery is observed here rather than dying
-            # silently while the process stays "up".
-            already_done = [
-                task for task in monitor_tasks if task.done() and task not in inspected_done
-            ]
-            already_done += [
-                spec.task
-                for spec in supervised
-                if spec.task is not None and spec.task.done() and spec.task not in inspected_done
-            ]
-            if already_done:
-                done: set[asyncio.Task[Any]] = set(already_done)
-            else:
-                active = [task for task in monitor_tasks if not task.done()]
-                active += [spec.task for spec in supervised if spec.task and not spec.task.done()]
-
-                if not active:
-                    await asyncio.sleep(refresh_interval)
-                    metrics.inc("no_leaders_monitored_total")
-                    continue
-
-                done, _ = await asyncio.wait(active, timeout=refresh_interval)
-            inspected_done.update(done)
-
-            fail_closed = False
-            for task in done:
-                completed_spec = next((s for s in supervised if s.task is task), None)
-
-                # A cancelled task is a normal lifecycle event (shutdown, or a
-                # loop that re-raises CancelledError) — never a crash. Calling
-                # task.exception() on it would raise CancelledError and tear
-                # down the supervisor, turning graceful cancellation into an
-                # exit(1). Treat it as a benign drop.
-                if task.cancelled():
-                    if completed_spec is not None:
-                        logger.info(
-                            "supervised_task_cancelled",
-                            extra={"task": completed_spec.name},
-                        )
-                    continue
-
-                task_error = task.exception()
-
-                if completed_spec is None:
-                    # Leader monitor: log and drop; dynamic discovery
-                    # re-introduces monitors as leaders change. P2-h: a crashed
-                    # leader monitor used to leave ``monitored_leader_count``
-                    # advertising a monitor that no longer exists, so health /
-                    # metrics over-reported live coverage. Re-derive the count
-                    # from the still-live monitor tasks (the crashed one is
-                    # ``done`` here) so the gauge reflects reality and an
-                    # operator can see coverage dropped.
-                    if task_error:
-                        logger.error(
-                            "monitor_task_crashed",
-                            extra={"error": redact_error_detail(task_error)},
-                        )
-                    monitor_wallet_by_task.pop(task, None)
-                    metrics.inc("leader_monitor_crashed_total")
-                    application.readiness.update(
-                        monitored_leader_count=_live_monitor_count(monitor_tasks)
-                    )
-                    continue
-
-                if task_error is None:
-                    # Supervised loops run forever; a clean return means the
-                    # subsystem disabled itself (e.g. config gate). Leave it
-                    # dropped rather than tear the process down.
-                    logger.warning(
-                        "supervised_task_exited_clean",
-                        extra={"task": completed_spec.name},
-                    )
-                    continue
-
-                metrics.inc("supervised_task_restart_total")
-                decision = _on_supervised_crash(completed_spec, loop.time())
-                logger.error(
-                    "supervised_task_crashed",
-                    extra={
-                        "task": completed_spec.name,
-                        "restarts": completed_spec.restarts,
-                        "decision": decision,
-                        "error": redact_error_detail(task_error),
-                    },
-                )
-                if decision == "restart":
-                    await asyncio.sleep(min(5.0, 0.5 * (2 ** max(0, completed_spec.restarts - 1))))
-                    completed_spec.spawn()
-                else:
-                    logger.critical(
-                        "supervised_task_fail_closed",
-                        extra={
-                            "task": completed_spec.name,
-                            "restarts": completed_spec.restarts,
-                        },
-                    )
-                    application.readiness.update(supervisor_ok=False)
-                    fail_closed = True
-
-            if fail_closed:
-                return 1
+        return await supervisor.run_until_stopped()
 
     finally:
         await _shutdown_runtime(
@@ -2823,26 +2154,7 @@ async def _run_application(
 
 async def _close_polymarket_clients(clients: list[Any]) -> None:
     """Close each distinct SDK owner without masking the shutdown reason."""
-    seen: set[int] = set()
-    for client in reversed(clients):
-        identity = id(client)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        close = getattr(client, "close", None)
-        if not callable(close):
-            close = getattr(client, "aclose", None)
-        if not callable(close):
-            continue
-        try:
-            close_result = close()
-            if inspect.isawaitable(close_result):
-                await close_result
-        except Exception as exc:
-            logger.warning(
-                "polymarket_client_shutdown_failed",
-                extra={"error": redact_error_detail(exc)},
-            )
+    await close_polymarket_clients(clients, logger=logger)
 
 
 async def main(*, auto_trader: bool = False, copier: str | None = None) -> int:

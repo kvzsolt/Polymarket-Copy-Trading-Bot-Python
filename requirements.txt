@@ -53,6 +53,8 @@ coincurve==21.0.0 ; implementation_name == 'cpython' and platform_machine != 'x8
     # via ccxt
 colorama==0.4.6 ; sys_platform == 'win32'
     # via pytest
+coverage==7.17.3
+    # via polymarket-copy-trading-bot
 cryptography==50.0.2
     # via ccxt
 cytoolz==1.2.0 ; implementation_name == 'cpython'

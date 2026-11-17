@@ -23,6 +23,10 @@ from typing import cast
 import asyncpg
 from pmcopy.orchestrators.task_protection import TaskProtectiveRuntimeBindings
 
+from pmcopy.application.runtime_state import (
+    bind_task_budget_settlement,
+    resolve_leader_wallet,
+)
 from pmcopy.config.app_config import AppConfig
 from pmcopy.config.v1_runtime import CopyTasksRuntimeConfig
 from pmcopy.orchestrators.v1_event_adapters import (
@@ -125,11 +129,7 @@ def _trader_task_rows(
     wallet = str(getattr(trader, "wallet", "") or "").strip().lower()
     accounts: list[str] = []
     for context in contexts:
-        extra = getattr(context, "extra", None)
-        if isinstance(extra, Mapping):
-            leader = str(extra.get("leader_wallet") or "").strip().lower()
-        else:
-            leader = ""
+        leader = resolve_leader_wallet(context)
         if leader == wallet:
             account = str(
                 getattr(context, "user_id", "") or getattr(context, "wallet_address", "") or ""
@@ -349,13 +349,9 @@ class CopyTaskV1RuntimeHandle:
         values = tuple(contexts)
         if self._settlement_factory is not None:
             for context in values:
-                extra = getattr(context, "extra", None)
-                if isinstance(extra, dict) and "task_budget_settlement" not in extra:
+                if getattr(context, "task_budget_settlement", None) is None:
                     settlement = self._settlement_factory(context)
-                    extra["task_budget_settlement"] = settlement
-                    existing_reconciler = extra.get("_reconciliation_service")
-                    if existing_reconciler is not None:
-                        existing_reconciler.task_budget_settlement = settlement
+                    bind_task_budget_settlement(context, settlement, overwrite=False)
         self._snapshot_provider.add_contexts(values)
         self._execution_adapter.add_contexts(values)
         if self._protective_bindings is not None:
@@ -450,14 +446,8 @@ async def start_v1_copy_task_runtime(
         )
 
     for context in context_values:
-        extra = getattr(context, "extra", None)
-        if not isinstance(extra, dict):
-            continue
         settlement = _make_settlement(context)
-        extra["task_budget_settlement"] = settlement
-        existing_reconciler = extra.get("_reconciliation_service")
-        if existing_reconciler is not None:
-            existing_reconciler.task_budget_settlement = settlement
+        bind_task_budget_settlement(context, settlement, overwrite=True)
     if balance_reader is None:
         from pmcopy.utils.getMyBalance import get_my_balance
 

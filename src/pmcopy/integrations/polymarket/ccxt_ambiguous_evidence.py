@@ -40,6 +40,7 @@ from pmcopy.integrations.polymarket.errors import (
     VenueHistoryIncompleteError,
     VenueSchemaError,
 )
+from pmcopy.interfaces.clob_gateway import PrivateHistoryGateway
 from pmcopy.utils.logger import get_logger
 
 logger = get_logger("AmbiguousEvidence")
@@ -51,32 +52,6 @@ _DEFAULT_CLOCK_SKEW = timedelta(seconds=60)
 # submission amount is persisted post-quantization, so a genuine match is
 # exact to the venue tick while never relying on binary float equality.
 _AMOUNT_EPSILON = Decimal("0.000001")
-
-
-@runtime_checkable
-class PrivateHistoryGateway(Protocol):
-    """Bounded authenticated reads for one market's private history."""
-
-    async def get_fills(
-        self,
-        market: str | None = None,
-        *,
-        trade_id: str | None = None,
-        order_id: str | None = None,
-    ) -> Sequence[Any]:
-        """Return the complete paginated fill history for ``market``."""
-
-        ...
-
-    async def list_open_orders(
-        self,
-        *,
-        order_id: str | None = None,
-        market: str | None = None,
-    ) -> Sequence[Any]:
-        """Return the complete paginated open-order set for ``market``."""
-
-        ...
 
 
 @runtime_checkable

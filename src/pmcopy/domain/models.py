@@ -32,13 +32,3 @@ class TradeSignal:
     outcome: str = ""
     submarket: str = ""
     source_action_id: str | None = None
-
-
-@dataclass
-class PositionSnapshot:
-    user_id: str
-    condition_id: str
-    token_id: str
-    leader_id: str | None
-    size_tokens: Decimal
-    avg_entry_price: Decimal

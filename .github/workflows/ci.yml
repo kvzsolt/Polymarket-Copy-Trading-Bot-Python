@@ -165,7 +165,7 @@ jobs:
           # 7 F401, 4 F811, 1 each B905/B023/B017) was cleared in Task 25;
           # the split hard/soft pair used to conceal new findings behind
           # continue-on-error — the single blocking scan keeps the tree at 0.
-          ruff check --exclude=legacy,test.py,bootstrap.py .
+          ruff check .
       - name: bandit (security — hard fail medium+ severity)
         run: |
           pip install bandit
