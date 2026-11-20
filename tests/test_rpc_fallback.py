@@ -3,7 +3,7 @@
 Covers:
 * Provider creation and pass-through behaviour.
 * Failover logic: error-code detection, exception matching, and fallback routing.
-* URL masking for safe logging.
+* Credential-safe provider configuration logging.
 * Edge cases: empty fallback, same URL as primary, non-failover exceptions.
 
 All tests are pure unit tests — no network I/O.
@@ -21,7 +21,6 @@ from pmcopy.clients.network.rpc_fallback import (
     _FailoverHTTPProvider,
     _is_failover_exception,
     _is_failover_response,
-    _mask_url,
 )
 
 
@@ -80,28 +79,6 @@ class TestIsFailoverException:
 
 
 # ---------------------------------------------------------------------------
-# _mask_url
-# ---------------------------------------------------------------------------
-
-
-class TestMaskUrl:
-    def test_infura_v3(self) -> None:
-        url = "https://polygon-mainnet.infura.io/v3/REDACTED_INFURA_PROJECT_ID"
-        assert _mask_url(url) == "https://polygon-mainnet.infura.io/v3/***"
-
-    def test_query_string(self) -> None:
-        url = "https://example.com/rpc?key=secret123"
-        assert _mask_url(url) == "https://example.com/rpc?***"
-
-    def test_plain_url(self) -> None:
-        url = "https://polygon-rpc.com"
-        assert _mask_url(url) == "https://polygon-rpc.com"
-
-    def test_empty(self) -> None:
-        assert _mask_url("") == ""
-
-
-# ---------------------------------------------------------------------------
 # _FailoverHTTPProvider creation
 # ---------------------------------------------------------------------------
 
@@ -119,6 +96,16 @@ class TestFailoverHTTPProviderCreation:
     def test_fallback_created_when_different(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://fallback.example")
         assert provider._fallback is not None
+
+    def test_configuration_log_omits_both_endpoint_urls(self) -> None:
+        """Only the fallback configuration event may reach the log handler."""
+        with patch("pmcopy.clients.network.rpc_fallback.logger") as logger:
+            _FailoverHTTPProvider(
+                "https://rpc.example/v2/primary-fixture",
+                "https://user:password-fixture@fallback.example/v2/token?query=fixture",
+            )
+
+        logger.info.assert_called_once_with("RPC fallback configured")
 
     def test_http_providers_receive_timeout_request_kwargs(self) -> None:
         with patch("pmcopy.clients.network.rpc_fallback.Web3.HTTPProvider") as http_provider:
@@ -298,4 +285,3 @@ def test_module_imports() -> None:
     assert hasattr(rpc_fallback, "_FailoverHTTPProvider")
     assert hasattr(rpc_fallback, "_is_failover_response")
     assert hasattr(rpc_fallback, "_is_failover_exception")
-    assert hasattr(rpc_fallback, "_mask_url")

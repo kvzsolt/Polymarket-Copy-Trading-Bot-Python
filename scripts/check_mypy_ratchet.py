@@ -128,7 +128,7 @@ def write_manifest(actual: dict[str, int]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Check the per-file mypy error baseline.")
     parser.add_argument(
         "--update",
         action="store_true",

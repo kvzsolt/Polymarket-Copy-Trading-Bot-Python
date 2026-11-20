@@ -20,7 +20,6 @@ from pmcopy.clients.network.provider_transport import (
     ProviderEndpoints,
     ProviderHttpTransport,
 )
-from pmcopy.clients.network.rpc_fallback import _mask_url
 from pmcopy.config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
@@ -504,12 +503,8 @@ async def test_phase2_mined_log_preserves_transport_receipt_and_does_not_fabrica
 
 
 @pytest.mark.asyncio
-async def test_phase2_rpc_mask_url_and_reusable_injected_provider_transport() -> None:
-    """CRITICAL-3 & HIGH-8: _mask_url redacts /v2/ keys and ProviderHttpTransport reuses injected transport."""
-    secret = "SuperSecretAlchemyKey999"
-    masked = _mask_url(f"https://polygon-mainnet.g.alchemy.com/v2/{secret}")
-    assert secret not in masked
-    assert masked == "https://polygon-mainnet.g.alchemy.com/v2/***"
+async def test_phase2_reusable_injected_provider_transport() -> None:
+    """Verify the RPC transport reuses the injected HTTP transport across requests."""
 
     mock_transport = httpx.MockTransport(
         lambda req: httpx.Response(

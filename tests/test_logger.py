@@ -421,7 +421,7 @@ class TestUrlHelpers:
         assert tx_link("") == ""
 
     def test_tx_link_unknown_chain_defaults_polygon(self):
-        assert "polygonscan.com" in tx_link("0xabc", chain="unknown")
+        assert tx_link("0xabc", chain="unknown") == "https://polygonscan.com/tx/0xabc"
 
     def test_event_link(self):
         assert event_link("2026-nba-champion") == "https://polymarket.com/event/2026-nba-champion"

@@ -2069,6 +2069,9 @@ _LEGACY_KEY_ROUTES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("market_data", "rest_degraded_max_spread_bps"): None,
     ("market_data", "rest_degraded_log_every_seconds"): None,
 }
+_RETIRED_KEY_LABELS = {
+    pair: ".".join(pair) for pair, route in _LEGACY_KEY_ROUTES.items() if route is None
+}
 _OBSOLETE_CLOB_CREDENTIAL_KEYS = ("api_key", "api_secret", "api_passphrase")
 
 # Venue backend selection is gone: CCXT is the only transport. These keys must
@@ -2173,10 +2176,9 @@ def _translate_legacy_payload(payload: Mapping[str, Any], *, source: str) -> dic
             route = _LEGACY_KEY_ROUTES.get((section, key), _ROUTE_KEEP)
             if route is None:
                 logger.warning(
-                    "config_legacy_key_dropped | source=%s key=%s.%s",
+                    "config_legacy_key_dropped | source=%s key=%s",
                     source,
-                    section,
-                    key,
+                    _RETIRED_KEY_LABELS[(section, key)],
                 )
                 continue
             if route is _ROUTE_KEEP:
@@ -2211,7 +2213,9 @@ def _resolve_environment(explicit: str | None, secrets_value: str | None = None)
     name = explicit or os.getenv("PMCOPY_ENVIRONMENT") or secrets_value or _DEFAULT_ENVIRONMENT
     name = str(name).strip().lower()
     if not _ENVIRONMENT_NAME_RE.match(name):
-        raise EnvValidationError(f"Invalid configuration environment name: {name!r}")
+        raise EnvValidationError(
+            "Invalid configuration environment name. Check the environment selector."
+        )
     return name
 
 
@@ -2310,18 +2314,22 @@ def _read_trader_configs(directory: Path) -> list[TraderConfig]:
 
 
 def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
-    if not path.exists():
-        if required:
-            raise EnvValidationError(f"Required configuration file is missing: {path}")
-        return {}
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise EnvValidationError(f"Unable to read YAML configuration {path}: {exc}") from exc
+    except FileNotFoundError:
+        if required:
+            raise EnvValidationError(
+                f"Required configuration file is missing: {path.name}"
+            ) from None
+        return {}
+    except (OSError, UnicodeError):
+        raise EnvValidationError(f"Unable to read YAML configuration file {path.name}.") from None
+    except yaml.YAMLError:
+        raise EnvValidationError(f"Invalid YAML syntax in {path.name}.") from None
     if payload is None:
         return {}
     if not isinstance(payload, dict):
-        raise EnvValidationError(f"Configuration root must be a mapping: {path}")
+        raise EnvValidationError(f"Configuration root must be a mapping: {path.name}")
     return {str(key): value for key, value in payload.items()}
 
 
@@ -2569,15 +2577,10 @@ def load_config(
     environments_dir = config_root / "environments" / environment_name
     if environments_dir.is_dir():
         payload = _deep_merge(payload, _read_service_files(environments_dir))
-        logger.info(
-            "config_environment_loaded | environment=%s dir=%s",
-            environment_name,
-            environments_dir,
-        )
+        logger.info("config_environment_loaded")
     elif environment_name != _DEFAULT_ENVIRONMENT:
         raise EnvValidationError(
-            f"Unknown configuration environment {environment_name!r}: "
-            f"{environments_dir} does not exist."
+            "Unknown configuration environment. Check the selector and its config/environments directory."
         )
 
     traders = _read_trader_configs(config_root / "traders")

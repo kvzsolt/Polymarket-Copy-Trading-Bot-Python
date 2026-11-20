@@ -26,7 +26,7 @@ class FilteredGammaScenario(GatewayScenario):
 
     async def get_json(self, url, **kwargs):
         """Return closed metadata only when explicitly requested."""
-        if not url.startswith("https://gamma-api.polymarket.com"):
+        if url != "https://gamma-api.polymarket.com/markets":
             return await super().get_json(url, **kwargs)
         assert not kwargs.get("headers")
         assert kwargs["silent"] is True

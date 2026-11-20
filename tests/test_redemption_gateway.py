@@ -79,16 +79,17 @@ class GatewayScenario:
 
     async def get_json(self, url, **kwargs):
         """Dispatch official endpoint shapes and guard credential separation."""
-        if url.startswith("https://data-api.polymarket.com"):
+        if url == "https://data-api.polymarket.com/positions":
             assert "headers" not in kwargs
             assert kwargs["params"]["sizeThreshold"] == 0
             return self.positions
-        if url.startswith("https://gamma-api.polymarket.com"):
+        if url == "https://gamma-api.polymarket.com/markets":
             assert not kwargs.get("headers")
             return self.metadata
         assert kwargs["headers"]["RELAYER_API_KEY"] == "SYNTHETIC_RELAYER_KEY"
-        if url.endswith("/params"):
+        if url == "https://relayer-v2.polymarket.com/v1/account/transactions/params":
             return self.nonce
+        assert url == "https://relayer-v2.polymarket.com/v1/account/transactions/tx-1"
         return self.status
 
 
