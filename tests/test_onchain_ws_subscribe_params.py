@@ -198,9 +198,7 @@ async def test_connect_log_never_contains_api_key(monkeypatch: pytest.MonkeyPatc
         onchain_ws_module.logger.setLevel(previous_level)
 
     messages = [record.getMessage() for record in records]
-    connected = [message for message in messages if "connected to" in message]
-    assert connected, messages
-    assert "polygon-mainnet.g.alchemy.com" in connected[0]
+    assert "OnchainWS[pendingtx]: connected to polygon-mainnet.g.alchemy.com" in messages
     for message in messages:
         assert secret not in message
         assert "/v2/" not in message

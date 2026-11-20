@@ -34,9 +34,7 @@ def _config(overrides: dict | None = None) -> object:
         "wallet": {"funder_address": ADDRESS},
         "polymarket": {"rpc_url": "https://polygon-mainnet.g.alchemy.com/v2/test-key-123"},
         "detection": {
-            "onchain": {
-                "alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"
-            }
+            "onchain": {"alchemy_wss_url": "wss://polygon-mainnet.g.alchemy.com/v2/test-key-123"}
         },
     }
     if overrides:
@@ -158,7 +156,7 @@ class TestListElementRedaction:
         assert canary not in rendered
         assert REDACTED_PLACEHOLDER in rendered
         # Non-secret list elements stay readable.
-        assert "https://rpc.invalid" in rendered
+        assert out[1] == "https://rpc.invalid"
 
     def test_list_query_parameter_secret_redacted(self) -> None:
         canary = _canary_hex()

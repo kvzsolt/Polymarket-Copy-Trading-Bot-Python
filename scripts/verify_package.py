@@ -35,6 +35,7 @@ Exit code 0 = every proof green.
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 import os
 import shutil
 import subprocess
@@ -255,7 +256,7 @@ def build_artifacts(dist_dir: Path) -> tuple[Path, Path, str]:
     """Build wheel + sdist; return (wheel, sdist, tool description)."""
     dist_dir.mkdir(parents=True, exist_ok=True)
     try:
-        import build  # noqa: F401
+        import_module("build")
 
         cmd = [sys.executable, "-m", "build", "--outdir", str(dist_dir)]
         tool = "python -m build"

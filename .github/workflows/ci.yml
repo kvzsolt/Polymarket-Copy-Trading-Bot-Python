@@ -322,6 +322,7 @@ jobs:
             -e "PMCOPY__NETWORK__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
             -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
             -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
+            -e "PMCOPY__ALCHEMY_WSS_URL=wss://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
             -e "PMCOPY__POLYMARKET__RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/$FAKE_RPC_TOKEN" \
             -e PMCOPY__APP__ENABLE_METRICS_SERVER=true \
             -e PMCOPY__APP__METRICS_BIND_HOST=0.0.0.0 \

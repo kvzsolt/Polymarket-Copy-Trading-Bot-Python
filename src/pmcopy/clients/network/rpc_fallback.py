@@ -23,9 +23,7 @@ degenerates to a single-provider pass-through.
 
 from __future__ import annotations
 
-import re
 from typing import Any
-from urllib.parse import urlsplit
 
 from web3 import Web3
 from web3.providers.base import JSONBaseProvider
@@ -78,11 +76,7 @@ class _FailoverHTTPProvider(JSONBaseProvider):
                 fallback_url.strip(),
                 request_kwargs=request_kwargs,
             )
-            logger.info(
-                "RPC fallback configured: primary=%s fallback=%s",
-                _mask_url(primary_url),
-                _mask_url(fallback_url),
-            )
+            logger.info("RPC fallback configured")
         else:
             logger.debug("RPC fallback not configured (single provider)")
 
@@ -128,32 +122,6 @@ class _FailoverHTTPProvider(JSONBaseProvider):
         # Try fallback.
         logger.info("Failing over to secondary RPC for %s", method)
         return self._fallback.make_request(method, params)
-
-
-_VERSIONED_KEY_RE = re.compile(r"(/v\d+)/[^/?#]+")
-
-
-def _mask_url(url: str) -> str:
-    """Strip API key / credential from URL for safe logging."""
-    if not url:
-        return ""
-    if "?" in url:
-        base = url.split("?", 1)[0]
-        return _mask_url(base) + "?***"
-    masked = _VERSIONED_KEY_RE.sub(r"\1/***", url)
-    if masked != url:
-        return masked
-    parsed = urlsplit(url)
-    if parsed.username or parsed.password:
-        host = parsed.hostname or ""
-        port = f":{parsed.port}" if parsed.port else ""
-        return f"{parsed.scheme}://***@{host}{port}/***"
-    path = parsed.path.rstrip("/")
-    if path and len(path.rsplit("/", 1)[-1]) >= 16:
-        prefix = path.rsplit("/", 1)[0]
-        host = parsed.netloc
-        return f"{parsed.scheme}://{host}{prefix}/***"
-    return url
 
 
 def _is_failover_response(raw: RPCResponse) -> bool:

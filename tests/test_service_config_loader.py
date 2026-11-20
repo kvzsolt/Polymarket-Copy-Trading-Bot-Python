@@ -12,6 +12,7 @@ process PMCOPY__* environment. The environment is selected explicitly
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -190,8 +191,7 @@ def test_legacy_secret_aliases_keep_working_at_the_loader_boundary(
     legacy_http = "https://polygon-mainnet.g.alchemy.com/v2/legacy-alias-key"
     legacy_wss = "wss://polygon-mainnet.g.alchemy.com/v2/legacy-alias-key"
     secrets.write_text(
-        f"PMCOPY__NETWORK__RPC_URL={legacy_http}\n"
-        f"PMCOPY__ALCHEMY_WSS_URL={legacy_wss}\n",
+        f"PMCOPY__NETWORK__RPC_URL={legacy_http}\nPMCOPY__ALCHEMY_WSS_URL={legacy_wss}\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
@@ -447,6 +447,51 @@ def test_environment_selector_in_secrets_env_is_honored(
     config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
 
     assert config.sizing.percentage == 2.0
+
+
+def test_secret_file_values_stay_out_of_config_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Load a custom environment and report a retired key without logging secret input."""
+    monkeypatch.delenv("PMCOPY_ENVIRONMENT", raising=False)
+    selector = "private-profile-fixture"
+    config_dir = _tree(tmp_path, {f"environments/{selector}/sizing.yml": {"percentage": 2}})
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        f"PMCOPY_ENVIRONMENT={selector}\nPMCOPY__EXECUTION__MAX_RETRIES=private-retired-value\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+
+    with caplog.at_level(logging.INFO, logger="AppConfig"):
+        config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
+
+    assert config.sizing.percentage == 2
+    assert "config_environment_loaded" in caplog.messages
+    assert (
+        "config_legacy_key_dropped | source=secrets.env key=execution.max_retries"
+        in caplog.messages
+    )
+    assert selector not in caplog.text
+    assert str(config_dir) not in caplog.text
+    assert "private-retired-value" not in caplog.text
+
+
+@pytest.mark.parametrize("contents", ["[private-value", "- private-value"])
+def test_invalid_environment_yaml_keeps_selector_and_values_out_of_errors(
+    tmp_path: Path, contents: str
+) -> None:
+    """Identify the failing service file without disclosing its directory or contents."""
+    selector = "private-overlay"
+    config_dir = _tree(tmp_path, {f"environments/{selector}/sizing.yml": {}})
+    (config_dir / "environments" / selector / "sizing.yml").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(EnvValidationError, match=r"sizing\.yml") as error:
+        load_config(_overrides(), config_dir=config_dir, environment=selector)
+
+    assert selector not in str(error.value)
+    assert "private-value" not in str(error.value)
+    assert error.value.__cause__ is None
 
 
 def test_explicit_environment_beats_secrets_env_selector(

@@ -59,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: object) -> None:  # silence request logging
         pass
 
-    def _send(self, payload: dict, *, status: int = 200) -> None:
+    def _send(self, payload: dict[str, object] | list[object], *, status: int = 200) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -102,6 +102,7 @@ def main() -> None:
     cert, key = sys.argv[1], sys.argv[2]
     server = ThreadingHTTPServer(("0.0.0.0", 443), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert, key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     print("fake polygon rpc ready on :443", flush=True)
