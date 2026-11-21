@@ -42,8 +42,8 @@ def test_venue_dependencies_are_pinned_and_synchronized() -> None:
         )
 
 
-def test_standalone_constraint_uses_the_verified_exact_release() -> None:
-    """Prevent targeted installs from selecting an unverified patch release."""
+def test_standalone_constraints_use_secure_dependency_versions() -> None:
+    """Keep targeted installs aligned with secure project dependency constraints."""
 
     root = Path(__file__).resolve().parents[1]
     constraints = [
@@ -52,7 +52,7 @@ def test_standalone_constraint_uses_the_verified_exact_release() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert constraints == ["ccxt==4.5.92"]
+    assert constraints == ["certifi>=2026.10.23", "ccxt==4.5.92"]
 
 
 def test_frozen_installs_resolve_the_verified_ccxt_release() -> None:
