@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.clients.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
+from pmcopy.clients.ws.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ class TestFillEvent:
             on_fill=_raise,
         )
 
-        with patch("pmcopy.clients.user_ws.logger.warning") as warning:
+        with patch("pmcopy.clients.ws.user_ws.logger.warning") as warning:
             ws._handle_message(
                 json.dumps(
                     {
@@ -284,7 +284,7 @@ class TestHeartbeat:
 
         mock_ws.send = mock_send
 
-        with patch("pmcopy.clients.user_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("pmcopy.clients.ws.user_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await user_ws._heartbeat(mock_ws)
             assert mock_sleep.call_count >= 2
             for call in mock_sleep.call_args_list:
@@ -300,7 +300,7 @@ class TestHeartbeat:
         mock_ws.send.side_effect = ConnectionError("pipe broken")
         user_ws._running = True
 
-        with patch("pmcopy.clients.user_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.ws.user_ws.asyncio.sleep", new_callable=AsyncMock):
             await user_ws._heartbeat(mock_ws)
             # Should return without raising
 
@@ -323,7 +323,7 @@ class TestHeartbeat:
         async def fake_sleep(_secs: float) -> None:
             ws_client._running = False
 
-        with patch("pmcopy.clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
+        with patch("pmcopy.clients.ws.user_ws.asyncio.sleep", side_effect=fake_sleep):
             await ws_client._heartbeat(sock)
 
         sock.close.assert_awaited()
@@ -385,8 +385,8 @@ class TestReconnect:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("pmcopy.clients.user_ws.websockets.connect", return_value=mock_ctx):
-            with patch("pmcopy.clients.user_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.ws.user_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.ws.user_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         # Should have tried to connect at least twice

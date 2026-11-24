@@ -172,7 +172,7 @@ def test_is_forbidden_matches_wildcard_and_nested(target: str) -> None:
     "target",
     [
         "pmcopy.config.app_config",
-        "pmcopy.services.executionService",
+        "pmcopy.services.execution.execution_service",
         "tests.helpers",  # 'tests' is not 'test_'
         "polymarket_legacy_tools",  # head doesn't start with 'legacy'
         "doctor",  # different prefix

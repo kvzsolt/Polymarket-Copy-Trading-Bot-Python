@@ -1,6 +1,6 @@
 """A06 — strict multi-user configuration boundary contracts.
 
-``services/multiUserConfig.py`` is the operator-facing boundary for
+``services/accounts/multi_user_config.py`` is the operator-facing boundary for
 ``MULTI_USER_CONFIG_FILE``. These tests pin the strict input contracts:
 
 * ``enabled`` accepts only JSON booleans or the exact strings
@@ -43,7 +43,7 @@ from unittest.mock import patch
 
 import pytest
 import pmcopy.config.app_config as app_config_mod
-from pmcopy.services.multiUserConfig import load_runtime_users
+from pmcopy.services.accounts.multi_user_config import load_runtime_users
 from tests.config_helpers import load_test_config
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64

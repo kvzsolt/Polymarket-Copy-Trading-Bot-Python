@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from pmcopy.domain.models import ComplianceDecision
-from pmcopy.utils.fetchData import fetch_data
+from pmcopy.utils.fetch_data import fetch_data
 from pmcopy.utils.logger import get_logger
 
 logger = get_logger("Compliance")

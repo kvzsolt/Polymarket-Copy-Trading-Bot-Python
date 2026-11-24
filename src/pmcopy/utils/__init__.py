@@ -5,8 +5,8 @@ import threading as _threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .fetchData import close_session, fetch_data
-    from .getMyBalance import get_my_balance
+    from .fetch_data import close_session, fetch_data
+    from .wallet_balance import get_my_balance
     from .idempotency import build_trade_key, has_processed, mark_processed
 
 # Polymarket CLOB token IDs are CTF (Conditional Token Framework) uint256
@@ -34,9 +34,9 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
 # ---------------------------------------------------------------------------
 _LAZY_IMPORTS: dict[str, str] = {
     # symbol_name: module_path
-    "fetch_data": "pmcopy.utils.fetchData",
-    "close_session": "pmcopy.utils.fetchData",
-    "get_my_balance": "pmcopy.utils.getMyBalance",
+    "fetch_data": "pmcopy.utils.fetch_data",
+    "close_session": "pmcopy.utils.fetch_data",
+    "get_my_balance": "pmcopy.utils.wallet_balance",
     "build_trade_key": "pmcopy.utils.idempotency",
     "has_processed": "pmcopy.utils.idempotency",
     "mark_processed": "pmcopy.utils.idempotency",

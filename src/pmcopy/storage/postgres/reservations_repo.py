@@ -44,7 +44,7 @@ from typing import TypeAlias, override
 
 import asyncpg
 
-from pmcopy.ports.repositories import (
+from pmcopy.interfaces.repositories import (
     AbstractReservationRepository,
     DuplicateActiveReservationError,
 )

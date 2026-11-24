@@ -445,19 +445,19 @@ async def test_reservation_expiry_callback_is_account_scoped_and_fail_closed(
     A's callback stays reserved, a persistence-lookup failure stays reserved,
     and each callback only ever consults its own account's repositories.
     """
-    from pmcopy.orchestrators.runtime_bootstrap import build_trading_context
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_trading_context
 
     async def _no_reconcile(context, **_kwargs):
         return 0
 
     monkeypatch.setattr(
-        "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", _no_reconcile
+        "pmcopy.orchestrators.pipeline.trade_pipeline.reconcile_submitted_unconfirmed", _no_reconcile
     )
     monkeypatch.setattr(
         "pmcopy.services.risk.risk_monitor.reconcile_unconfirmed_risk_orders", _no_reconcile
     )
     monkeypatch.setattr(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         AsyncMock(return_value=None),
     )
 

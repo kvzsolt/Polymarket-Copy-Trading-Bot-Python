@@ -49,7 +49,7 @@ async def test_explicit_collection_uses_shared_provider_runtime_and_never_publis
 
 
 def test_drain_open_requires_existing_validated_job_and_rejects_changed_plan(tmp_path):
-    from pmcopy.storage.history_import import HistoryImportJournal
+    from pmcopy.storage.local.history_import import HistoryImportJournal
     from tests.test_aethertrade_history_import import plan
 
     missing = tmp_path / "missing"

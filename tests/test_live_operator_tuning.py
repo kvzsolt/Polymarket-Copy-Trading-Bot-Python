@@ -11,7 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pmcopy.config.app_config import AppConfig, load_config
-from pmcopy.services.balance_regime import BalanceRegime
+from pmcopy.services.accounts.balance_regime import BalanceRegime
 from pmcopy.services.risk.risk_engine import headroom_for_buy
 
 BANKROLL = Decimal("350")

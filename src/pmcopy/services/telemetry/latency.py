@@ -6,7 +6,7 @@ from types import TracebackType
 
 from pmcopy.domain.source_time import TransportReceipt
 from pmcopy.interfaces.source_time import ReceiptClock
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     LatencyPhase,
     METRIC_TELEMETRY_LATENCY,
     MetricsRegistry,

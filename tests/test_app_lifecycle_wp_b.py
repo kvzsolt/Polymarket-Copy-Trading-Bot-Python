@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import pmcopy.app as app_module
-from pmcopy.orchestrators.app_lifecycle import (
+from pmcopy.orchestrators.lifecycle.app_lifecycle import (
     CallableCloseResource,
     HealthServerResource,
     ManagedResource,
@@ -17,9 +17,9 @@ from pmcopy.orchestrators.app_lifecycle import (
     SupervisedTaskSpec,
     TaskSupervisor,
 )
-from pmcopy.services.circuitBreaker import CircuitBreaker
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import MetricsRegistry
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_runtime_resource_stack_closes_lifo_once_and_isolates_errors() -> 
 async def test_partial_wss_startup_populates_runtimes_out_for_shutdown(monkeypatch) -> None:
     """When user 2 fails WSS startup, user 1's started runtime is recorded and stopped."""
     monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", AsyncMock())
-    monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
+    monkeypatch.setattr("pmcopy.utils.fetch_data.close_session", AsyncMock())
 
     stopped: list[str] = []
 

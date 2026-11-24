@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 from pmcopy.services.execution.coordinator import ExecutionCoordinatorResult
 from pmcopy.services.execution.types import ExecutionRequest
 
@@ -78,7 +78,7 @@ async def test_pipeline_forwards_fraction_live_cap_and_minimum_policy() -> None:
         token_id="123456",
     )
 
-    with patch("pmcopy.orchestrators.trade_pipeline.logger.info") as info_log:
+    with patch("pmcopy.orchestrators.pipeline.trade_pipeline.logger.info") as info_log:
         await _submit_copy_through_coordinator(
             context,
             request,

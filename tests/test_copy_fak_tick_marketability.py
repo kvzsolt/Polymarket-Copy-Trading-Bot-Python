@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.services.executionService import _copy_fak_limit_on_tick
+from pmcopy.services.execution.execution_service import _copy_fak_limit_on_tick
 
 
 class TestHardBoundSnap:

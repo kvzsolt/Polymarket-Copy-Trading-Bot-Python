@@ -210,7 +210,7 @@ def _copiers_summary(config: AppConfig) -> list[dict]:
     VALUES never reach this summary — resolved private keys live only in
     the ``SecretStr`` wallet config and are never read here.
     """
-    from pmcopy.services.multiUserConfig import load_runtime_users
+    from pmcopy.services.accounts.multi_user_config import load_runtime_users
 
     users = load_runtime_users([], config)
     mode = "live" if not config.execution.paper_trade_only else "paper"

@@ -245,6 +245,7 @@ class PolygonSettlementReader:
                     if len(topics) != 4:
                         raise ValueError
                     source, target = cls._topic_address(topics[2]), cls._topic_address(topics[3])
+                    transfers: tuple[tuple[int, int], ...]
                     if topics[0] == single:
                         token, size = Web3().codec.decode(
                             ["uint256", "uint256"], bytes.fromhex(data[2:])

@@ -21,7 +21,7 @@ from pmcopy.interfaces.clob_gateway import (
     PrivateHistoryGateway,
     VenueCompatibilityProbe,
 )
-from pmcopy.ports.repositories import (
+from pmcopy.interfaces.repositories import (
     AbstractReservationRepository,
     DuplicateActiveReservationError,
 )

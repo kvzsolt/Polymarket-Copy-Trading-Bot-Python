@@ -104,7 +104,7 @@ class Gateway:
 def setup(tmp_path, *, globally_enabled=True, policies=None, **limits):
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
     from pmcopy.domain.pending_evaluation import PendingEvaluationLimits
-    from pmcopy.services.pending_evaluation import BoundedPendingEvaluator
+    from pmcopy.services.discovery.pending_evaluation import BoundedPendingEvaluator
 
     clock, budget, box = Clock(), Budget(), outbox(tmp_path / "box")
     gateway = Gateway(clock)

@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+import pmcopy.orchestrators.bootstrap.runtime_bootstrap as runtime_bootstrap
 from pmcopy.services.execution.reservation_expiry import (
     OrderRowLookup,
     ReservationExpiryDecision,
@@ -425,7 +425,7 @@ async def test_delayed_fill_after_keep_is_accounted_and_releases_once() -> None:
     )
 
     with patch(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         kept = await svc.reconciler_callback("res-1")

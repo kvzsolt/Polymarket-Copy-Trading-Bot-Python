@@ -17,7 +17,7 @@ from pmcopy.config.app_config import EnvValidationError, load_config
 from pmcopy.config.trader_config import TraderConfig
 from pmcopy.domain.detection import DetectionMode
 from pmcopy.domain.provider_budget import ProviderConfigurationError
-from pmcopy.orchestrators.provider_runtime import ProviderRuntime
+from pmcopy.orchestrators.bootstrap.provider_runtime import ProviderRuntime
 
 
 ALCHEMY_WSS = "wss://polygon-mainnet.g.alchemy.com/v2/test-alchemy-key-123"
@@ -437,7 +437,7 @@ class TestSlice3SingletonMultiplexWebSocket:
 
     @pytest.mark.asyncio
     async def test_singleton_connection_multiplexes_slots_and_meters_frames(self) -> None:
-        from pmcopy.clients.alchemy_multiplex_ws import (
+        from pmcopy.clients.ws.alchemy_multiplex_ws import (
             AlchemyMultiplexWebSocket,
             SlotSubscription,
         )
@@ -541,7 +541,7 @@ class TestSlice3SingletonMultiplexWebSocket:
 
     @pytest.mark.asyncio
     async def test_empty_startup_stays_idle_and_debounces_dynamic_resubscriptions(self) -> None:
-        from pmcopy.clients.alchemy_multiplex_ws import (
+        from pmcopy.clients.ws.alchemy_multiplex_ws import (
             AlchemyMultiplexWebSocket,
             SlotSubscription,
         )
@@ -1266,7 +1266,7 @@ class TestSlice6StateMachineAutoDowngradeAndRuntime:
     ) -> None:
         import logging
         from eth_abi import encode
-        from pmcopy.orchestrators.alchemy_detection_runtime import AlchemyDetectionRuntime
+        from pmcopy.orchestrators.detection.alchemy_detection_runtime import AlchemyDetectionRuntime
         from pmcopy.services.onchain_detection import calldata_decoder
         from pmcopy.services.onchain_detection.order_filled_detector import (
             ORDER_FILLED_V2_TOPIC0,
@@ -1462,7 +1462,7 @@ class TestSlice6StateMachineAutoDowngradeAndRuntime:
 
     def test_legacy_session_retires_newheads_and_unfiltered_logs(self) -> None:
         from pmcopy.adapters.polygon.alchemy_json_rpc import AlchemySubscriptionOptions
-        from pmcopy.orchestration.bootstrap import PolygonSourceRuntimeConfig
+        from pmcopy.orchestrators.bootstrap.polygon_bootstrap import PolygonSourceRuntimeConfig
 
         # Unfiltered logs without watched_wallets must be rejected
         with pytest.raises(ValueError, match="watched_wallets"):

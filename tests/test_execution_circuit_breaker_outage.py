@@ -22,9 +22,9 @@ import pytest
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.errors import VenueUnavailableError
 from pmcopy.interfaces.clob_gateway import ClobGateway
-from pmcopy.services.circuitBreaker import CircuitBreaker
-from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker
+from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
 
 def _make_exec_config() -> SimpleNamespace:
@@ -169,7 +169,7 @@ def test_default_breaker_honours_config_failure_threshold_without_mutating_globa
     without mutating hidden module-global state ``_CLOB_CIRCUIT`` (multi-copier
     sharing is owned explicitly at composition in ``runtime_bootstrap``).
     """
-    from pmcopy.services.executionService import _CLOB_CIRCUIT
+    from pmcopy.services.execution.execution_service import _CLOB_CIRCUIT
 
     original_threshold = _CLOB_CIRCUIT.failure_threshold
     cfg = _make_exec_config()

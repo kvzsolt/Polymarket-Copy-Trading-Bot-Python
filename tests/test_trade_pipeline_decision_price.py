@@ -3,7 +3,7 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
-from pmcopy.orchestrators.trade_pipeline import _decision_live_price
+from pmcopy.orchestrators.pipeline.trade_pipeline import _decision_live_price
 
 
 def _sig(side: str, price: str) -> SimpleNamespace:

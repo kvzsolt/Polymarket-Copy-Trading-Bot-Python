@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from pmcopy.domain.detection import TradeSide
-from pmcopy.services.leader_performance import (
+from pmcopy.services.trading.leader_performance import (
     ClosedEpisodeAccumulator,
     FollowerLeaderKey,
     PerformanceFill,

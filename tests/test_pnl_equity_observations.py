@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
 
 NOW = datetime(2026, 9, 8, tzinfo=timezone.utc)
 

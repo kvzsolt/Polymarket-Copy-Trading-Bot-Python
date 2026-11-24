@@ -13,39 +13,39 @@ from pmcopy.application.runtime_state import (
 )
 from pmcopy.config.app_config import AppConfig
 from pmcopy.interfaces.account_inventory import PositionSizeReader
-from pmcopy.services.balance_regime import BalanceRegime
+from pmcopy.services.accounts.balance_regime import BalanceRegime
 from pmcopy.services.copy_tasks.protective_runtime import TaskProtectivePositionManager
-from pmcopy.services.copyDecisionService import CopyDecisionService
-from pmcopy.services.copyStrategy import CopySizingResult, calculate_copy_notional
-from pmcopy.services.entryPermissionService import EntryPermissionService
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.leader_performance import LeaderPerformanceReader
-from pmcopy.services.leaderScoringService import LeaderScoringService
-from pmcopy.services.portfolio_valuation import MarketQuoteSource
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.trading.copy_decision_service import CopyDecisionService
+from pmcopy.services.trading.copy_strategy import CopySizingResult, calculate_copy_notional
+from pmcopy.services.trading.entry_permission_service import EntryPermissionService
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.trading.leader_performance import LeaderPerformanceReader
+from pmcopy.services.trading.leader_scoring_service import LeaderScoringService
+from pmcopy.services.accounting.portfolio_valuation import MarketQuoteSource
+from pmcopy.services.positions.position_coordinator import PositionCoordinator
 from pmcopy.services.telemetry import TelemetryEmitters
 
 if TYPE_CHECKING:
     from pmcopy.interfaces.clob_gateway import ClobGateway, PriceQuoteGateway
-    from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
-    from pmcopy.ports.repositories import (
+    from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
+    from pmcopy.interfaces.repositories import (
         AbstractFillRepository,
         AbstractLeaderRepository,
         AbstractOrderRepository,
         AbstractPositionRepository,
         AbstractReservationRepository,
     )
-    from pmcopy.services.accountingService import AccountingService
+    from pmcopy.services.accounting.accounting_service import AccountingService
     from pmcopy.services.execution.coordinator import ExecutionCoordinator
     from pmcopy.services.execution.reservation_service import ReservationService
-    from pmcopy.services.executionService import ExecutionService
-    from pmcopy.services.market_data_service import MarketDataService
+    from pmcopy.services.execution.execution_service import ExecutionService
+    from pmcopy.services.market_data.market_data_service import MarketDataService
     from pmcopy.services.onchain_detection.leader_sell_scope_guard import (
         LeaderSellBuyScopeGuard,
     )
-    from pmcopy.services.pnlTracker import PnLTracker
-    from pmcopy.services.position_drift_service import PositionDriftService
-    from pmcopy.services.positionManager import PositionManager
+    from pmcopy.services.accounting.pnl_tracker import PnLTracker
+    from pmcopy.services.positions.position_drift_service import PositionDriftService
+    from pmcopy.services.positions.position_manager import PositionManager
     from pmcopy.services.risk.risk_engine import RiskEngine
 
 

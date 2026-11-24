@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.clients.market_ws import MarketWebSocket
+from pmcopy.clients.ws.market_ws import MarketWebSocket
 from tests.test_book_update_atomicity import seeded_store
 
 

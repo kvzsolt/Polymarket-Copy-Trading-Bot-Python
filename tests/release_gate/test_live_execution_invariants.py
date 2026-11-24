@@ -38,7 +38,7 @@ from tests.test_execution_idempotency_extended import (  # type: ignore[import-n
     _pg_pool,
     _reset_circuit,  # noqa: F401 — re-export so the autouse fixture applies
 )
-from pmcopy.services.executionService import ExecutionService  # noqa: E402
+from pmcopy.services.execution.execution_service import ExecutionService  # noqa: E402
 from pmcopy.storage.postgres.orders_repo import OrdersRepo  # noqa: E402
 
 

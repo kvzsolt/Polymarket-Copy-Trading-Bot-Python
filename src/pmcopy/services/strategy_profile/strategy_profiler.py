@@ -32,7 +32,7 @@ from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from pmcopy.models.strategy_profile import StrategyArchetype, StrategyProfile
+from pmcopy.domain.strategy_profile import StrategyArchetype, StrategyProfile
 from pmcopy.services.strategy_profile.leader_history_loader import LoadedHistory
 
 _DAY_MS = 86_400_000

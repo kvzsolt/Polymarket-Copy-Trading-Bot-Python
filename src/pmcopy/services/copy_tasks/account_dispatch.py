@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
@@ -14,8 +13,9 @@ from pmcopy.services.copy_tasks.worker import (
     LeaderWorkerSupervisor,
     WorkerQueueFull,
 )
+from pmcopy.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("CopyAccountDispatch")
 
 
 @dataclass(frozen=True, slots=True)

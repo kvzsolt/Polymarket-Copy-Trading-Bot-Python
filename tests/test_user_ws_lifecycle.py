@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.clients.user_ws import UserWebSocket
+from pmcopy.clients.ws.user_ws import UserWebSocket
 from pmcopy.utils.logger import _reset_lifecycle_dedup_for_tests
 
 
@@ -55,7 +55,7 @@ def _fill_event(trade_status: str, *, order_id: str = "ord-1", token: str = "0xt
 def test_wss_event_emits_canonical_lifecycle_status(trade_status, canonical):
     ws = _ws()
     with (
-        patch("pmcopy.clients.user_ws._log_lc_fallback", create=True),
+        patch("pmcopy.clients.ws.user_ws._log_lc_fallback", create=True),
         patch("pmcopy.utils.logger.log_order_lifecycle") as lc,
     ):
         ws._handle_fill(_fill_event(trade_status, order_id=f"ord-{canonical}"))

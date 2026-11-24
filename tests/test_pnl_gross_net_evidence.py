@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
 
 
 @pytest.mark.asyncio

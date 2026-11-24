@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     METRIC_TELEMETRY_COPY_OUTCOME,
     METRIC_TELEMETRY_EMIT_FAILURE,
     TELEMETRY_METRIC_SCHEMAS,

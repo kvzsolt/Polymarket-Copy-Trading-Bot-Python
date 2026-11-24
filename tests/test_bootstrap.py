@@ -15,12 +15,12 @@ import pytest
 
 from pmcopy.bootstrap import Application, build_app
 from pmcopy.config.app_config import AppConfig
-from pmcopy.ports.repositories import AbstractLeaderRepository
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.interfaces.repositories import AbstractLeaderRepository
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
 from pmcopy.services.discovery.falcon_discovery_service import (
     FalconDiscoveryService,
 )
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.services.observability.health_server import ReadinessTracker
 from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
 from pmcopy.storage.postgres.leaders_repo import LeadersRepo
 

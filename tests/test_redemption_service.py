@@ -16,7 +16,7 @@ from pmcopy.domain.redemption import (
     SettlementMarketError,
     SettlementStorageError,
 )
-from pmcopy.services.settlement import RedemptionService
+from pmcopy.services.accounting.settlement import RedemptionService
 
 WALLET = "0x" + "1" * 40
 

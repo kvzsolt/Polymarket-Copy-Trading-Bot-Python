@@ -263,7 +263,7 @@ async def test_wss_wake_persists_order_evidence_before_reconciliation(
     """Runtime glue records cancellation before scanning unresolved orders."""
 
     import pmcopy.app as app
-    import pmcopy.orchestrators.trade_pipeline as pipeline
+    import pmcopy.orchestrators.pipeline.trade_pipeline as pipeline
 
     call_order: list[str] = []
     reconciler = MagicMock()
@@ -309,7 +309,7 @@ async def test_wss_wake_records_evidence_while_reconcile_is_in_progress(
     """
 
     import pmcopy.app as app
-    import pmcopy.orchestrators.trade_pipeline as pipeline
+    import pmcopy.orchestrators.pipeline.trade_pipeline as pipeline
 
     call_order: list[str] = []
     started = asyncio.Event()

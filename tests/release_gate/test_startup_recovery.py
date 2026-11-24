@@ -12,7 +12,7 @@ import inspect
 
 import pytest
 
-from pmcopy.orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import startup_reconcile_unconfirmed
 
 
 def test_startup_reconcile_unconfirmed_is_coroutine() -> None:
@@ -61,7 +61,9 @@ def test_app_main_calls_startup_reconcile_before_monitors() -> None:
     import ast
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "app.py").read_text(encoding="utf-8")
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "orchestrators" / "app" / "runner.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")
@@ -86,7 +88,9 @@ def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
     import ast
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "app.py").read_text(encoding="utf-8")
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "orchestrators" / "app" / "runner.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")

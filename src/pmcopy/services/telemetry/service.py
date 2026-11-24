@@ -9,7 +9,7 @@ from collections import deque
 from datetime import UTC, datetime
 from typing import Protocol
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     GAUGE_TELEMETRY_ACTIVE_ENTITIES,
     GAUGE_TELEMETRY_CACHE_ENTRIES,
     GAUGE_TELEMETRY_FALCON_DISCOVERY_STATE,

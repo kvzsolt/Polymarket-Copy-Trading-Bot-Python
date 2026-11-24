@@ -21,10 +21,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pmcopy.orchestrators.runtime_bootstrap import build_context_maps
-from pmcopy.orchestrators.runtime_monitor import LeaderBatchDispatcher
-from pmcopy.orchestrators.trade_pipeline import build_trade_key
-from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_context_maps
+from pmcopy.orchestrators.lifecycle.runtime_monitor import LeaderBatchDispatcher
+from pmcopy.orchestrators.pipeline.trade_pipeline import build_trade_key
+from pmcopy.services.positions.position_action_coordinator import PositionScope
 
 from tests.multicopier.conftest import (
     CONDITION,

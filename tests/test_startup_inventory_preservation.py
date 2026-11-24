@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.domain.position_lifecycle import PositionLifecycle
-from pmcopy.orchestrators.startup_health import (
+from pmcopy.orchestrators.lifecycle.startup_health import (
     PositionSyncResult,
     _position_sync_check,
     reconcile_persisted_positions_to_live,

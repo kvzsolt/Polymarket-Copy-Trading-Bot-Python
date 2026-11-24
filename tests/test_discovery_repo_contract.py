@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import inspect
 
-from pmcopy.ports.repositories import AbstractDiscoveryRepository
+from pmcopy.interfaces.repositories import AbstractDiscoveryRepository
 from pmcopy.services.discovery.models import DiscoveryRepository
 from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
 

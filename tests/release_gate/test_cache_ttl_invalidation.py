@@ -53,7 +53,7 @@ def test_evict_clears_all_snapshots() -> None:
 
     The "clear every snapshot" use case (own-fill cache hygiene, reconciler
     full-clear) is owned by ``evict(token)``, which pops the whole token
-    state. This is what ``clients/user_ws.py`` actually calls on fills.
+    state. This is what ``clients/ws/user_ws.py`` actually calls on fills.
     """
     cache = MarketStateStore()
     cache.set_quote("tok", best_bid=Decimal("0.5"), best_ask=Decimal("0.5"))

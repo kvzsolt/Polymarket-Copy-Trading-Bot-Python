@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.services.intentRegistry import (
+from pmcopy.services.execution.intent_registry import (
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
@@ -16,8 +16,8 @@ from pmcopy.services.intentRegistry import (
     Reservation,
     UnknownIntentError,
 )
-from pmcopy.services.positionActionCoordinator import PositionScope
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.positions.position_action_coordinator import PositionScope
+from pmcopy.services.positions.position_coordinator import PositionCoordinator
 
 
 def _scope(token: str = "TKN-A") -> PositionScope:

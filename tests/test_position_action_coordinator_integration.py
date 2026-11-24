@@ -1,7 +1,7 @@
 """Integration tests for the per-scoped-position action coordinator (issue #28).
 
 These tests exercise the wiring end-to-end:
-  * ``execute_trades`` in ``orchestrators/trade_pipeline.py``
+  * ``execute_trades`` in ``orchestrators/pipeline/trade_pipeline.py``
   * ``run_risk_check_for_context`` in ``services/riskMonitor.py``
   * ``reconcile_submitted_unconfirmed`` per-record path
 
@@ -26,12 +26,12 @@ import pmcopy.config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.trade_pipeline import execute_trades
-from pmcopy.services.accountingService import AccountingService
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.services.pnlTracker import PnLTracker
-from pmcopy.services.positionManager import PositionManager
-from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades
+from pmcopy.services.accounting.accounting_service import AccountingService
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
+from pmcopy.services.positions.position_manager import PositionManager
+from pmcopy.services.positions.position_action_coordinator import PositionScope
 from pmcopy.services.risk.risk_engine import RiskEngine
 from pmcopy.services.risk.risk_monitor import run_risk_check_for_context
 from pmcopy.storage.postgres.fills_repo import FillsRepo
@@ -92,7 +92,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):
@@ -122,7 +122,7 @@ def _config(**overrides):
 
 def _make_fresh_bundle():
     from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
     now = time.monotonic()
     return MarketDataBundle(

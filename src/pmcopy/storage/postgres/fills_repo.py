@@ -22,7 +22,7 @@ from typing import Any, TYPE_CHECKING
 
 import asyncpg
 
-from pmcopy.ports.repositories import AbstractFillRepository
+from pmcopy.interfaces.repositories import AbstractFillRepository
 from pmcopy.services.execution.fill_accounting import AccountedOrderFill, FillAccountingConflict
 from pmcopy.storage.postgres.task_fill_projection import PostgresTaskFillProjection
 from pmcopy.storage.postgres.fill_evidence_projection import PostgresFillEvidenceProjection

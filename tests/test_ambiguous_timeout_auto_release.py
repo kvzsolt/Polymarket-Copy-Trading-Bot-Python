@@ -113,7 +113,7 @@ async def test_auto_release_fires_when_all_probes_clean():
         reservation_service=reservation,
         clob_gateway=gw,
     )
-    with patch("pmcopy.services.metrics.metrics.inc_sync") as inc_sync:
+    with patch("pmcopy.services.observability.metrics.metrics.inc_sync") as inc_sync:
         released = await svc._maybe_auto_release_ambiguous(
             _record(),
             side="BUY",
@@ -548,7 +548,7 @@ async def test_timeout_handler_clears_pacing_on_release():
     svc._auto_release_next_probe_at["ord-amb-1"] = (0.0, 30.0)
     svc._auto_release_abort_counts["ord-amb-1"] = 3
 
-    with patch("pmcopy.services.metrics.metrics.inc_sync"):
+    with patch("pmcopy.services.observability.metrics.metrics.inc_sync"):
         timed_out, released = await svc._handle_unresolved_confirmation_timeout(
             _record(), side="BUY", fill_info={"status": "poll_unavailable"}
         )

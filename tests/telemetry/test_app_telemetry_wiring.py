@@ -8,11 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pmcopy.config.app_config as app_config_mod
-import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
+import pmcopy.orchestrators.bootstrap.runtime_bootstrap as runtime_bootstrap
 from pmcopy.application.trading_context import TradingContext
-from pmcopy.orchestrators.runtime_bootstrap import build_trading_context, default_follow
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_trading_context, default_follow
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import MetricsRegistry
 from pmcopy.services.telemetry import ExecutionTelemetryEmitter, TelemetryEmitters
 from tests.config_helpers import load_test_config
 
@@ -178,8 +178,8 @@ def test_build_user_state_threads_the_bundle_into_execution_and_state() -> None:
     emitters = TelemetryEmitters.disabled()
 
     with (
-        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager"),
-        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.PositionManager"),
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.ExecutionService") as execution_service_cls,
     ):
         state = runtime_bootstrap.build_user_state(
             _runtime_user(),
@@ -200,8 +200,8 @@ def test_build_user_state_without_telemetry_uses_the_disabled_bundle() -> None:
     cfg = _config()
 
     with (
-        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager"),
-        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.PositionManager"),
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.ExecutionService") as execution_service_cls,
     ):
         state = runtime_bootstrap.build_user_state(
             _runtime_user(),
@@ -244,7 +244,7 @@ def test_build_trading_context_copies_the_bundle_from_the_user_state() -> None:
     )
 
     with patch(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         context = asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
@@ -255,7 +255,7 @@ def test_build_trading_context_copies_the_bundle_from_the_user_state() -> None:
 def test_execution_service_stores_the_injected_telemetry_emitter() -> None:
     """The execution service holds the emitter without using it yet."""
 
-    from pmcopy.services.executionService import ExecutionService
+    from pmcopy.services.execution.execution_service import ExecutionService
 
     cfg = _config()
     emitter = TelemetryEmitters.disabled().execution

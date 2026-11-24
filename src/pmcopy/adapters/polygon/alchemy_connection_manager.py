@@ -132,7 +132,7 @@ class WebsocketsJsonRpcConnector:
             Connected WebSocket implementing the narrow JSON-RPC transport.
         """
 
-        from pmcopy.clients.alchemy_multiplex_ws import (
+        from pmcopy.clients.ws.alchemy_multiplex_ws import (
             _NoRedirectConnect,
             _SILENT_WS_LOGGER,
         )

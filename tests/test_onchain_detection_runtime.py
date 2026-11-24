@@ -1,4 +1,4 @@
-"""Tests for ``orchestrators/onchain_detection_runtime.py`` (PR2)."""
+"""Tests for ``orchestrators/detection/onchain_detection_runtime.py`` (PR2)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pmcopy.config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
 )
-from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
 from pmcopy.services.onchain_detection.order_filled_detector import ORDER_FILLED_TOPIC0
 from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfig
 from pmcopy.services.onchain_detection.trade_detection_models import (
@@ -823,7 +823,7 @@ async def test_logs_only_runtime_with_empty_roster_opens_no_subscriptions() -> N
     idles visibly, and the first non-empty roster update reopens the filters."""
     import logging
 
-    from pmcopy.orchestrators import onchain_detection_runtime as runtime_module
+    from pmcopy.orchestrators.detection import onchain_detection_runtime as runtime_module
 
     records: list[logging.LogRecord] = []
 
@@ -867,7 +867,7 @@ async def test_resubscribe_failure_is_warned_and_the_next_update_still_processes
     sockets stay subscribed and the next roster update is processed."""
     import logging
 
-    from pmcopy.orchestrators import onchain_detection_runtime as runtime_module
+    from pmcopy.orchestrators.detection import onchain_detection_runtime as runtime_module
 
     calls: list[frozenset[str]] = []
 

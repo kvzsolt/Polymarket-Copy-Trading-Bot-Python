@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pmcopy.orchestrators.trade_pipeline import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import (
     TradePipelineResult,
     build_trade_key,
     execute_trades,
@@ -78,7 +78,7 @@ def _row(raw: dict[str, object], status: str, reason: str | None) -> TradePipeli
 
 async def _run(context, rows, *, signals):
     impl = AsyncMock(return_value=rows)
-    with patch("pmcopy.orchestrators.trade_pipeline._execute_trades_impl", impl):
+    with patch("pmcopy.orchestrators.pipeline.trade_pipeline._execute_trades_impl", impl):
         return await execute_trades(context, LEADER, signals, 1_700_000_000.0)
 
 
@@ -94,7 +94,7 @@ async def _run_fresh(context, rows_factory, *, signals):
     async def _impl(_context, _leader, _signals, _now):
         return rows_factory()
 
-    with patch("pmcopy.orchestrators.trade_pipeline._execute_trades_impl", _impl):
+    with patch("pmcopy.orchestrators.pipeline.trade_pipeline._execute_trades_impl", _impl):
         return await execute_trades(context, LEADER, signals, 1_700_000_000.0)
 
 
@@ -162,7 +162,7 @@ class TestPipelineFailure:
         emitters, service = recording_emitters()
         impl = AsyncMock(side_effect=ValueError("boom"))
 
-        with patch("pmcopy.orchestrators.trade_pipeline._execute_trades_impl", impl):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline._execute_trades_impl", impl):
             with pytest.raises(ValueError, match="boom"):
                 await execute_trades(_context(emitters), LEADER, [_raw()], 1.0)
 
@@ -179,7 +179,7 @@ class TestPipelineFailure:
         emitters, service = recording_emitters()
         impl = AsyncMock(side_effect=asyncio.CancelledError())
 
-        with patch("pmcopy.orchestrators.trade_pipeline._execute_trades_impl", impl):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline._execute_trades_impl", impl):
             with pytest.raises(asyncio.CancelledError):
                 await execute_trades(_context(emitters), LEADER, [_raw()], 1.0)
 
@@ -226,7 +226,7 @@ class TestLatencyAndSafety:
             seen.append(len(service.calls))
             return [_row(raw, "skipped", "already_processed")]
 
-        with patch("pmcopy.orchestrators.trade_pipeline._execute_trades_impl", _impl):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline._execute_trades_impl", _impl):
             await execute_trades(_context(emitters), LEADER, [raw], 1.0)
 
         assert seen == [0]
@@ -237,7 +237,7 @@ class TestReconciliationSweep:
     @pytest.mark.asyncio
     async def test_completed_sweep_is_reported(self) -> None:
         from pmcopy.domain.position_key import PositionKey
-        from pmcopy.services.positionCoordinator import PositionCoordinator
+        from pmcopy.services.positions.position_coordinator import PositionCoordinator
 
         emitters, service = recording_emitters()
         record = {
@@ -260,7 +260,7 @@ class TestReconciliationSweep:
         )
         assert PositionKey.from_reconciliation_record(record)
 
-        with patch("pmcopy.orchestrators.trade_pipeline._reconcile_one", AsyncMock(return_value=True)):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline._reconcile_one", AsyncMock(return_value=True)):
             reconciled = await reconcile_submitted_unconfirmed(context)
 
         assert reconciled == 1
@@ -270,7 +270,7 @@ class TestReconciliationSweep:
 
     @pytest.mark.asyncio
     async def test_empty_sweep_reports_nothing(self) -> None:
-        from pmcopy.services.positionCoordinator import PositionCoordinator
+        from pmcopy.services.positions.position_coordinator import PositionCoordinator
 
         emitters, service = recording_emitters()
         context = SimpleNamespace(
@@ -322,7 +322,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", _fake_balance)
 
 
 @_integration

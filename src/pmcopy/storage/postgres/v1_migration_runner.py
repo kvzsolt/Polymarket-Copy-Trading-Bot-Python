@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-
-import asyncpg
+from typing import Any, TypeAlias
 
 from pmcopy.utils.packaged_resources import packaged_resource_dir
 
-MigrationConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
+MigrationConnection: TypeAlias = Any
 
 
 @dataclass(frozen=True, slots=True)

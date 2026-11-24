@@ -153,7 +153,7 @@ def _normalize_jsonl_line(line: str) -> str:
 
 def _build_startup_health_report():
     """Construct a synthetic StartupHealthReport via the production dataclasses."""
-    from pmcopy.orchestrators.startup_health import (
+    from pmcopy.orchestrators.lifecycle.startup_health import (
         OrderStartupCleanupResult,
         PositionSyncResult,
         StartupHealthCheckItem,
@@ -271,7 +271,7 @@ def drive_startup(log) -> None:
 
 
 def drive_detection_event(log) -> None:
-    """services/tradeMonitor.py::_log_detected_trade (panel + JSONL record)."""
+    """services/trading/trade_monitor.py::_log_detected_trade (panel + JSONL record)."""
     trade = {
         "proxyWallet": LEADER_WALLET,
         "side": "BUY",
@@ -311,7 +311,7 @@ def drive_detection_event(log) -> None:
 
 
 def drive_sizing_decision(log) -> None:
-    """orchestrators/trade_pipeline.py sizing_audit / sizing_final / decision.
+    """orchestrators/pipeline/trade_pipeline.py sizing_audit / sizing_final / decision.
 
     sizing_audit, sizing_final and trade_decision are JSONL-only types: the
     console fixture for this event is intentionally EMPTY — that emptiness is
@@ -592,7 +592,7 @@ def drive_recovery(log) -> None:
 
 
 def drive_position_drift(log) -> None:
-    """services/position_drift_service.py::_emit (clean + pause_scope drift)."""
+    """services/positions/position_drift_service.py::_emit (clean + pause_scope drift)."""
     log_position_drift(
         log,
         status="clean",

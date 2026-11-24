@@ -12,7 +12,7 @@ The lifecycle emitter previously (a) only checked the camelCase
 emitter is logging-only; settlement remains reconciler-owned.
 """
 
-import pmcopy.clients.user_ws as user_ws
+import pmcopy.clients.ws.user_ws as user_ws
 import pmcopy.utils.logger as logger_mod
 
 

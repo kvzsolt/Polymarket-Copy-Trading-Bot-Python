@@ -8,7 +8,7 @@ from typing import Protocol
 from pmcopy.domain.cost_basis import PositionCostBasis
 from pmcopy.domain.performance import PerformanceUnits
 from pmcopy.domain.position_lifecycle import PositionClassification, PositionLifecycle
-from pmcopy.services.portfolio_valuation import CachedMarkPolicy, MarketQuoteSource
+from pmcopy.services.accounting.portfolio_valuation import CachedMarkPolicy, MarketQuoteSource
 
 
 class RiskPosition(Protocol):

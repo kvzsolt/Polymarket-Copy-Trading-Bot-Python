@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pmcopy.orchestrators.account_inventory_startup import InitialInventorySync
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.orchestrators.lifecycle.account_inventory_startup import InitialInventorySync
+from pmcopy.services.observability.health_server import ReadinessTracker
 from tests.test_manual_sync_inventory_convergence import SyncScenario
 from tests.test_positions_repo_set_position_size import VALID_TOKEN, _repo_with_current
 

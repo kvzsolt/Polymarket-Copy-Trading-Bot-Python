@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from pmcopy.services.accountingService import _required_decimal_str
+from pmcopy.services.accounting.accounting_service import _required_decimal_str
 
 
 def test_required_decimal_str_accepts_str_decimal_and_float() -> None:

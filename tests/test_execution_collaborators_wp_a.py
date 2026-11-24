@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pmcopy.services.circuitBreaker import CircuitBreaker, CircuitState
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker, CircuitState
 from pmcopy.services.execution.admission_gates import (
     ExecutionAdmissionEvaluator,
     ValidatedAdmission,

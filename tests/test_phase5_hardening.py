@@ -22,8 +22,8 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
-from pmcopy.services.intentRegistry import (
+from pmcopy.clients.ws.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
+from pmcopy.services.execution.intent_registry import (
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
@@ -31,11 +31,11 @@ from pmcopy.services.intentRegistry import (
     IntentState,
     Reservation,
 )
-from pmcopy.services.positionActionCoordinator import (
+from pmcopy.services.positions.position_action_coordinator import (
     PositionActionCoordinator,
     PositionScope,
 )
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.positions.position_coordinator import PositionCoordinator
 from pmcopy.cache.market_state_store import MarketStateStore
 
 

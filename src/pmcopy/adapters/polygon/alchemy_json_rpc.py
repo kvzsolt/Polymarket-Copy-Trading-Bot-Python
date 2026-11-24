@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pmcopy.adapters.clock import SystemReceiptClock
+from pmcopy.adapters.time.clock import SystemReceiptClock
 from pmcopy.interfaces.source_time import ReceiptClock
 
 import asyncio

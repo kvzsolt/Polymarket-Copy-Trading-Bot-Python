@@ -14,8 +14,8 @@ import pytest
 
 import pmcopy.app as app
 from pmcopy.bot_cli.commands.run import run_run
-from pmcopy.orchestrators.user_data_runtime import UserDataRuntime
-from pmcopy.services.manual_sync_service import ManualSyncService
+from pmcopy.orchestrators.streaming.user_data_runtime import UserDataRuntime
+from pmcopy.services.positions.manual_sync_service import ManualSyncService
 
 
 class ShutdownScenario:
@@ -87,7 +87,7 @@ def test_repeated_interrupt_finishes_runtime_cleanup(
     close_pool = AsyncMock()
     monkeypatch.setattr(app, "main", scenario.run)
     monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", close_pool)
-    monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
+    monkeypatch.setattr("pmcopy.utils.fetch_data.close_session", AsyncMock())
     original_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     try:

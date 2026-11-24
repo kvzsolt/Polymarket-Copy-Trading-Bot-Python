@@ -8,12 +8,43 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from math import isfinite
 from typing import Protocol
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_UNIX_SECONDS = 253402300799
+
+
+def parse_log_block_timestamp_ms(raw_log: Mapping[str, object]) -> int | None:
+    """Parse an immutable ``blockTimestamp`` directly from a mined EVM log.
+
+    Alchemy Polygon ``eth_subscribe("logs", ...)`` frames carry ``blockTimestamp``
+    as a 0x-prefixed Unix-seconds hex string. Extracting it directly avoids an
+    extra ``eth_getBlockByHash`` RPC round-trip on the detection hot path while
+    preserving immutable chain time (never local receipt/processing time).
+    """
+    if not isinstance(raw_log, Mapping):
+        return None
+    raw = raw_log.get("blockTimestamp", raw_log.get("block_timestamp"))
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        if isinstance(raw, int):
+            seconds = raw
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            if text.startswith(("0x", "0X")):
+                seconds = int(text, 16)
+            else:
+                seconds = int(text, 10)
+        else:
+            return None
+    except ValueError:
+        return None
+    return seconds * 1000 if 0 <= seconds <= _MAX_UNIX_SECONDS else None
 
 
 class JsonRpcHttpReader(Protocol):
@@ -71,6 +102,7 @@ class RpcBlockTimestampReader:
         self._capacity = cache_capacity
         self._timeout_seconds = timeout_seconds
         self._cache: OrderedDict[str, int] = OrderedDict()
+        self._inflight: dict[str, asyncio.Future[int | None]] = {}
         self._concurrency = asyncio.Semaphore(8)
 
     async def timestamp_ms(self, block_hash: str) -> int | None:
@@ -97,6 +129,25 @@ class RpcBlockTimestampReader:
         if cached is not None:
             self._cache.move_to_end(identity)
             return cached
+        existing = self._inflight.get(identity)
+        if existing is not None:
+            return await asyncio.shield(existing)
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[int | None] = loop.create_future()
+        self._inflight[identity] = fut
+        try:
+            value = await self._fetch_block_timestamp_ms(identity)
+            if not fut.done():
+                fut.set_result(value)
+            return value
+        except BaseException as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            self._inflight.pop(identity, None)
+
+    async def _fetch_block_timestamp_ms(self, identity: str) -> int | None:
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 async with self._concurrency:

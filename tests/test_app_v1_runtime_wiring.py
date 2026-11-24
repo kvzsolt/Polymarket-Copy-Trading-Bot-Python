@@ -13,7 +13,7 @@ import inspect
 
 def test_v1_wiring_imports_resolve() -> None:
     """The lazy imports used by app.main()'s v1 wiring must resolve."""
-    from pmcopy.orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
+    from pmcopy.orchestrators.copy_tasks.v1_runtime_bootstrap import start_v1_copy_task_runtime
 
     assert callable(start_v1_copy_task_runtime)
 

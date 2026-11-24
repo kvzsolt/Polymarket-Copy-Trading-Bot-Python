@@ -21,8 +21,8 @@ _ONE = Decimal("1")
 class DataApiLeaderSellFractionReader:
     """Reconstruct one SELL fraction from public activity and positions."""
 
-    _ACTIVITY_URL = "https://data-api.polymarket.com/activity"
-    _POSITIONS_URL = "https://data-api.polymarket.com/positions"
+    _ACTIVITY_URL = "https://data-api.polymarket.com/v2/activity"
+    _POSITIONS_URL = "https://data-api.polymarket.com/v2/positions"
 
     def __init__(
         self,
@@ -64,7 +64,6 @@ class DataApiLeaderSellFractionReader:
             "user": leader,
             "type": "TRADE",
             "limit": str(self._activity_limit),
-            "offset": "0",
             "sortBy": "TIMESTAMP",
             "sortDirection": "DESC",
         }
@@ -72,11 +71,10 @@ class DataApiLeaderSellFractionReader:
             "user": leader,
             "sizeThreshold": "0",
             "limit": "500",
-            "offset": "0",
         }
         if condition_id:
-            activity_params["market"] = condition_id
-            positions_params["market"] = condition_id
+            activity_params["condition"] = condition_id
+            positions_params["condition"] = condition_id
         activity_url = self._url(
             self._ACTIVITY_URL,
             activity_params,
@@ -143,7 +141,13 @@ class DataApiLeaderSellFractionReader:
     @staticmethod
     def _transaction_hash(row: Mapping[str, object]) -> str:
         return (
-            str(row.get("transactionHash") or row.get("txHash") or row.get("tx_hash") or "")
+            str(
+                row.get("transactionHash")
+                or row.get("transaction_hash")
+                or row.get("txHash")
+                or row.get("tx_hash")
+                or ""
+            )
             .strip()
             .lower()
         )
@@ -169,7 +173,10 @@ class DataApiLeaderSellFractionReader:
         seen: set[str] = set()
         for position in positions:
             asset = cls._token_id(position)
-            size = cls._decimal(position.get("size"))
+            raw_size = (
+                position.get("size") if "size" in position else position.get("current_size")
+            )
+            size = cls._decimal(raw_size)
             if not asset or asset in seen or size is None or size < _ZERO:
                 return None
             seen.add(asset)
@@ -179,7 +186,9 @@ class DataApiLeaderSellFractionReader:
 
     @staticmethod
     def _token_id(row: Mapping[str, object]) -> str:
-        return str(row.get("asset") or row.get("tokenID") or row.get("token_id") or "")
+        return str(
+            row.get("asset") or row.get("tokenID") or row.get("token_id") or row.get("tokenId") or ""
+        )
 
     @staticmethod
     def _decimal(value: object) -> Decimal | None:

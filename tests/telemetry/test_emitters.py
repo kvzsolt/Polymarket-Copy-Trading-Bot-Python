@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 
 from pmcopy.services.execution.types import ExecutionRequest, ExecutionResult
-from pmcopy.services.metrics import METRIC_TELEMETRY_EMIT_FAILURE, MetricsRegistry
+from pmcopy.services.observability.metrics import METRIC_TELEMETRY_EMIT_FAILURE, MetricsRegistry
 from pmcopy.services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,

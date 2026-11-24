@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pmcopy.utils import fetchData
+from pmcopy.utils import fetch_data as fetchData
 
 
 @pytest.mark.asyncio

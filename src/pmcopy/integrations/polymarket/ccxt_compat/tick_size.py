@@ -159,7 +159,7 @@ class PublicClobTickSizeSource:
         base_url: str = _PUBLIC_CLOB_BOOK_URL,
     ) -> None:
         if fetch_json is None:
-            from pmcopy.utils.fetchData import fetch_data
+            from pmcopy.utils.fetch_data import fetch_data
 
             fetch_json = fetch_data
         self._fetch_json = fetch_json

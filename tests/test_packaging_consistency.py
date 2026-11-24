@@ -10,13 +10,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CORE_PACKAGES = {
     "pmcopy.config",
     "pmcopy.interfaces",
-    "pmcopy.models",
     "pmcopy.services",
+    "pmcopy.services.accounts",
+    "pmcopy.services.accounting",
+    "pmcopy.services.execution",
+    "pmcopy.services.market_data",
+    "pmcopy.services.positions",
+    "pmcopy.services.providers",
+    "pmcopy.services.trading",
     "pmcopy.utils",
     "pmcopy.domain",
     "pmcopy.clients.network",
+    "pmcopy.clients.ws",
     "pmcopy.orchestrators",
+    "pmcopy.orchestrators.bootstrap",
+    "pmcopy.orchestrators.copy_tasks",
+    "pmcopy.orchestrators.detection",
+    "pmcopy.orchestrators.lifecycle",
+    "pmcopy.orchestrators.pipeline",
     "pmcopy.storage",
+    "pmcopy.storage.local",
+    "pmcopy.storage.postgres",
 }
 
 

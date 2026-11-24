@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from pmcopy.config.app_config import AmbiguousRecoveryConfig
-from pmcopy.orchestrators.runtime_bootstrap import (
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import (
     _build_ambiguous_recovery_service,
     ambiguous_recovery_loop,
 )

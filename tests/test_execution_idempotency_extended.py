@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pmcopy.services.executionService import (
+from pmcopy.services.execution.execution_service import (
     ExecutionRequest,
     ExecutionService,
     _is_pending_submission_expired,
@@ -39,7 +39,7 @@ from tests.fixtures_market_meta import MarketMeta
 from tests.conftest import make_clob_gateway
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSour
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset the circuit breaker around every test."""
-    import pmcopy.services.executionService as _es
+    import pmcopy.services.execution.execution_service as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -349,7 +349,7 @@ class TestStaleLockExpiry:
             key = "test-stale-idem-key"
             now = time.time()
             with patch(
-                "pmcopy.services.executionService._effective_idempotency_key",
+                "pmcopy.services.execution.execution_service._effective_idempotency_key",
                 return_value=key,
             ):
                 await svc._save_submission(
@@ -956,7 +956,7 @@ class TestAtomicLockConcurrencyStress:
             key = "test-expiry-race-key"
             now = time.time()
             with patch(
-                "pmcopy.services.executionService._effective_idempotency_key",
+                "pmcopy.services.execution.execution_service._effective_idempotency_key",
                 return_value=key,
             ):
                 # Seed an expired pending lock: no order_id, pending TTL elapsed.

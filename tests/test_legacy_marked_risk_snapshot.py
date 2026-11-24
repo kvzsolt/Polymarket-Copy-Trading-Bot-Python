@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pmcopy.domain.position import Position
-from pmcopy.orchestrators import trade_pipeline
+from pmcopy.orchestrators.pipeline import trade_pipeline
 from tests.config_helpers import load_test_config
 
 

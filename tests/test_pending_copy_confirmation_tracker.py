@@ -18,7 +18,7 @@ import logging
 
 import pytest
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     GAUGE_PENDING_COPY_TRACKED,
     METRIC_PENDING_COPY_CONFIRMED,
     METRIC_PENDING_COPY_TRACKER_DROPPED,

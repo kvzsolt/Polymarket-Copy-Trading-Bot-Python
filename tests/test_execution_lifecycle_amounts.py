@@ -6,7 +6,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from pmcopy.services.execution.types import ExecutionRequest
-from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.execution.execution_service import ExecutionService
 
 
 def _request(*, side: str, amount: str) -> ExecutionRequest:

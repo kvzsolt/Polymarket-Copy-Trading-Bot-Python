@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import uuid4
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     TELEMETRY_METRIC_SCHEMAS,
     MetricsRegistry,
     metrics as default_metrics,

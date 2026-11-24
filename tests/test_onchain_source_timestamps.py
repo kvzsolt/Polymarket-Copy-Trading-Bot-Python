@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pmcopy.application.confirmed_signal_execution_adapter import ConfirmedSignalExecutionAdapter
-from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
+from pmcopy.orchestrators.copy_tasks.v1_event_adapters import LeaderEventNormalizer
 from pmcopy.domain.detection import DetectionMode
 from tests.test_onchain_detection_runtime import _WATCHED, _build_log
 from tests.test_confirmed_signal_execution_adapter import FakeClock, FakeSignalSink, _claim

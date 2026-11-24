@@ -9,7 +9,7 @@ import pytest
 from pmcopy.config.app_config import AppConfig, load_config
 from pmcopy.config.provider_budget import ProviderBudgetConfig
 from pmcopy.domain.provider_budget import BudgetSettings, ProviderConfigurationError
-from pmcopy.orchestrators.provider_runtime import ProviderRuntime
+from pmcopy.orchestrators.bootstrap.provider_runtime import ProviderRuntime
 
 
 class Clock:

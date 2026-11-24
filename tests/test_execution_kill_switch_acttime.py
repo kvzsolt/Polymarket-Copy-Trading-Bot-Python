@@ -22,8 +22,8 @@ import pytest
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.models import VenueOrderState, VenueSubmitResult
 from pmcopy.interfaces.clob_gateway import ClobGateway
-from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 import time as _time
 
 

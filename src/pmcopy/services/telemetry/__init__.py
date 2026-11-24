@@ -1,6 +1,6 @@
 """Public telemetry contracts and services."""
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     ActiveEntity,
     FalconDiscoveryState,
     LatencyPhase,

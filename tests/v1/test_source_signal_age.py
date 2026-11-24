@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 
 from pmcopy.domain.detection import DetectionMode, TradeSide
-from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+from pmcopy.orchestrators.copy_tasks.v1_event_adapters import LeaderEventNormalizer
 from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor
 from tests.v1.test_copy_task_event_routing import (
     _LEADER,

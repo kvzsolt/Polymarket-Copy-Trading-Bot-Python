@@ -25,8 +25,8 @@ from itertools import product
 import pytest
 
 from pmcopy.domain.price_bound import TickRounding, quantize_price_to_tick
-from pmcopy.services.executionService import _effective_idempotency_key
-from pmcopy.services.order_sizing import size_buy_order, size_sell_order
+from pmcopy.services.execution.execution_service import _effective_idempotency_key
+from pmcopy.services.trading.order_sizing import size_buy_order, size_sell_order
 
 TICKS = ("0.001", "0.01", "0.05", "0.1")
 PRICES = ("0.01", "0.10", "0.50", "0.95", "0.99", "0.999")

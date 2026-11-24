@@ -11,7 +11,7 @@ import pytest
 
 from pmcopy.bot_cli.commands import drift as drift_mod
 from pmcopy.config.env import SignatureType, WalletConfig
-from pmcopy.services.multiUserConfig import RuntimeUser, UserFollowConfig
+from pmcopy.services.accounts.multi_user_config import RuntimeUser, UserFollowConfig
 
 _PRIVATE_KEY = "0x" + "a" * 64
 _FUNDER = "0x" + "d" * 40
@@ -65,7 +65,7 @@ class _Harness:
             patch.object(drift_mod, "_list_persisted_positions", AsyncMock(return_value=[])),
             patch("pmcopy.storage.postgres.connection.init_pool", AsyncMock(return_value=MagicMock())),
             patch("pmcopy.storage.postgres.connection.shutdown_pool", AsyncMock()),
-            patch("pmcopy.orchestrators.runtime_bootstrap.fetch_live_positions", self.fetch_live),
+            patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.fetch_live_positions", self.fetch_live),
         )
 
     def __enter__(self) -> _Harness:

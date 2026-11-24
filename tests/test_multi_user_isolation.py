@@ -17,9 +17,9 @@ import pytest
 from pmcopy.config.app_config import load_config
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.trade_pipeline import execute_trades
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.storage.postgres.fills_repo import FillsRepo
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
 from pmcopy.storage.postgres.positions_repo import PositionsRepo
@@ -88,7 +88,7 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
     from decimal import Decimal as _D
     from unittest.mock import AsyncMock, patch
     from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
         cfg = load_config(
@@ -214,7 +214,7 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
     # ``_build_context`` passes an explicit override dict to ``load_config``,
     # so this test never reads process env for its config.
-    import pmcopy.orchestrators.trade_pipeline as trade_pipeline
+    import pmcopy.orchestrators.pipeline.trade_pipeline as trade_pipeline
 
     async def _fake_balance(_wallet: str):
         return 1000.0

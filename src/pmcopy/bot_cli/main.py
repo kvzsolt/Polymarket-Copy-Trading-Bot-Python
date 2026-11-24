@@ -37,6 +37,8 @@ from pmcopy.bot_cli.commands import (
     run_redeem,
     register_resolve_command,
     run_resolve,
+    register_tasks_command,
+    run_tasks,
 )
 
 _COMMANDS = [
@@ -56,6 +58,7 @@ _COMMANDS = [
     ("trading", register_trading_command, run_trading),
     ("redeem", register_redeem_command, run_redeem),
     ("resolve", register_resolve_command, run_resolve),
+    ("tasks", register_tasks_command, run_tasks),
 ]
 
 _COMMAND_RUNNERS = {name: runner for name, _, runner in _COMMANDS}

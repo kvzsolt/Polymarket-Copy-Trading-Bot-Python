@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.metrics import (
     ActiveEntity,
     FalconDiscoveryState,
     GAUGE_TELEMETRY_ACTIVE_ENTITIES,

@@ -181,6 +181,28 @@ class TaskSizingPolicy:
         ):
             raise ValueError("percentage-based sizing requires a positive percentage")
 
+    @property
+    def requires_leader_balance_snapshot(self) -> bool:
+        """Whether BUY sizing depends on the leader's on-chain collateral balance.
+
+        Returns ``True`` exclusively for portfolio/balance-based sizing modes
+        (``balance_weighted``, ``portfolio_weighted``, and percentage-family
+        modes with ``proportional_balance_cap_enabled=True``). Fixed, exact-mirror,
+        and uncapped percentage tasks return ``False`` and skip RPC lookups.
+        """
+        if self.mode in {
+            TaskSizingMode.BALANCE_WEIGHTED,
+            TaskSizingMode.PORTFOLIO_WEIGHTED,
+        }:
+            return True
+        if self.mode in {
+            TaskSizingMode.PROPORTIONAL,
+            TaskSizingMode.ADAPTIVE,
+            TaskSizingMode.TIERED,
+        }:
+            return bool(self.proportional_balance_cap_enabled)
+        return False
+
 
 @dataclass(frozen=True, slots=True)
 class TaskSchedule:

@@ -11,7 +11,7 @@ from web3.types import RPCResponse
 
 from pmcopy.clients.network.provider_transport import ProviderEndpoints
 from pmcopy.interfaces.provider_budget import ProviderAdmission
-from pmcopy.services.provider_gateway import ProviderUnavailable
+from pmcopy.services.providers.provider_gateway import ProviderUnavailable
 
 
 class MeteredWeb3Provider(JSONBaseProvider):

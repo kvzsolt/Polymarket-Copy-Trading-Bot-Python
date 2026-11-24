@@ -2,7 +2,7 @@
 
 import pytest
 
-from pmcopy.services.tradeScoringService import TradeScoringService
+from pmcopy.services.trading.trade_scoring_service import TradeScoringService
 from tests.config_helpers import load_test_config
 
 

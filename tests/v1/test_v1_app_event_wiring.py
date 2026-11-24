@@ -8,7 +8,7 @@ from pathlib import Path
 def test_app_injects_existing_and_dynamic_contexts_into_v1_runtime() -> None:
     """Keep task follower lookup current across startup and roster refresh."""
 
-    source = Path("src/pmcopy/app.py").read_text(encoding="utf-8")
+    source = Path("src/pmcopy/orchestrators/app/runner.py").read_text(encoding="utf-8")
 
     assert "contexts=initial_v1_contexts" in source
     assert "start_workers=False" in source
@@ -26,7 +26,7 @@ def test_app_injects_existing_and_dynamic_contexts_into_v1_runtime() -> None:
 def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> None:
     """Make v1 ingress the sole copy authority while it is enabled."""
 
-    source = Path("src/pmcopy/app.py").read_text(encoding="utf-8")
+    source = Path("src/pmcopy/orchestrators/app/runner.py").read_text(encoding="utf-8")
 
     assert "run_leader_monitor(" not in source
     assert "v1_sink=v1_runtime.submit_raw_batch" not in source
@@ -42,6 +42,6 @@ def test_app_routes_native_owner_source_to_v1_without_legacy_duplication() -> No
 def test_app_projects_market_wss_quotes_into_the_shared_v1_cache() -> None:
     """Wire the shared quote sink into every follower market-data runtime."""
 
-    source = Path("src/pmcopy/app.py").read_text(encoding="utf-8")
+    source = Path("src/pmcopy/orchestrators/app/runner.py").read_text(encoding="utf-8")
 
     assert "quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None" in source

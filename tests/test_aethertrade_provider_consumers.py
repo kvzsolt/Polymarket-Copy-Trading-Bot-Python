@@ -8,8 +8,8 @@ import pytest
 
 from pmcopy.clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
 from pmcopy.adapters.polygon.historical_erc1155_balance import Web3HistoricalErc1155BalanceReader
-from pmcopy.orchestrators.startup_health import _check_rpc
-from pmcopy.utils.getMyBalance import get_my_balance, get_native_balance_wei
+from pmcopy.orchestrators.lifecycle.startup_health import _check_rpc
+from pmcopy.utils.wallet_balance import get_my_balance, get_native_balance_wei
 
 
 class TestMeteredConsumers:
@@ -68,7 +68,7 @@ class TestProviderBalanceReader:
 
     @pytest.mark.asyncio
     async def test_exact_collateral_and_unknown_transport(self):
-        from pmcopy.services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.providers.provider_balances import ProviderBalanceReader
 
         gateway = SimpleNamespace(
             call=AsyncMock(side_effect=["0x6000", "0x" + format(9007199254740993123456, "064x")])
@@ -81,7 +81,7 @@ class TestProviderBalanceReader:
 
     @pytest.mark.asyncio
     async def test_native_and_invalid_address_do_not_fabricate_zero(self):
-        from pmcopy.services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.providers.provider_balances import ProviderBalanceReader
 
         gateway = SimpleNamespace(call=AsyncMock(return_value="0x7"))
         reader = ProviderBalanceReader(gateway, "alchemy", ())
@@ -116,7 +116,7 @@ class TestProviderComposition:
 
     @pytest.mark.asyncio
     async def test_reservation_balance_carries_runtime(self, monkeypatch):
-        from pmcopy.orchestrators import runtime_bootstrap
+        from pmcopy.orchestrators.bootstrap import runtime_bootstrap
         from pmcopy.config.app_config import AppConfig
         from unittest.mock import Mock
 
@@ -145,7 +145,7 @@ class TestBalanceExactness:
 
     @pytest.mark.asyncio
     async def test_full_uint256_precision(self):
-        from pmcopy.services.provider_balances import ProviderBalanceReader
+        from pmcopy.services.providers.provider_balances import ProviderBalanceReader
 
         amount = 2**256 - 1
         gateway = SimpleNamespace(
@@ -165,7 +165,7 @@ class TestProviderDoctorInjection:
         from dataclasses import replace
         from pmcopy.config.app_config import AppConfig
         from pmcopy.bot_cli.commands import doctor
-        from pmcopy.orchestrators import startup_health
+        from pmcopy.orchestrators.lifecycle import startup_health
 
         cfg = AppConfig()
         cfg = replace(cfg, polymarket=replace(cfg.polymarket, enforce_geoblock=False))
@@ -184,7 +184,7 @@ class TestProviderDoctorInjection:
 
     @pytest.mark.asyncio
     async def test_startup_health_passes_runtime_to_rpc(self, monkeypatch):
-        from pmcopy.orchestrators import startup_health
+        from pmcopy.orchestrators.lifecycle import startup_health
 
         class StopAfterProbes(Exception):
             pass

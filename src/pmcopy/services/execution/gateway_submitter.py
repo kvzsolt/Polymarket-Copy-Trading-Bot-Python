@@ -19,12 +19,12 @@ from pmcopy.integrations.polymarket.errors import (
     VenueUnavailableError,
 )
 from pmcopy.integrations.polymarket.models import MarketableOrderRequest, VenueSubmitResult
-from pmcopy.services.circuitBreaker import CircuitBreaker
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker
 from pmcopy.services.execution.idempotency_lock import AcquiredSubmissionLock
 from pmcopy.services.execution.order_planner import PlannedExecutionOrder
 from pmcopy.services.execution.submission import build_pending_response
 from pmcopy.services.execution.types import ExecutionRequest, ExecutionResult
-from pmcopy.services.trading_permission import TradingPausedError, TradingPermissionService
+from pmcopy.services.trading.trading_permission import TradingPausedError, TradingPermissionService
 from pmcopy.utils.logger import (
     log_api_error,
     log_api_response,

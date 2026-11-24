@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from pmcopy.services.healthServer import ReadinessTracker, start_health_server
+from pmcopy.services.observability.health_server import ReadinessTracker, start_health_server
 
 
 def _legacy_ready(tracker: ReadinessTracker) -> None:

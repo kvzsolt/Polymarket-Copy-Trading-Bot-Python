@@ -214,9 +214,10 @@ class FalconClient:
                     request_id=request_id,
                 )
             if status == 403:
+                raw_agent_id = body.get("agent_id")
                 raise FalconPermissionError(
                     "Falcon permission denied (403); verify plan access for the requested agent",
-                    agent_id=body["agent_id"],
+                    agent_id=raw_agent_id if isinstance(raw_agent_id, int) else None,
                 )
             if status in _RETRYABLE_STATUS:
                 if attempt + 1 < self._max_attempts:

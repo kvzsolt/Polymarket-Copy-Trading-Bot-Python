@@ -20,17 +20,17 @@ from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSna
 from tests.config_helpers import load_test_config
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.trade_pipeline import execute_trades
-from pmcopy.services.accountingService import AccountingService
-from pmcopy.services.copyDecisionService import CopyDecision
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.services.market_data_service import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades
+from pmcopy.services.accounting.accounting_service import AccountingService
+from pmcopy.services.trading.copy_decision_service import CopyDecision
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataSource,
     StaleDataError,
 )
-from pmcopy.services.pnlTracker import PnLTracker
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.services.risk.risk_engine import RiskEngine
 from pmcopy.storage.postgres.fills_repo import FillsRepo
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
@@ -88,7 +88,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):

@@ -6,7 +6,7 @@ import pytest
 
 from pmcopy.config.app_config import DiscoveryConfig
 from pmcopy.services.discovery.models import discovery_config_hash
-from pmcopy.services.leaderScoringService import LeaderScoringService
+from pmcopy.services.trading.leader_scoring_service import LeaderScoringService
 
 
 def _config() -> SimpleNamespace:

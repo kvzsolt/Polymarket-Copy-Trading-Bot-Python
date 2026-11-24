@@ -2,7 +2,7 @@
 clears tick / min_order_size.
 
 Pre-fix the method did not exist on MarketStateStore.
-``clients/market_ws.py:_handle_tick_size_change`` invoked it via
+``clients/ws/market_ws.py:_handle_tick_size_change`` invoked it via
 ``_call_cache_optional("invalidate_sizing_decision", asset_id)``, which
 silently returned False — meaning a tick-size-change event did NOT
 invalidate any sizing decision derived from the old tick. A SELL whose

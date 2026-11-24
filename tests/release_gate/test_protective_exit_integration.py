@@ -24,7 +24,7 @@ import inspect
 
 import pytest
 
-from pmcopy.services.entryPermissionService import EntryPermissionService
+from pmcopy.services.trading.entry_permission_service import EntryPermissionService
 from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 pytestmark = pytest.mark.release_gate

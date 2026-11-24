@@ -19,8 +19,8 @@ Alchemy reconnect.
 
 from __future__ import annotations
 
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import (
     GAUGE_ONCHAIN_WS_CONNECTED,
     METRIC_ONCHAIN_WS_RECONNECT,
     MetricsRegistry,

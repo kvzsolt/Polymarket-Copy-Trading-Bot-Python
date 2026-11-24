@@ -7,8 +7,8 @@ import asyncpg
 
 from pmcopy.domain.auto_trader import AutoTraderScope, CopyPerformance
 from pmcopy.domain.detection import TradeSide
-from pmcopy.services.auto_trader_performance import RecentEpisodeAccumulator
-from pmcopy.services.leader_performance import PerformanceFill
+from pmcopy.services.discovery.auto_trader_performance import RecentEpisodeAccumulator
+from pmcopy.services.trading.leader_performance import PerformanceFill
 
 
 class PostgresAutoTraderPerformance:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
-from pmcopy.ports.repositories import AbstractCursorRepository
+from pmcopy.interfaces.repositories import AbstractCursorRepository
 
 
 @dataclass(frozen=True)

@@ -22,8 +22,8 @@ import pytest
 
 from pmcopy.domain.execution import ExecutionOrderType
 from pmcopy.services.execution.coordinator import ExecutionCoordinator
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 
 
 LEADER = "0x" + "d" * 40

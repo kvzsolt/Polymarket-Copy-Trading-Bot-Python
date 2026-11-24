@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pmcopy.services.reconciliation import ReconciliationService, reconciliation_loop
+from pmcopy.services.positions.reconciliation import ReconciliationService, reconciliation_loop
 
 
 def _make_clob(open_orders, probed_order=None):

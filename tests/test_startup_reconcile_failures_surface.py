@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pmcopy.orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import startup_reconcile_unconfirmed
 
 
 def _ctx(user_id: str):
@@ -49,15 +49,15 @@ async def test_failures_out_populated_on_exception():
     failures: list[str] = []
     with (
         patch(
-            "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
+            "pmcopy.orchestrators.pipeline.trade_pipeline.reconcile_submitted_unconfirmed",
             side_effect=fake_trade,
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
             side_effect=fake_risk,
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         ),
     ):
         result = await startup_reconcile_unconfirmed(contexts, failures_out=failures)
@@ -82,15 +82,15 @@ async def test_backward_compat_no_failures_out_kwarg():
 
     with (
         patch(
-            "pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
+            "pmcopy.orchestrators.pipeline.trade_pipeline.reconcile_submitted_unconfirmed",
             side_effect=fake_trade,
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
             side_effect=fake_risk,
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         ),
     ):
         result = await startup_reconcile_unconfirmed(contexts)
@@ -106,8 +106,8 @@ async def test_startup_passes_recovery_marker_to_both_reconciliation_paths():
     risk = AsyncMock(return_value=0)
     context = _ctx("user")
     with (
-        patch("pmcopy.orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", trade),
-        patch("pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", risk),
+        patch("pmcopy.orchestrators.pipeline.trade_pipeline.reconcile_submitted_unconfirmed", trade),
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.reconcile_unconfirmed_risk_orders", risk),
     ):
         await startup_reconcile_unconfirmed([context])
     trade.assert_awaited_once_with(context, startup_recovery=True)
@@ -119,18 +119,18 @@ async def test_unknown_recovered_inventory_reaches_startup_failure_gate():
     """Batch gathering cannot hide an unavailable account snapshot from startup."""
     from unittest.mock import AsyncMock
     from pmcopy.services.execution.recovery_inventory import StartupInventoryRecoveryUnavailable
-    from pmcopy.services.positionCoordinator import PositionCoordinator
+    from pmcopy.services.positions.position_coordinator import PositionCoordinator
     from tests.test_pre_reconcile_skip_locked import _trade_context
 
     context = _trade_context(PositionCoordinator())
     failures = []
     with (
         patch(
-            "pmcopy.orchestrators.trade_pipeline._reconcile_one",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._reconcile_one",
             AsyncMock(side_effect=StartupInventoryRecoveryUnavailable("inventory unavailable")),
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
             AsyncMock(return_value=0),
         ),
     ):
@@ -143,18 +143,18 @@ async def test_generic_ledger_failure_reaches_startup_failure_gate():
     """Unavailable durable accounting cannot make startup reconciliation look clean."""
     from unittest.mock import AsyncMock
 
-    from pmcopy.services.positionCoordinator import PositionCoordinator
+    from pmcopy.services.positions.position_coordinator import PositionCoordinator
     from tests.test_pre_reconcile_skip_locked import _trade_context
 
     context = _trade_context(PositionCoordinator())
     failures: list[str] = []
     with (
         patch(
-            "pmcopy.orchestrators.trade_pipeline._reconcile_one",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._reconcile_one",
             AsyncMock(side_effect=RuntimeError("accounted fill ledger unavailable")),
         ),
         patch(
-            "pmcopy.orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            "pmcopy.orchestrators.bootstrap.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
             AsyncMock(return_value=0),
         ),
     ):

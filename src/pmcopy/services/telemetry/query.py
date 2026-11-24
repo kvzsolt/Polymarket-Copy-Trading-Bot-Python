@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
-from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.services.observability.metrics import MetricsRegistry
 from pmcopy.services.telemetry.contracts import (
     AmbiguousEvent,
     DiscoveryEvent,

@@ -9,8 +9,8 @@ import pytest
 from pmcopy.domain.grouped_detection import TraderDetectionPolicy
 from pmcopy.domain.provider_budget import BudgetExhausted
 from pmcopy.domain.source_time import TransportReceipt
-from pmcopy.services.grouped_detection import DetectionSubscription
-from pmcopy.storage.detection_state import SqliteDetectionState
+from pmcopy.services.onchain_detection.grouped_detection import DetectionSubscription
+from pmcopy.storage.local.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
 
 

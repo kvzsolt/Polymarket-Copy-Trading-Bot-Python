@@ -22,8 +22,8 @@ from pmcopy.integrations.falcon.errors import (
     FalconProtocolError,
     FalconUnavailableError,
 )
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
-from pmcopy.orchestrators.runtime_discovery import AutoTraderStartupBurst
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.discovery.runtime_discovery import AutoTraderStartupBurst
 from pmcopy.services.discovery import operator_cli
 from pmcopy.services.discovery.discovery_models import DiscoveryResult
 from tests.test_falcon_client import FakeHttpClient, FakeResponse, page

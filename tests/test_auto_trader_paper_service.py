@@ -6,7 +6,7 @@ from decimal import Decimal as D
 
 from pmcopy.domain.auto_trader import AutoTraderScope
 from pmcopy.domain.paper_evaluation import PaperBook, PaperSimulation
-from pmcopy.services.paper_evaluation import PaperCopyOrder, PaperCopyEvaluator
+from pmcopy.services.discovery.paper_evaluation import PaperCopyOrder, PaperCopyEvaluator
 from pmcopy.services.risk.risk_engine import RiskEngine, policy_from_config
 from tests.config_helpers import load_test_config
 

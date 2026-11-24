@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pmcopy.orchestrators.v1_event_adapters import TradingContextTaskExecutionAdapter
+from pmcopy.orchestrators.copy_tasks.v1_event_adapters import TradingContextTaskExecutionAdapter
 from pmcopy.services.copy_tasks.account_dispatch import AccountTaskDispatcher
 from pmcopy.services.copy_tasks.budget import InMemoryTaskBudgetRepository, TaskBudgetReservationService
 from pmcopy.services.copy_tasks.event_routing import CopyTaskEventProcessor

@@ -29,7 +29,7 @@ def _receipt() -> TransportReceipt:
 
 def test_discarding_sink_accepts_and_drops_raw_observations() -> None:
     """The no-evidence sink satisfies RawObservationSink without persisting."""
-    from pmcopy.orchestrators.native_detection_runtime import DiscardingRawObservationSink
+    from pmcopy.orchestrators.detection.native_detection_runtime import DiscardingRawObservationSink
 
     sink = DiscardingRawObservationSink()
     assert sink.record("alchemy", "mined", {"any": "payload"}, _receipt(), recovered=False) is None
@@ -52,7 +52,7 @@ async def test_native_detection_composes_with_a_discarding_sink(tmp_path, monkey
     """A default mined-only roster composes against the discarding sink."""
     from pmcopy.config.native_detection import NativeDetectionConfig
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
-    from pmcopy.orchestrators.native_detection_runtime import (
+    from pmcopy.orchestrators.detection.native_detection_runtime import (
         DiscardingRawObservationSink,
         NativeDetectionRuntime,
     )
@@ -61,7 +61,7 @@ async def test_native_detection_composes_with_a_discarding_sink(tmp_path, monkey
         def capture(self):
             return _receipt()
 
-    monkeypatch.setattr("pmcopy.orchestrators.native_detection_runtime.SystemReceiptClock", Clock)
+    monkeypatch.setattr("pmcopy.orchestrators.detection.native_detection_runtime.SystemReceiptClock", Clock)
     wallet = "0x" + "11" * 20
     owner = SimpleNamespace(
         primary="alchemy",

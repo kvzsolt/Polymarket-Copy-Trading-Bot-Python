@@ -7,7 +7,7 @@ import pytest
 
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from pmcopy.interfaces.clob_gateway import ClobGateway
-from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.execution.execution_service import ExecutionService
 from tests.config_helpers import load_test_config
 from tests.test_execution_fak_repost_ambiguity import _mock_mds, _order_repo, _req
 

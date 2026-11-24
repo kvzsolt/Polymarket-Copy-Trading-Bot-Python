@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from pmcopy.services.positionActionCoordinator import (
+from pmcopy.services.positions.position_action_coordinator import (
     PositionActionCoordinator,
     PositionScope,
 )

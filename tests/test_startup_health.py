@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-from pmcopy.orchestrators.runtime_summary import print_startup_summary
-from pmcopy.orchestrators.startup_health import (
+from pmcopy.orchestrators.lifecycle.runtime_summary import print_startup_summary
+from pmcopy.orchestrators.lifecycle.startup_health import (
     OrderStartupCleanupResult,
     PositionSyncResult,
     StartupHealthCheckItem,
@@ -270,8 +270,8 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
     )
 
     with (
-        patch("pmcopy.orchestrators.runtime_summary.console.print"),
-        patch("pmcopy.orchestrators.runtime_summary.logger.info") as log_info,
+        patch("pmcopy.orchestrators.lifecycle.runtime_summary.console.print"),
+        patch("pmcopy.orchestrators.lifecycle.runtime_summary.logger.info") as log_info,
     ):
         print_startup_summary(
             wallet=env["FUNDER_ADDRESS"],
@@ -340,8 +340,8 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
         async def _ok_api():
             return StartupHealthCheckItem(status="ok", message="Polymarket API responding")
 
-        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_rpc", _ok_rpc)
-        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_polymarket_api", _ok_api)
+        monkeypatch.setattr("pmcopy.orchestrators.lifecycle.startup_health._check_rpc", _ok_rpc)
+        monkeypatch.setattr("pmcopy.orchestrators.lifecycle.startup_health._check_polymarket_api", _ok_api)
 
         report = await perform_startup_health_check(
             wallet="0xabc",
@@ -391,8 +391,8 @@ async def test_perform_startup_health_check_fails_when_orders_repo_missing(monke
         async def _ok_api():
             return StartupHealthCheckItem(status="ok", message="Polymarket API responding")
 
-        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_rpc", _ok_rpc)
-        monkeypatch.setattr("pmcopy.orchestrators.startup_health._check_polymarket_api", _ok_api)
+        monkeypatch.setattr("pmcopy.orchestrators.lifecycle.startup_health._check_rpc", _ok_rpc)
+        monkeypatch.setattr("pmcopy.orchestrators.lifecycle.startup_health._check_polymarket_api", _ok_api)
 
         report = await perform_startup_health_check(
             wallet="0xabc",

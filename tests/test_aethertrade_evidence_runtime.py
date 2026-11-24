@@ -55,7 +55,7 @@ def test_secret_rejected_in_yaml_and_never_exposed_in_repr(tmp_path):
 @pytest.mark.parametrize("enabled,token", [(False, "x" * 32), (True, "")])
 def test_runtime_has_no_disabled_or_unconfigured_noop(tmp_path, enabled, token):
     from pmcopy.config.evidence import EvidenceConfig
-    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence.evidence_runtime import EvidenceRuntime
 
     cfg = SimpleNamespace(
         evidence=EvidenceConfig(
@@ -70,7 +70,7 @@ def test_runtime_has_no_disabled_or_unconfigured_noop(tmp_path, enabled, token):
 
 
 async def test_runtime_persists_before_start_and_close_cancels_stalled_network(tmp_path):
-    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence.evidence_runtime import EvidenceRuntime
 
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -105,7 +105,7 @@ async def test_runtime_persists_before_start_and_close_cancels_stalled_network(t
 
 
 async def test_runtime_clockless_record_and_overflow_stay_invalid_after_restart(tmp_path):
-    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence.evidence_runtime import EvidenceRuntime
 
     cfg = config(tmp_path, max_events=1)
     runtime = EvidenceRuntime.from_config(
@@ -132,7 +132,7 @@ async def test_runtime_clockless_record_and_overflow_stay_invalid_after_restart(
 
 
 async def test_runtime_closes_after_unexpected_worker_failure(tmp_path):
-    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence.evidence_runtime import EvidenceRuntime
 
     failed = asyncio.Event()
 
@@ -162,7 +162,7 @@ async def test_runtime_closes_after_unexpected_worker_failure(tmp_path):
 
 
 async def test_runtime_exposes_sticky_explicit_invalidation(tmp_path):
-    from pmcopy.orchestrators.evidence_runtime import EvidenceRuntime
+    from pmcopy.orchestrators.evidence.evidence_runtime import EvidenceRuntime
 
     runtime = EvidenceRuntime.from_config(
         config(tmp_path), clock=FixedClock(), transport=FakeTransport(TimeoutError())

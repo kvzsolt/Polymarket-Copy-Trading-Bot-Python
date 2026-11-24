@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 import pytest
-from pmcopy.orchestrators import runtime_bootstrap
+from pmcopy.orchestrators.bootstrap import runtime_bootstrap
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_manual_sync_builder_uses_the_injected_refresh_callback():
 
 
 def test_reconciler_factory_binds_the_account_holdings_reader():
-    from pmcopy.orchestrators.trade_pipeline import get_reconciliation_service
+    from pmcopy.orchestrators.pipeline.trade_pipeline import get_reconciliation_service
 
     reader = Mock()
     context = SimpleNamespace(
@@ -39,7 +39,7 @@ def test_reconciler_factory_binds_the_account_holdings_reader():
         positions_repo=Mock(),
         config=None,
     )
-    with patch("pmcopy.orchestrators.trade_pipeline.ReconciliationService") as factory:
+    with patch("pmcopy.orchestrators.pipeline.trade_pipeline.ReconciliationService") as factory:
         get_reconciliation_service(context)
     recovery = factory.call_args.kwargs["recovery_inventory"]
     assert recovery is not None

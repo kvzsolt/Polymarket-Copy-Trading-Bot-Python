@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from pmcopy.config.app_config import DiscoveryConfig
-from pmcopy.orchestrators.leader_registry import LeaderRegistry, apply_hysteresis
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry, apply_hysteresis
 from pmcopy.services.discovery.models import Candidate
 
 WALLET = "0x" + "a" * 40

@@ -39,7 +39,7 @@ from typing import TypeAlias
 
 import asyncpg
 
-from pmcopy.ports.repositories import AbstractPositionRepository
+from pmcopy.interfaces.repositories import AbstractPositionRepository
 from pmcopy.domain.cost_basis import PositionCostBasis
 from pmcopy.domain.position_ownership import PositionOwnership
 from pmcopy.domain.position_lifecycle import PositionClassification, PositionLifecycle

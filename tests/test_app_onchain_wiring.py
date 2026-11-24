@@ -20,11 +20,11 @@ import pytest
 def test_onchain_wiring_imports_resolve() -> None:
     """The lazy imports in app.main()'s on-chain wiring must resolve."""
     from pmcopy.services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
-    from pmcopy.orchestrators.detection_source_factory import DetectionSourceFactory
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-    from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+    from pmcopy.orchestrators.detection.detection_source_factory import DetectionSourceFactory
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import OnchainSignalDispatchAdapter
     from pmcopy.services.onchain_detection.pending_tx_detector import PendingTxConfig
-    from pmcopy.orchestrators.trade_pipeline import execute_trades
+    from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades
 
     assert GammaConditionIdResolver is not None
     assert DetectionSourceFactory is not None
@@ -41,14 +41,14 @@ async def test_app_composes_factory_from_config() -> None:
     from pmcopy.app import _build_detection_source_factory
     from pmcopy.config.app_config import DetectionConfig, OnchainDetectionConfig
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestration.polygon_source_transaction_runtime import (
+    from pmcopy.orchestrators.detection.polygon_source_transaction_runtime import (
         PolygonSourceTransactionRuntime,
     )
-    from pmcopy.orchestrators.detection_source_factory import (
+    from pmcopy.orchestrators.detection.detection_source_factory import (
         DetectionSourceFactory,
         DetectionSourceRequest,
     )
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
     from pmcopy.services.onchain_detection.trade_detection_models import DetectionConfidence
 
     config = SimpleNamespace(
@@ -105,8 +105,8 @@ async def test_app_composes_the_logs_only_confirmed_runtime_from_config() -> Non
     from pmcopy.app import _build_detection_source_factory
     from pmcopy.config.app_config import DetectionConfig, OnchainDetectionConfig
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestrators.detection_source_factory import DetectionSourceRequest
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.detection.detection_source_factory import DetectionSourceRequest
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
 
     config = SimpleNamespace(
         detection=DetectionConfig(
@@ -150,10 +150,10 @@ def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> Non
 
     from pmcopy.app import _confirmed_source_builder
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestration.polygon_source_transaction_runtime import (
+    from pmcopy.orchestrators.detection.polygon_source_transaction_runtime import (
         PolygonSourceTransactionRuntime,
     )
-    from pmcopy.orchestrators.detection_source_factory import (
+    from pmcopy.orchestrators.detection.detection_source_factory import (
         ConfirmedSourceBuilder,
         DetectionSourceRequest,
     )
@@ -343,7 +343,7 @@ def test_refresh_onchain_watched_wallets_swallows_runtime_errors() -> None:
 
 def test_onchain_runtime_accepts_the_refresh_the_wiring_performs() -> None:
     """Contract check against the real runtime, not just a stand-in."""
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
 
     async def _sink(signal) -> None:  # pragma: no cover - never dispatched
         raise AssertionError("no signal expected")
@@ -404,7 +404,7 @@ def _captured_builder_records(config, level: int) -> list[str]:
     import logging
 
     import pmcopy.app as app_module
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     records: list[logging.LogRecord] = []
 
@@ -430,7 +430,7 @@ def _captured_builder_records(config, level: int) -> list[str]:
 
 def test_pending_copy_tracker_is_built_in_pending_mode() -> None:
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
     from pmcopy.services.onchain_detection.pending_copy_confirmation_tracker import (
         PendingCopyConfirmationTracker,
     )
@@ -448,7 +448,7 @@ def test_pending_copy_tracker_is_built_in_pending_mode() -> None:
 def test_pending_copy_tracker_is_not_built_outside_pending_mode() -> None:
     """The tracker is a pending-mode safeguard; other modes must not pay for it."""
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     metrics = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
 
@@ -463,7 +463,7 @@ def test_pending_copy_tracker_is_not_built_outside_pending_mode() -> None:
 
 def test_pending_copy_tracker_respects_the_disable_flag() -> None:
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     config = _pending_config(onchain={"pending_copy_confirmation_enabled": False})
 
@@ -480,7 +480,7 @@ def test_pending_copy_tracker_respects_the_disable_flag() -> None:
 def test_pending_copy_tracker_is_not_built_without_an_rpc_endpoint() -> None:
     """Receipt confirmation needs HTTP RPC; without it the tracker stays off."""
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     assert (
         _build_pending_copy_tracker(
@@ -494,7 +494,7 @@ def test_pending_copy_tracker_is_not_built_without_an_rpc_endpoint() -> None:
 
 def test_pending_copy_tracker_uses_the_configured_bounds() -> None:
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     config = _pending_config(
         onchain={
@@ -519,7 +519,7 @@ def test_pending_copy_tracker_uses_the_configured_bounds() -> None:
 def test_auto_unwind_flag_does_not_wire_a_hook_yet() -> None:
     """The flag exists but the requester is design-only; enabling must be inert."""
     from pmcopy.app import _build_pending_copy_tracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     tracker = _build_pending_copy_tracker(
         _pending_config(onchain={"pending_copy_auto_unwind_enabled": True}),
@@ -534,8 +534,8 @@ def test_auto_unwind_flag_does_not_wire_a_hook_yet() -> None:
 def test_onchain_ws_health_reporter_is_registered_in_pending_mode() -> None:
     from pmcopy.app import _build_onchain_ws_health_reporter
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.services.healthServer import ReadinessTracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.health_server import ReadinessTracker
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
     from pmcopy.services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
     readiness = ReadinessTracker()
@@ -553,8 +553,8 @@ def test_no_ws_health_check_is_registered_for_mempool_reserved_mode() -> None:
     """Only the gen-1 runtime opens ``OnchainWebSocket``."""
     from pmcopy.app import _build_onchain_ws_health_reporter
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.services.healthServer import ReadinessTracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.health_server import ReadinessTracker
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     readiness = ReadinessTracker()
 
@@ -573,8 +573,8 @@ def test_onchain_ws_health_reporter_is_registered_for_confirmed_logs_only() -> N
     subscriptions (stream ``orderfilled``), so its health is observable."""
     from pmcopy.app import _build_onchain_ws_health_reporter
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.services.healthServer import ReadinessTracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.health_server import ReadinessTracker
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
     from pmcopy.services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
 
     readiness = ReadinessTracker()
@@ -592,8 +592,8 @@ def test_onchain_ws_health_reporter_is_registered_for_confirmed_logs_only() -> N
 def test_no_ws_health_check_is_registered_for_confirmed_mempool_reserved() -> None:
     from pmcopy.app import _build_onchain_ws_health_reporter
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.services.healthServer import ReadinessTracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.services.observability.health_server import ReadinessTracker
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     readiness = ReadinessTracker()
     reporter = _build_onchain_ws_health_reporter(
@@ -616,9 +616,9 @@ async def test_detection_factory_forwards_the_health_reporting_socket_factory() 
         _build_onchain_ws_health_reporter,
     )
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestrators.detection_source_factory import DetectionSourceRequest
-    from pmcopy.services.healthServer import ReadinessTracker
-    from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from pmcopy.orchestrators.detection.detection_source_factory import DetectionSourceRequest
+    from pmcopy.services.observability.health_server import ReadinessTracker
+    from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 
     reporter = _build_onchain_ws_health_reporter(
         ReadinessTracker(),
@@ -659,7 +659,7 @@ async def test_detection_factory_forwards_the_health_reporting_socket_factory() 
 def test_websocket_factory_binds_the_listener_and_degrades_to_the_plain_client() -> None:
     """``app`` builds the socket constructor; the listener is optional."""
     from pmcopy.app import _build_onchain_websocket_factory
-    from pmcopy.clients.onchain_ws import OnchainWebSocket
+    from pmcopy.clients.ws.onchain_ws import OnchainWebSocket
 
     assert _build_onchain_websocket_factory(None) is OnchainWebSocket
 
@@ -868,7 +868,9 @@ async def test_a_failing_tracker_stop_is_logged_and_shutdown_continues(
 def _run_application_node() -> ast.AsyncFunctionDef:
     """Return the parsed ``_run_application`` coroutine from ``app.py``."""
 
-    source = (Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "app.py").read_text(encoding="utf-8")
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "orchestrators" / "app" / "runner.py"
+    ).read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_application":
             return node

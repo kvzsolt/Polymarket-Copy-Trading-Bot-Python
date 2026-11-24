@@ -15,7 +15,7 @@ from pmcopy.services.copy_sizing_v5.strategies import (
     ExactMirrorBuyIntentStrategy,
     FixedBuyIntentStrategy,
 )
-from pmcopy.services.copyStrategy import (
+from pmcopy.services.trading.copy_strategy import (
     LegacyNotionalStrategy,
     calculate_copy_notional,
     normalize_strategy,

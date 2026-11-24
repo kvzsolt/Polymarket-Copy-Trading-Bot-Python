@@ -12,7 +12,7 @@ import pytest
 from pmcopy.config.evidence import EvidenceConfig
 
 
-_APP_PY = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "app.py"
+_APP_PY = Path(__file__).resolve().parents[1] / "src" / "pmcopy" / "orchestrators" / "app" / "runner.py"
 
 
 @pytest.fixture
@@ -20,11 +20,11 @@ def admitted_provider(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Keep startup ordering tests isolated from real provider configuration/network."""
     runtime = SimpleNamespace(close=Mock())
     monkeypatch.setattr(
-        "pmcopy.orchestrators.provider_runtime.ProviderRuntime.from_config", lambda _config: runtime
+        "pmcopy.orchestrators.bootstrap.provider_runtime.ProviderRuntime.from_config", lambda _config: runtime
     )
     evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
     monkeypatch.setattr(
-        "pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda _config: evidence
+        "pmcopy.orchestrators.evidence.evidence_runtime.EvidenceRuntime.from_config", lambda _config: evidence
     )
     return runtime
 

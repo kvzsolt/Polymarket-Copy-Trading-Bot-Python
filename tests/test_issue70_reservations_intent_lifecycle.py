@@ -58,7 +58,7 @@ from pmcopy.domain.order_lifecycle import (  # noqa: E402
 from pmcopy.services.execution.reservation_service import (  # noqa: E402
     ReservationService,
 )
-from pmcopy.services.intentRegistry import (  # noqa: E402
+from pmcopy.services.execution.intent_registry import (  # noqa: E402
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
@@ -66,7 +66,7 @@ from pmcopy.services.intentRegistry import (  # noqa: E402
     UnknownIntentError,
     Reservation as IntentReservation,
 )
-from pmcopy.services.positionActionCoordinator import PositionScope  # noqa: E402
+from pmcopy.services.positions.position_action_coordinator import PositionScope  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

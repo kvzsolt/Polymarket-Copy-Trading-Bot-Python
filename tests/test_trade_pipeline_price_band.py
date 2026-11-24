@@ -6,7 +6,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from pmcopy.domain.execution import LeaderPriceBand
-from pmcopy.orchestrators.trade_pipeline import _copy_entry_price_plan
+from pmcopy.orchestrators.pipeline.trade_pipeline import _copy_entry_price_plan
 
 
 def _context(

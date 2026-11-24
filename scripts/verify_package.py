@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from importlib import import_module
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +53,9 @@ _WHEEL_RESOURCE_FILES = (
     "pmcopy/config/app.yml",
     "pmcopy/config/execution.yml",
     "pmcopy/config/environments/example/execution.yml",
-    "pmcopy/config/traders/anon1.yml",
+    "pmcopy/config/traders/maxent.yml",
+    "pmcopy/config/traders/melchior1248.yml",
+    "pmcopy/config/traders/protagonist.yml",
     "pmcopy/storage/postgres/migrations/20260808_01_copy_tasks_and_reentry_locks.sql",
     "pmcopy/telemetry_ui/index.html",
     "pmcopy/telemetry_ui/styles.css",
@@ -255,7 +258,7 @@ def build_artifacts(dist_dir: Path) -> tuple[Path, Path, str]:
     """Build wheel + sdist; return (wheel, sdist, tool description)."""
     dist_dir.mkdir(parents=True, exist_ok=True)
     try:
-        import build  # noqa: F401
+        import_module("build")
 
         cmd = [sys.executable, "-m", "build", "--outdir", str(dist_dir)]
         tool = "python -m build"

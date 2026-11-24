@@ -281,10 +281,10 @@ class RiskLotCodec:
     @staticmethod
     def _integer(row: Mapping[str, object], name: str) -> int:
         value = row.get(name)
-        if isinstance(value, bool):
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise ValueError(f"risk lot {name} must be an integer")
         try:
-            parsed = int(value)  # type: ignore[arg-type]
+            parsed = int(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"risk lot {name} must be an integer") from exc
         if parsed < 1:

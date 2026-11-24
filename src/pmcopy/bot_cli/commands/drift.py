@@ -9,14 +9,14 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from pmcopy.config.app_config import EnvValidationError, load_config
-from pmcopy.services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
+from pmcopy.services.accounts.multi_user_config import bind_resolved_deposit_wallet, load_runtime_users
 from pmcopy.utils.logger import redact_error_detail
 
 if TYPE_CHECKING:
     import asyncpg
 
     from pmcopy.config.app_config import AppConfig
-    from pmcopy.services.multiUserConfig import RuntimeUser
+    from pmcopy.services.accounts.multi_user_config import RuntimeUser
 
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
@@ -175,7 +175,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
     checked_users: list[str] = []
     skipped_users: list[str] = []
 
-    from pmcopy.orchestrators.runtime_bootstrap import fetch_live_positions
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import fetch_live_positions
     from pmcopy.storage.postgres.connection import init_pool, shutdown_pool
 
     pool = await init_pool(

@@ -4,14 +4,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pmcopy.clients.onchain_ws import OnchainWebSocket
+from pmcopy.clients.ws.onchain_ws import OnchainWebSocket
 
 
 @pytest.mark.asyncio
 async def test_socket_samples_injected_receipt_before_decoding_and_overwrites_provider_value(
     monkeypatch,
 ):
-    import pmcopy.clients.onchain_ws as module
+    import pmcopy.clients.ws.onchain_ws as module
     from pmcopy.domain.source_time import TransportReceipt
 
     order = []
@@ -57,8 +57,8 @@ def test_transport_receipt_rejects_cross_session_elapsed_comparison():
 async def test_mined_receipt_survives_enrichment_and_canonical_normalization():
     from pmcopy.domain.source_time import TransportReceipt
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
-    from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.copy_tasks.v1_event_adapters import LeaderEventNormalizer
     from tests.test_onchain_detection_runtime import _WATCHED, _build_log
     from tests.test_confirmed_signal_execution_adapter import FakeClock
 

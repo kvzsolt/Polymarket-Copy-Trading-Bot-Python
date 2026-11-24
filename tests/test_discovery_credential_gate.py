@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
 
 
 def _discovery(*, api_has_token: bool, enabled: bool = True):

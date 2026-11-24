@@ -13,7 +13,7 @@ from pmcopy.interfaces.grouped_detection import (
     RawObservationSink,
 )
 from pmcopy.interfaces.source_time import ReceiptClock
-from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.services.onchain_detection.grouped_detection import DetectionSubscription
 from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 from pmcopy.utils.logger import get_logger
 

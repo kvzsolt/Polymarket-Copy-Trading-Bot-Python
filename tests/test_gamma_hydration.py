@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import pmcopy.orchestrators.runtime_bootstrap as runtime_bootstrap
-from pmcopy.orchestrators.runtime_bootstrap import hydrate_resolved_market_state
+import pmcopy.orchestrators.bootstrap.runtime_bootstrap as runtime_bootstrap
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import hydrate_resolved_market_state
 
 COND = "0x" + "a" * 64
 COND_GONE = "0x" + "b" * 64

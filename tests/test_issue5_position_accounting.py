@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
 from pmcopy.storage.postgres.positions_repo import PositionsRepo
 

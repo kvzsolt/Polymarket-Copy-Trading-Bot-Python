@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pmcopy.app as app
-from pmcopy.orchestrators import runtime_discovery
-from pmcopy.orchestrators.leader_registry import LeaderCandidate, LeaderRegistryState
+from pmcopy.orchestrators.discovery import runtime_discovery
+from pmcopy.orchestrators.discovery.leader_registry import LeaderCandidate, LeaderRegistryState
 
 
 @pytest.mark.asyncio

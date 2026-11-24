@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from pmcopy.orchestration.redemption_runtime import RedemptionRuntime
+from pmcopy.orchestrators.settlement.redemption_runtime import RedemptionRuntime
 from tests.test_cli_redeem import TestRedeemCommand as RedeemFixture
 from tests.test_redemption_service import FakeClock, FakeGateway, FakeJournal
-from pmcopy.services.multiUserConfig import RuntimeUser
+from pmcopy.services.accounts.multi_user_config import RuntimeUser
 
 
 class FakeSession:
@@ -28,9 +28,9 @@ class TestRedemptionRuntime:
         """RPC recovery must not multiply the generic HTTP client's four retries."""
         chain = Mock()
         gateway = FakeGateway(FakeJournal())
-        monkeypatch.setattr("pmcopy.orchestration.redemption_runtime.PolygonSettlementReader", chain)
+        monkeypatch.setattr("pmcopy.orchestrators.settlement.redemption_runtime.PolygonSettlementReader", chain)
         monkeypatch.setattr(
-            "pmcopy.orchestration.redemption_runtime.PolymarketSettlementGateway", lambda *a, **k: gateway
+            "pmcopy.orchestrators.settlement.redemption_runtime.PolymarketSettlementGateway", lambda *a, **k: gateway
         )
         clock = FakeClock()
         runtime = RedemptionRuntime(
@@ -50,10 +50,10 @@ class TestRedemptionRuntime:
         journal = FakeJournal()
         gateway = FakeGateway(journal)
         monkeypatch.setattr(
-            "pmcopy.orchestration.redemption_runtime.PolymarketSettlementGateway", lambda *a, **k: gateway
+            "pmcopy.orchestrators.settlement.redemption_runtime.PolymarketSettlementGateway", lambda *a, **k: gateway
         )
         monkeypatch.setattr(
-            "pmcopy.orchestration.redemption_runtime.DepositWalletCodec",
+            "pmcopy.orchestrators.settlement.redemption_runtime.DepositWalletCodec",
             lambda *a: pytest.fail("preview signer"),
         )
         runtime = RedemptionRuntime(

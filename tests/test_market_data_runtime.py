@@ -20,11 +20,11 @@ import pytest
 from pmcopy.cache.market_state_store import MarketStateStore
 from pmcopy.integrations.polymarket.errors import VenueOrderbookNotFoundError
 from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
-from pmcopy.orchestrators.market_data_runtime import (
+from pmcopy.orchestrators.streaming.market_data_runtime import (
     MarketDataRuntime,
     extract_token_ids_from_live_positions,
 )
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.services.observability.health_server import ReadinessTracker
 
 
 TOKEN_A = "0xaaa"
@@ -146,7 +146,7 @@ class TestStartNoTokens:
     @pytest.mark.asyncio
     async def test_start_empty_tokens_market_data_not_ready(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.streaming.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         readiness = ReadinessTracker()
@@ -166,7 +166,7 @@ class TestStartNoTokens:
         and every dynamically-added token is permanently un-bootstrappable.
         """
         monkeypatch.setattr(
-            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.streaming.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         rt = _make_runtime()
@@ -183,7 +183,7 @@ class TestStartNoTokens:
     ) -> None:
         """After an empty start, a new token must reach the live WS client."""
         monkeypatch.setattr(
-            "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
+            "pmcopy.orchestrators.streaming.market_data_runtime.MarketWebSocket",
             _FakeMarketWebSocket,
         )
         gw = _make_bootstrap_gateway()
@@ -962,7 +962,7 @@ class TestEnsureTokenReadyOrBootstrapped:
 class TestWssTelemetry:
     """The runtime owns the market stream's operator lifecycle events.
 
-    ``clients/market_ws.py`` stays transport-only; the runtime already owns
+    ``clients/ws/market_ws.py`` stays transport-only; the runtime already owns
     the connected/disconnected callbacks, so the first connection is reported
     as ``connected`` and every later one as ``reconnected``.
     """

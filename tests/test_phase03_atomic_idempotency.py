@@ -195,7 +195,7 @@ class TestPipelineIntegration:
     """
 
     def test_trade_pipeline_uses_try_claim(self):
-        from pmcopy.orchestrators import trade_pipeline
+        from pmcopy.orchestrators.pipeline import trade_pipeline
 
         src = Path(trade_pipeline.__file__).read_text(encoding="utf-8")
         assert "try_claim_processed_trade" in src, (

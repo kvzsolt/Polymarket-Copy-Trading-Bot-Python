@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 
 from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader, TraderStatus
-from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
+from pmcopy.orchestrators.discovery.auto_trader_runtime import AutoTraderRuntime
 from tests.test_auto_trader_service import MemoryRepository, service, A, B, SCOPE
 
 
@@ -64,7 +64,7 @@ def test_paper_qualification_defaults_are_configurable_without_another_roster_co
 
 
 async def test_falcon_adapter_retains_explicit_rejections_without_sweeping_empty_targets():
-    from pmcopy.orchestrators.auto_trader_runtime import FalconEvidenceProvider
+    from pmcopy.orchestrators.discovery.auto_trader_runtime import FalconEvidenceProvider
     from datetime import UTC, datetime
 
     source = SimpleNamespace(

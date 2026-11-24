@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 from pmcopy.domain.position_key import PositionKey
-from pmcopy.services.positionActionCoordinator import PositionActionCoordinator
+from pmcopy.services.positions.position_action_coordinator import PositionActionCoordinator
 
 
 @pytest.mark.asyncio

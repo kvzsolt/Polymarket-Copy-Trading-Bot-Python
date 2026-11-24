@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
+from pmcopy.services.observability.health_server import ReadinessTracker
 
 
 class ControlledSleep:
@@ -39,7 +39,7 @@ async def test_silent_quote_expiry_updates_readiness_and_owned_timer_is_awaited(
         await transport_stopped.wait()
 
     monkeypatch.setattr(
-        "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
+        "pmcopy.orchestrators.streaming.market_data_runtime.MarketWebSocket",
         lambda **kwargs: SimpleNamespace(connect=connect, stop=AsyncMock()),
     )
     store = MagicMock()
@@ -97,7 +97,7 @@ async def test_cancelled_socket_shutdown_still_awaits_owned_freshness_loop(monke
         await release.wait()
 
     monkeypatch.setattr(
-        "pmcopy.orchestrators.market_data_runtime.MarketWebSocket",
+        "pmcopy.orchestrators.streaming.market_data_runtime.MarketWebSocket",
         lambda **kwargs: SimpleNamespace(connect=connect, stop=stop_socket),
     )
     sleeper = ControlledSleep()

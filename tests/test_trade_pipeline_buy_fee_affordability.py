@@ -19,7 +19,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 
-from pmcopy.orchestrators.trade_pipeline import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import (
     _buy_fee_bps_or_none,
     _buy_required_cash_with_fees,
 )

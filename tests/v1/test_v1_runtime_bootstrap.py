@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pmcopy.config.v1_runtime import CopyTasksRuntimeConfig
-from pmcopy.orchestrators.v1_runtime_bootstrap import (
+from pmcopy.orchestrators.copy_tasks.v1_runtime_bootstrap import (
     CopyTaskV1RuntimeHandle,
     start_v1_copy_task_runtime,
 )
@@ -315,7 +315,7 @@ async def test_lifecycle_binds_before_workers_are_explicitly_started() -> None:
 def test_bootstrap_contains_no_unrouted_event_drop_handler() -> None:
     """Prevent regression to a runtime that logs and drops every task event."""
 
-    source = Path("src/pmcopy/orchestrators/v1_runtime_bootstrap.py").read_text(encoding="utf-8")
+    source = Path("src/pmcopy/orchestrators/copy_tasks/v1_runtime_bootstrap.py").read_text(encoding="utf-8")
     assert "_unrouted_leader_event_handler" not in source
     assert "leader_event_unrouted" not in source
 

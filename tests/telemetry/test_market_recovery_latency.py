@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 from pmcopy.services.telemetry.latency import PipelineLatency
 from tests.telemetry.test_pipeline_latency import ReceiptClock
 

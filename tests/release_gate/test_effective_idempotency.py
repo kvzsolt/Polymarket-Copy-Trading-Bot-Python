@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pmcopy.services.idempotency import compute_effective_key
+from pmcopy.services.execution.idempotency import compute_effective_key
 from pmcopy.utils.idempotency import build_trade_key
 
 

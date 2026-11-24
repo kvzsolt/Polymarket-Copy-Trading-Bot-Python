@@ -6,7 +6,7 @@ signals. The facts that make it true live in two other modules:
 
 * ``services/onchain_detection/pending_tx_detector.py`` stamps the confidence
   on every pending signal;
-* ``orchestrators/onchain_detection_runtime.py`` owns ``_CONFIDENCE_RANK`` and
+* ``orchestrators/detection/onchain_detection_runtime.py`` owns ``_CONFIDENCE_RANK`` and
   drops any signal ranked below the configured floor.
 
 So the expected set is *derived* from those two modules here — the emitted
@@ -22,7 +22,7 @@ from pmcopy.config.app_config import (
     _ONCHAIN_DETECTION_CONFIDENCE_VALUES,
     _PENDING_MODE_CONFIDENCE_VALUES,
 )
-from pmcopy.orchestrators.onchain_detection_runtime import _CONFIDENCE_RANK
+from pmcopy.orchestrators.detection.onchain_detection_runtime import _CONFIDENCE_RANK
 from pmcopy.services.onchain_detection.pending_tx_detector import build_signals_from_pending_tx
 from pmcopy.services.onchain_detection.trade_detection_models import (
     MAKER_SIDE_BUY,

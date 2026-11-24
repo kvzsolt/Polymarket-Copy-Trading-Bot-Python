@@ -6,7 +6,7 @@ path, so it owns the one permitted pre-submit emit — exactly one
 ``signal_received(source="polling", ...)`` per trade row, on both the v1 and
 the legacy branch.
 
-``services/tradeMonitor.py`` is deliberately untouched; it stays a pure
+``services/trading/trade_monitor.py`` is deliberately untouched; it stays a pure
 transport that already counts ``detection_signals_total{source="polling"}``.
 """
 
@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pmcopy.orchestrators.runtime_monitor import LeaderBatchDispatcher, run_leader_monitor
+from pmcopy.orchestrators.lifecycle.runtime_monitor import LeaderBatchDispatcher, run_leader_monitor
 from pmcopy.services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
 from tests.telemetry_helpers import raising_emitters, recording_emitters
 
@@ -170,7 +170,7 @@ async def test_run_leader_monitor_forwards_the_detection_emitter(
     async def fake_trade_monitor(_params, callback, **_kwargs) -> None:
         await callback([_row(TX_A)])
 
-    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.trade_monitor", fake_trade_monitor)
+    monkeypatch.setattr("pmcopy.orchestrators.lifecycle.runtime_monitor.trade_monitor", fake_trade_monitor)
 
     await run_leader_monitor(
         LEADER,

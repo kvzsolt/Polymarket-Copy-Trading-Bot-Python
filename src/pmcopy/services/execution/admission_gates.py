@@ -7,9 +7,9 @@ from decimal import Decimal
 from typing import Any
 
 from pmcopy.domain.price_bound import OrderSide
-from pmcopy.services.circuitBreaker import CircuitBreaker
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker
 from pmcopy.services.execution.types import ExecutionRequest, ExecutionResult
-from pmcopy.services.trading_permission import (
+from pmcopy.services.trading.trading_permission import (
     SubmissionPurpose,
     TradingPausedError,
     TradingPermissionService,

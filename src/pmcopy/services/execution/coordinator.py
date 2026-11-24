@@ -26,7 +26,7 @@ from pmcopy.services.execution.reservation_service import (
     ReservationConflict,
     ReservationService,
 )
-from pmcopy.services.metrics import LatencyPhase
+from pmcopy.services.observability.metrics import LatencyPhase
 from pmcopy.services.telemetry.latency import PipelineLatency
 
 logger = logging.getLogger(__name__)

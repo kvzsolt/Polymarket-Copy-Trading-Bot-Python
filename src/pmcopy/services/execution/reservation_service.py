@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
 
 from pmcopy.domain.order_lifecycle import OrderIntent, IntentSide, Reservation
-from pmcopy.ports.repositories import (
+from pmcopy.interfaces.repositories import (
     AbstractPositionRepository,
     AbstractReservationRepository,
     DuplicateActiveReservationError,

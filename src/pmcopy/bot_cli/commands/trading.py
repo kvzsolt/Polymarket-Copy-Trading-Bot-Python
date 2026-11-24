@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from pmcopy.config.app_config import load_config
-from pmcopy.services.trading_control import FULL_STOP_REASON
+from pmcopy.services.trading.trading_control import FULL_STOP_REASON
 
 
 def register_trading_command(subparsers: argparse._SubParsersAction) -> None:
@@ -71,8 +71,8 @@ async def _apply_full_stop_to_live_venues(config) -> None:
     """
 
     from pmcopy.integrations.polymarket.venue_runtime import build_polymarket_runtime
-    from pmcopy.services.multiUserConfig import load_runtime_users
-    from pmcopy.services.trading_control import (
+    from pmcopy.services.accounts.multi_user_config import load_runtime_users
+    from pmcopy.services.trading.trading_control import (
         NullRuntimeTelemetry,
         TradingControlRuntimeSignal,
     )

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from pmcopy.domain.auto_trader import AutoRoster, AutoTraderScope, Trader
-from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
-from pmcopy.orchestrators.auto_trader_paper_runtime import AutoTraderPaperRuntime
+from pmcopy.orchestrators.discovery.auto_trader_runtime import AutoTraderRuntime
+from pmcopy.orchestrators.discovery.auto_trader_paper_runtime import AutoTraderPaperRuntime
 from tests.test_auto_trader_service import MemoryRepository, service, A
 from tests.test_auto_trader_paper_service import MemoryLedger, evaluator
 from tests.config_helpers import load_test_config

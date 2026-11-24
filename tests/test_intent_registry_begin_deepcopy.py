@@ -17,13 +17,13 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.services.intentRegistry import (
+from pmcopy.services.execution.intent_registry import (
     IntentRegistry,
     IntentSide,
     IntentState,
     Reservation,
 )
-from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.positions.position_action_coordinator import PositionScope
 
 
 @pytest.mark.asyncio

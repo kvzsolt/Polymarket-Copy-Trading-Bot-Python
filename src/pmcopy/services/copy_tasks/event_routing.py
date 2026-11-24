@@ -7,17 +7,19 @@ copy-task coordinator and every mutation to an injected execution port.
 
 from __future__ import annotations
 
-import logging
+import asyncio
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+import time
 from typing import Protocol
 
 from pmcopy.domain.detection import LeaderTradeEvent
 from pmcopy.domain.source_time import TransportReceipt
-from pmcopy.services.metrics import LatencyPhase
+from pmcopy.services.observability.metrics import LatencyPhase
 from pmcopy.services.telemetry.latency import LatencyMeasurement, PipelineLatency
 from pmcopy.services.copy_sizing_v5.domain import CopySizingRequest
 from pmcopy.services.copy_tasks.budget import (
@@ -39,9 +41,17 @@ from pmcopy.services.copy_tasks.runtime import (
     RuntimeDecision,
     RuntimeExecutionEnvelope,
 )
+from pmcopy.utils.logger import get_logger
 
 _ZERO = Decimal("0")
-logger = logging.getLogger(__name__)
+logger = get_logger("CopyTaskEventProcessor")
+
+
+def _swallow_cancelled_budget_task(task: asyncio.Task[TaskBudgetSnapshot]) -> None:
+    """Prevent unhandled-exception warnings when a speculative budget read is cancelled."""
+    if task.cancelled():
+        return
+    task.exception()
 
 
 def _decimal(value: object, *, name: str, positive: bool = False) -> Decimal:
@@ -79,6 +89,7 @@ class CopyTaskSourceEvent:
     leader_market_weight: Decimal | None = None
     leader_sell_fraction: Decimal | None = None
     normalized_receipt: TransportReceipt | None = None
+    leader_funder_wallet: str = ""
 
     def __post_init__(self) -> None:
         """Validate exact-decimal metadata without inventing missing values."""
@@ -128,6 +139,7 @@ class FollowerTaskSnapshot:
     execution_token_id: str
     execution_reference_price: Decimal
     trust_multiplier: Decimal = Decimal("1")
+    leader_pusd_balance: Decimal | None = None
 
     def __post_init__(self) -> None:
         """Validate money, share, and target-token inputs."""
@@ -172,6 +184,12 @@ class FollowerTaskSnapshot:
                 "sell_shares",
                 _decimal(self.sell_shares, name="sell_shares", positive=True),
             )
+        if self.leader_pusd_balance is not None:
+            object.__setattr__(
+                self,
+                "leader_pusd_balance",
+                _decimal(self.leader_pusd_balance, name="leader_pusd_balance", positive=False),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +227,60 @@ class CopyTaskReader(Protocol):
         """Return active and paused tasks from durable state."""
 
         ...
+
+
+class CachedCopyTaskReader:
+    """Short-TTL singleflight cache over durable ``CopyTaskReader`` for low latency.
+
+    Eliminates a PostgreSQL ``SELECT * FROM copy_tasks`` + JSON decode on every
+    incoming on-chain trade signal while staying bounded and explicitly
+    invalidatable whenever task definitions change.
+    """
+
+    def __init__(
+        self,
+        reader: CopyTaskReader,
+        *,
+        ttl_seconds: float = 5.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if ttl_seconds < 0:
+            raise ValueError("ttl_seconds must be non-negative")
+        self._reader = reader
+        self._ttl_seconds = float(ttl_seconds)
+        self._monotonic = monotonic
+        self._cached: tuple[CopyTask, ...] | None = None
+        self._expires_at: float = 0.0
+        self._inflight: asyncio.Future[tuple[CopyTask, ...]] | None = None
+
+    async def list_active(self) -> tuple[CopyTask, ...]:
+        """Return active copy tasks from memory when fresh, else refresh once."""
+        if self._ttl_seconds > 0 and self._cached is not None and self._monotonic() < self._expires_at:
+            return self._cached
+        if self._inflight is not None:
+            return await asyncio.shield(self._inflight)
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[tuple[CopyTask, ...]] = loop.create_future()
+        self._inflight = fut
+        try:
+            tasks = tuple(await self._reader.list_active())
+            if self._ttl_seconds > 0:
+                self._cached = tasks
+                self._expires_at = self._monotonic() + self._ttl_seconds
+            if not fut.done():
+                fut.set_result(tasks)
+            return tasks
+        except BaseException as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            self._inflight = None
+
+    def invalidate(self) -> None:
+        """Force the next read to fetch fresh task definitions from storage."""
+        self._cached = None
+        self._expires_at = 0.0
 
 
 class FollowerTaskSnapshotProvider(Protocol):
@@ -316,6 +388,30 @@ class CopyTaskEventProcessor:
             evaluated_at = self._clock.now() if self._clock is not None else event.trade.detected_at
             result = await self._process_task(task, event)
             results.append(result)
+            if not result.allowed:
+                logger.info(
+                    "copy_task_skipped | task_id=%s leader=%s side=%s reason=%s "
+                    "price=%s notional=%s tx=%s",
+                    task.task_id,
+                    event.trade.leader_wallet,
+                    event.trade.side.value,
+                    result.reason,
+                    event.trade.price,
+                    event.trade.notional,
+                    event.trade.transaction_hash or "",
+                )
+            else:
+                logger.info(
+                    "copy_task_dispatched | task_id=%s leader=%s side=%s reason=%s "
+                    "price=%s notional=%s tx=%s",
+                    task.task_id,
+                    event.trade.leader_wallet,
+                    event.trade.side.value,
+                    result.reason,
+                    event.trade.price,
+                    event.trade.notional,
+                    event.trade.transaction_hash or "",
+                )
             if self._decision_observer is not None:
                 self._decision_observer.task_decision(
                     task, event, result, evaluated_at, self._freshness.max_age_seconds
@@ -369,9 +465,20 @@ class CopyTaskEventProcessor:
             )
             if reason is not None:
                 return TaskRouteResult(task_id=task.task_id, allowed=False, reason=reason)
+        budget_key = TaskBudgetKey(
+            follower_account=task.follower_account,
+            task_id=task.task_id,
+            market_id=source.market_id,
+            sports_market_type=event.sports_market_type,
+        )
+        budget_task: asyncio.Task[TaskBudgetSnapshot] = asyncio.create_task(
+            self._task_budgets.snapshot(budget_key, now)
+        )
+        budget_task.add_done_callback(_swallow_cancelled_budget_task)
         try:
             follower = await self._snapshot_provider.snapshot_for(task, event)
         except Exception as exc:
+            budget_task.cancel()
             logger.warning(
                 "copy_task_snapshot_unavailable",
                 extra={
@@ -384,21 +491,17 @@ class CopyTaskEventProcessor:
                 allowed=False,
                 reason="follower_snapshot_unavailable",
             )
+        except BaseException:
+            budget_task.cancel()
+            raise
         if reaction.action is ReactionAction.SELL and follower.sell_shares is None:
+            budget_task.cancel()
             return TaskRouteResult(
                 task_id=task.task_id,
                 allowed=False,
                 reason="follower_sell_shares_unavailable",
             )
-        budget = await self._task_budgets.snapshot(
-            TaskBudgetKey(
-                follower_account=task.follower_account,
-                task_id=task.task_id,
-                market_id=source.market_id,
-                sports_market_type=event.sports_market_type,
-            ),
-            now,
-        )
+        budget = await budget_task
         admission = self._admission_context(event, source, budget, now=now)
         sizing = (
             self._sizing_request(event, follower) if reaction.action is ReactionAction.BUY else None
@@ -488,11 +591,16 @@ class CopyTaskEventProcessor:
         event: CopyTaskSourceEvent,
         follower: FollowerTaskSnapshot,
     ) -> CopySizingRequest:
+        leader_balance = (
+            event.leader_pusd_balance
+            if event.leader_pusd_balance is not None
+            else follower.leader_pusd_balance
+        )
         return CopySizingRequest(
             leader_wallet=event.trade.leader_wallet,
             leader_trade_notional=event.trade.notional,
             follower_pusd_balance=follower.follower_pusd_balance,
-            leader_pusd_balance=event.leader_pusd_balance,
+            leader_pusd_balance=leader_balance,
             side="BUY",
             follower_market_exposure=follower.follower_market_exposure,
             follower_reserved_notional=follower.follower_reserved_notional,
@@ -569,6 +677,7 @@ class CopyTaskEventProcessor:
 
 
 __all__ = [
+    "CachedCopyTaskReader",
     "CopyTaskEventProcessor",
     "CopyTaskReader",
     "CopyTaskSourceEvent",

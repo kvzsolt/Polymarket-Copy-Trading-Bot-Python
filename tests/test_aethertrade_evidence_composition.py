@@ -38,14 +38,14 @@ class TestEvidenceComposition:
         monkeypatch.setattr(app, "load_config", lambda: config)
         monkeypatch.setattr(app, "configure_logging", lambda **kwargs: None)
         monkeypatch.setattr(app, "_validate_detection_confidence_floor", lambda config: None)
-        monkeypatch.setattr("pmcopy.orchestrators.provider_runtime.ProviderRuntime.from_config", lambda config: provider)
+        monkeypatch.setattr("pmcopy.orchestrators.bootstrap.provider_runtime.ProviderRuntime.from_config", lambda config: provider)
         policy = SimpleNamespace(validate=lambda config: None, effective_config=lambda config: config)
         return app, config, provider, policy
 
     async def test_default_runtime_starts_before_consumers_and_is_owned(self, monkeypatch):
         app, config, provider, policy = self.prepare(monkeypatch)
         evidence = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
-        monkeypatch.setattr("pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", lambda config: evidence)
+        monkeypatch.setattr("pmcopy.orchestrators.evidence.evidence_runtime.EvidenceRuntime.from_config", lambda config: evidence)
 
         async def stop_after_composition(**kwargs):
             evidence.start.assert_awaited_once()
@@ -64,7 +64,7 @@ class TestEvidenceComposition:
         def unavailable(config):
             raise EvidenceError("unsafe synthetic-token detail")
 
-        monkeypatch.setattr("pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", unavailable)
+        monkeypatch.setattr("pmcopy.orchestrators.evidence.evidence_runtime.EvidenceRuntime.from_config", unavailable)
         build = AsyncMock(side_effect=AssertionError("database should not open"))
         monkeypatch.setattr(app, "build_app", build)
         assert await app._run_application([], startup_policy=policy) == 1
@@ -95,7 +95,7 @@ class TestEvidenceComposition:
 
         app, config, provider, policy = self.disabled(monkeypatch)
         monkeypatch.setattr(
-            "pmcopy.orchestrators.evidence_runtime.EvidenceRuntime.from_config", forbidden
+            "pmcopy.orchestrators.evidence.evidence_runtime.EvidenceRuntime.from_config", forbidden
         )
 
         async def stop_after_composition(**kwargs):
@@ -130,7 +130,7 @@ class TestEvidenceComposition:
         monkeypatch.setattr(app, "load_config", lambda: with_journal)
         opened = AsyncMock(side_effect=AssertionError("journal must not be opened"))
         monkeypatch.setattr(
-            "pmcopy.orchestrators.history_evidence_drain_runtime."
+            "pmcopy.orchestrators.evidence.history_evidence_drain_runtime."
             "HistoryEvidenceDrainRuntime.from_config",
             opened,
         )

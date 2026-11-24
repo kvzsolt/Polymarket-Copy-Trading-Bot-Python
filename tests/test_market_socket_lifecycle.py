@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from pmcopy.clients import market_ws
+from pmcopy.clients.ws import market_ws
 from tests.test_book_update_atomicity import seeded_store
 
 

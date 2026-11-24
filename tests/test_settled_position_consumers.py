@@ -11,7 +11,8 @@ import pytest
 
 from pmcopy.config.app_config import AppConfig
 from pmcopy.domain.position_lifecycle import PositionLifecycle
-from pmcopy.orchestrators import runtime_summary, trade_pipeline
+from pmcopy.orchestrators.lifecycle import runtime_summary
+from pmcopy.orchestrators.pipeline import trade_pipeline
 from pmcopy.services.risk.account_snapshot import AccountRiskSnapshotBuilder
 from tests.test_legacy_marked_risk_snapshot import FixedQuote
 

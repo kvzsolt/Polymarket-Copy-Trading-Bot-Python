@@ -132,7 +132,7 @@ async def _run_doctor(
         overrides["DATABASE_URL"] = dsn
         loader = _config_loader(overrides)
         from pmcopy.bot_cli.commands import doctor as doctor_mod
-        import pmcopy.orchestrators.startup_health as startup_health_mod
+        import pmcopy.orchestrators.lifecycle.startup_health as startup_health_mod
         import pmcopy.services.compliance as compliance_mod
 
         async def _fake_rpc(_url):

@@ -82,7 +82,7 @@ class RecordingTelemetry:
 async def test_core_full_stop_cancels_every_resting_order_across_gateways() -> None:
     """A durable full stop cancels resting orders on every follower gateway."""
 
-    from pmcopy.services.trading_control import TradingControlRuntimeSignal
+    from pmcopy.services.trading.trading_control import TradingControlRuntimeSignal
 
     first = FakeGateway(("order-a", "order-b"))
     second = FakeGateway(("order-c",))
@@ -101,7 +101,7 @@ async def test_core_full_stop_cancels_every_resting_order_across_gateways() -> N
 async def test_core_plain_pause_never_cancels_resting_orders() -> None:
     """Entry pause keeps risk-reducing capacity; only full stop cancels."""
 
-    from pmcopy.services.trading_control import TradingControlRuntimeSignal
+    from pmcopy.services.trading.trading_control import TradingControlRuntimeSignal
 
     gateway = FakeGateway(("order-a",))
     telemetry = RecordingTelemetry()
@@ -118,7 +118,7 @@ async def test_core_plain_pause_never_cancels_resting_orders() -> None:
 async def test_core_full_stop_attempts_all_cancels_then_reports_failure() -> None:
     """One failed venue interaction cannot skip the remaining accounts."""
 
-    from pmcopy.services.trading_control import RuntimeSafetyApplyError, TradingControlRuntimeSignal
+    from pmcopy.services.trading.trading_control import RuntimeSafetyApplyError, TradingControlRuntimeSignal
 
     first = FakeGateway(("order-a", "order-b"), failed_order_id="order-a")
     second = FakeGateway(("order-c",))
@@ -138,7 +138,7 @@ async def test_core_full_stop_attempts_all_cancels_then_reports_failure() -> Non
 async def test_core_null_runtime_telemetry_never_raises() -> None:
     """Processes without a telemetry service still apply safety state."""
 
-    from pmcopy.services.trading_control import NullRuntimeTelemetry, TradingControlRuntimeSignal
+    from pmcopy.services.trading.trading_control import NullRuntimeTelemetry, TradingControlRuntimeSignal
 
     gateway = FakeGateway(("order-a",))
     signal = TradingControlRuntimeSignal(gateways=(gateway,), telemetry=NullRuntimeTelemetry())
@@ -424,7 +424,7 @@ def _config(*, trading_mode: str) -> SimpleNamespace:
 def _patch_cli_environment(monkeypatch, *, trading_mode: str, built_runtimes):
     import pmcopy.bot_cli.commands.trading as trading_command
     import pmcopy.integrations.polymarket.venue_runtime as venue_runtime
-    import pmcopy.services.multiUserConfig as multi_user_config
+    import pmcopy.services.accounts.multi_user_config as multi_user_config
     import pmcopy.storage.postgres.connection as pg_connection
     import pmcopy.storage.postgres.migrations as pg_migrations
     import pmcopy.storage.postgres.trading_control_repo as trading_control_repo
@@ -593,7 +593,7 @@ def test_local_cli_full_stop_keeps_durable_state_when_a_cancel_fails(monkeypatch
         venue_runtime, "build_polymarket_runtime", fake_build_polymarket_runtime
     )
     monkeypatch.setattr(
-        "pmcopy.services.multiUserConfig.load_runtime_users",
+        "pmcopy.services.accounts.multi_user_config.load_runtime_users",
         lambda leaders, config: [SimpleNamespace(user_id="user-1", wallet=object())],
     )
 

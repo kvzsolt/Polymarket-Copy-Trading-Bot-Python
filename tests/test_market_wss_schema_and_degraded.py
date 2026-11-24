@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.clients.market_ws import MarketWebSocket
-from pmcopy.clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
-from pmcopy.services.market_data_service import (
+from pmcopy.clients.ws.market_ws import MarketWebSocket
+from pmcopy.clients.ws.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
+from pmcopy.services.market_data.market_data_service import (
     MarketDataPolicy,
     MarketDataService,
     MarketDataSource,
@@ -446,7 +446,7 @@ class TestIsWssDown:
     """MarketDataRuntime.is_wss_down health tracking."""
 
     def test_is_wss_down_true_when_not_running(self) -> None:
-        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -457,7 +457,7 @@ class TestIsWssDown:
         assert rt.is_wss_down(threshold_seconds=15.0) is True
 
     def test_is_wss_down_true_when_no_messages_received(self) -> None:
-        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -471,7 +471,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_false_when_recent_message(self) -> None:
         import time
-        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -486,7 +486,7 @@ class TestIsWssDown:
 
     def test_is_wss_down_true_after_threshold(self) -> None:
         import time
-        from pmcopy.orchestrators.market_data_runtime import MarketDataRuntime
+        from pmcopy.orchestrators.streaming.market_data_runtime import MarketDataRuntime
 
         rt = MarketDataRuntime(
             market_store=MarketStateStore(),
@@ -581,7 +581,7 @@ class TestSafetyInvariants:
 
     @pytest.mark.asyncio
     async def test_market_resolved_prevents_execution(self) -> None:
-        from pmcopy.services.market_data_service import MarketDataNotReady
+        from pmcopy.services.market_data.market_data_service import MarketDataNotReady
 
         cache = MarketStateStore()
         _seed_executable_wss(cache, TOKEN_A)

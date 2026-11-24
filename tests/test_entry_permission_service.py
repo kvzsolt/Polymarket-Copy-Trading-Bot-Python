@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
-from pmcopy.services.entryPermissionService import (
+from pmcopy.services.trading.entry_permission_service import (
     REASON_ALLOWED,
     REASON_CLEARED,
     REASON_DENIED,

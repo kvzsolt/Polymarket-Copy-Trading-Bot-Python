@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from pmcopy.services.grouped_detection import DetectionSubscription
-from pmcopy.storage.detection_state import SqliteDetectionState
+from pmcopy.services.onchain_detection.grouped_detection import DetectionSubscription
+from pmcopy.storage.local.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
 from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
 from pmcopy.domain.source_time import TransportReceipt

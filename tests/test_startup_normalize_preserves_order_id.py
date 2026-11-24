@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
-from pmcopy.orchestrators.startup_health import normalize_startup_order_statuses
+from pmcopy.orchestrators.lifecycle.startup_health import normalize_startup_order_statuses
 
 
 class _FakeTx:

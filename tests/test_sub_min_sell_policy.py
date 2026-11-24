@@ -1,7 +1,7 @@
 """Phase 2.8 — sub-minimum leader sell fractions must fail closed when configured.
 
 The audit found sub-minimum sell fractions round UP to the venue minimum
-(``orchestrators/trade_pipeline.py:1117-1119``): a leader's 2% nibble becomes
+(``orchestrators/pipeline/trade_pipeline.py:1117-1119``): a leader's 2% nibble becomes
 a near-full exit on small positions. Add a configurable policy: "round_up"
 (legacy) or "skip" (fail-closed — drop the copy sell rather than overshoot).
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-from pmcopy.orchestrators.trade_pipeline import _resolve_leader_sell_tokens
+from pmcopy.orchestrators.pipeline.trade_pipeline import _resolve_leader_sell_tokens
 
 
 def test_round_up_legacy_default():

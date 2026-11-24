@@ -1,6 +1,6 @@
 """Task 22 — multi-copier configuration schema v2 (copiers YAML) contracts.
 
-``services/copierConfig.py`` is the operator-facing boundary for the
+``services/accounts/copier_config.py`` is the operator-facing boundary for the
 ``app.copiers_config_file`` YAML roster (schema_version 2, addon §3). These
 tests pin the strict input contracts on top of the Task 14 primitives:
 
@@ -47,7 +47,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import pmcopy.config.app_config as app_config_mod
-from pmcopy.services.multiUserConfig import RuntimeUser, load_runtime_users
+from pmcopy.services.accounts.multi_user_config import RuntimeUser, load_runtime_users
 from tests.config_helpers import load_test_config
 
 # Synthetic values only — no real credentials ever appear in this file.
@@ -1281,7 +1281,7 @@ def test_legacy_single_account_maps_to_one_deterministic_copier(caplog):
     import logging
 
     cfg = _config(FUNDER_ADDRESS=FUNDER_A, PRIVATE_KEY=KEY_A)
-    with caplog.at_level(logging.INFO, logger="pmcopy.services.multiUserConfig"):
+    with caplog.at_level(logging.INFO, logger="pmcopy.services.accounts.multi_user_config"):
         users = load_runtime_users([LEADER_1], cfg)
     assert len(users) == 1
     assert users[0].user_id == FUNDER_A
@@ -1297,7 +1297,7 @@ def test_legacy_single_account_maps_to_one_deterministic_copier(caplog):
 
 
 def test_select_runtime_copiers_filters_subset():
-    from pmcopy.services.copierConfig import select_runtime_copiers
+    from pmcopy.services.accounts.copier_config import select_runtime_copiers
 
     users = [
         RuntimeUser(user_id="primary", wallet=MagicMock()),
@@ -1309,7 +1309,7 @@ def test_select_runtime_copiers_filters_subset():
 
 
 def test_select_runtime_copiers_rejects_unknown_id():
-    from pmcopy.services.copierConfig import select_runtime_copiers
+    from pmcopy.services.accounts.copier_config import select_runtime_copiers
 
     users = [RuntimeUser(user_id="primary", wallet=MagicMock())]
     with pytest.raises(ValueError, match="primary"):
@@ -1318,7 +1318,7 @@ def test_select_runtime_copiers_rejects_unknown_id():
 
 def test_load_respects_copier_selection_through_seam(tmp_path, monkeypatch):
     users = _load(_paper_yaml(), tmp_path, monkeypatch)
-    from pmcopy.services.copierConfig import select_runtime_copiers
+    from pmcopy.services.accounts.copier_config import select_runtime_copiers
 
     assert [u.user_id for u in select_runtime_copiers(users, "secondary")] == ["secondary"]
 
@@ -1329,15 +1329,15 @@ def test_load_respects_copier_selection_through_seam(tmp_path, monkeypatch):
 
 
 def test_schema_v2_to_build_user_state_two_copiers(tmp_path, monkeypatch):
-    from pmcopy.orchestrators import runtime_bootstrap
+    from pmcopy.orchestrators.bootstrap import runtime_bootstrap
 
     users = _load(_paper_yaml(), tmp_path, monkeypatch)
     assert len(users) == 2
 
     states = {}
     with (
-        patch("pmcopy.orchestrators.runtime_bootstrap.PositionManager"),
-        patch("pmcopy.orchestrators.runtime_bootstrap.ExecutionService"),
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.PositionManager"),
+        patch("pmcopy.orchestrators.bootstrap.runtime_bootstrap.ExecutionService"),
     ):
         for runtime_user in users:
             states[runtime_user.user_id] = runtime_bootstrap.build_user_state(

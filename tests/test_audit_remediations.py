@@ -12,7 +12,7 @@ import httpx
 import pytest
 from eth_abi import encode as abi_encode
 
-from pmcopy.clients.alchemy_multiplex_ws import (
+from pmcopy.clients.ws.alchemy_multiplex_ws import (
     AlchemyMultiplexWebSocket,
     SlotSubscription,
 )
@@ -28,7 +28,7 @@ from pmcopy.config.addresses import (
 from pmcopy.domain.detection import DetectionMode
 from pmcopy.domain.source_time import TransportReceipt
 from pmcopy.domain.tracked_users import TrackedTraderAddresses, TrackedUserDirectory
-from pmcopy.orchestrators.alchemy_detection_runtime import AlchemyDetectionRuntime
+from pmcopy.orchestrators.detection.alchemy_detection_runtime import AlchemyDetectionRuntime
 from pmcopy.services.onchain_detection.alchemy_ws_meter import AlchemyWsMeter
 from pmcopy.services.onchain_detection.mined_fill_deduplicator import (
     LogEventLruDeduplicator,
@@ -533,10 +533,10 @@ async def test_phase2_rpc_mask_url_and_reusable_injected_provider_transport() ->
 @pytest.mark.asyncio
 async def test_phase3_reservation_expiry_skips_locked_scope_preventing_deadlock() -> None:
     """C-01: _reconcile_expired_reservation must not self-deadlock on an already-locked scope."""
-    from pmcopy.orchestrators.runtime_bootstrap import _bind_reservation_runtime
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import _bind_reservation_runtime
     from pmcopy.services.execution.reservation_expiry import ReservationExpiryDecision
-    from pmcopy.services.positionActionCoordinator import PositionKey
-    from pmcopy.services.positionCoordinator import PositionCoordinator
+    from pmcopy.services.positions.position_action_coordinator import PositionKey
+    from pmcopy.services.positions.position_coordinator import PositionCoordinator
 
     coord_locks = PositionCoordinator()
     scope = PositionKey(user_id="u1", condition_id="cond-1", token_id="tok-1")
@@ -608,7 +608,7 @@ async def test_phase3_cancelled_submit_persists_submitted_unconfirmed_via_shield
     """C-02: CancelledError during in-flight _submit_gateway must shield-persist submitted_unconfirmed."""
     from pmcopy.config.app_config import load_config
     from pmcopy.domain.execution import ExecutionOrderType
-    from pmcopy.services.executionService import ExecutionRequest, ExecutionService
+    from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
 
     saved_statuses: list[str] = []
 
@@ -673,7 +673,7 @@ async def test_phase3_coordinator_releases_reservation_on_geoblocked_and_metadat
 ):
     """C-2: Pre-POST gate rejections must release account and task reservations immediately."""
     from pmcopy.services.execution.coordinator import ExecutionCoordinator, ExecutionIntent
-    from pmcopy.services.executionService import ExecutionResult
+    from pmcopy.services.execution.execution_service import ExecutionResult
 
     for status_code in (
         "geoblocked",
@@ -760,7 +760,7 @@ async def test_phase3_reconcile_terminal_no_fill_updates_submission_status_and_i
     None
 ):
     """C-04: Terminal no-fill must update orders submission status AND BalanceRegime.record_cancel must be idempotent."""
-    from pmcopy.services.balance_regime import BalanceRegime
+    from pmcopy.services.accounts.balance_regime import BalanceRegime
     from pmcopy.services.execution.reconciliation_service import ReconciliationService
 
     regime = BalanceRegime()
@@ -859,7 +859,7 @@ async def test_phase3_ccxt_maker_legs_filters_counterparty_makers_and_paper_fill
 @pytest.mark.asyncio
 async def test_phase3_cross_source_claim_serializes_concurrent_same_tx_siblings() -> None:
     """C-05: Concurrent sibling fills of the same tx must not return winner=unknown on races."""
-    from pmcopy.orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
 
     in_flight_keys: set[str] = set()
     committed_keys: dict[str, str] = {}
@@ -1072,7 +1072,7 @@ def test_phase4_multi_user_config_rejects_case_colliding_copier_ids() -> None:
     from pydantic import SecretStr
 
     from pmcopy.config.app_config import SignatureType, WalletConfig
-    from pmcopy.services.multiUserConfig import RuntimeUser, _reject_duplicate_users
+    from pmcopy.services.accounts.multi_user_config import RuntimeUser, _reject_duplicate_users
 
     u1 = RuntimeUser(
         user_id="Alpha",

@@ -73,8 +73,8 @@ async def test_positions_ledger_pk_includes_token_id():
 @pytest.mark.asyncio
 async def test_yes_and_no_outcomes_persist_independently(monkeypatch):
     """Both YES (token_a) and NO (token_b) rows survive concurrent upserts."""
-    import pmcopy.services.accountingService as acct_mod
-    from pmcopy.services.accountingService import AccountingService, PositionLot
+    import pmcopy.services.accounting.accounting_service as acct_mod
+    from pmcopy.services.accounting.accounting_service import AccountingService, PositionLot
 
     async with _pg_pool() as pool:
 
@@ -120,8 +120,8 @@ async def test_yes_and_no_outcomes_persist_independently(monkeypatch):
 @pytest.mark.asyncio
 async def test_close_position_requires_token_id(monkeypatch):
     """close_position must accept token_id and only delete the matching token row."""
-    import pmcopy.services.accountingService as acct_mod
-    from pmcopy.services.accountingService import AccountingService, PositionLot
+    import pmcopy.services.accounting.accounting_service as acct_mod
+    from pmcopy.services.accounting.accounting_service import AccountingService, PositionLot
 
     async with _pg_pool() as pool:
 

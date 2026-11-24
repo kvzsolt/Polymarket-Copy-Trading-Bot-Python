@@ -8,7 +8,7 @@ import pytest
 
 from pmcopy.storage.postgres.positions_repo import PositionsRepo
 from pmcopy.storage.postgres.positions_repo import PositionRecord
-from pmcopy.orchestrators.trade_pipeline import _sync_sell_position_from_live_holdings
+from pmcopy.orchestrators.pipeline.trade_pipeline import _sync_sell_position_from_live_holdings
 from pmcopy.domain.position_ownership import PositionOwnership
 from tests.test_positions_repo_set_position_size import _FakePool, _FakeTx, VALID_TOKEN
 

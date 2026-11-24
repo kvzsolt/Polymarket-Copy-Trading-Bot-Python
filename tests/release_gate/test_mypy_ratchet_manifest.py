@@ -27,11 +27,11 @@ from scripts.check_mypy_ratchet import (
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 SAMPLE_MYPY_OUTPUT = """\
-src/pmcopy/services/auto_trader.py:12: error: Incompatible types in assignment  [assignment]
-src/pmcopy/services/auto_trader.py:40: error: "None" is not a valid type  [valid-type]
-src/pmcopy/services/auto_trader.py:40: note: See https://mypy.readthedocs.io/
-src/pmcopy/orchestrators/trade_pipeline.py:7:1: error: Cannot find implementation  [import]
-src/pmcopy/services/auto_trader.py:12: error: duplicate line for the same file
+src/pmcopy/services/discovery/auto_trader.py:12: error: Incompatible types in assignment  [assignment]
+src/pmcopy/services/discovery/auto_trader.py:40: error: "None" is not a valid type  [valid-type]
+src/pmcopy/services/discovery/auto_trader.py:40: note: See https://mypy.readthedocs.io/
+src/pmcopy/orchestrators/pipeline/trade_pipeline.py:7:1: error: Cannot find implementation  [import]
+src/pmcopy/services/discovery/auto_trader.py:12: error: duplicate line for the same file
 Found 3 errors in 2 files (checked 211 source files)
 """
 
@@ -39,8 +39,8 @@ Found 3 errors in 2 files (checked 211 source files)
 def test_parse_error_counts_groups_by_file_and_ignores_notes_and_summaries() -> None:
     counts = parse_error_counts(SAMPLE_MYPY_OUTPUT)
     assert counts == {
-        "src/pmcopy/services/auto_trader.py": 3,
-        "src/pmcopy/orchestrators/trade_pipeline.py": 1,
+        "src/pmcopy/services/discovery/auto_trader.py": 3,
+        "src/pmcopy/orchestrators/pipeline/trade_pipeline.py": 1,
     }
 
 

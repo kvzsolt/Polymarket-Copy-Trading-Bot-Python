@@ -10,15 +10,15 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from pmcopy.adapters.clock import SystemReceiptClock
+from pmcopy.adapters.time.clock import SystemReceiptClock
 from pmcopy.domain.history_import import HistoryImportError, HistoryImportPlan
-from pmcopy.services.history_import import (
+from pmcopy.services.evidence.history_import import (
     HistoryGateway,
     HistoryImportCollector,
     HistoryImportOutcome,
 )
-from pmcopy.storage.history_import import HistoryImportJournal
-from pmcopy.storage.provider_budget import SqliteProviderBudget
+from pmcopy.storage.local.history_import import HistoryImportJournal
+from pmcopy.storage.local.provider_budget import SqliteProviderBudget
 
 
 class HistoryProviderRuntime(Protocol):
@@ -89,7 +89,7 @@ def run_history_import(args: argparse.Namespace) -> int:
             raise HistoryImportError("history_journal_required")
         # Approved loader/runtime are deliberately imported after pure preview.
         from pmcopy.config.app_config import load_config
-        from pmcopy.orchestrators.provider_runtime import ProviderRuntime
+        from pmcopy.orchestrators.bootstrap.provider_runtime import ProviderRuntime
 
         outcome = asyncio.run(
             HistoryImportCommand(load_config, ProviderRuntime.from_config).execute(

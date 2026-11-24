@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 from pmcopy.config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
-from pmcopy.services.executionService import (
+from pmcopy.services.execution.execution_service import (
     ExecutionRequest,
     ExecutionService,
     _sanitize_submission_response,
@@ -561,7 +561,7 @@ class TestExecutionService:
         # Seed duplicate — must have order_id to block retry
         key = "d"
         repo.store = {key: {"order_id": "existing", "status": "filled"}}
-        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.execution.execution_service._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
         assert res.status == "duplicate_ignored"
 
@@ -610,7 +610,7 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.execution.execution_service._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True
@@ -662,7 +662,7 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        with patch("pmcopy.services.executionService._effective_idempotency_key", return_value=key):
+        with patch("pmcopy.services.execution.execution_service._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True

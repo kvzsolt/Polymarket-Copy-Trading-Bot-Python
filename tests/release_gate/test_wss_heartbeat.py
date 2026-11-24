@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.clients.market_ws import MarketWebSocket
-from pmcopy.clients.ws_constants import HEARTBEAT_INTERVAL
+from pmcopy.clients.ws.market_ws import MarketWebSocket
+from pmcopy.clients.ws.ws_constants import HEARTBEAT_INTERVAL
 
 
 def test_heartbeat_interval_is_five_seconds() -> None:
@@ -43,7 +43,7 @@ async def test_heartbeat_sends_ping_string_at_cadence() -> None:
         if len(sleep_calls) >= 2:
             ws_client._running = False
 
-    with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+    with patch("pmcopy.clients.ws.market_ws.asyncio.sleep", side_effect=fake_sleep):
         await ws_client._heartbeat(fake_ws)
 
     assert sleep_calls and all(s == HEARTBEAT_INTERVAL for s in sleep_calls)
@@ -64,7 +64,7 @@ async def test_heartbeat_exits_on_send_failure() -> None:
     async def instant_sleep(_seconds: float) -> None:
         return None
 
-    with patch("pmcopy.clients.market_ws.asyncio.sleep", side_effect=instant_sleep):
+    with patch("pmcopy.clients.ws.market_ws.asyncio.sleep", side_effect=instant_sleep):
         await asyncio.wait_for(ws_client._heartbeat(fake_ws), timeout=1.0)
 
     fake_ws.send.assert_awaited_once_with("PING")

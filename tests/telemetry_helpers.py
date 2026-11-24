@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.services.observability.metrics import MetricsRegistry
 from pmcopy.services.telemetry import TelemetryEmitters
 from pmcopy.services.telemetry.service import TelemetryService
 

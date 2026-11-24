@@ -119,8 +119,8 @@ async def test_retryable_fak_failure_never_waits_without_another_attempt(
 
     sleep = AsyncMock()
     jitter = MagicMock(return_value=0.01)
-    monkeypatch.setattr("pmcopy.services.executionService.asyncio.sleep", sleep)
-    monkeypatch.setattr("pmcopy.services.executionService.random.uniform", jitter)
+    monkeypatch.setattr("pmcopy.services.execution.execution_service.asyncio.sleep", sleep)
+    monkeypatch.setattr("pmcopy.services.execution.execution_service.random.uniform", jitter)
     gateway = MagicMock(spec=ClobGateway)
     gateway.submit_marketable_order = AsyncMock(
         return_value=VenueSubmitResult(

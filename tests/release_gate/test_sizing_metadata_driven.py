@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pmcopy.services.order_sizing import size_buy_order, size_sell_order
+from pmcopy.services.trading.order_sizing import size_buy_order, size_sell_order
 
 
 def test_buy_below_min_rejected_when_cap_cannot_cover_upsize() -> None:

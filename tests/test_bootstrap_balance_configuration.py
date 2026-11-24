@@ -8,7 +8,7 @@ import pytest
 
 import pmcopy.bootstrap as bootstrap_module
 from pmcopy.config.app_config import AppConfig, DatabaseConfig, PolymarketConfig
-from pmcopy.utils import getMyBalance as balance_module
+from pmcopy.utils import wallet_balance as balance_module
 
 
 class _FakeAcquireContext:

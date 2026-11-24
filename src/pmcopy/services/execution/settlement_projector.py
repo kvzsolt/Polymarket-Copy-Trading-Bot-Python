@@ -29,11 +29,11 @@ from pmcopy.services.execution.order_planner import (
     quote_outside_band,
 )
 from pmcopy.services.execution.types import ExecutionRequest, ExecutionResult
-from pmcopy.services.trading_permission import TradingPausedError, TradingPermissionService
+from pmcopy.services.trading.trading_permission import TradingPausedError, TradingPermissionService
 from pmcopy.utils.logger import redact_error_detail
 
 if TYPE_CHECKING:
-    from pmcopy.services.market_data_service import MarketDataService
+    from pmcopy.services.market_data.market_data_service import MarketDataService
 
 _DEFERRED_ORDER_ACK_STATUSES = frozenset(
     {

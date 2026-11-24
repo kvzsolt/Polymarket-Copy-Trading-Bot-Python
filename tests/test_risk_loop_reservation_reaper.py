@@ -105,7 +105,7 @@ def test_should_attempt_no_fill_prune_is_per_scope():
 
 @pytest.mark.asyncio
 async def test_attempt_phantom_prune_returns_drift_result(monkeypatch):
-    import pmcopy.orchestrators.trade_pipeline as tp
+    import pmcopy.orchestrators.pipeline.trade_pipeline as tp
 
     drift_reconciler = MagicMock()
     drift_reconciler.reconcile_position_drift = AsyncMock(
@@ -126,7 +126,7 @@ async def test_attempt_phantom_prune_returns_drift_result(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_attempt_phantom_prune_empty_on_error(monkeypatch):
-    import pmcopy.orchestrators.trade_pipeline as tp
+    import pmcopy.orchestrators.pipeline.trade_pipeline as tp
 
     def _boom(_ctx):
         raise RuntimeError("no reconciler wired")

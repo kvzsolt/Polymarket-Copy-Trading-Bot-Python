@@ -8,7 +8,7 @@ import aiohttp
 import pytest
 
 from pmcopy.domain.redemption import RedemptionState
-from pmcopy.services.settlement import RedemptionService
+from pmcopy.services.accounting.settlement import RedemptionService
 from tests.test_redemption_gateway import CONDITION, GatewayScenario
 from tests.test_redemption_service import FakeClock, FakeJournal
 

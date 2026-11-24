@@ -22,17 +22,17 @@ from pmcopy.services.execution.book_spread import (
     resolve_book_spread_mode,
 )
 from pmcopy.services.execution.types import ExecutionRequest, ExecutionResult
-from pmcopy.services.market_data_quality import is_thin_or_empty_book
-from pmcopy.services.market_data_service import (
+from pmcopy.services.market_data.market_data_quality import is_thin_or_empty_book
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataNotReady,
     MarketDataPolicy,
 )
-from pmcopy.services.order_sizing import MinimumOrderPolicy
-from pmcopy.services.trading_permission import SubmissionPurpose
+from pmcopy.services.trading.order_sizing import MinimumOrderPolicy
+from pmcopy.services.trading.trading_permission import SubmissionPurpose
 
 if TYPE_CHECKING:
-    from pmcopy.services.market_data_service import MarketDataService
+    from pmcopy.services.market_data.market_data_service import MarketDataService
 
 _COPY_MINIMUM_ORDER_POLICY = MinimumOrderPolicy()
 _DEFAULT_ENTRY_PRICE_DRIFT_PCT = ExecutionConfig.max_entry_price_drift_pct

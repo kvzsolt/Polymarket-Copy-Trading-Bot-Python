@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pmcopy.config.v1_runtime import CopyTasksRuntimeConfig
-from pmcopy.orchestrators.v1_runtime import CopyTaskV1RuntimeBuilder
+from pmcopy.orchestrators.copy_tasks.v1_runtime import CopyTaskV1RuntimeBuilder
 from pmcopy.services.copy_tasks.budget import InMemoryTaskBudgetRepository
 from pmcopy.services.copy_tasks.lots import InMemoryRiskLotRepository
 from pmcopy.services.copy_tasks.reentry_lock import InMemoryMarketReentryLockRepository

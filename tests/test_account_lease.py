@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from pmcopy.domain.account_identity import CopierAccountId
-from pmcopy.services.account_lease import (
+from pmcopy.services.accounts.account_lease import (
     AccountLeaseManager,
     AccountLeaseLost,
     account_lease_renewal_loop,
@@ -85,7 +85,7 @@ def test_account_identity_stable_across_display_and_wallet_changes() -> None:
     the wallet is then the only identity that account ever had.
     """
     from pmcopy.config.env import SignatureType, WalletConfig
-    from pmcopy.services.multiUserConfig import RuntimeUser, bind_resolved_deposit_wallet
+    from pmcopy.services.accounts.multi_user_config import RuntimeUser, bind_resolved_deposit_wallet
 
     def _user(user_id: str, funder: str) -> RuntimeUser:
         return RuntimeUser(
@@ -428,7 +428,7 @@ async def test_user_runtime_state_carries_typed_account_identity() -> None:
     from unittest.mock import MagicMock, patch
 
     import pmcopy.config.app_config as app_config_mod
-    from pmcopy.orchestrators.runtime_bootstrap import build_user_state
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_user_state
     from tests.config_helpers import load_test_config
 
     env = {

@@ -14,11 +14,11 @@ import pmcopy.config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
-from pmcopy.services.pnlTracker import PnLTracker
+from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades, _resolve_leader_tier
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
 from pmcopy.services.risk.risk_engine import RiskEngine
-from pmcopy.services.accountingService import AccountingService
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.accounting.accounting_service import AccountingService
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.storage.postgres.fills_repo import FillsRepo
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
 from pmcopy.storage.postgres.positions_repo import PositionsRepo
@@ -115,7 +115,7 @@ class _FakeLeadersRepo:
 def _make_fresh_bundle():
     """Tiny WSS-fresh MarketDataBundle used by tier tests for sizing inputs."""
     from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
     now = time.monotonic()
     return MarketDataBundle(
@@ -339,7 +339,7 @@ async def test_multiple_signals_tier_applied_to_all(tmp_path):
 
 @pytest.mark.asyncio
 async def test_watchlist_gate_can_be_disabled(tmp_path):
-    from pmcopy.services.executionService import ExecutionResult
+    from pmcopy.services.execution.execution_service import ExecutionResult
 
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
@@ -417,7 +417,7 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
 @pytest.mark.asyncio
 async def test_live_trading_enabled_allows_live(tmp_path):
     """Explicit live selection reaches the injected execution boundary for a live-follow tier."""
-    from pmcopy.services.executionService import ExecutionResult
+    from pmcopy.services.execution.execution_service import ExecutionResult
     from tests.test_trade_pipeline_safety import _PassThroughCoordinator
 
     async with _pg_pool() as pool:
@@ -443,7 +443,7 @@ async def test_live_trading_enabled_allows_live(tmp_path):
         )
         ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
         with patch(
-            "pmcopy.orchestrators.trade_pipeline.get_my_balance", AsyncMock(return_value=Decimal(1000))
+            "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", AsyncMock(return_value=Decimal(1000))
         ):
             results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1

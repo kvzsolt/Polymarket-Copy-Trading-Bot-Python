@@ -1,0 +1,1 @@
+"""Subpackage ``pmcopy.adapters.time``."""

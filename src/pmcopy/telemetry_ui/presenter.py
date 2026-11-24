@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
-from pmcopy.services.metrics import MetricsRegistry, metrics as default_metrics
+from pmcopy.services.observability.metrics import MetricsRegistry, metrics as default_metrics
 from pmcopy.services.telemetry.hub import TelemetrySubscription
 from pmcopy.services.telemetry.query import TelemetryQueryService
 from pmcopy.utils.log_redaction import redact_object, redact_text

@@ -24,8 +24,8 @@ import pytest
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
-from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-from pmcopy.services.market_data_service import (
+from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataNotReady,
     MarketDataSource,
@@ -157,7 +157,7 @@ def _request(**overrides) -> ExecutionRequest:
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
-    import pmcopy.services.executionService as _es
+    import pmcopy.services.execution.execution_service as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield

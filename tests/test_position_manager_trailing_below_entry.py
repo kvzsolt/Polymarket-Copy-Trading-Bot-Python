@@ -9,7 +9,7 @@ then some" hole. The trailing trigger is derived from the in-profit peak; it
 must fire on the retrace regardless of where entry sits.
 """
 
-import pmcopy.services.positionManager as pm_mod
+import pmcopy.services.positions.position_manager as pm_mod
 
 
 def _make_trailing_pm():

@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pmcopy.clients.market_ws import MarketWebSocket
+    from pmcopy.clients.ws.market_ws import MarketWebSocket
     from pmcopy.clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
-    from pmcopy.clients.user_ws import UserWebSocket
+    from pmcopy.clients.ws.user_ws import UserWebSocket
 
 __all__ = [
     "AsyncHttpClient",
@@ -29,12 +29,12 @@ def __getattr__(name: str) -> Any:
         return HttpRetryPolicy
 
     if name == "MarketWebSocket":
-        from pmcopy.clients.market_ws import MarketWebSocket
+        from pmcopy.clients.ws.market_ws import MarketWebSocket
 
         return MarketWebSocket
 
     if name == "UserWebSocket":
-        from pmcopy.clients.user_ws import UserWebSocket
+        from pmcopy.clients.ws.user_ws import UserWebSocket
 
         return UserWebSocket
 

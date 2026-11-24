@@ -16,7 +16,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 
-from pmcopy.services.circuitBreaker import CircuitBreaker, CircuitState
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker, CircuitState
 
 
 def test_reading_state_does_not_consume_probe_budget():
@@ -32,7 +32,7 @@ def test_reading_state_does_not_consume_probe_budget():
     assert cb.state == CircuitState.OPEN
 
     # Fast-forward past the cooldown.
-    with patch("pmcopy.services.circuitBreaker.time.monotonic", return_value=cb._last_failure_time + 11.0):
+    with patch("pmcopy.services.execution.circuit_breaker.time.monotonic", return_value=cb._last_failure_time + 11.0):
         # Read .state 100 times — pre-fix this would have reset the probe
         # counter 100 times.
         for _ in range(100):
@@ -72,7 +72,7 @@ def test_allow_request_after_cooldown_transitions():
     assert cb._state == CircuitState.OPEN
     assert cb.allow_request() is False
 
-    with patch("pmcopy.services.circuitBreaker.time.monotonic", return_value=cb._last_failure_time + 11.0):
+    with patch("pmcopy.services.execution.circuit_breaker.time.monotonic", return_value=cb._last_failure_time + 11.0):
         # allow_request should drive the transition and let the first probe through.
         assert cb.allow_request() is True
         assert cb._state == CircuitState.HALF_OPEN

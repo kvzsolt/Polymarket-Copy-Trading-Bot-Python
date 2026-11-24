@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from pmcopy.domain.models import TradeSignal
-from pmcopy.ports.repositories import (
+from pmcopy.interfaces.repositories import (
     AbstractCursorRepository,
     AbstractDiscoveryRepository,
     AbstractFillRepository,

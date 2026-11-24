@@ -12,8 +12,8 @@ import pytest
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
-from pmcopy.services.market_data_quality import (
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
+from pmcopy.services.market_data.market_data_quality import (
     top_of_book_from_levels as _top_of_book_from_levels,
 )
 
@@ -65,7 +65,7 @@ def _mock_mds(bid: str | None, ask: str | None) -> AsyncMock:
 
 def _make_execution_service(bid: str | None, ask: str | None, quote_price: str = "0.50"):
     """Build a minimal ExecutionService with mocked deps."""
-    from pmcopy.services.executionService import ExecutionService
+    from pmcopy.services.execution.execution_service import ExecutionService
 
     clob = AsyncMock()
     gateway = SimpleNamespace(
@@ -128,7 +128,7 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
 
 
 def _req(amount: str = "10", side: str = "BUY", **overrides):
-    from pmcopy.services.executionService import ExecutionRequest
+    from pmcopy.services.execution.execution_service import ExecutionRequest
 
     data = dict(
         user_id="user1",
@@ -154,7 +154,7 @@ def _req(amount: str = "10", side: str = "BUY", **overrides):
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset circuit breaker so it doesn't interfere."""
-    import pmcopy.services.executionService as _es
+    import pmcopy.services.execution.execution_service as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -533,7 +533,7 @@ class TestSpreadMetrics:
     """Test the _calculate_book_spread_metrics helper."""
 
     def test_spread_metrics_include_absolute_relative_and_ticks(self):
-        from pmcopy.services.executionService import _calculate_book_spread_metrics
+        from pmcopy.services.execution.execution_service import _calculate_book_spread_metrics
 
         metrics = _calculate_book_spread_metrics(
             best_bid=Decimal("0.50"),

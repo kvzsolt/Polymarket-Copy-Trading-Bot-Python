@@ -11,7 +11,7 @@ from __future__ import annotations
 from pmcopy.storage.postgres.risk_lot_repository import RiskLotCodec
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import time
 from decimal import Decimal
 from typing import Protocol
@@ -410,9 +410,19 @@ class PostgresCopyTaskRepository:
         pool: DatabasePool,
         *,
         codec: CopyTaskCodec | None = None,
+        on_mutation: Callable[[], None] | None = None,
     ) -> None:
         self._pool = pool
         self._codec = codec or CopyTaskCodec()
+        self._on_mutation = on_mutation
+
+    def set_mutation_listener(self, callback: Callable[[], None] | None) -> None:
+        """Register an in-process cache invalidation hook invoked after commits."""
+        self._on_mutation = callback
+
+    def _notify_mutation(self) -> None:
+        if self._on_mutation is not None:
+            self._on_mutation()
 
     async def create(self, task: CopyTask) -> None:
         """Create a task or raise when its identity already exists."""
@@ -441,6 +451,7 @@ class PostgresCopyTaskRepository:
         )
         if inserted is None:
             raise CopyTaskConflict(f"copy task already exists: {task.task_id}")
+        self._notify_mutation()
 
     async def get(self, task_id: str) -> CopyTask | None:
         """Return one task including soft-deleted records."""
@@ -490,6 +501,7 @@ class PostgresCopyTaskRepository:
             int(expected_version),
         )
         if updated is not None:
+            self._notify_mutation()
             return
         current = await self.get(task.task_id)
         if current is None:

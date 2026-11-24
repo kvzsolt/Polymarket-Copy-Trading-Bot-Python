@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pmcopy.config.app_config import PositionDriftConfig
-from pmcopy.services.position_drift_service import PositionDriftService
+from pmcopy.services.positions.position_drift_service import PositionDriftService
 
 
 @pytest.mark.asyncio

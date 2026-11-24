@@ -55,3 +55,28 @@ def test_domain_never_imports_outward_layers() -> None:
                     violations.append(f"{relative}:{node.lineno} imports {imported_root}")
 
     assert violations == []
+
+
+def test_no_camelcase_python_filenames_in_pmcopy() -> None:
+    """Enforce a single strict snake_case filename convention across src/pmcopy."""
+    root = Path(__file__).resolve().parents[1] / "src" / "pmcopy"
+    offenders = [
+        str(path.relative_to(root))
+        for path in sorted(root.rglob("*.py"))
+        if "__pycache__" not in path.parts and any(ch.isupper() for ch in path.stem)
+    ]
+    assert offenders == [], f"camelCase filenames are forbidden: {offenders}"
+
+
+def test_organized_packages_have_no_loose_solo_files_or_duplicate_roots() -> None:
+    """Ensure solo modules live inside cohesive subsystem subpackages."""
+    root = Path(__file__).resolve().parents[1] / "src" / "pmcopy"
+    for removed in ("orchestration", "ports", "models", "log"):
+        assert not (root / removed).exists(), f"Obsolete directory reappeared: {removed}"
+    for container in ("services", "orchestrators", "storage", "clients", "adapters"):
+        loose = [
+            p.name
+            for p in sorted((root / container).glob("*.py"))
+            if p.name != "__init__.py"
+        ]
+        assert loose == [], f"Loose solo files found in {container}/: {loose}"

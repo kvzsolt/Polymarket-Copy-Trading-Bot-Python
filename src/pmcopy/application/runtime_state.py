@@ -4,7 +4,7 @@
 protective risk context per account), while execution coordination, reconciliation
 backoff, venue concurrency semaphores, coarse 24-hour ``MAX_POSITION_PCT`` balance
 snapshots, and protective risk-monitor caches are **account-scoped** concerns owned
-by :class:`pmcopy.orchestrators.runtime_bootstrap.UserRuntimeState`.
+by :class:`pmcopy.orchestrators.bootstrap.runtime_bootstrap.UserRuntimeState`.
 
 Separating :class:`AccountExecutionRuntimeState` and :class:`AccountRiskRuntimeState`
 from per-binding ``TradingContext`` fields ensures:
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Final, override
 
 if TYPE_CHECKING:
     from pmcopy.interfaces.clob_gateway import ClobGateway
-    from pmcopy.ports.repositories import AbstractReservationRepository
+    from pmcopy.interfaces.repositories import AbstractReservationRepository
     from pmcopy.services.execution.pending_order_reconciliation import (
         PendingOrderReconciliationQueryService,
     )

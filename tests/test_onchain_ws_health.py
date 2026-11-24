@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
-from pmcopy.clients.onchain_ws import OnchainWebSocket, OnchainWsStateListener
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import (
+from pmcopy.clients.ws.onchain_ws import OnchainWebSocket, OnchainWsStateListener
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import (
     GAUGE_ONCHAIN_WS_CONNECTED,
     METRIC_ONCHAIN_WS_RECONNECT,
     ONCHAIN_WS_STREAM_LABEL_VALUES,
@@ -195,7 +195,7 @@ async def test_stream_label_values_match_the_runtime_subscription_names() -> Non
     there would make every health metric raise on an unbounded label instead
     of reporting the drop.
     """
-    from pmcopy.orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from pmcopy.orchestrators.detection.onchain_detection_runtime import OnchainDetectionRuntime
 
     opened: list[str] = []
 
@@ -286,7 +286,7 @@ async def _drive_one_cycle(
     listener: Any,
 ) -> OnchainWebSocket:
     """Run exactly one connect -> disconnect -> reconnect-scheduled cycle."""
-    from pmcopy.clients import onchain_ws as onchain_ws_module
+    from pmcopy.clients.ws import onchain_ws as onchain_ws_module
 
     class _Connect:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -367,7 +367,7 @@ async def test_websocket_without_a_listener_is_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The listener is optional; the loop behaves exactly as before without one."""
-    from pmcopy.clients import onchain_ws as onchain_ws_module
+    from pmcopy.clients.ws import onchain_ws as onchain_ws_module
 
     holder: dict[str, OnchainWebSocket] = {}
     connects: list[int] = []

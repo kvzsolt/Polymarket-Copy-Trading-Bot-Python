@@ -274,7 +274,7 @@ class TestGetMyBalanceFallback:
         mock_config.network.usdc_contract_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
         mock_config.network.chain_id = 137
 
-        from pmcopy.utils.getMyBalance import configure_from_appconfig
+        from pmcopy.utils.wallet_balance import configure_from_appconfig
 
         configure_from_appconfig(mock_config)
 

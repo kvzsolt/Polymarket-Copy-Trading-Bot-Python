@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
 from pmcopy.services.discovery.cycle_summary import DiscoveryCycleSummary
 
 

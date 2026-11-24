@@ -20,7 +20,7 @@ from pmcopy.interfaces.grouped_detection import (
 )
 from pmcopy.interfaces.provider_budget import ProviderAdmission
 from pmcopy.interfaces.source_time import ReceiptClock
-from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.services.onchain_detection.grouped_detection import DetectionSubscription
 from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery
 
 

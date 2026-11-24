@@ -29,7 +29,7 @@ import aiohttp
 
 from pmcopy.integrations.polymarket.history_client import PolymarketHistoryClient
 
-_DATA_API_BASE = "https://data-api.polymarket.com"
+_DATA_API_BASE = "https://data-api.polymarket.com/v2"
 
 
 @dataclass(frozen=True)
@@ -148,11 +148,16 @@ class LeaderHistoryLoader:
         return await self._fetch_json_list("/closed-positions", params)
 
     async def _fetch_json_list(self, path: str, params: dict[str, str]) -> list[dict[str, Any]]:
-        url = f"{_DATA_API_BASE}{path}"
+        wire_params = {k: v for k, v in params.items() if k != "offset"}
+        wire_path = path
+        if path == "/closed-positions":
+            wire_path = "/positions"
+            wire_params["status"] = "CLOSED"
+        url = f"{_DATA_API_BASE}{wire_path}"
         timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, params=params) as resp:
+                async with session.get(url, params=wire_params) as resp:
                     if resp.status >= 400:
                         return []
                     payload = await resp.json()

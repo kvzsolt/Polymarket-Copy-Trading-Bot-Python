@@ -3,7 +3,7 @@
 import time
 
 
-from pmcopy.services.circuitBreaker import CircuitBreaker, CircuitOpen, CircuitState
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker, CircuitOpen, CircuitState
 
 
 # ── helpers ───────────────────────────────────────────────────────────────

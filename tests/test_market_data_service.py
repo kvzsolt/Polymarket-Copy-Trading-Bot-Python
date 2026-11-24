@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.cache.market_state_store import BookSnapshot, MarketStateStore, QuoteSnapshot, TickSnapshot
-from pmcopy.services.market_data_service import (
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataNotReady,
     MarketDataPolicy,
@@ -1007,7 +1007,7 @@ class TestRestSnapshotBudgetsMatchTheRoundTrip:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import pmcopy.services.market_data_service as mds_mod
+        import pmcopy.services.market_data.market_data_service as mds_mod
 
         store = MarketStateStore()
         now, gw = self._clock_and_gateway(
@@ -1034,7 +1034,7 @@ class TestRestSnapshotBudgetsMatchTheRoundTrip:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Characterizes the live failure the new budget fixes."""
-        import pmcopy.services.market_data_service as mds_mod
+        import pmcopy.services.market_data.market_data_service as mds_mod
 
         store = MarketStateStore()
         now, gw = self._clock_and_gateway(

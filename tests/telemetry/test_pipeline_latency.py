@@ -1,7 +1,7 @@
 """Only observed durations within one boot enter bounded latency histograms."""
 
 from pmcopy.domain.source_time import TransportReceipt
-from pmcopy.services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.services.observability.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 from pmcopy.services.telemetry.latency import PipelineLatency
 
 

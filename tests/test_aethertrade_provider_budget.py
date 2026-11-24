@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from pmcopy.domain.provider_budget import BudgetSettings, ProviderConfigurationError
-from pmcopy.storage.provider_budget import SqliteProviderBudget
+from pmcopy.storage.local.provider_budget import SqliteProviderBudget
 
 
 class FakeClock:

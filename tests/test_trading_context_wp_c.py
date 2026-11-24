@@ -17,19 +17,19 @@ from pmcopy.application.runtime_state import (
 )
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.config.app_config import load_config
-from pmcopy.orchestrators.runtime_bootstrap import (
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import (
     build_trading_context,
     build_user_state,
     default_follow,
 )
-from pmcopy.orchestrators.trade_pipeline import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import (
     _position_pct_cap_balance_usdc,
     _position_pct_cap_snapshot_is_fresh,
     get_reconciliation_service,
     seed_position_pct_cap_snapshot,
 )
-from pmcopy.services.circuitBreaker import CircuitBreaker
-from pmcopy.services.multiUserConfig import RuntimeUser
+from pmcopy.services.execution.circuit_breaker import CircuitBreaker
+from pmcopy.services.accounts.multi_user_config import RuntimeUser
 
 _FUNDER_A = "0x" + "a" * 40
 _FUNDER_B = "0x" + "b" * 40
@@ -86,7 +86,7 @@ async def test_multi_leader_contexts_share_account_execution_and_risk_state() ->
     )
 
     with patch(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         ctx_1 = await build_trading_context(state_a, user_a.follows[_LEADER_1], cfg)
@@ -115,7 +115,7 @@ async def test_multi_leader_contexts_share_account_execution_and_risk_state() ->
     seed_position_pct_cap_snapshot(ctx_1, Decimal("450.25"), timestamp=1_700_000_000.0)
     assert _position_pct_cap_snapshot_is_fresh(ctx_2, now=1_700_000_100.0) is True
     with patch(
-        "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+        "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
         new=AsyncMock(side_effect=AssertionError("RPC should not be called when fresh")),
     ):
         # Use current wall-clock seed so _position_pct_cap_balance_usdc sees freshness.
@@ -152,7 +152,7 @@ async def test_separate_follower_accounts_keep_isolated_state_but_share_venue_br
     assert state_b.execution_service.circuit_breaker is shared_breaker
 
     with patch(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         new=AsyncMock(return_value=None),
     ):
         ctx_a = await build_trading_context(state_a, user_a.follows[_LEADER_1], cfg)

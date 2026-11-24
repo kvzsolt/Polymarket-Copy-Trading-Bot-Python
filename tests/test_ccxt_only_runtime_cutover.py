@@ -21,7 +21,7 @@ from pmcopy.integrations.polymarket.ccxt_prediction_client import CcxtPrediction
 from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from pmcopy.integrations.polymarket.paper_execution import PaperExecutionGateway
 from pmcopy.integrations.polymarket.venue_runtime import build_polymarket_runtime
-from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.execution.execution_service import ExecutionService
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -166,7 +166,9 @@ def test_no_backend_selector_or_sdk_imports_in_production() -> None:
     """Production source must not import the removed SDK/selector surface."""
 
     app_source = (ROOT / "src" / "pmcopy" / "app.py").read_text(encoding="utf-8")
-    bootstrap_source = (ROOT / "src" / "pmcopy" / "orchestrators" / "runtime_bootstrap.py").read_text(encoding="utf-8")
+    bootstrap_source = (
+        ROOT / "src" / "pmcopy" / "orchestrators" / "bootstrap" / "runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
     package_source = (ROOT / "src" / "pmcopy" / "integrations" / "polymarket" / "__init__.py").read_text(
         encoding="utf-8"
     )

@@ -7,7 +7,7 @@ import pytest
 from pmcopy.integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from pmcopy.integrations.polymarket.models import VenueFill
 from pmcopy.services.execution.reconciliation_service import ReconciliationService
-from pmcopy.services.leader_performance import ClosedEpisodeAccumulator, PerformanceFill
+from pmcopy.services.trading.leader_performance import ClosedEpisodeAccumulator, PerformanceFill
 from pmcopy.domain.detection import TradeSide
 from tests.test_ccxt_prediction_gateway_contract import FakeExchange
 from unittest.mock import AsyncMock

@@ -23,8 +23,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pmcopy.config.app_config as app_config_mod
-from pmcopy.orchestrators.runtime_bootstrap import ensure_runtime_follows
-from pmcopy.services.multiUserConfig import load_runtime_users
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import ensure_runtime_follows
+from pmcopy.services.accounts.multi_user_config import load_runtime_users
 from tests.config_helpers import load_test_config
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -138,7 +138,7 @@ def test_legacy_config_less_account_auto_follows_new_leaders_at_refresh():
 
 
 def test_legacy_default_never_overwrites_existing_entries():
-    from pmcopy.services.multiUserConfig import UserFollowConfig
+    from pmcopy.services.accounts.multi_user_config import UserFollowConfig
 
     existing = UserFollowConfig("user-1", LEADER_1, True, 0.5, 10, 77)
     user = _user("user-1", {LEADER_1: existing})

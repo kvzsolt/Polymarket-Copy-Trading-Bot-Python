@@ -80,14 +80,14 @@ sys.meta_path.insert(0, _ControlPlaneBlocker())
 )
 
 _VERIFY = """
-from pmcopy.adapters.clock import MonotonicClock, SystemMonotonicClock
+from pmcopy.adapters.time.clock import MonotonicClock, SystemMonotonicClock
 
 clock = SystemMonotonicClock()
 assert isinstance(clock.monotonic(), float)
 assert clock.monotonic() <= clock.monotonic()
 assert hasattr(MonotonicClock, "monotonic")
 
-from pmcopy.services.trading_control import (
+from pmcopy.services.trading.trading_control import (
     NullRuntimeTelemetry,
     OpenOrderControlGateway,
     RuntimeSafetyApplyError,
@@ -169,8 +169,8 @@ def test_relocated_modules_declare_no_control_plane_imports() -> None:
     """Static guard: the relocated sources never mention the control plane."""
 
     relocated = (
-        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "clock.py",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_control.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "time" / "clock.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading" / "trading_control.py",
         REPOSITORY_ROOT / "src" / "pmcopy" / "bot_cli" / "commands" / "trading.py",
     )
     for path in relocated:
@@ -226,15 +226,15 @@ def test_kept_trading_survivors_never_import_control_plane() -> None:
     """Static guard: kept surfaces are free of control-plane imports."""
 
     kept = (
-        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "healthServer.py",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "liveness_heartbeat.py",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_permission.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "observability" / "health_server.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "lifecycle" / "liveness_heartbeat.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading" / "trading_permission.py",
         REPOSITORY_ROOT / "src" / "pmcopy" / "storage" / "postgres" / "trading_control_repo.py",
         REPOSITORY_ROOT / "src" / "pmcopy" / "storage" / "postgres" / "market_reentry_lock_repository.py",
         REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "telemetry",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "telemetry_bootstrap.py",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading_control.py",
-        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "clock.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "orchestrators" / "bootstrap" / "telemetry_bootstrap.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "services" / "trading" / "trading_control.py",
+        REPOSITORY_ROOT / "src" / "pmcopy" / "adapters" / "time" / "clock.py",
         REPOSITORY_ROOT / "src" / "pmcopy" / "bot_cli",
     )
     for path in kept:

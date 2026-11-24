@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pmcopy.models.strategy_profile import StrategyArchetype
+from pmcopy.domain.strategy_profile import StrategyArchetype
 
 _CLFResult = tuple[StrategyArchetype, bool, str]
 

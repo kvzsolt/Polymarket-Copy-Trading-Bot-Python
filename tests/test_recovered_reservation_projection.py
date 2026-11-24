@@ -9,8 +9,8 @@ import pytest
 
 from pmcopy.domain.order_lifecycle import IntentReason, IntentSide, Reservation
 from pmcopy.services.execution.intent_recovery import recover_intents_from_db
-from pmcopy.services.intentRegistry import DuplicateIntentError, IntentRegistry, IntentState
-from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.execution.intent_registry import DuplicateIntentError, IntentRegistry, IntentState
+from pmcopy.services.positions.position_action_coordinator import PositionScope
 
 
 @pytest.mark.asyncio

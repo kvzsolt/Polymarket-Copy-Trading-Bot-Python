@@ -11,7 +11,7 @@ import yaml
 
 from pmcopy.config.app_config import AppConfig, CopyTradingConfig, EnvValidationError, load_config
 from pmcopy.config.trader_config import TraderConfig
-from pmcopy.orchestrators.v1_runtime_bootstrap import _seed_tasks_from_trader_configs
+from pmcopy.orchestrators.copy_tasks.v1_runtime_bootstrap import _seed_tasks_from_trader_configs
 
 WALLET = "0x" + "a" * 40
 WALLET_B = "0x" + "b" * 40

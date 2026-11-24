@@ -7,7 +7,7 @@ import pytest
 
 from pmcopy.domain.grouped_detection import TraderDetectionPolicy
 from pmcopy.domain.source_time import TransportReceipt
-from pmcopy.storage.detection_state import SqliteDetectionState
+from pmcopy.storage.local.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import COUNTERPARTY, EXCHANGE, OWNER, LogFixture
 
 

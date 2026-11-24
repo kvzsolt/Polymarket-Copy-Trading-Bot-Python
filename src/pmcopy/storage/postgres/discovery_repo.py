@@ -12,7 +12,7 @@ from typing import Any
 import asyncpg
 import orjson
 
-from pmcopy.ports.repositories import AbstractDiscoveryRepository
+from pmcopy.interfaces.repositories import AbstractDiscoveryRepository
 from pmcopy.services.discovery.models import Candidate
 
 

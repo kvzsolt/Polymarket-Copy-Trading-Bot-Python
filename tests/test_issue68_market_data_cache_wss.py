@@ -25,10 +25,10 @@ from pmcopy.cache.market_state_store import (
     BookSnapshot,
     MarketStateStore,
 )
-from pmcopy.clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
-from pmcopy.clients.user_ws import UserWebSocket
+from pmcopy.clients.ws.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
+from pmcopy.clients.ws.user_ws import UserWebSocket
 from pmcopy.integrations.polymarket.models import OrderBook, OrderBookLevel
-from pmcopy.services.market_data_service import MarketDataPolicy, MarketDataService, StaleDataError
+from pmcopy.services.market_data.market_data_service import MarketDataPolicy, MarketDataService, StaleDataError
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ class TestHeartbeat:
 
         mock_ws.send = mock_send
 
-        with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("pmcopy.clients.ws.market_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await market_ws._heartbeat(mock_ws)
             assert mock_sleep.call_count >= 2
             for call in mock_sleep.call_args_list:
@@ -205,7 +205,7 @@ class TestHeartbeat:
 
     @pytest.mark.asyncio
     async def test_user_ws_heartbeat_interval(self, user_ws: UserWebSocket) -> None:
-        from pmcopy.clients.user_ws import HEARTBEAT_INTERVAL as USER_HB
+        from pmcopy.clients.ws.user_ws import HEARTBEAT_INTERVAL as USER_HB
 
         mock_ws = AsyncMock()
         user_ws._running = True
@@ -220,7 +220,7 @@ class TestHeartbeat:
 
         mock_ws.send = mock_send
 
-        with patch("pmcopy.clients.user_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("pmcopy.clients.ws.user_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await user_ws._heartbeat(mock_ws)
             assert mock_sleep.call_count >= 2
             for call in mock_sleep.call_args_list:
@@ -263,8 +263,8 @@ class TestReconnectSnapshots:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.ws.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.ws.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         assert len(bootstrap_calls) >= 1
@@ -305,8 +305,8 @@ class TestReconnectSnapshots:
         mock_ctx.__aenter__ = fail_connect
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("pmcopy.clients.market_ws.websockets.connect", return_value=mock_ctx):
-            with patch("pmcopy.clients.market_ws.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pmcopy.clients.ws.market_ws.websockets.connect", return_value=mock_ctx):
+            with patch("pmcopy.clients.ws.market_ws.asyncio.sleep", new_callable=AsyncMock):
                 await ws._reconnect_loop()
 
         assert invalidated

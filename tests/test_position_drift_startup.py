@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.config.app_config import PositionDriftConfig
-from pmcopy.orchestrators.runtime_bootstrap import startup_drift_check
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import startup_drift_check
+from pmcopy.services.observability.health_server import ReadinessTracker
 
 
 def _drift_config(**overrides) -> PositionDriftConfig:

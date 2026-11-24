@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pmcopy.services.reconciliation import (
+from pmcopy.services.positions.reconciliation import (
     ReconciliationResult,
     ReconciliationService,
     _order_age_seconds,

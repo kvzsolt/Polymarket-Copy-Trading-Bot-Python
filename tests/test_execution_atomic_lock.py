@@ -21,8 +21,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 from pmcopy.storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
 from tests.fixtures_market_meta import MarketMeta
 from tests.conftest import make_clob_gateway

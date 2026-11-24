@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
-from pmcopy.ports.repositories import AbstractLeaderRepository
+from pmcopy.interfaces.repositories import AbstractLeaderRepository
 
 
 @dataclass(frozen=True, slots=True)

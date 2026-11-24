@@ -90,7 +90,7 @@ def _signal(side: str = "BUY") -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_live_trade_pipeline_skips_when_coordinator_missing():
-    from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+    from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 
     exec_svc = MagicMock()
     exec_svc.execute = AsyncMock()
@@ -112,7 +112,7 @@ async def test_live_trade_pipeline_skips_when_coordinator_missing():
 
 @pytest.mark.asyncio
 async def test_live_trade_pipeline_skips_for_sell_too():
-    from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+    from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 
     exec_svc = MagicMock()
     exec_svc.execute = AsyncMock()
@@ -135,7 +135,7 @@ async def test_live_trade_pipeline_skips_for_sell_too():
 
 @pytest.mark.asyncio
 async def test_paper_mode_trade_pipeline_falls_back_to_execution_service():
-    from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+    from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 
     fake_result = SimpleNamespace(accepted=True, status="submitted_unconfirmed")
     exec_svc = MagicMock()
@@ -157,7 +157,7 @@ async def test_paper_mode_trade_pipeline_falls_back_to_execution_service():
 
 @pytest.mark.asyncio
 async def test_no_config_trade_pipeline_falls_back():
-    from pmcopy.orchestrators.trade_pipeline import _submit_copy_through_coordinator
+    from pmcopy.orchestrators.pipeline.trade_pipeline import _submit_copy_through_coordinator
 
     fake_result = SimpleNamespace(accepted=True, status="submitted_unconfirmed")
     exec_svc = MagicMock()
@@ -276,7 +276,7 @@ async def _pg_pool():
 async def test_runtime_bootstrap_helper_returns_coordinator():
     """``_build_execution_coordinator`` must return a coordinator instance when
     funder_address is set so live runtime contexts are always guarded."""
-    from pmcopy.orchestrators.runtime_bootstrap import _build_execution_coordinator
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import _build_execution_coordinator
     from pmcopy.storage.postgres.positions_repo import PositionsRepo
 
     async with _pg_pool() as pool:
@@ -295,7 +295,7 @@ async def test_runtime_bootstrap_helper_returns_coordinator():
 
 
 def test_runtime_bootstrap_helper_returns_none_without_funder():
-    from pmcopy.orchestrators.runtime_bootstrap import _build_execution_coordinator
+    from pmcopy.orchestrators.bootstrap.runtime_bootstrap import _build_execution_coordinator
 
     coord = _build_execution_coordinator(
         pool=MagicMock(),

@@ -24,16 +24,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pmcopy.config.app_config as app_config_mod
-from pmcopy.orchestrators.runtime_bootstrap import (
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
 )
 from pmcopy.services.execution import intent_recovery as _intent_recovery_module
-from pmcopy.services.intentRegistry import DuplicateIntentError, IntentSide, Reservation
-from pmcopy.services.multiUserConfig import UserFollowConfig
-from pmcopy.services.positionActionCoordinator import PositionScope
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.execution.intent_registry import DuplicateIntentError, IntentSide, Reservation
+from pmcopy.services.accounts.multi_user_config import UserFollowConfig
+from pmcopy.services.positions.position_action_coordinator import PositionScope
+from pmcopy.services.positions.position_coordinator import PositionCoordinator
 from tests.config_helpers import load_test_config
 
 # Captured at import time, before the autouse fixture patches the module
@@ -91,7 +91,7 @@ def _build_account_state(user_id: str = "user-1") -> object:
 def _quiet_bootstrap(monkeypatch):
     """Keep the bootstrap off live DB / inventory paths for these wiring tests."""
     monkeypatch.setattr(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         AsyncMock(return_value=None),
     )
     async def _no_recovery(*args, **kwargs):

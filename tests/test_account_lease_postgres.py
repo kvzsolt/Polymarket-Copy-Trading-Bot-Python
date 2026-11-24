@@ -291,7 +291,7 @@ async def test_leases_are_per_account_rows() -> None:
 
 async def test_manager_end_to_end_against_real_sql() -> None:
     from pmcopy.domain.account_identity import CopierAccountId
-    from pmcopy.services.account_lease import AccountLeaseManager
+    from pmcopy.services.accounts.account_lease import AccountLeaseManager
 
     async with _pg_pool() as pool:
         holder = AccountLeaseManager(pool=pool, ttl_seconds=_TTL_SECONDS)

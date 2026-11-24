@@ -134,11 +134,11 @@ async def test_data_api_reader_rewinds_newer_activity_to_pre_sell_balance() -> N
     assert all(_LEADER in url for url in calls)
     activity_url = next(url for url in calls if "/activity" in url)
     activity_query = parse_qs(urlparse(activity_url).query)
-    assert activity_query["market"] == [_signal().condition_id]
+    assert activity_query["condition"] == [_signal().condition_id]
     assert activity_query["limit"] == ["500"]
     positions_url = next(url for url in calls if "/positions" in url)
     positions_query = parse_qs(urlparse(positions_url).query)
-    assert positions_query["market"] == [_signal().condition_id]
+    assert positions_query["condition"] == [_signal().condition_id]
     assert positions_query["sizeThreshold"] == ["0"]
     assert positions_query["limit"] == ["500"]
 

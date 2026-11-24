@@ -7,7 +7,7 @@ import pytest
 
 def test_empty_roster_has_no_subscriptions() -> None:
     """An empty owner OR-filter must never become an exchange-wide feed."""
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     assert GroupedDetectionPlanner().plan(()) == ()
 
@@ -15,7 +15,7 @@ def test_empty_roster_has_no_subscriptions() -> None:
 def test_default_mined_owner_groups_cover_more_than_one_hundred_wallets() -> None:
     """Every owner appears exactly once in bounded native-owner groups."""
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     policies = tuple(TraderDetectionPolicy(wallet=f"0x{number:040x}") for number in range(1, 252))
     groups = GroupedDetectionPlanner().plan(policies)
@@ -34,7 +34,7 @@ def test_default_mined_owner_groups_cover_more_than_one_hundred_wallets() -> Non
 def test_pending_is_shared_and_keeps_independent_mined_coverage() -> None:
     """Missing mempool evidence cannot hide a pending trader's mined action."""
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     policies = tuple(
         TraderDetectionPolicy(wallet=f"0x{number:040x}", mode="pending") for number in (1, 2)
@@ -71,7 +71,7 @@ def test_invalid_policies_fail_closed(changes: dict[str, object]) -> None:
 def test_non_alchemy_provider_and_duplicate_wallet_policy_are_rejected() -> None:
     """A wallet gets one owner policy; non-Alchemy providers fail closed."""
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     with pytest.raises(ValueError, match="provider"):
         TraderDetectionPolicy(wallet="0x" + "11" * 20, provider="infura")
@@ -83,7 +83,7 @@ def test_non_alchemy_provider_and_duplicate_wallet_policy_are_rejected() -> None
 def test_disabled_trader_is_never_subscribed() -> None:
     """Disabled desired policy cannot keep a hidden source feed alive."""
     from pmcopy.domain.grouped_detection import TraderDetectionPolicy
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     assert (
         GroupedDetectionPlanner().plan(
@@ -96,7 +96,7 @@ def test_disabled_trader_is_never_subscribed() -> None:
 def test_planner_rejects_non_alchemy_provider_object() -> None:
     """GroupedDetectionPlanner only allows Alchemy streams even if policy is bypassed."""
     from types import SimpleNamespace
-    from pmcopy.services.grouped_detection import GroupedDetectionPlanner
+    from pmcopy.services.onchain_detection.grouped_detection import GroupedDetectionPlanner
 
     bypassed = SimpleNamespace(wallet="0x" + "11" * 20, enabled=True, provider="infura", mode="mined")
     with pytest.raises(ValueError, match="Alchemy"):

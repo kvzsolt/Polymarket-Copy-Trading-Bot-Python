@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from pmcopy.domain.source_transactions import EvmHead
-from pmcopy.orchestration.polygon_source_transaction_runtime import (
+from pmcopy.orchestrators.detection.polygon_source_transaction_runtime import (
     PolygonSourceTransactionRuntime,
 )
 

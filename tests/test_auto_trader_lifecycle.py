@@ -165,8 +165,8 @@ def test_stale_reserve_cannot_be_newly_activated():
 
 
 def test_live_episode_history_counts_only_fresh_closed_fills():
-    from pmcopy.services.leader_performance import PerformanceFill
-    from pmcopy.services.auto_trader_performance import RecentEpisodeAccumulator
+    from pmcopy.services.trading.leader_performance import PerformanceFill
+    from pmcopy.services.discovery.auto_trader_performance import RecentEpisodeAccumulator
     from pmcopy.domain.detection import TradeSide
 
     accumulator = RecentEpisodeAccumulator()

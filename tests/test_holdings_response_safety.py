@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
-from pmcopy.orchestrators import trade_pipeline
+from pmcopy.orchestrators.pipeline import trade_pipeline
 from pmcopy.services.risk import risk_monitor
 
 

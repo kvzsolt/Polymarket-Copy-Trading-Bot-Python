@@ -25,8 +25,8 @@ import pytest
 
 import pmcopy.config.app_config as app_config_mod
 from pmcopy.config.env import WalletConfig
-from pmcopy.orchestrators.runtime_bootstrap import build_user_state
-from pmcopy.services.multiUserConfig import RuntimeUser, UserFollowConfig
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_user_state
+from pmcopy.services.accounts.multi_user_config import RuntimeUser, UserFollowConfig
 from tests.config_helpers import load_test_config
 
 # ---------------------------------------------------------------------------
@@ -211,7 +211,7 @@ def build_account_state(
 def _quiet_bootstrap(monkeypatch):
     """Keep context composition off live DB paths (same posture as T10 tests)."""
     monkeypatch.setattr(
-        "pmcopy.orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        "pmcopy.orchestrators.bootstrap.runtime_bootstrap.rehydrate_position_manager",
         AsyncMock(return_value=None),
     )
 

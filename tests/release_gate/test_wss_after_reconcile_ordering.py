@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-APP_PATH = Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "app.py"
+APP_PATH = Path(__file__).resolve().parents[2] / "src" / "pmcopy" / "orchestrators" / "app" / "runner.py"
 
 
 @pytest.fixture(scope="module")

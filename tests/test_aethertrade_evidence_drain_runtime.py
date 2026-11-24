@@ -11,7 +11,7 @@ class TestEvidenceDrainRuntime:
     """Explicit event barriers keep retry and cancellation tests deterministic."""
 
     async def test_retry_does_not_drop_rows_or_end_worker(self):
-        from pmcopy.orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
+        from pmcopy.orchestrators.evidence.evidence_drain_runtime import EvidenceDrainRuntime
 
         waiting = asyncio.Event()
         released = asyncio.Event()
@@ -31,7 +31,7 @@ class TestEvidenceDrainRuntime:
         assert runtime.status == "closed"
 
     async def test_close_cancels_stalled_database_operation(self):
-        from pmcopy.orchestrators.evidence_drain_runtime import EvidenceDrainRuntime
+        from pmcopy.orchestrators.evidence.evidence_drain_runtime import EvidenceDrainRuntime
 
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -51,8 +51,8 @@ class TestEvidenceDrainRuntime:
 
     def test_user_state_passes_atomic_projection_to_actual_fill_repository(self, monkeypatch):
         from pmcopy.config.app_config import AppConfig
-        from pmcopy.orchestrators import runtime_bootstrap
-        from pmcopy.services.multiUserConfig import RuntimeUser
+        from pmcopy.orchestrators.bootstrap import runtime_bootstrap
+        from pmcopy.services.accounts.multi_user_config import RuntimeUser
 
         seen = []
         projection = object()
@@ -78,7 +78,7 @@ class TestEvidenceDrainRuntime:
         async def stop_database():
             events.append("database")
 
-        monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
+        monkeypatch.setattr("pmcopy.utils.fetch_data.close_session", AsyncMock())
         monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", stop_database)
         await app._shutdown_runtime(monitor_tasks=[], supervised=[], market_data_runtimes={},
                                     user_data_runtimes=[], metrics_runner=None,
@@ -96,7 +96,7 @@ class TestEvidenceDrainRuntime:
             raise RuntimeError("startup interrupted")
 
         monkeypatch.setattr(app, "_run_application", fail_after_registration)
-        monkeypatch.setattr("pmcopy.utils.fetchData.close_session", AsyncMock())
+        monkeypatch.setattr("pmcopy.utils.fetch_data.close_session", AsyncMock())
         with pytest.raises(RuntimeError, match="startup interrupted"):
             await app.main()
         drain.aclose.assert_awaited_once()

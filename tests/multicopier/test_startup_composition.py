@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import pmcopy.app as app_module
-from pmcopy.orchestrators.leader_registry import LeaderRegistryState
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistryState
+from pmcopy.services.observability.health_server import ReadinessTracker
 
 from tests.multicopier.conftest import (
     FUNDER_ALPHA,
@@ -59,7 +59,7 @@ class _StartupHarness:
 
         provider = SimpleNamespace(close=MagicMock())
         monkeypatch.setattr(
-            "pmcopy.orchestrators.provider_runtime.ProviderRuntime.from_config",
+            "pmcopy.orchestrators.bootstrap.provider_runtime.ProviderRuntime.from_config",
             lambda _config: provider,
         )
         self.evidence_runtime = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())

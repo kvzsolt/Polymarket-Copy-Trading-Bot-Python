@@ -13,8 +13,8 @@ import pytest
 import pmcopy.config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
 from pmcopy.application.trading_context import TradingContext
-from pmcopy.orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
-from pmcopy.orchestrators.trade_pipeline import (
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import startup_reconcile_unconfirmed
+from pmcopy.orchestrators.pipeline.trade_pipeline import (
     build_trade_key,
     execute_trades,
     reconcile_submitted_unconfirmed,
@@ -23,12 +23,12 @@ from pmcopy.orchestrators.trade_pipeline import (
 from pmcopy.storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from pmcopy.integrations.polymarket.models import VenueFill
 from pmcopy.integrations.polymarket.data_api_positions import DataApiPositionSizeReader
-from pmcopy.services.copyDecisionService import CopyDecision
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.services.pnlTracker import PnLTracker
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.trading.copy_decision_service import CopyDecision
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.services.risk.risk_engine import RiskEngine
-from pmcopy.services.accountingService import AccountingService
+from pmcopy.services.accounting.accounting_service import AccountingService
 from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
 
 
@@ -54,7 +54,7 @@ def _mock_balance_for_tests(monkeypatch):
         return 10000.0
 
     monkeypatch.setattr(
-        "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+        "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
         _fake_balance,
     )
 
@@ -130,7 +130,7 @@ def _make_bundle(
 ):
     """Build an executable WSS-fresh MarketDataBundle for trade-pipeline tests."""
     from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
 
     now = time.monotonic()
     return MarketDataBundle(
@@ -432,7 +432,7 @@ async def test_sell_not_blocked_when_risk_block_active(tmp_path):
 
         signal = _signal(side="SELL", tx_hash="0xquarantine-sell")
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("10"),
         ):
@@ -992,7 +992,7 @@ async def test_max_position_pct_caps_cash_only_even_when_balance_policy_disabled
         ctx.copy_decision_service = decision_service
 
         with patch(
-            "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+            "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
             new_callable=AsyncMock,
             return_value=80.0,
         ):
@@ -1025,7 +1025,7 @@ async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path):
 
         with (
             patch(
-                "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+                "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
                 new_callable=AsyncMock,
                 return_value=4.0,
             ),
@@ -1067,7 +1067,7 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
         ctx.copy_decision_service = decision_service
 
         with patch(
-            "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+            "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
             new_callable=AsyncMock,
             return_value=90.0,
         ):
@@ -1106,7 +1106,7 @@ async def test_max_position_pct_uses_startup_snapshot_before_submit(tmp_path):
         ctx.copy_decision_service = decision_service
 
         balance_mock = AsyncMock(side_effect=[100.0, 50.0])
-        with patch("pmcopy.orchestrators.trade_pipeline.get_my_balance", balance_mock):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", balance_mock):
             results = await execute_trades(
                 ctx, "leader1", [_signal(tx_hash="0xfresh-cash")], time.time()
             )
@@ -1147,7 +1147,7 @@ async def test_max_position_pct_refreshes_snapshot_after_24_hours(tmp_path):
         )
 
         balance_mock = AsyncMock(return_value=50.0)
-        with patch("pmcopy.orchestrators.trade_pipeline.get_my_balance", balance_mock):
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", balance_mock):
             results = await execute_trades(
                 ctx, "leader1", [_signal(tx_hash="0xstale-cash")], time.time()
             )
@@ -1191,7 +1191,7 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
 
         with (
             patch(
-                "pmcopy.orchestrators.trade_pipeline.get_my_balance",
+                "pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance",
                 new_callable=AsyncMock,
                 return_value=25.0,
             ),
@@ -1308,7 +1308,7 @@ async def test_sell_reduces_position(tmp_path):
         signal = _signal(side="SELL", price=0.60, size=10.0)
         signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("20"),
         ):
@@ -1361,7 +1361,7 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
         signal["_leader_position_size_before"] = 200.0
 
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("20"),
         ):
@@ -1405,11 +1405,11 @@ async def test_sell_does_not_log_clamp_when_fraction_is_below_live_balance(tmp_p
 
         with (
             patch(
-                "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+                "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
                 new_callable=AsyncMock,
                 return_value=Decimal("62.2902"),
             ),
-            patch("pmcopy.orchestrators.trade_pipeline.logger.info") as info_log,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.logger.info") as info_log,
         ):
             await execute_trades(ctx, "leader1", [signal], time.time())
 
@@ -1452,7 +1452,7 @@ async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
         signal["_leader_sell_fraction"] = 0.1
 
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("10"),
         ):
@@ -1500,7 +1500,7 @@ async def test_sell_below_exchange_minimum_keeps_inventory(tmp_path):
         signal["_leader_sell_fraction"] = 0.1
 
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("3"),
         ):
@@ -1545,7 +1545,7 @@ async def test_sell_uses_notional_when_size_missing(tmp_path):
         signal = _signal(side="SELL", price=0.50, size=0.0)
         signal["usdcSize"] = 2.0
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("20"),
         ):
@@ -1836,7 +1836,7 @@ async def test_sell_realized_pnl_uses_known_updated_position_cost(
         signal = _signal(side="SELL", price=0.60, size=10.0)
         signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("20"),
         ):
@@ -1879,7 +1879,7 @@ async def test_sell_realized_pnl_preserves_unknown_position_cost(
         signal = _signal(side="SELL", price=0.60, size=10.0)
         signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
         with patch(
-            "pmcopy.orchestrators.trade_pipeline._fetch_live_position_size",
+            "pmcopy.orchestrators.pipeline.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
             return_value=Decimal("20"),
         ):
@@ -1899,7 +1899,7 @@ async def test_sell_realized_pnl_preserves_unknown_position_cost(
 # Regression: token_id field-mapping priority (tokenID > token_id > asset)
 # ---------------------------------------------------------------------------
 
-from pmcopy.orchestrators.trade_pipeline import normalize_signals  # noqa: E402
+from pmcopy.orchestrators.pipeline.trade_pipeline import normalize_signals  # noqa: E402
 
 HEX_ASSET = "0x951403abcdef1234567890abcdef1234567890ab8665"
 
@@ -2094,7 +2094,7 @@ async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
 async def test_cross_source_claim_row_is_invisible_to_manual_sync_probe(tmp_path):
     """I3 (real Postgres): the tx-level pre-claim never counts as a recent bot trade."""
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
 
     async with _pg_pool() as pool:
         ctx = _make_context(pool, tmp_path, execution_service=AsyncMock())
@@ -2150,7 +2150,7 @@ async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
     is refused.
     """
     from pmcopy.domain.detection import DetectionMode
-    from pmcopy.orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
 
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
@@ -2201,7 +2201,7 @@ async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
 async def test_released_cross_source_claim_lets_polling_copy_pipeline_level(tmp_path):
     """I2 (real Postgres): a pre-claim whose dispatch raised is released, so
     the polling fallback really copies the fill afterwards."""
-    from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import OnchainSignalDispatchAdapter
     from pmcopy.services.onchain_detection.trade_detection_models import (
         DetectionConfidence,
         OnchainTradeSignal,
@@ -2303,8 +2303,8 @@ async def test_post_submission_duplicate_keeps_cross_source_claim_pipeline_level
     copy already reached the venue. Releasing the tx-level claim there would
     let the next REST polling tick submit a second copy of the same fill.
     """
-    from pmcopy.orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
-    from pmcopy.orchestrators.trade_pipeline import TradePipelineResult
+    from pmcopy.orchestrators.detection.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+    from pmcopy.orchestrators.pipeline.trade_pipeline import TradePipelineResult
     from pmcopy.services.onchain_detection.trade_detection_models import (
         DetectionConfidence,
         OnchainTradeSignal,

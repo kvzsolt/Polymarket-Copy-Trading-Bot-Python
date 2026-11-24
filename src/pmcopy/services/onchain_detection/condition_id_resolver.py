@@ -9,7 +9,7 @@ import time
 from typing import Any
 from urllib.parse import urlencode
 
-from pmcopy.utils.fetchData import fetch_data
+from pmcopy.utils.fetch_data import fetch_data
 from pmcopy.utils.logger import get_logger, redact_error_detail
 
 logger = get_logger("OnchainConditionIdResolver")

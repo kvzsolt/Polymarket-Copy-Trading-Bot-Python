@@ -37,7 +37,7 @@ def event(number=1, **changes):
 
 def outbox(path, **kwargs):
     """Inject a fixed clock and return a local SQLite producer."""
-    from pmcopy.storage.evidence_outbox import SqliteEvidenceOutbox
+    from pmcopy.storage.local.evidence_outbox import SqliteEvidenceOutbox
 
     return SqliteEvidenceOutbox(path, clock=FixedClock(), **kwargs)
 

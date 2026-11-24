@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pmcopy.services.healthServer import _STRICT_REQUIRED_KEYS, ReadinessTracker
+from pmcopy.services.observability.health_server import _STRICT_REQUIRED_KEYS, ReadinessTracker
 
 
 def test_strict_required_keys_include_drift_ok():

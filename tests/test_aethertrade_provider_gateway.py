@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from pmcopy.domain.provider_budget import BudgetSettings
-from pmcopy.services.provider_gateway import ProviderGateway, ProviderUnavailable
-from pmcopy.storage.provider_budget import SqliteProviderBudget
+from pmcopy.services.providers.provider_gateway import ProviderGateway, ProviderUnavailable
+from pmcopy.storage.local.provider_budget import SqliteProviderBudget
 
 
 class Clock:

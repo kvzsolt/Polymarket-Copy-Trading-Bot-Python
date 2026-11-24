@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pmcopy.orchestrators.trade_pipeline import _prefetch_market_data_for_signals
-from pmcopy.services.market_data_service import StaleDataError
+from pmcopy.orchestrators.pipeline.trade_pipeline import _prefetch_market_data_for_signals
+from pmcopy.services.market_data.market_data_service import StaleDataError
 
 TOKEN = "7132104567925221259462638553270691275033272857194253222353576478981233863739"
 

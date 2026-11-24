@@ -10,8 +10,8 @@ from typing import Any
 import aiohttp
 import pytest
 
-from pmcopy.services.healthServer import ReadinessTracker, start_health_server
-from pmcopy.services.metrics import (
+from pmcopy.services.observability.health_server import ReadinessTracker, start_health_server
+from pmcopy.services.observability.metrics import (
     METRIC_TELEMETRY_LATENCY,
     TELEMETRY_LATENCY_BUCKETS,
     TELEMETRY_METRIC_SCHEMAS,

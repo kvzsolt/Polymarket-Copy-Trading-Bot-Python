@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pmcopy.services.executionService import _effective_idempotency_key
-from pmcopy.services.idempotency import compute_effective_identity, compute_effective_key
+from pmcopy.services.execution.execution_service import _effective_idempotency_key
+from pmcopy.services.execution.idempotency import compute_effective_identity, compute_effective_key
 
 _BASE_KWARGS = dict(
     user="copier-primary",

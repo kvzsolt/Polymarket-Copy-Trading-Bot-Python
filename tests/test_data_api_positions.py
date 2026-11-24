@@ -19,9 +19,30 @@ async def test_reads_past_first_full_page_and_includes_dust() -> None:
     reader = DataApiPositionSizeReader(lambda: http)
     assert await reader.shares(WALLET, "999") == Decimal("0.125")
     calls = http.get_json.await_args_list
-    assert [call.kwargs["params"]["offset"] for call in calls] == [0, 500]
+    assert len(calls) == 2
+    assert all("offset" not in call.kwargs["params"] for call in calls)
     assert all(call.kwargs["params"]["sizeThreshold"] == 0 for call in calls)
     assert all(call.kwargs["params"]["limit"] == 500 for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_v2_envelope_and_snake_case_fields_with_cursor_pagination() -> None:
+    first_page = {
+        "data": [{"token_id": str(index), "current_size": "1"} for index in range(1, 501)],
+        "pagination": {"limit": 500, "offset": 0, "has_more": True, "next_cursor": "cursor-page-2"},
+    }
+    second_page = {
+        "data": [{"token_id": "999", "current_size": "0.125"}],
+        "pagination": {"limit": 500, "offset": 0, "has_more": False, "next_cursor": None},
+    }
+    http = AsyncMock()
+    http.get_json.side_effect = [first_page, second_page]
+    reader = DataApiPositionSizeReader(lambda: http)
+    assert await reader.shares(WALLET, "999") == Decimal("0.125")
+    calls = http.get_json.await_args_list
+    assert len(calls) == 2
+    assert "cursor" not in calls[0].kwargs["params"]
+    assert calls[1].kwargs["params"]["cursor"] == "cursor-page-2"
 
 
 @pytest.mark.asyncio

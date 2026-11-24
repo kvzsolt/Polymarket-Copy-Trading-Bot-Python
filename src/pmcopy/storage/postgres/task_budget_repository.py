@@ -26,7 +26,7 @@ from pmcopy.services.copy_tasks.budget import (
     TaskBudgetSnapshot,
 )
 from pmcopy.services.copy_tasks.domain import TaskSpendPolicy
-from pmcopy.services.metrics import LatencyPhase
+from pmcopy.services.observability.metrics import LatencyPhase
 from pmcopy.services.telemetry.latency import PipelineLatency
 
 

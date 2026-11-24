@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import pmcopy.services.manual_sync_service as manual_sync_module
-from pmcopy.services.manual_sync_service import ManualSyncService
+import pmcopy.services.positions.manual_sync_service as manual_sync_module
+from pmcopy.services.positions.manual_sync_service import ManualSyncService
 from pmcopy.storage.postgres.positions_repo import PositionRecord
 
 
@@ -125,7 +125,7 @@ async def test_manual_trade_not_in_db_is_inserted_logged_and_cache_evicted():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xnew", asset="0xtoken1")],  # activity API
@@ -134,14 +134,14 @@ async def test_manual_trade_not_in_db_is_inserted_logged_and_cache_evicted():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -149,7 +149,7 @@ async def test_manual_trade_not_in_db_is_inserted_logged_and_cache_evicted():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="test")
 
@@ -169,7 +169,7 @@ async def test_trade_already_in_user_activities_is_skipped_silently():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xdup")],
@@ -178,14 +178,14 @@ async def test_trade_already_in_user_activities_is_skipped_silently():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=True)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=True)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -193,7 +193,7 @@ async def test_trade_already_in_user_activities_is_skipped_silently():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="test")
 
@@ -210,12 +210,12 @@ async def test_on_wss_authenticated_stops_rest_fallback_and_triggers_sync():
     assert svc._rest_task is not None
 
     with (
-        patch("pmcopy.services.manual_sync_service.fetch_data", AsyncMock(return_value=[])),
+        patch("pmcopy.services.positions.manual_sync_service.fetch_data", AsyncMock(return_value=[])),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -291,7 +291,7 @@ async def test_position_discrepancy_emits_log_and_upsert():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],  # activity
@@ -300,7 +300,7 @@ async def test_position_discrepancy_emits_log_and_upsert():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -308,7 +308,7 @@ async def test_position_discrepancy_emits_log_and_upsert():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="test")
 
@@ -329,7 +329,7 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -338,7 +338,7 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -346,7 +346,7 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         await svc.sync_now(reason="test")
 
@@ -373,7 +373,7 @@ async def test_complete_empty_snapshot_deletes_absent_local_position():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],  # activity
@@ -382,7 +382,7 @@ async def test_complete_empty_snapshot_deletes_absent_local_position():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(return_value=user_pos_model),
         ),
     ):
@@ -422,7 +422,7 @@ async def test_complete_smaller_snapshot_deletes_only_absent_local_position():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -431,7 +431,7 @@ async def test_complete_smaller_snapshot_deletes_only_absent_local_position():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(return_value=user_pos_model),
         ),
     ):
@@ -463,7 +463,7 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -472,7 +472,7 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(return_value=user_pos_model),
         ),
     ):
@@ -506,7 +506,7 @@ async def test_zero_value_position_preserves_existing_local_position():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -515,7 +515,7 @@ async def test_zero_value_position_preserves_existing_local_position():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -539,7 +539,7 @@ async def test_zero_value_position_is_seeded_as_held_inventory():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -548,10 +548,10 @@ async def test_zero_value_position_is_seeded_as_held_inventory():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(return_value=user_pos_model),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="startup")
 
@@ -580,7 +580,7 @@ async def test_position_already_matching_does_not_log_discrepancy():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -589,7 +589,7 @@ async def test_position_already_matching_does_not_log_discrepancy():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -597,7 +597,7 @@ async def test_position_already_matching_does_not_log_discrepancy():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="test")
 
@@ -635,7 +635,7 @@ async def test_initial_sync_inserts_silently_no_panel():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xhist1"), _trade(tx="0xhist2", side="SELL")],
@@ -644,14 +644,14 @@ async def test_initial_sync_inserts_silently_no_panel():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -659,7 +659,7 @@ async def test_initial_sync_inserts_silently_no_panel():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.initial_sync()
 
@@ -689,11 +689,11 @@ async def test_fetch_returns_non_list_does_not_crash():
     svc, _, _ = _make_service()
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[None, {"error": "bad"}]),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -719,7 +719,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -728,7 +728,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -736,7 +736,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
     ):
         await svc.sync_now(reason="test")
 
@@ -761,7 +761,7 @@ async def test_manual_sync_upserts_when_drift_not_recent():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -770,7 +770,7 @@ async def test_manual_sync_upserts_when_drift_not_recent():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -811,7 +811,7 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -820,7 +820,7 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -852,7 +852,7 @@ async def test_own_copy_fill_recorded_as_bot_not_manual():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xsettle", asset="0xtokenOwn", side="BUY")],  # activity
@@ -861,14 +861,14 @@ async def test_own_copy_fill_recorded_as_bot_not_manual():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -876,7 +876,7 @@ async def test_own_copy_fill_recorded_as_bot_not_manual():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -908,7 +908,7 @@ async def test_genuine_manual_trade_still_detected_when_orders_repo_present():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xmanual", asset="0xtokenM", side="SELL")],
@@ -917,14 +917,14 @@ async def test_genuine_manual_trade_still_detected_when_orders_repo_present():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -932,7 +932,7 @@ async def test_genuine_manual_trade_still_detected_when_orders_repo_present():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -956,7 +956,7 @@ async def test_own_trade_probe_failure_falls_back_to_manual():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xprobefail", asset="0xtokenF")],
@@ -965,14 +965,14 @@ async def test_own_trade_probe_failure_falls_back_to_manual():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -980,7 +980,7 @@ async def test_own_trade_probe_failure_falls_back_to_manual():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -999,7 +999,7 @@ async def test_orders_repo_unwired_preserves_legacy_manual_detection():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [_trade(tx="0xlegacy", asset="0xtokenL")],
@@ -1008,14 +1008,14 @@ async def test_orders_repo_unwired_preserves_legacy_manual_detection():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+            "pmcopy.services.positions.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_activity_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_activity_model",
             MagicMock(return_value=activity_model),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -1023,7 +1023,7 @@ async def test_orders_repo_unwired_preserves_legacy_manual_detection():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_trade_detected") as mock_print,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -1042,7 +1042,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],  # activity
@@ -1051,7 +1051,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -1059,7 +1059,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -1082,7 +1082,7 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
 
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(
                 side_effect=[
                     [],
@@ -1091,7 +1091,7 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
             ),
         ),
         patch(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             MagicMock(
                 return_value=MagicMock(
                     delete_many=AsyncMock(),
@@ -1099,7 +1099,7 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
                 )
             ),
         ),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         await svc.sync_now(reason="wss_fill")
 
@@ -1113,11 +1113,11 @@ async def test_marked_zero_still_represents_held_inventory() -> None:
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(return_value=[_live_position(size=12.1851, avg=0.34, current_value=0.0)]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         await svc._sync_positions_and_tracking()
     repo.set_position_size.assert_awaited_once()
@@ -1128,7 +1128,7 @@ async def test_marked_zero_still_represents_held_inventory() -> None:
 async def test_initial_inventory_failure_is_not_reported_as_applied() -> None:
     svc, _, _ = _make_service()
     with (
-        patch("pmcopy.services.manual_sync_service.fetch_data", AsyncMock(return_value=None)),
+        patch("pmcopy.services.positions.manual_sync_service.fetch_data", AsyncMock(return_value=None)),
         pytest.raises(RuntimeError, match="Initial inventory synchronization is incomplete"),
     ):
         await svc.initial_sync()
@@ -1141,10 +1141,10 @@ async def test_required_position_read_failure_prevents_writes_and_reports_failur
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[[], [_live_position()]]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
     ):
         result = await svc.sync_now(reason="test")
     repo.set_position_size.assert_not_awaited()
@@ -1170,11 +1170,11 @@ async def test_required_position_write_failure_is_reported(failure) -> None:
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[[], [_live_position()]]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         result = await svc.sync_now(reason="test")
     assert result is False
@@ -1197,11 +1197,11 @@ async def test_pending_fill_keeps_existing_position_under_reconciler_ownership(
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[[], [_live_position(size=venue_size)]]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         assert await svc.sync_now(reason="pending_fill") is True
     repo.set_position_size.assert_not_awaited()
@@ -1219,11 +1219,11 @@ async def test_missing_held_position_identity_cannot_be_treated_as_disposal(cond
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[[], [_live_position(cond=condition)]]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         assert await svc.sync_now(reason="invalid_identity") is False
     repo.set_position_size.assert_not_awaited()
@@ -1241,11 +1241,11 @@ async def test_manual_increment_does_not_inherit_a_copied_position_owner(size, o
     history = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
     with (
         patch(
-            "pmcopy.services.manual_sync_service.fetch_data",
+            "pmcopy.services.positions.manual_sync_service.fetch_data",
             AsyncMock(side_effect=[[], [_live_position(size=size)]]),
         ),
-        patch("pmcopy.services.manual_sync_service.get_user_position_model", return_value=history),
-        patch("pmcopy.services.manual_sync_service.print_manual_sync_discrepancy"),
+        patch("pmcopy.services.positions.manual_sync_service.get_user_position_model", return_value=history),
+        patch("pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         assert await svc.sync_now(reason="manual_inventory") is True
     assert repo.set_position_size.await_args.kwargs["leader_id"] == owner

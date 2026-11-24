@@ -13,17 +13,17 @@ import logging
 from typing import TYPE_CHECKING
 
 from pmcopy.domain.order_lifecycle import IntentSide as LifecycleIntentSide
-from pmcopy.services.intentRegistry import (
+from pmcopy.services.execution.intent_registry import (
     IntentRegistry,
     IntentRecord,
     IntentSide as RegistryIntentSide,
     IntentState,
     Reservation as IntentReservation,
 )
-from pmcopy.services.positionActionCoordinator import PositionScope
+from pmcopy.services.positions.position_action_coordinator import PositionScope
 
 if TYPE_CHECKING:
-    from pmcopy.ports.repositories import AbstractReservationRepository
+    from pmcopy.interfaces.repositories import AbstractReservationRepository
 
 logger = logging.getLogger(__name__)
 

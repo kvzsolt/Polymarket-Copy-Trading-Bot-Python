@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from decimal import Decimal, localcontext
 
 from pmcopy.domain.grouped_detection import NativeOwnerFill
-from pmcopy.services.grouped_detection import EXCHANGES, V2_ORDER_FILLED_TOPIC
+from pmcopy.services.onchain_detection.grouped_detection import EXCHANGES, V2_ORDER_FILLED_TOPIC
 
 
 class NativeOwnerLogDecoder:

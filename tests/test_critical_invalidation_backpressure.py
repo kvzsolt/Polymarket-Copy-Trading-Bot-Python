@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from pmcopy.clients.market_ws import MarketWebSocket
+from pmcopy.clients.ws.market_ws import MarketWebSocket
 from tests.test_book_update_atomicity import seeded_store
 from tests.test_market_data_runtime import RecordingQuoteSink, _make_runtime
 

@@ -468,8 +468,8 @@ def _patch_composition(
     """Patch the production composition helpers used by ``_compose_redriver``."""
     from types import SimpleNamespace
 
-    import pmcopy.orchestrators.runtime_bootstrap as bootstrap
-    import pmcopy.services.multiUserConfig as multi_user
+    import pmcopy.orchestrators.bootstrap.runtime_bootstrap as bootstrap
+    import pmcopy.services.accounts.multi_user_config as multi_user
 
     monkeypatch.setattr(bootstrap, "configured_leaders", lambda config: ["0xleader"])
     monkeypatch.setattr(multi_user, "load_runtime_users", lambda leaders, config: list(users))

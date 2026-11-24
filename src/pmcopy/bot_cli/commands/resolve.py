@@ -597,13 +597,13 @@ async def _compose_redriver(
     """
     venue_runtime: Any = None
     try:
-        from pmcopy.orchestrators.runtime_bootstrap import (
+        from pmcopy.orchestrators.bootstrap.runtime_bootstrap import (
             build_user_state,
             build_user_venue_runtime,
             configured_leaders,
             ensure_runtime_follows,
         )
-        from pmcopy.services.multiUserConfig import load_runtime_users
+        from pmcopy.services.accounts.multi_user_config import load_runtime_users
 
         order_row = await _fetch_order_row(orders_repo, args)
         if order_row is None:
@@ -678,7 +678,7 @@ def run_resolve(args: argparse.Namespace) -> int:
                 target_user = str((target_row or {}).get("user_id") or "").strip()
                 if target_user and hasattr(pool, "acquire"):
                     from pmcopy.domain.account_identity import CopierAccountId
-                    from pmcopy.services.account_lease import AccountLeaseManager
+                    from pmcopy.services.accounts.account_lease import AccountLeaseManager
 
                     execution_cfg = getattr(config, "execution", None)
                     lease_mode = str(getattr(execution_cfg, "trading_mode", "paper") or "paper")

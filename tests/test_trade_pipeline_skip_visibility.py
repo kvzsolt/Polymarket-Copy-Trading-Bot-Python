@@ -27,16 +27,16 @@ from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSna
 from tests.config_helpers import load_test_config
 from pmcopy.application.trading_context import TradingContext
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.trade_pipeline import execute_trades
-from pmcopy.services.accountingService import AccountingService
-from pmcopy.services.executionService import ExecutionResult
-from pmcopy.services.market_data_service import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import execute_trades
+from pmcopy.services.accounting.accounting_service import AccountingService
+from pmcopy.services.execution.execution_service import ExecutionResult
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataSource,
     StaleDataError,
 )
-from pmcopy.services.pnlTracker import PnLTracker
-from pmcopy.services.positionManager import PositionManager
+from pmcopy.services.accounting.pnl_tracker import PnLTracker
+from pmcopy.services.positions.position_manager import PositionManager
 from pmcopy.services.risk.risk_engine import RiskEngine
 from pmcopy.storage.postgres.fills_repo import FillsRepo
 from pmcopy.storage.postgres.orders_repo import OrdersRepo
@@ -93,7 +93,7 @@ def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
 
-    monkeypatch.setattr("pmcopy.orchestrators.trade_pipeline.get_my_balance", _fake_balance)
+    monkeypatch.setattr("pmcopy.orchestrators.pipeline.trade_pipeline.get_my_balance", _fake_balance)
 
 
 def _config(**overrides):
@@ -268,7 +268,7 @@ async def test_market_data_stale_prints_panel(tmp_path):
             runtime=runtime,
             primary="rest_snapshot",
         )
-        with patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p:
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline.print_skip_reason") as p:
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "skipped"
         assert results[0].reason == "market_metadata_unavailable"
@@ -290,7 +290,7 @@ async def test_sell_never_held_prints_panel(tmp_path):
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
         )
-        with patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p:
+        with patch("pmcopy.orchestrators.pipeline.trade_pipeline.print_skip_reason") as p:
             results = await execute_trades(ctx, "leader1", [_signal(side="SELL")], time.time())
         assert results[0].status == "skipped"
         assert results[0].reason == "never_held"
@@ -324,9 +324,9 @@ async def test_terminal_copy_failure_has_one_panel_and_follower_amounts(tmp_path
             runtime=runtime,
         )
         with (
-            patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as generic_panel,
-            patch("pmcopy.orchestrators.trade_pipeline.print_trade_result") as detailed_panel,
-            patch("pmcopy.orchestrators.trade_pipeline.log_trade_skip") as skip_log,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.print_skip_reason") as generic_panel,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.print_trade_result") as detailed_panel,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.log_trade_skip") as skip_log,
         ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         generic_panel.assert_not_called()
@@ -372,8 +372,8 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
             runtime=runtime,
         )
         with (
-            patch("pmcopy.orchestrators.trade_pipeline.print_skip_reason") as p,
-            patch("pmcopy.orchestrators.trade_pipeline.log_trade_submitted") as log_sub,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.print_skip_reason") as p,
+            patch("pmcopy.orchestrators.pipeline.trade_pipeline.log_trade_submitted") as log_sub,
         ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "submitted_unconfirmed"

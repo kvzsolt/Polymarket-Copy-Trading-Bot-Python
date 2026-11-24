@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from pmcopy.config.app_config import EnvValidationError
-from pmcopy.orchestrators.runtime_bootstrap import configured_leaders
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import configured_leaders
 from tests.config_helpers import load_test_config
 
 

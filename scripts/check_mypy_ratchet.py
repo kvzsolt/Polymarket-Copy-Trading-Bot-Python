@@ -128,7 +128,8 @@ def write_manifest(actual: dict[str, int]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    """Check or update the pinned per-file type error counts."""
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument(
         "--update",
         action="store_true",

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pmcopy.orchestrators.v1_runtime_bootstrap import CopyTaskV1RuntimeHandle
+from pmcopy.orchestrators.copy_tasks.v1_runtime_bootstrap import CopyTaskV1RuntimeHandle
 
 
 def handle_for(producer, accounts):

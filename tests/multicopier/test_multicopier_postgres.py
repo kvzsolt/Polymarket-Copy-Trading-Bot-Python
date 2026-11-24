@@ -41,13 +41,13 @@ import pytest
 
 from pmcopy.domain.execution import ExecutionMetadata
 from pmcopy.integrations.polymarket.models import VenueFill, VenueSubmitResult
-from pmcopy.orchestrators.runtime_bootstrap import (
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
     startup_reconcile_unconfirmed,
 )
-from pmcopy.orchestrators.trade_pipeline import (
+from pmcopy.orchestrators.pipeline.trade_pipeline import (
     execute_trades,
     get_reconciliation_service,
 )
@@ -126,7 +126,7 @@ def _hermetic_balances(monkeypatch):
     async def _fake_balance(wallet, provider_runtime=None):
         return balances.get(wallet)
 
-    import pmcopy.orchestrators.trade_pipeline as trade_pipeline
+    import pmcopy.orchestrators.pipeline.trade_pipeline as trade_pipeline
 
     monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
     yield balances

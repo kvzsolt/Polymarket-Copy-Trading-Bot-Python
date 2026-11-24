@@ -15,7 +15,7 @@ aggregated signal.
 
 from __future__ import annotations
 
-from pmcopy.orchestrators.trade_pipeline import build_trade_key, all_tx_hashes_for_trade
+from pmcopy.orchestrators.pipeline.trade_pipeline import build_trade_key, all_tx_hashes_for_trade
 
 
 def test_all_tx_hashes_returns_primary_and_constituents():

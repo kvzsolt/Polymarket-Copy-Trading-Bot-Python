@@ -12,7 +12,7 @@ import pytest
 
 from pmcopy.domain.detection import DetectionFinality, DetectionMode, TradeSide
 from pmcopy.domain.execution import ExecutionMetadata
-from pmcopy.orchestrators.v1_event_adapters import (
+from pmcopy.orchestrators.copy_tasks.v1_event_adapters import (
     CopyTaskRuntimeIngress,
     DeferredCopyTaskEventHandler,
     LeaderEventNormalizer,

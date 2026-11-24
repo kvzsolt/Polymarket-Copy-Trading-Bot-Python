@@ -18,9 +18,9 @@ from decimal import Decimal
 
 import pytest
 
-from pmcopy.orchestrators.runtime_bootstrap import build_trading_context
-from pmcopy.services.copierConfig import load_runtime_users_from_copiers
-from pmcopy.services.multiUserConfig import load_runtime_users
+from pmcopy.orchestrators.bootstrap.runtime_bootstrap import build_trading_context
+from pmcopy.services.accounts.copier_config import load_runtime_users_from_copiers
+from pmcopy.services.accounts.multi_user_config import load_runtime_users
 
 from tests.multicopier.conftest import (
     CONDITION,
@@ -160,7 +160,7 @@ async def test_build_trading_context_propagates_the_explicit_flag():
 
 
 def test_copier_exposure_headroom_arithmetic():
-    from pmcopy.orchestrators.trade_pipeline import copier_open_exposure_headroom
+    from pmcopy.orchestrators.pipeline.trade_pipeline import copier_open_exposure_headroom
 
     # open + reserved + nothing left under the cap.
     assert copier_open_exposure_headroom(

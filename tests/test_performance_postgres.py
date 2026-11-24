@@ -6,7 +6,7 @@ import asyncpg
 import pytest
 from tests.integration_postgres import PostgresContainer
 
-from pmcopy.services.leader_performance import FollowerLeaderKey
+from pmcopy.services.trading.leader_performance import FollowerLeaderKey
 from pmcopy.storage.postgres.fills_repo import FillRecord, FillsRepo
 from pmcopy.storage.postgres.migrations import apply_migrations
 from pmcopy.storage.postgres.leader_performance_repository import PostgresLeaderPerformanceReader

@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from pmcopy.integrations.falcon.models import LeaderboardEntry, Market360Snapshot, Wallet360Snapshot
-from pmcopy.services.leaderScoringService import LeaderScoringService
+from pmcopy.services.trading.leader_scoring_service import LeaderScoringService
 from pmcopy.domain.performance import PerformanceUnits
 from tests.discovery.test_runtime_scoring import _config
 

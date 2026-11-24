@@ -80,7 +80,7 @@ def active_policy() -> AccountCapPolicy:
 
     # No typed AppConfig injected — return a fail-closed hardcoded default.
     # Production paths MUST call init_risk_engine(config) at startup
-    # (orchestrators/runtime_bootstrap.py:214); reaching this branch in
+    # (orchestrators/bootstrap/runtime_bootstrap.py:214); reaching this branch in
     # production indicates a misconfigured bootstrap. Log once per process.
     global _env_fallback_warned
     if not _env_fallback_warned:

@@ -222,7 +222,7 @@ def test_sanitize_submission_response_preserves_attempted_order_ids():
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset the process-wide circuit breaker around every test."""
-    import pmcopy.services.executionService as _es
+    import pmcopy.services.execution.execution_service as _es
 
     _es._CLOB_CIRCUIT.reset()
     yield
@@ -269,8 +269,8 @@ class _FeeSvc:
 @pytest.mark.asyncio
 async def test_execution_service_persists_attempted_order_ids():
     from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
-    from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-    from pmcopy.services.market_data_service import MarketDataBundle, MarketDataSource
+    from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+    from pmcopy.services.market_data.market_data_service import MarketDataBundle, MarketDataSource
     from pmcopy.integrations.polymarket.models import VenueSubmitResult
 
     now = time.monotonic()

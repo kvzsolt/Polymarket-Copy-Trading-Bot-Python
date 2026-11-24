@@ -12,8 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pmcopy.services.copyDecisionService import CopyDecisionService
-from pmcopy.services.leaderScoringService import LeaderScore
+from pmcopy.services.trading.copy_decision_service import CopyDecisionService
+from pmcopy.services.trading.leader_scoring_service import LeaderScore
 
 
 def _test_config() -> SimpleNamespace:
@@ -459,7 +459,7 @@ class TestEffectiveIntentKey:
 
     def test_key_changes_when_effective_size_changes(self):
         from decimal import Decimal
-        from pmcopy.services.copyDecisionService import effective_intent_key
+        from pmcopy.services.trading.copy_decision_service import effective_intent_key
 
         key_before = effective_intent_key(
             user="user1",
@@ -486,7 +486,7 @@ class TestEffectiveIntentKey:
 
     def test_key_deterministic(self):
         from decimal import Decimal
-        from pmcopy.services.copyDecisionService import effective_intent_key
+        from pmcopy.services.trading.copy_decision_service import effective_intent_key
 
         key1 = effective_intent_key(
             user="user1",
@@ -519,8 +519,8 @@ class TestEffectiveIntentKey:
         the multi-copier execution-environment discriminator.
         """
         from decimal import Decimal
-        from pmcopy.services.copyDecisionService import effective_intent_key
-        from pmcopy.services.idempotency import compute_effective_key
+        from pmcopy.services.trading.copy_decision_service import effective_intent_key
+        from pmcopy.services.execution.idempotency import compute_effective_key
 
         kwargs = dict(
             user="user1",

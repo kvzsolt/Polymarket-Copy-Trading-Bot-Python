@@ -199,6 +199,8 @@ jobs:
             --ignore-missing-imports --follow-imports=silent \
             src/pmcopy/integrations/polymarket/ccxt_prediction_client.py \
             src/pmcopy/integrations/polymarket/ccxt_prediction_gateway.py \
+            src/pmcopy/integrations/polymarket/ccxt_gateway_helpers.py \
+            src/pmcopy/integrations/polymarket/ccxt_metadata_mixin.py \
             src/pmcopy/integrations/polymarket/venue_runtime.py \
             src/pmcopy/clients/network/http_client.py
       - name: mypy (type-debt ratchet — blocking, baseline must never grow)

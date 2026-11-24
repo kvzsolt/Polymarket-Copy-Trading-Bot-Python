@@ -17,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.market_readiness import MarketReadinessGroup
-from pmcopy.services.user_readiness import UserReadinessGroup
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.market_data.market_readiness import MarketReadinessGroup
+from pmcopy.services.accounts.user_readiness import UserReadinessGroup
 
 
 def test_user_stream_snapshot_names_the_degraded_account() -> None:

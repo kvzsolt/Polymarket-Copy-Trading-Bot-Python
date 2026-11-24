@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 from math import isfinite
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Generic, TypeVar
 
+from pmcopy.utils.logger import get_logger
+
 T = TypeVar("T")
 LeaderHandler = Callable[[str, T], Awaitable[None]]
 
-logger = logging.getLogger(__name__)
+logger = get_logger("CopyTaskWorker")
 
 
 class WorkerQueueFull(RuntimeError):

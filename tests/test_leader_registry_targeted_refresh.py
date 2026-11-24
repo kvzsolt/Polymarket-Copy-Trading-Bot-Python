@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
 
 WALLET_A = "0x" + "a" * 40
 WALLET_B = "0x" + "b" * 40

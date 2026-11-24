@@ -31,6 +31,7 @@ from pmcopy.bot_cli.commands.profile_leader import (
 from pmcopy.bot_cli.commands.trading import register_trading_command, run_trading
 from pmcopy.bot_cli.commands.redeem import register_redeem_command, run_redeem
 from pmcopy.bot_cli.commands.resolve import register_resolve_command, run_resolve
+from pmcopy.bot_cli.commands.tasks import register_tasks_command, run_tasks
 
 __all__ = [
     "register_doctor_command",
@@ -63,4 +64,6 @@ __all__ = [
     "run_redeem",
     "register_resolve_command",
     "run_resolve",
+    "register_tasks_command",
+    "run_tasks",
 ]

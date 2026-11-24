@@ -17,9 +17,9 @@ import asyncio
 
 import pytest
 
-from pmcopy.orchestrators.runtime_monitor import run_leader_monitor
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import metrics
+from pmcopy.orchestrators.lifecycle.runtime_monitor import run_leader_monitor
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import metrics
 
 from tests.multicopier.conftest import LEADER_1, LEADER_2, make_config
 
@@ -40,13 +40,13 @@ def _batch(tx_hash: str) -> list[dict]:
 
 
 def _counter_value(name: str, labels: dict[str, str]) -> float:
-    from pmcopy.services.metrics import _metric_key
+    from pmcopy.services.observability.metrics import _metric_key
 
     return metrics.counters.get(_metric_key(name, labels), 0.0)
 
 
 def _gauge_value(name: str, labels: dict[str, str]) -> float:
-    from pmcopy.services.metrics import _metric_key
+    from pmcopy.services.observability.metrics import _metric_key
 
     return metrics.gauges.get(_metric_key(name, labels), 0.0)
 
@@ -57,7 +57,7 @@ async def test_saturating_leader_a_queue_coalesces_without_stalling_leader_b(
 ):
     config = make_config(**{"detection": {"trade_queue_max_batches": 2}})
     stub = _TradeMonitorStub()
-    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.trade_monitor", stub)
+    monkeypatch.setattr("pmcopy.orchestrators.lifecycle.runtime_monitor.trade_monitor", stub)
 
     processed: list[tuple[str, str]] = []
     release_a = asyncio.Event()
@@ -72,7 +72,7 @@ async def test_saturating_leader_a_queue_coalesces_without_stalling_leader_b(
 
     # The monitor wires the real pipeline entry as its legacy executor at
     # module scope; replace it at that seam so determinism lives in one place.
-    monkeypatch.setattr("pmcopy.orchestrators.runtime_monitor.execute_trade_pipeline", executor)
+    monkeypatch.setattr("pmcopy.orchestrators.lifecycle.runtime_monitor.execute_trade_pipeline", executor)
 
     class _Ctx:
         user_id = "copier-alpha"

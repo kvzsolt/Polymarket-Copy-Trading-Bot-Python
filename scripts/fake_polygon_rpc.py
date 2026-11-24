@@ -68,10 +68,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
-        # data-api.polymarket.com/positions: an empty account is a valid,
+        # data-api.polymarket.com/v2/positions: an empty account is a valid,
         # complete page (fewer rows than the page size ends pagination).
-        if self.path.startswith("/positions"):
-            self._send([])
+        if self.path.startswith(("/v2/positions", "/positions")):
+            self._send({"data": [], "pagination": {"limit": 500, "offset": 0, "has_more": False, "next_cursor": None}})
             return
         self._send({"ok": True})
 

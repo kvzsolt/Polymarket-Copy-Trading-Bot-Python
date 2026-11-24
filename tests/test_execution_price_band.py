@@ -11,9 +11,9 @@ import pytest
 from pmcopy.cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from pmcopy.domain.execution import ExecutionOrderType
 from pmcopy.services.execution.types import ExecutionRequest
-from pmcopy.services.executionService import ExecutionService
+from pmcopy.services.execution.execution_service import ExecutionService
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
-from pmcopy.services.market_data_service import (
+from pmcopy.services.market_data.market_data_service import (
     MarketDataBundle,
     MarketDataSource,
 )

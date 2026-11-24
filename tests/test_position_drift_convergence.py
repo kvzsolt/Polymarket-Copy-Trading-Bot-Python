@@ -11,7 +11,7 @@ import pytest
 
 from pmcopy.config.app_config import PositionDriftConfig
 from pmcopy.domain.position_drift import PositionDriftAction, PositionDriftStatus
-from pmcopy.services.position_drift_service import PositionDriftService
+from pmcopy.services.positions.position_drift_service import PositionDriftService
 
 
 @dataclass(frozen=True)

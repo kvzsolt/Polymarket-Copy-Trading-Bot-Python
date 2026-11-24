@@ -31,15 +31,15 @@ from pmcopy.services.execution.reservation_service import (
     ReservationConflict,
     ReservationService,
 )
-from pmcopy.services.intentRegistry import (
+from pmcopy.services.execution.intent_registry import (
     DuplicateIntentError,
     IntentRegistry,
     IntentSide as RegistryIntentSide,
     IntentState,
     Reservation,
 )
-from pmcopy.services.positionActionCoordinator import PositionScope
-from pmcopy.services.positionCoordinator import PositionCoordinator
+from pmcopy.services.positions.position_action_coordinator import PositionScope
+from pmcopy.services.positions.position_coordinator import PositionCoordinator
 from pmcopy.storage.postgres.positions_repo import PositionsRepo
 from pmcopy.storage.postgres.reservations_repo import ReservationsRepo
 

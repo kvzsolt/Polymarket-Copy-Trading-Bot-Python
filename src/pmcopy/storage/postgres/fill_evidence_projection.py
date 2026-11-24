@@ -11,7 +11,7 @@ from pmcopy.integrations.pmrecon.transaction_outbox import (
     PostgresEvidenceOutbox,
 )
 from pmcopy.interfaces.source_time import ReceiptClock
-from pmcopy.services.evidence_fills import FollowerFillEvidenceBuilder
+from pmcopy.services.evidence.evidence_fills import FollowerFillEvidenceBuilder
 
 if TYPE_CHECKING:
     from pmcopy.storage.postgres.fills_repo import FillRecord

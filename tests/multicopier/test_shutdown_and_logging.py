@@ -124,7 +124,7 @@ async def test_shutdown_runtime_stops_every_account_once_and_releases_leases_bef
         events.append("http_close")
 
     monkeypatch.setattr("pmcopy.storage.postgres.connection.shutdown_pool", _shutdown_pool)
-    monkeypatch.setattr("pmcopy.utils.fetchData.close_session", _close_session)
+    monkeypatch.setattr("pmcopy.utils.fetch_data.close_session", _close_session)
 
     # One monitor task per leader; one supervised loop per account; a second
     # supervised spec whose task was never spawned must be tolerated.

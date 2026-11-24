@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.domain.position_lifecycle import PositionLifecycle
-from pmcopy.services.manual_sync_service import ManualSyncService
+from pmcopy.services.positions.manual_sync_service import ManualSyncService
 from pmcopy.storage.postgres.positions_repo import PositionRecord
 
 
@@ -32,11 +32,11 @@ class SyncScenario:
         )
         monkeypatch.setattr(self.service, "_sync_manual_trades", AsyncMock())
         monkeypatch.setattr(
-            "pmcopy.services.manual_sync_service.get_user_position_model",
+            "pmcopy.services.positions.manual_sync_service.get_user_position_model",
             lambda wallet: self.history,
         )
         monkeypatch.setattr(
-            "pmcopy.services.manual_sync_service.print_manual_sync_discrepancy", MagicMock()
+            "pmcopy.services.positions.manual_sync_service.print_manual_sync_discrepancy", MagicMock()
         )
 
     def hold(self, size: str = "5", *, settled: bool = False) -> None:

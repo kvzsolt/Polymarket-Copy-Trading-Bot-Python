@@ -8,11 +8,11 @@ import pytest
 
 from pmcopy.domain.grouped_detection import TraderDetectionPolicy
 from pmcopy.domain.source_time import TransportReceipt
-from pmcopy.services.grouped_detection import DetectionSubscription
+from pmcopy.services.onchain_detection.grouped_detection import DetectionSubscription
 from pmcopy.services.onchain_detection.bounded_recovery import BoundedLogRecovery, RecoveryUnavailable
 from pmcopy.services.onchain_detection.native_observer import NativeOwnerObserver
 from pmcopy.services.onchain_detection.native_owner import NativeOwnerLogDecoder
-from pmcopy.storage.detection_state import SqliteDetectionState
+from pmcopy.storage.local.detection_state import SqliteDetectionState
 from tests.test_aethertrade_native_owner import OWNER, LogFixture
 
 

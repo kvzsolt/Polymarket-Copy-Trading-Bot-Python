@@ -11,10 +11,10 @@ these tests pin the invariants the decision depends on.
 
 from __future__ import annotations
 
-from pmcopy.services.healthServer import ReadinessTracker
-from pmcopy.services.metrics import MetricsRegistry
+from pmcopy.services.observability.health_server import ReadinessTracker
+from pmcopy.services.observability.metrics import MetricsRegistry
 from pmcopy.services.telemetry import TelemetryEmitters
-from pmcopy.orchestrators.telemetry_bootstrap import TelemetryRuntime
+from pmcopy.orchestrators.bootstrap.telemetry_bootstrap import TelemetryRuntime
 
 
 async def test_trading_emitters_never_break_with_a_subscriber_less_hub() -> None:

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pmcopy.cache.market_state_store import MarketStateStore
-from pmcopy.services.market_data_service import (
+from pmcopy.services.market_data.market_data_service import (
     MarketDataPolicy,
     MarketDataService,
     MarketDataSource,

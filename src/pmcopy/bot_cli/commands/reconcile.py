@@ -98,7 +98,7 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
 
         if unconfirmed:
             try:
-                from pmcopy.orchestration.reconciliation_command import ReconciliationCommandService
+                from pmcopy.orchestrators.settlement.reconciliation_command import ReconciliationCommandService
 
                 result = await ReconciliationCommandService(config=config, pool=pool).run()
                 reconciled = result.stale_orders_cancelled

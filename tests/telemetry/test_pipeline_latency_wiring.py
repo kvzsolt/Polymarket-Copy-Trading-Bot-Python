@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pmcopy.adapters.clock import SystemReceiptClock
+from pmcopy.adapters.time.clock import SystemReceiptClock
 from pmcopy.domain.detection import DetectionMode
 from pmcopy.integrations.polymarket.models import VenueSubmitResult
 from pmcopy.interfaces.clob_gateway import ClobGateway
-from pmcopy.orchestrators.v1_event_adapters import LeaderEventNormalizer
-from pmcopy.services.executionService import ExecutionService
-from pmcopy.services.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+from pmcopy.orchestrators.copy_tasks.v1_event_adapters import LeaderEventNormalizer
+from pmcopy.services.execution.execution_service import ExecutionService
+from pmcopy.services.observability.metrics import LatencyPhase, MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
 from pmcopy.services.telemetry.emitters import ExecutionTelemetryEmitter
 from pmcopy.services.telemetry.latency import PipelineLatency
 from tests.config_helpers import load_test_config

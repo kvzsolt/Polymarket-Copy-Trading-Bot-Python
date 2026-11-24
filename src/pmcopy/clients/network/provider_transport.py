@@ -12,7 +12,7 @@ from pmcopy.domain.provider_budget import ProviderConfigurationError
 from pmcopy.domain.observed_rpc import ObservedRpcResult
 from pmcopy.domain.source_time import TransportReceipt
 from pmcopy.interfaces.source_time import ReceiptClock
-from pmcopy.services.provider_gateway import ProviderUnavailable
+from pmcopy.services.providers.provider_gateway import ProviderUnavailable
 
 
 @dataclass(frozen=True, slots=True, repr=False)

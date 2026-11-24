@@ -18,7 +18,7 @@ from pmcopy.domain.redemption import (
     RedemptionSnapshot,
     RedemptionState,
 )
-from pmcopy.services.multiUserConfig import RuntimeUser
+from pmcopy.services.accounts.multi_user_config import RuntimeUser
 
 WALLET = "0x" + "1" * 40
 

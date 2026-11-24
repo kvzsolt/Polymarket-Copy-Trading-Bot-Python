@@ -6,12 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
-from pmcopy.orchestrators.auto_trader_runtime import AutoTraderRuntime
+from pmcopy.orchestrators.discovery.auto_trader_runtime import AutoTraderRuntime
 
 from pmcopy.config.app_config import AppConfig, load_config
 from pmcopy.integrations.falcon.client import FalconClient
-from pmcopy.orchestrators.leader_registry import LeaderRegistry
-from pmcopy.orchestrators.discovery_funds import build_discovery_funds_callable
+from pmcopy.orchestrators.discovery.leader_registry import LeaderRegistry
+from pmcopy.orchestrators.discovery.discovery_funds import build_discovery_funds_callable
 from pmcopy.services.discovery.falcon_candidate_service import (
     FalconCandidateService,
 )
@@ -19,13 +19,13 @@ from pmcopy.services.discovery.falcon_discovery_service import (
     FalconDiscoveryService,
 )
 from pmcopy.services.discovery.policy_config import discovery_policy_from_config
-from pmcopy.services.healthServer import ReadinessTracker
+from pmcopy.services.observability.health_server import ReadinessTracker
 from pmcopy.storage.postgres.connection import init_pool
 from pmcopy.storage.postgres.discovery_repo import DiscoveryRepo
 from pmcopy.storage.postgres.leaders_repo import LeadersRepo
 from pmcopy.storage.postgres.migrations import apply_migrations
-from pmcopy.utils.getMyBalance import configure_from_appconfig as configure_balance_from_appconfig
-from pmcopy.utils.getMyBalance import get_my_balance
+from pmcopy.utils.wallet_balance import configure_from_appconfig as configure_balance_from_appconfig
+from pmcopy.utils.wallet_balance import get_my_balance
 from pmcopy.utils.logger import get_logger
 
 __all__ = ["Application", "build_app"]

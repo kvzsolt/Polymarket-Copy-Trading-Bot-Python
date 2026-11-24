@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pmcopy.bot_cli.commands.trading import register_trading_command
-from pmcopy.services.executionService import ExecutionRequest, ExecutionService
-from pmcopy.services.trading_permission import (
+from pmcopy.services.execution.execution_service import ExecutionRequest, ExecutionService
+from pmcopy.services.trading.trading_permission import (
     SubmissionPurpose,
     TradingPausedError,
     TradingPermissionService,
